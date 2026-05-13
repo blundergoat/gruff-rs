@@ -1,0 +1,41 @@
+paths:
+  ignore:
+    - target/**
+allowlists:
+  acceptedAbbreviations:
+    - id
+    - db
+    - io
+    - ui
+    - tx
+    - rx
+  secretPreviews: []
+rules:
+  complexity.cognitive:
+    threshold: 15
+  complexity.cyclomatic:
+    thresholds:
+      warn: 10
+      error: 20
+  complexity.nesting-depth:
+    thresholds:
+      warn: 4
+      error: 6
+  complexity.npath:
+    thresholds:
+      warn: 32
+      error: 128
+  docs.todo-density:
+    threshold: 4
+  size.file-length:
+    thresholds:
+      warn: 400
+      error: 800
+  size.function-length:
+    thresholds:
+      warn: 30
+      error: 60
+  size.parameter-count:
+    threshold: 5
+  test-quality.long-test:
+    threshold: 30

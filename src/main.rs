@@ -1,5 +1,6 @@
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use proc_macro2::LineColumn;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,10 +11,15 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use syn::spanned::Spanned;
+use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 use walkdir::{DirEntry, WalkDir};
+
+mod rules;
 
 const VERSION: &str = "0.1.0-dev";
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
+const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff.yaml", ".gruff.yml", ".gruff.json"];
 
 #[derive(Parser)]
 #[command(
@@ -30,6 +36,7 @@ struct Cli {
 enum Commands {
     Analyse(AnalyseArgs),
     Report(ReportArgs),
+    ListRules(ListRulesArgs),
     Dashboard(DashboardArgs),
 }
 
@@ -89,6 +96,12 @@ struct DashboardArgs {
     project_root: PathBuf,
 }
 
+#[derive(Args)]
+struct ListRulesArgs {
+    #[arg(long, default_value = "text")]
+    format: RuleListFormat,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, PartialEq, Eq)]
 enum OutputFormat {
     Text,
@@ -115,6 +128,12 @@ impl OutputFormat {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ReportFormat {
     Html,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RuleListFormat {
+    Text,
     Json,
 }
 
@@ -211,6 +230,13 @@ struct SourceFile {
     is_rust: bool,
 }
 
+struct SourceUnit<'a> {
+    file: &'a SourceFile,
+    source: &'a str,
+    rust_ast: Option<syn::File>,
+    diagnostics: Vec<RunDiagnostic>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 enum Severity {
@@ -242,6 +268,20 @@ enum Pillar {
     TestQuality,
     Design,
 }
+
+const SCORE_PILLARS: &[Pillar] = &[
+    Pillar::Size,
+    Pillar::Complexity,
+    Pillar::DeadCode,
+    Pillar::Waste,
+    Pillar::Naming,
+    Pillar::Documentation,
+    Pillar::Modernisation,
+    Pillar::Security,
+    Pillar::SensitiveData,
+    Pillar::TestQuality,
+    Pillar::Design,
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,12 +457,14 @@ struct BaselineEntry {
 #[derive(Clone)]
 struct FunctionBlock {
     name: String,
-    params: String,
+    param_count: usize,
     start_line: usize,
     line_count: usize,
     body: String,
     is_public: bool,
     is_test: bool,
+    returns_bool: bool,
+    ignore_without_reason: bool,
 }
 
 fn main() -> ExitCode {
@@ -442,6 +484,7 @@ fn main() -> ExitCode {
             }
         }
         Commands::Report(args) => run_report(args),
+        Commands::ListRules(args) => run_list_rules(args),
         Commands::Dashboard(args) => run_dashboard(args),
     }
 }
@@ -501,11 +544,43 @@ fn run_report(args: ReportArgs) -> ExitCode {
     }
 }
 
+fn run_list_rules(args: ListRulesArgs) -> ExitCode {
+    let registry = rules::builtin_registry();
+    match args.format {
+        RuleListFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(registry.definitions()).expect("rules serialize")
+            );
+        }
+        RuleListFormat::Text => {
+            for definition in registry.definitions() {
+                println!(
+                    "{} [{}] {:?} {:?} - {}",
+                    definition.id,
+                    definition.tier,
+                    definition.pillar,
+                    definition.default_severity,
+                    definition.description
+                );
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
     let project_root = std::env::current_dir()
         .map_err(|error| format!("unable to resolve current directory: {error}"))?;
-    let config = load_config(&project_root, options)?;
-    let mut discovery = discover_sources(&project_root, options, &config);
+    run_analysis_in_project(&project_root, options)
+}
+
+fn run_analysis_in_project(
+    project_root: &Path,
+    options: &AnalysisOptions,
+) -> Result<AnalysisReport, String> {
+    let config = load_config(project_root, options)?;
+    let mut discovery = discover_sources(project_root, options, &config);
 
     if let Some(mode) = &options.diff {
         let changed = changed_files(mode)?;
@@ -526,11 +601,14 @@ fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
         });
     }
 
+    findings.extend(analyse_project(project_root, &config));
+
     for source_file in &discovery.files {
         match fs::read_to_string(&source_file.absolute_path) {
             Ok(source) => {
-                diagnostics.extend(parse_diagnostics(source_file, &source));
-                findings.extend(analyse_source(source_file, &source, &config));
+                let source_unit = parse_source_unit(source_file, &source);
+                findings.extend(analyse_source(&source_unit, &config));
+                diagnostics.extend(source_unit.diagnostics);
             }
             Err(error) => diagnostics.push(RunDiagnostic {
                 diagnostic_type: "read-error".to_string(),
@@ -543,10 +621,10 @@ fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
 
     let mut baseline_report = None;
     if let Some(path) = &options.generate_baseline {
-        let baseline_path = absolutize(&project_root, path);
+        let baseline_path = absolutize(project_root, path);
         write_baseline(&baseline_path, &findings)?;
         baseline_report = Some(BaselineReport {
-            path: display_path(&project_root, &baseline_path),
+            path: display_path(project_root, &baseline_path),
             source: "generated".to_string(),
             suppressed: 0,
             generated: true,
@@ -555,7 +633,7 @@ fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
         let selected = options
             .baseline
             .as_ref()
-            .map(|path| (absolutize(&project_root, path), "explicit"))
+            .map(|path| (absolutize(project_root, path), "explicit"))
             .or_else(|| {
                 let default = project_root.join(DEFAULT_BASELINE);
                 default.exists().then_some((default, "default"))
@@ -565,7 +643,7 @@ fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
             let before = findings.len();
             apply_baseline(&baseline_path, &mut findings)?;
             baseline_report = Some(BaselineReport {
-                path: display_path(&project_root, &baseline_path),
+                path: display_path(project_root, &baseline_path),
                 source: source.to_string(),
                 suppressed: before.saturating_sub(findings.len()),
                 generated: false,
@@ -590,7 +668,7 @@ fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
 
     if let Some(history_file) = &options.history_file {
-        record_history(&project_root, history_file, &findings, &mut diagnostics);
+        record_history(project_root, history_file, &findings, &mut diagnostics);
     }
 
     let summary = summarize(&findings);
@@ -759,10 +837,7 @@ fn load_config(project_root: &Path, options: &AnalysisOptions) -> Result<Config,
         .config
         .as_ref()
         .map(|path| absolutize(project_root, path))
-        .or_else(|| {
-            let default = project_root.join(".gruff.json");
-            default.exists().then_some(default)
-        });
+        .or_else(|| default_config_path(project_root));
 
     let Some(path) = config_path else {
         return Ok(config);
@@ -770,49 +845,104 @@ fn load_config(project_root: &Path, options: &AnalysisOptions) -> Result<Config,
 
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("unable to read config {}: {error}", path.display()))?;
-    let value: Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("invalid config JSON {}: {error}", path.display()))?;
+    let value = parse_config_value(&path, &raw)?;
+    let root = value
+        .as_object()
+        .ok_or_else(|| format!("config {} must be a JSON object", path.display()))?;
+    reject_unknown_keys(root, &["paths", "allowlists", "rules"], "config root")?;
 
-    if let Some(paths) = value.get("paths").and_then(Value::as_object) {
-        if let Some(ignore) = paths.get("ignore").and_then(Value::as_array) {
-            config.ignored_paths = ignore
-                .iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
+    if let Some(paths_value) = root.get("paths") {
+        let paths = paths_value
+            .as_object()
+            .ok_or_else(|| "config key `paths` must be an object".to_string())?;
+        reject_unknown_keys(paths, &["ignore"], "config key `paths`")?;
+        if let Some(ignore) = paths.get("ignore") {
+            config.ignored_paths = string_array(ignore, "paths.ignore")?;
+        }
+    }
+
+    if let Some(allowlists_value) = root.get("allowlists") {
+        let allowlists = allowlists_value
+            .as_object()
+            .ok_or_else(|| "config key `allowlists` must be an object".to_string())?;
+        reject_unknown_keys(
+            allowlists,
+            &["acceptedAbbreviations", "secretPreviews"],
+            "config key `allowlists`",
+        )?;
+        if let Some(abbreviations) = allowlists.get("acceptedAbbreviations") {
+            config.accepted_abbreviations =
+                string_array(abbreviations, "allowlists.acceptedAbbreviations")?
+                    .into_iter()
+                    .map(|value| value.to_ascii_lowercase())
+                    .collect();
+        }
+        if let Some(previews) = allowlists.get("secretPreviews") {
+            config.secret_previews = string_array(previews, "allowlists.secretPreviews")?
+                .into_iter()
                 .collect();
         }
     }
 
-    if let Some(allowlists) = value.get("allowlists").and_then(Value::as_object) {
-        if let Some(abbreviations) = allowlists
-            .get("acceptedAbbreviations")
-            .and_then(Value::as_array)
-        {
-            config.accepted_abbreviations = abbreviations
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|value| value.to_ascii_lowercase())
-                .collect();
-        }
-        if let Some(previews) = allowlists.get("secretPreviews").and_then(Value::as_array) {
-            config.secret_previews = previews
-                .iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect();
-        }
-    }
-
-    if let Some(rules) = value.get("rules").and_then(Value::as_object) {
+    if let Some(rules_value) = root.get("rules") {
+        let registry = rules::builtin_registry();
+        let rules = rules_value
+            .as_object()
+            .ok_or_else(|| "config key `rules` must be an object".to_string())?;
         for (rule_id, rule_value) in rules {
-            let mut setting = RuleSetting::default();
-            if let Some(enabled) = rule_value.get("enabled").and_then(Value::as_bool) {
-                setting.enabled = Some(enabled);
+            if !registry.contains(rule_id) {
+                return Err(format!("unknown rule id `{rule_id}` in config"));
             }
-            if let Some(thresholds) = rule_value.get("thresholds").and_then(Value::as_object) {
+            let rule_object = rule_value
+                .as_object()
+                .ok_or_else(|| format!("config for rule `{rule_id}` must be an object"))?;
+            reject_unknown_keys(
+                rule_object,
+                &["enabled", "threshold", "thresholds", "options"],
+                &format!("config for rule `{rule_id}`"),
+            )?;
+
+            let mut setting = RuleSetting::default();
+            if let Some(enabled) = rule_object.get("enabled") {
+                setting.enabled = Some(enabled.as_bool().ok_or_else(|| {
+                    format!("config key `rules.{rule_id}.enabled` must be a boolean")
+                })?);
+            }
+            if rule_object.contains_key("threshold") && rule_object.contains_key("thresholds") {
+                return Err(format!(
+                    "config for rule `{rule_id}` cannot use both `threshold` and `thresholds`"
+                ));
+            }
+            if let Some(threshold_value) = rule_object.get("threshold") {
+                let threshold_name = single_threshold_name(&registry, rule_id)?;
+                let number = threshold_value.as_f64().ok_or_else(|| {
+                    format!("threshold `rules.{rule_id}.threshold` must be a number")
+                })?;
+                setting
+                    .thresholds
+                    .insert(threshold_name.to_string(), number);
+            }
+            if let Some(thresholds_value) = rule_object.get("thresholds") {
+                let thresholds = thresholds_value.as_object().ok_or_else(|| {
+                    format!("config key `rules.{rule_id}.thresholds` must be an object")
+                })?;
                 for (name, threshold) in thresholds {
-                    if let Some(number) = threshold.as_f64() {
-                        setting.thresholds.insert(name.clone(), number);
+                    if !registry.supports_threshold(rule_id, name) {
+                        return Err(format!("unknown threshold `{name}` for rule `{rule_id}`"));
+                    }
+                    let number = threshold.as_f64().ok_or_else(|| {
+                        format!("threshold `rules.{rule_id}.thresholds.{name}` must be a number")
+                    })?;
+                    setting.thresholds.insert(name.clone(), number);
+                }
+            }
+            if let Some(options_value) = rule_object.get("options") {
+                let options = options_value.as_object().ok_or_else(|| {
+                    format!("config key `rules.{rule_id}.options` must be an object")
+                })?;
+                for name in options.keys() {
+                    if !registry.supports_option(rule_id, name) {
+                        return Err(format!("unknown option `{name}` for rule `{rule_id}`"));
                     }
                 }
             }
@@ -823,390 +953,699 @@ fn load_config(project_root: &Path, options: &AnalysisOptions) -> Result<Config,
     Ok(config)
 }
 
-fn parse_diagnostics(file: &SourceFile, source: &str) -> Vec<RunDiagnostic> {
-    if !file.is_rust {
-        return Vec::new();
-    }
-
-    let mut braces = 0isize;
-    let mut parentheses = 0isize;
-    let mut brackets = 0isize;
-
-    for (index, line) in source.lines().enumerate() {
-        for character in line.chars() {
-            match character {
-                '{' => braces += 1,
-                '}' => braces -= 1,
-                '(' => parentheses += 1,
-                ')' => parentheses -= 1,
-                '[' => brackets += 1,
-                ']' => brackets -= 1,
-                _ => {}
-            }
-        }
-        if braces < 0 || parentheses < 0 || brackets < 0 {
-            return vec![RunDiagnostic {
-                diagnostic_type: "parse-error".to_string(),
-                message: "Unbalanced Rust delimiters detected.".to_string(),
-                file_path: Some(file.display_path.clone()),
-                line: Some(index + 1),
-            }];
-        }
-    }
-
-    if braces != 0 || parentheses != 0 || brackets != 0 {
-        return vec![RunDiagnostic {
-            diagnostic_type: "parse-error".to_string(),
-            message: "Unbalanced Rust delimiters detected.".to_string(),
-            file_path: Some(file.display_path.clone()),
-            line: Some(source.lines().count().max(1)),
-        }];
-    }
-
-    Vec::new()
+fn default_config_path(project_root: &Path) -> Option<PathBuf> {
+    DEFAULT_CONFIG_FILES
+        .iter()
+        .map(|name| project_root.join(name))
+        .find(|path| path.exists())
 }
 
-fn analyse_source(file: &SourceFile, source: &str, config: &Config) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    analyse_text_rules(file, source, config, &mut findings);
-    if file.is_rust {
-        analyse_rust_rules(file, source, config, &mut findings);
+fn parse_config_value(path: &Path, raw: &str) -> Result<Value, String> {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "yaml" | "yml" => serde_yaml::from_str(raw)
+            .map_err(|error| format!("invalid config YAML {}: {error}", path.display())),
+        "json" => serde_json::from_str(raw)
+            .map_err(|error| format!("invalid config JSON {}: {error}", path.display())),
+        _ => serde_yaml::from_str(raw)
+            .map_err(|error| format!("invalid config YAML {}: {error}", path.display())),
     }
-    findings
-        .into_iter()
-        .filter(|finding| config.rule_enabled(&finding.rule_id))
+}
+
+fn single_threshold_name<'a>(
+    registry: &'a rules::RuleRegistry,
+    rule_id: &str,
+) -> Result<&'a str, String> {
+    let definition = registry
+        .get(rule_id)
+        .ok_or_else(|| format!("unknown rule id `{rule_id}` in config"))?;
+    if definition.thresholds.len() == 1 {
+        Ok(definition.thresholds[0].name)
+    } else {
+        Err(format!(
+            "config key `rules.{rule_id}.threshold` is only supported for rules with exactly one threshold"
+        ))
+    }
+}
+
+fn reject_unknown_keys(
+    object: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    for key in object.keys() {
+        if !allowed.iter().any(|allowed_key| allowed_key == key) {
+            return Err(format!("unknown key `{key}` in {context}"));
+        }
+    }
+    Ok(())
+}
+
+fn string_array(value: &Value, path: &str) -> Result<Vec<String>, String> {
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("config key `{path}` must be an array"))?;
+    array
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            item.as_str()
+                .map(String::from)
+                .ok_or_else(|| format!("config key `{path}[{index}]` must be a string"))
+        })
         .collect()
 }
 
-fn analyse_text_rules(
-    file: &SourceFile,
-    source: &str,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let line_count = source.lines().count();
-    let file_warn = config.threshold("size.file-length", "warn", 400.0) as usize;
-    let file_error = config.threshold("size.file-length", "error", 800.0) as usize;
-    if line_count > file_error {
-        findings.push(finding(
-            "size.file-length",
-            format!("File has {line_count} lines, above the error threshold of {file_error}."),
+fn parse_source_unit<'a>(file: &'a SourceFile, source: &'a str) -> SourceUnit<'a> {
+    if !file.is_rust {
+        return SourceUnit {
             file,
-            Some(1),
-            Severity::Error,
-            Pillar::Size,
-        ));
-    } else if line_count > file_warn {
-        findings.push(finding(
-            "size.file-length",
-            format!("File has {line_count} lines, above the warning threshold of {file_warn}."),
-            file,
-            Some(1),
-            Severity::Warning,
-            Pillar::Size,
-        ));
+            source,
+            rust_ast: None,
+            diagnostics: Vec::new(),
+        };
     }
 
-    let todo_count = source.matches("TODO").count() + source.matches("FIXME").count();
-    if todo_count >= config.threshold("docs.todo-density", "markers", 4.0) as usize {
-        findings.push(finding(
-            "docs.todo-density",
-            format!("File contains {todo_count} TODO/FIXME markers."),
+    match syn::parse_file(source) {
+        Ok(ast) => SourceUnit {
             file,
-            Some(first_matching_line(source, "TODO").unwrap_or(1)),
-            Severity::Advisory,
-            Pillar::Documentation,
-        ));
+            source,
+            rust_ast: Some(ast),
+            diagnostics: Vec::new(),
+        },
+        Err(error) => SourceUnit {
+            file,
+            source,
+            rust_ast: None,
+            diagnostics: vec![RunDiagnostic {
+                diagnostic_type: "parse-error".to_string(),
+                message: format!("Rust parser error: {error}"),
+                file_path: Some(file.display_path.clone()),
+                line: Some(line_from_span(error.span().start())),
+            }],
+        },
     }
-
-    analyse_sensitive_data(file, source, config, findings);
 }
 
-fn analyse_sensitive_data(
-    file: &SourceFile,
-    source: &str,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let patterns = [
-        (
-            "sensitive-data.aws-access-key",
-            r"AKIA[0-9A-Z]{16}",
-            "AWS access key pattern detected.",
-        ),
-        (
-            "sensitive-data.private-key",
-            r"BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY",
-            "Private key block detected.",
-        ),
-        (
-            "sensitive-data.jwt-token",
-            r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
-            "JWT-looking token detected.",
-        ),
-        (
-            "sensitive-data.database-url-password",
-            r"[a-z]+://[^:\s]+:[^@\s]+@",
-            "Database URL appears to include a password.",
-        ),
-        (
-            "sensitive-data.api-key-pattern",
-            r"(sk_live_|ghp_|sk-ant-|xox[baprs]-|OPENAI_API_KEY)",
-            "API key pattern detected.",
-        ),
-    ];
+fn line_from_span(position: LineColumn) -> usize {
+    position.line.max(1)
+}
 
-    for (rule_id, pattern, message) in patterns {
-        let regex = Regex::new(pattern).expect("static regex compiles");
+fn analyse_project(project_root: &Path, config: &Config) -> Vec<Finding> {
+    if project_root.join("README.md").exists() || !config.rule_enabled("docs.missing-readme") {
+        return Vec::new();
+    }
+
+    vec![Finding::new(
+        "docs.missing-readme",
+        "Project root does not contain a README.md file.",
+        "README.md",
+        Some(1),
+        Severity::Advisory,
+        Pillar::Documentation,
+        Confidence::High,
+        None,
+        Some("Add a README.md that explains the project purpose and local commands.".to_string()),
+        json!({}),
+    )]
+}
+
+fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
+    built_in_rules::analyse(unit, config)
+}
+
+mod built_in_rules {
+    use super::*;
+
+    pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        analyse_text_rules(unit.file, unit.source, config, &mut findings);
+        if let Some(ast) = &unit.rust_ast {
+            analyse_rust_rules(unit.file, unit.source, ast, config, &mut findings);
+        }
+        findings
+            .into_iter()
+            .filter(|finding| config.rule_enabled(&finding.rule_id))
+            .collect()
+    }
+
+    fn analyse_text_rules(
+        file: &SourceFile,
+        source: &str,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let line_count = source.lines().count();
+        let file_warn = config.threshold("size.file-length", "warn", 400.0) as usize;
+        let file_error = config.threshold("size.file-length", "error", 800.0) as usize;
+        if line_count > file_error {
+            findings.push(finding(
+                "size.file-length",
+                format!("File has {line_count} lines, above the error threshold of {file_error}."),
+                file,
+                Some(1),
+                Severity::Error,
+                Pillar::Size,
+            ));
+        } else if line_count > file_warn {
+            findings.push(finding(
+                "size.file-length",
+                format!("File has {line_count} lines, above the warning threshold of {file_warn}."),
+                file,
+                Some(1),
+                Severity::Warning,
+                Pillar::Size,
+            ));
+        }
+
+        let todo_count = source.matches("TODO").count() + source.matches("FIXME").count();
+        if todo_count >= config.threshold("docs.todo-density", "markers", 4.0) as usize {
+            findings.push(finding(
+                "docs.todo-density",
+                format!("File contains {todo_count} TODO/FIXME markers."),
+                file,
+                Some(first_matching_line(source, "TODO").unwrap_or(1)),
+                Severity::Advisory,
+                Pillar::Documentation,
+            ));
+        }
+
+        analyse_sensitive_data(file, source, config, findings);
+    }
+
+    fn analyse_sensitive_data(
+        file: &SourceFile,
+        source: &str,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let patterns = [
+            (
+                "sensitive-data.aws-access-key",
+                r"AKIA[0-9A-Z]{16}",
+                "AWS access key pattern detected.",
+            ),
+            (
+                "sensitive-data.private-key",
+                r"BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY",
+                "Private key block detected.",
+            ),
+            (
+                "sensitive-data.jwt-token",
+                r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+                "JWT-looking token detected.",
+            ),
+            (
+                "sensitive-data.database-url-password",
+                r"[a-z]+://[^:\s]+:[^@\s]+@",
+                "Database URL appears to include a password.",
+            ),
+            (
+                "sensitive-data.api-key-pattern",
+                r"(sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
+                "API key pattern detected.",
+            ),
+        ];
+
+        for (rule_id, pattern, message) in patterns {
+            let regex = Regex::new(pattern).expect("static regex compiles");
+            for capture in regex.find_iter(source) {
+                let preview = redact(capture.as_str());
+                if config.secret_previews.contains(&preview) {
+                    continue;
+                }
+                findings.push(Finding::new(
+                    rule_id,
+                    message,
+                    file.display_path.clone(),
+                    Some(byte_line(source, capture.start())),
+                    Severity::Error,
+                    Pillar::SensitiveData,
+                    Confidence::High,
+                    None,
+                    Some("Remove the secret and load it from a secure runtime source.".to_string()),
+                    json!({ "preview": preview }),
+                ));
+            }
+        }
+
+        analyse_env_like_secrets(file, source, config, findings);
+        analyse_high_entropy_strings(file, source, config, findings);
+    }
+
+    fn analyse_env_like_secrets(
+        file: &SourceFile,
+        source: &str,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let regex = Regex::new(
+            r#"\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*["']?([^"'\s]+)"#,
+        )
+        .expect("static regex compiles");
+
         for capture in regex.find_iter(source) {
             let preview = redact(capture.as_str());
             if config.secret_previews.contains(&preview) {
                 continue;
             }
             findings.push(Finding::new(
-                rule_id,
-                message,
+                "sensitive-data.hardcoded-env-value",
+                "Hardcoded environment-style secret assignment detected.",
                 file.display_path.clone(),
                 Some(byte_line(source, capture.start())),
                 Severity::Error,
                 Pillar::SensitiveData,
                 Confidence::High,
                 None,
-                Some("Remove the secret and load it from a secure runtime source.".to_string()),
+                Some(
+                    "Load secret values from runtime configuration instead of source.".to_string(),
+                ),
                 json!({ "preview": preview }),
             ));
         }
     }
-}
 
-fn analyse_rust_rules(
-    file: &SourceFile,
-    source: &str,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let blocks = rust_function_blocks(source);
-    analyse_blocks(file, &blocks, config, findings);
-    analyse_line_rules(file, source, config, findings);
-    analyse_item_rules(file, source, findings);
-    analyse_dead_code(file, source, findings);
-}
+    fn analyse_high_entropy_strings(
+        file: &SourceFile,
+        source: &str,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let regex = Regex::new(r#""([A-Za-z0-9+/=_-]{32,})"|'([A-Za-z0-9+/=_-]{32,})'"#)
+            .expect("static regex compiles");
 
-fn analyse_blocks(
-    file: &SourceFile,
-    blocks: &[FunctionBlock],
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    for block in blocks {
-        let method_warn = config.threshold("size.function-length", "warn", 30.0) as usize;
-        let method_error = config.threshold("size.function-length", "error", 60.0) as usize;
-        if block.line_count > method_error {
-            findings.push(block_finding(
-                "size.function-length",
-                format!(
-                    "Function `{}` has {} lines, above the error threshold of {method_error}.",
-                    block.name, block.line_count
-                ),
-                file,
-                block,
+        for captures in regex.captures_iter(source) {
+            let Some(secret) = captures.get(1).or_else(|| captures.get(2)) else {
+                continue;
+            };
+            let value = secret.as_str();
+            if !looks_high_entropy(value) {
+                continue;
+            }
+            let preview = redact(value);
+            if config.secret_previews.contains(&preview) {
+                continue;
+            }
+            findings.push(Finding::new(
+                "sensitive-data.high-entropy-string",
+                "High-entropy string literal detected.",
+                file.display_path.clone(),
+                Some(byte_line(source, secret.start())),
                 Severity::Error,
-                Pillar::Size,
+                Pillar::SensitiveData,
+                Confidence::Medium,
+                None,
+                Some("Move generated secrets to a secure runtime secret source.".to_string()),
+                json!({ "preview": preview, "entropy": shannon_entropy(value) }),
             ));
-        } else if block.line_count > method_warn {
-            findings.push(block_finding(
-                "size.function-length",
-                format!(
-                    "Function `{}` has {} lines, above the warning threshold of {method_warn}.",
-                    block.name, block.line_count
-                ),
-                file,
-                block,
-                Severity::Warning,
-                Pillar::Size,
-            ));
-        }
-
-        let params = count_parameters(&block.params);
-        if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
-            findings.push(block_finding(
-                "size.parameter-count",
-                format!("Function `{}` declares {params} parameters.", block.name),
-                file,
-                block,
-                Severity::Warning,
-                Pillar::Size,
-            ));
-        }
-
-        let cyclomatic = count_regex(
-            &block.body,
-            r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
-        ) + 1;
-        if cyclomatic > config.threshold("complexity.cyclomatic", "error", 20.0) as usize {
-            findings.push(block_finding(
-                "complexity.cyclomatic",
-                format!(
-                    "Function `{}` has cyclomatic complexity {cyclomatic}.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Error,
-                Pillar::Complexity,
-            ));
-        } else if cyclomatic > config.threshold("complexity.cyclomatic", "warn", 10.0) as usize {
-            findings.push(block_finding(
-                "complexity.cyclomatic",
-                format!(
-                    "Function `{}` has cyclomatic complexity {cyclomatic}.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Warning,
-                Pillar::Complexity,
-            ));
-        }
-
-        let nesting = max_nesting_depth(&block.body);
-        let cognitive = cyclomatic + nesting;
-        if cognitive > config.threshold("complexity.cognitive", "warn", 15.0) as usize {
-            findings.push(block_finding(
-                "complexity.cognitive",
-                format!(
-                    "Function `{}` has cognitive complexity {cognitive}.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Warning,
-                Pillar::Complexity,
-            ));
-        }
-
-        if block.line_count > 45 && cyclomatic > 10 {
-            findings.push(block_finding(
-                "design.god-function",
-                format!("Function `{}` is both long and complex.", block.name),
-                file,
-                block,
-                Severity::Warning,
-                Pillar::Design,
-            ));
-        }
-
-        if is_generic_name(&block.name) {
-            findings.push(block_finding(
-                "naming.generic-function",
-                format!(
-                    "Function `{}` is too generic to explain intent.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Advisory,
-                Pillar::Naming,
-            ));
-        }
-
-        if block.is_public && !has_doc_comment_before(&block.body) {
-            findings.push(block_finding(
-                "docs.missing-public-doc",
-                format!(
-                    "Public function `{}` is missing a Rust doc comment.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Advisory,
-                Pillar::Documentation,
-            ));
-        }
-
-        if block.is_test {
-            analyse_test_block(file, block, findings);
         }
     }
-}
 
-fn analyse_test_block(file: &SourceFile, block: &FunctionBlock, findings: &mut Vec<Finding>) {
-    if !Regex::new(r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!)")
-        .expect("static regex compiles")
-        .is_match(&block.body)
-    {
-        findings.push(block_finding(
-            "test-quality.no-assertions",
-            format!(
-                "Test `{}` does not appear to make an assertion.",
-                block.name
-            ),
-            file,
-            block,
-            Severity::Warning,
-            Pillar::TestQuality,
-        ));
+    fn analyse_rust_rules(
+        file: &SourceFile,
+        source: &str,
+        ast: &syn::File,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let blocks = rust_function_blocks(ast, source);
+        analyse_blocks(file, &blocks, config, findings);
+        analyse_line_rules(file, source, config, findings);
+        analyse_item_rules(file, ast, findings);
+        analyse_dead_code(file, ast, source, findings);
     }
 
-    let checks = [
-        (
-            "test-quality.sleep-in-test",
-            r"(std::thread::sleep|tokio::time::sleep)",
-            "Test sleeps instead of synchronising on behaviour.",
-        ),
-        (
-            "test-quality.loop-in-test",
-            r"\b(for|while|loop)\b",
-            "Test contains loop logic.",
-        ),
-        (
-            "test-quality.conditional-logic",
-            r"\b(if|match)\b",
-            "Test contains conditional logic.",
-        ),
-        (
-            "test-quality.unwrap-in-test",
-            r"\.unwrap\(\)",
-            "Test uses unwrap(), which can hide setup intent.",
-        ),
-    ];
+    fn analyse_blocks(
+        file: &SourceFile,
+        blocks: &[FunctionBlock],
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        for block in blocks {
+            let searchable_body = strip_rust_string_literals(&block.body);
+            let method_warn = config.threshold("size.function-length", "warn", 30.0) as usize;
+            let method_error = config.threshold("size.function-length", "error", 60.0) as usize;
+            if block.line_count > method_error {
+                findings.push(block_finding(
+                    "size.function-length",
+                    format!(
+                        "Function `{}` has {} lines, above the error threshold of {method_error}.",
+                        block.name, block.line_count
+                    ),
+                    file,
+                    block,
+                    Severity::Error,
+                    Pillar::Size,
+                ));
+            } else if block.line_count > method_warn {
+                findings.push(block_finding(
+                    "size.function-length",
+                    format!(
+                        "Function `{}` has {} lines, above the warning threshold of {method_warn}.",
+                        block.name, block.line_count
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Size,
+                ));
+            }
 
-    for (rule_id, pattern, message) in checks {
-        if Regex::new(pattern)
-            .expect("static regex compiles")
-            .is_match(&block.body)
-        {
+            let params = block.param_count;
+            if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
+                findings.push(block_finding(
+                    "size.parameter-count",
+                    format!("Function `{}` declares {params} parameters.", block.name),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Size,
+                ));
+            }
+
+            let cyclomatic = count_regex(
+                &searchable_body,
+                r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
+            ) + 1;
+            if cyclomatic > config.threshold("complexity.cyclomatic", "error", 20.0) as usize {
+                findings.push(block_finding_with_metadata(
+                    "complexity.cyclomatic",
+                    format!(
+                        "Function `{}` has cyclomatic complexity {cyclomatic}.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Error,
+                    Pillar::Complexity,
+                    json!({ "complexity": cyclomatic }),
+                ));
+            } else if cyclomatic > config.threshold("complexity.cyclomatic", "warn", 10.0) as usize
+            {
+                findings.push(block_finding_with_metadata(
+                    "complexity.cyclomatic",
+                    format!(
+                        "Function `{}` has cyclomatic complexity {cyclomatic}.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Complexity,
+                    json!({ "complexity": cyclomatic }),
+                ));
+            }
+
+            let nesting = max_nesting_depth(&searchable_body);
+            let nesting_error = config.threshold("complexity.nesting-depth", "error", 6.0) as usize;
+            let nesting_warn = config.threshold("complexity.nesting-depth", "warn", 4.0) as usize;
+            if nesting > nesting_error {
+                findings.push(block_finding_with_metadata(
+                    "complexity.nesting-depth",
+                    format!("Function `{}` has nesting depth {nesting}.", block.name),
+                    file,
+                    block,
+                    Severity::Error,
+                    Pillar::Complexity,
+                    json!({ "nestingDepth": nesting }),
+                ));
+            } else if nesting > nesting_warn {
+                findings.push(block_finding_with_metadata(
+                    "complexity.nesting-depth",
+                    format!("Function `{}` has nesting depth {nesting}.", block.name),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Complexity,
+                    json!({ "nestingDepth": nesting }),
+                ));
+            }
+
+            let npath = approximate_npath(&searchable_body);
+            let npath_error = config.threshold("complexity.npath", "error", 128.0) as usize;
+            let npath_warn = config.threshold("complexity.npath", "warn", 32.0) as usize;
+            if npath > npath_error {
+                findings.push(block_finding_with_extras(
+                    "complexity.npath",
+                    format!(
+                        "Function `{}` has approximate NPath complexity {npath}.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Error,
+                    Pillar::Complexity,
+                    BlockFindingExtras {
+                        confidence: Confidence::Medium,
+                        metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
+                    },
+                ));
+            } else if npath > npath_warn {
+                findings.push(block_finding_with_extras(
+                    "complexity.npath",
+                    format!(
+                        "Function `{}` has approximate NPath complexity {npath}.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Complexity,
+                    BlockFindingExtras {
+                        confidence: Confidence::Medium,
+                        metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
+                    },
+                ));
+            }
+
+            let cognitive = cyclomatic + nesting.saturating_mul(2);
+            if cognitive > config.threshold("complexity.cognitive", "warn", 15.0) as usize {
+                findings.push(block_finding_with_metadata(
+                    "complexity.cognitive",
+                    format!(
+                        "Function `{}` has cognitive complexity {cognitive}.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Complexity,
+                    json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
+                ));
+            }
+
+            if block.line_count > 45 && cyclomatic > 10 {
+                findings.push(block_finding(
+                    "design.god-function",
+                    format!("Function `{}` is both long and complex.", block.name),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Design,
+                ));
+            }
+
+            if is_generic_name(&block.name) {
+                findings.push(block_finding(
+                    "naming.generic-function",
+                    format!(
+                        "Function `{}` is too generic to explain intent.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Advisory,
+                    Pillar::Naming,
+                ));
+            }
+
+            if block.returns_bool && !is_boolean_predicate_name(&block.name) {
+                findings.push(block_finding(
+                    "naming.boolean-prefix",
+                    format!(
+                        "Boolean function `{}` should read like a predicate.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Advisory,
+                    Pillar::Naming,
+                ));
+            }
+
+            if is_placeholder_identifier(&block.name) {
+                findings.push(block_finding_with_extras(
+                    "naming.placeholder-identifier",
+                    format!(
+                        "Function `{}` uses a placeholder name instead of domain language.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Advisory,
+                    Pillar::Naming,
+                    BlockFindingExtras {
+                        confidence: Confidence::Medium,
+                        metadata: json!({}),
+                    },
+                ));
+            }
+
+            if block.is_public && !has_doc_comment_before(&block.body) {
+                findings.push(block_finding(
+                    "docs.missing-public-doc",
+                    format!(
+                        "Public function `{}` is missing a Rust doc comment.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Advisory,
+                    Pillar::Documentation,
+                ));
+            }
+
+            if block.is_test {
+                analyse_test_block(file, block, config, findings);
+            }
+        }
+    }
+
+    fn analyse_test_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        if block.ignore_without_reason {
             findings.push(block_finding(
-                rule_id,
-                message,
+                "test-quality.ignored-without-reason",
+                format!(
+                    "Ignored test `{}` does not explain why it is skipped.",
+                    block.name
+                ),
                 file,
                 block,
                 Severity::Advisory,
                 Pillar::TestQuality,
             ));
         }
+
+        let long_test_warn = config.threshold("test-quality.long-test", "warn", 30.0) as usize;
+        if block.line_count > long_test_warn {
+            findings.push(block_finding_with_metadata(
+                "test-quality.long-test",
+                format!(
+                    "Test `{}` has {} lines, above the warning threshold of {long_test_warn}.",
+                    block.name, block.line_count
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::TestQuality,
+                json!({ "lines": block.line_count }),
+            ));
+        }
+
+        let searchable_body = strip_rust_string_literals(&block.body);
+
+        if has_trivial_assertion(&searchable_body) {
+            findings.push(block_finding(
+                "test-quality.trivial-assertion",
+                format!("Test `{}` contains a trivial assertion.", block.name),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::TestQuality,
+            ));
+        }
+
+        if !Regex::new(
+            r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
+        )
+        .expect("static regex compiles")
+        .is_match(&searchable_body)
+        {
+            findings.push(block_finding(
+                "test-quality.no-assertions",
+                format!(
+                    "Test `{}` does not appear to make an assertion.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::TestQuality,
+            ));
+        }
+
+        let checks = [
+            (
+                "test-quality.sleep-in-test",
+                r"(std::thread::sleep|tokio::time::sleep)",
+                "Test sleeps instead of synchronising on behaviour.",
+            ),
+            (
+                "test-quality.loop-in-test",
+                r"\b(for|while|loop)\b",
+                "Test contains loop logic.",
+            ),
+            (
+                "test-quality.conditional-logic",
+                r"\b(if|match)\b",
+                "Test contains conditional logic.",
+            ),
+            (
+                "test-quality.unwrap-in-test",
+                r"\.unwrap\(\)",
+                "Test uses unwrap(), which can hide setup intent.",
+            ),
+        ];
+
+        for (rule_id, pattern, message) in checks {
+            if Regex::new(pattern)
+                .expect("static regex compiles")
+                .is_match(&searchable_body)
+            {
+                findings.push(block_finding(
+                    rule_id,
+                    message,
+                    file,
+                    block,
+                    Severity::Advisory,
+                    Pillar::TestQuality,
+                ));
+            }
+        }
     }
-}
 
-fn analyse_line_rules(
-    file: &SourceFile,
-    source: &str,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let command_regex =
-        Regex::new(r"(std::process::Command|Command)::new\s*\(").expect("static regex compiles");
-    let unwrap_regex = Regex::new(r"\.(unwrap|expect)\s*\(").expect("static regex compiles");
-    let unsafe_regex = Regex::new(r"\bunsafe\s*\{").expect("static regex compiles");
-    let clone_regex = Regex::new(r"\.clone\(\)").expect("static regex compiles");
-    let variable_regex = Regex::new(r"\b(?:let|for)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)")
-        .expect("static regex compiles");
+    fn analyse_line_rules(
+        file: &SourceFile,
+        source: &str,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let searchable_source = strip_rust_string_literals(source);
+        let command_regex = Regex::new(r"(std::process::Command|Command)::new\s*\(")
+            .expect("static regex compiles");
+        let unwrap_regex = Regex::new(r"\.(unwrap|expect)\s*\(").expect("static regex compiles");
+        let unsafe_regex = Regex::new(r"\bunsafe\s*\{").expect("static regex compiles");
+        let clone_regex = Regex::new(r"\.clone\(\)").expect("static regex compiles");
+        let variable_regex = Regex::new(r"\b(?:let|for)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)")
+            .expect("static regex compiles");
+        let lines: Vec<&str> = searchable_source.lines().collect();
 
-    for (line_index, line) in source.lines().enumerate() {
-        let line_number = line_index + 1;
+        for (line_index, line) in lines.iter().enumerate() {
+            let line_number = line_index + 1;
 
-        if command_regex.is_match(line) {
-            findings.push(finding(
+            if command_regex.is_match(line) {
+                findings.push(finding(
                 "security.process-command",
                 "Process command execution is used; validate command arguments are not user-controlled.",
                 file,
@@ -1214,379 +1653,747 @@ fn analyse_line_rules(
                 Severity::Warning,
                 Pillar::Security,
             ));
-        }
+            }
 
-        if unsafe_regex.is_match(line) {
-            findings.push(finding(
-                "security.unsafe-block",
-                "Unsafe block requires a clear safety invariant.",
-                file,
-                Some(line_number),
-                Severity::Warning,
-                Pillar::Security,
-            ));
-        }
-
-        if unwrap_regex.is_match(line) && !line.contains("#[test]") {
-            findings.push(finding(
-                "waste.unwrap-expect",
-                "unwrap()/expect() can turn recoverable errors into panics.",
-                file,
-                Some(line_number),
-                Severity::Advisory,
-                Pillar::Waste,
-            ));
-        }
-
-        if clone_regex.is_match(line) {
-            findings.push(finding(
-                "waste.unnecessary-clone-candidate",
-                "clone() call may be avoidable; confirm ownership requires it.",
-                file,
-                Some(line_number),
-                Severity::Advisory,
-                Pillar::Waste,
-            ));
-        }
-
-        for variable in variable_regex
-            .captures_iter(line)
-            .filter_map(|captures| captures.get(1))
-        {
-            let name = variable.as_str();
-            if name.len() <= 2
-                && !matches!(name, "i" | "j" | "k")
-                && !config
-                    .accepted_abbreviations
-                    .contains(&name.to_ascii_lowercase())
-            {
-                findings.push(Finding::new(
-                    "naming.short-variable",
-                    format!("Variable `{name}` is too short to explain intent."),
-                    file.display_path.clone(),
+            if unsafe_regex.is_match(line) && !has_nearby_safety_comment(&lines, line_index) {
+                findings.push(finding(
+                    "security.unsafe-block",
+                    "Unsafe block lacks a nearby SAFETY rationale.",
+                    file,
                     Some(line_number),
-                    Severity::Advisory,
-                    Pillar::Naming,
-                    Confidence::Medium,
-                    Some(name.to_string()),
-                    Some("Use a name that describes the domain role.".to_string()),
-                    json!({}),
+                    Severity::Warning,
+                    Pillar::Security,
                 ));
             }
+
+            if unwrap_regex.is_match(line) && !line.contains("#[test]") {
+                findings.push(finding(
+                    "waste.unwrap-expect",
+                    "unwrap()/expect() can turn recoverable errors into panics.",
+                    file,
+                    Some(line_number),
+                    Severity::Advisory,
+                    Pillar::Waste,
+                ));
+            }
+
+            if clone_regex.is_match(line) {
+                findings.push(finding(
+                    "waste.unnecessary-clone-candidate",
+                    "clone() call may be avoidable; confirm ownership requires it.",
+                    file,
+                    Some(line_number),
+                    Severity::Advisory,
+                    Pillar::Waste,
+                ));
+            }
+
+            for variable in variable_regex
+                .captures_iter(line)
+                .filter_map(|captures| captures.get(1))
+            {
+                let name = variable.as_str();
+                if is_placeholder_identifier(name) {
+                    findings.push(Finding::new(
+                        "naming.placeholder-identifier",
+                        format!(
+                            "Variable `{name}` uses a placeholder name instead of domain language."
+                        ),
+                        file.display_path.clone(),
+                        Some(line_number),
+                        Severity::Advisory,
+                        Pillar::Naming,
+                        Confidence::Medium,
+                        Some(name.to_string()),
+                        Some("Use a name that describes the domain role.".to_string()),
+                        json!({}),
+                    ));
+                }
+
+                if name.len() <= 2
+                    && !matches!(name, "i" | "j" | "k")
+                    && !config
+                        .accepted_abbreviations
+                        .contains(&name.to_ascii_lowercase())
+                {
+                    findings.push(Finding::new(
+                        "naming.short-variable",
+                        format!("Variable `{name}` is too short to explain intent."),
+                        file.display_path.clone(),
+                        Some(line_number),
+                        Severity::Advisory,
+                        Pillar::Naming,
+                        Confidence::Medium,
+                        Some(name.to_string()),
+                        Some("Use a name that describes the domain role.".to_string()),
+                        json!({}),
+                    ));
+                }
+            }
+        }
+
+        analyse_unreachable(file, &searchable_source, findings);
+    }
+
+    fn analyse_item_rules(file: &SourceFile, ast: &syn::File, findings: &mut Vec<Finding>) {
+        for item in &ast.items {
+            analyse_public_item(file, item, findings);
         }
     }
 
-    analyse_unreachable(file, source, findings);
-}
-
-fn analyse_item_rules(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
-    let item_regex = Regex::new(r"\bpub\s+(struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)")
-        .expect("static regex compiles");
-    for captures in item_regex.captures_iter(source) {
-        let Some(name) = captures.get(2) else {
-            continue;
-        };
-        let line = byte_line(source, name.start());
-        if !has_doc_comment_before_line(source, line) {
-            findings.push(Finding::new(
-                "docs.missing-public-doc",
-                format!(
-                    "Public item `{}` is missing a Rust doc comment.",
-                    name.as_str()
-                ),
-                file.display_path.clone(),
-                Some(line),
-                Severity::Advisory,
-                Pillar::Documentation,
-                Confidence::Medium,
-                Some(name.as_str().to_string()),
-                Some("Add a /// doc comment explaining the public API contract.".to_string()),
-                json!({}),
-            ));
+    fn analyse_public_item(file: &SourceFile, item: &Item, findings: &mut Vec<Finding>) {
+        match item {
+            Item::Mod(item_mod) => {
+                if is_public(&item_mod.vis) && !has_doc_attr(&item_mod.attrs) {
+                    push_missing_public_item_doc(
+                        file,
+                        item_mod.ident.to_string(),
+                        item_mod.ident.span(),
+                        findings,
+                    );
+                }
+                if let Some((_, items)) = &item_mod.content {
+                    for nested in items {
+                        analyse_public_item(file, nested, findings);
+                    }
+                }
+            }
+            Item::Struct(item_struct) => {
+                if is_public(&item_struct.vis) && !has_doc_attr(&item_struct.attrs) {
+                    push_missing_public_item_doc(
+                        file,
+                        item_struct.ident.to_string(),
+                        item_struct.ident.span(),
+                        findings,
+                    );
+                }
+                for field in &item_struct.fields {
+                    if is_public(&field.vis) {
+                        findings.push(finding(
+                        "modernisation.public-field",
+                        "Public struct field exposes representation; prefer accessors when invariants matter.",
+                        file,
+                        Some(line_from_span(field.span().start())),
+                        Severity::Advisory,
+                        Pillar::Modernisation,
+                    ));
+                    }
+                }
+            }
+            Item::Enum(item_enum) => {
+                if is_public(&item_enum.vis) && !has_doc_attr(&item_enum.attrs) {
+                    push_missing_public_item_doc(
+                        file,
+                        item_enum.ident.to_string(),
+                        item_enum.ident.span(),
+                        findings,
+                    );
+                }
+            }
+            Item::Trait(item_trait) => {
+                if is_public(&item_trait.vis) && !has_doc_attr(&item_trait.attrs) {
+                    push_missing_public_item_doc(
+                        file,
+                        item_trait.ident.to_string(),
+                        item_trait.ident.span(),
+                        findings,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
-    let public_field_regex =
-        Regex::new(r"\bpub\s+[A-Za-z_][A-Za-z0-9_]*\s*:").expect("static regex compiles");
-    for field in public_field_regex.find_iter(source) {
-        findings.push(finding(
-            "modernisation.public-field",
-            "Public struct field exposes representation; prefer accessors when invariants matter.",
-            file,
-            Some(byte_line(source, field.start())),
+    fn push_missing_public_item_doc(
+        file: &SourceFile,
+        name: String,
+        span: proc_macro2::Span,
+        findings: &mut Vec<Finding>,
+    ) {
+        findings.push(Finding::new(
+            "docs.missing-public-doc",
+            format!("Public item `{name}` is missing a Rust doc comment."),
+            file.display_path.clone(),
+            Some(line_from_span(span.start())),
             Severity::Advisory,
-            Pillar::Modernisation,
+            Pillar::Documentation,
+            Confidence::Medium,
+            Some(name),
+            Some("Add a /// doc comment explaining the public API contract.".to_string()),
+            json!({}),
         ));
     }
-}
 
-fn analyse_dead_code(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
-    let private_fn_regex =
-        Regex::new(r"(?m)^\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(").expect("static regex compiles");
-    for captures in private_fn_regex.captures_iter(source) {
-        let Some(name) = captures.get(1) else {
-            continue;
-        };
-        let needle = format!("{}(", name.as_str());
+    fn analyse_dead_code(
+        file: &SourceFile,
+        ast: &syn::File,
+        source: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        for item in &ast.items {
+            analyse_dead_code_item(file, item, source, findings);
+        }
+    }
+
+    fn analyse_dead_code_item(
+        file: &SourceFile,
+        item: &Item,
+        source: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        match item {
+            Item::Fn(item_fn) => analyse_dead_function(
+                file,
+                &item_fn.vis,
+                item_fn.sig.ident.to_string(),
+                item_fn.sig.ident.span(),
+                source,
+                findings,
+            ),
+            Item::Impl(item_impl) => {
+                for impl_item in &item_impl.items {
+                    if let ImplItem::Fn(method) = impl_item {
+                        analyse_dead_function(
+                            file,
+                            &method.vis,
+                            method.sig.ident.to_string(),
+                            method.sig.ident.span(),
+                            source,
+                            findings,
+                        );
+                    }
+                }
+            }
+            Item::Mod(item_mod) => {
+                if let Some((_, items)) = &item_mod.content {
+                    for nested in items {
+                        analyse_dead_code_item(file, nested, source, findings);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn analyse_dead_function(
+        file: &SourceFile,
+        visibility: &Visibility,
+        name: String,
+        span: proc_macro2::Span,
+        source: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        if is_public(visibility) {
+            return;
+        }
+        let needle = format!("{name}(");
         if source.matches(&needle).count() <= 1 {
             findings.push(Finding::new(
                 "dead-code.unused-private-function",
-                format!(
-                    "Private function `{}` appears to be unused in this file.",
-                    name.as_str()
-                ),
+                format!("Private function `{name}` appears to be unused in this file."),
                 file.display_path.clone(),
-                Some(byte_line(source, name.start())),
+                Some(line_from_span(span.start())),
                 Severity::Advisory,
                 Pillar::DeadCode,
                 Confidence::Low,
-                Some(name.as_str().to_string()),
+                Some(name),
                 Some("Remove the function or add a real call site.".to_string()),
                 json!({}),
             ));
         }
     }
-}
 
-fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
-    let terminator =
-        Regex::new(r"\b(return|panic!|todo!|unimplemented!)").expect("static regex compiles");
-    let useful = Regex::new(r"\S").expect("static regex compiles");
-    let mut previous_terminated = false;
-    for (line_index, line) in source.lines().enumerate() {
-        let trimmed = line.trim();
-        if previous_terminated && useful.is_match(trimmed) && !trimmed.starts_with('}') {
-            findings.push(finding(
-                "waste.unreachable-code",
-                "Statement appears after a terminating statement.",
-                file,
-                Some(line_index + 1),
-                Severity::Warning,
-                Pillar::Waste,
-            ));
+    fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
+        let terminator =
+            Regex::new(r"\b(return|panic!|todo!|unimplemented!)").expect("static regex compiles");
+        let useful = Regex::new(r"\S").expect("static regex compiles");
+        let mut previous_terminated = false;
+        for (line_index, line) in source.lines().enumerate() {
+            let trimmed = line.trim();
+            if previous_terminated && useful.is_match(trimmed) && !trimmed.starts_with('}') {
+                findings.push(finding(
+                    "waste.unreachable-code",
+                    "Statement appears after a terminating statement.",
+                    file,
+                    Some(line_index + 1),
+                    Severity::Warning,
+                    Pillar::Waste,
+                ));
+            }
+            previous_terminated = terminator.is_match(trimmed) && trimmed.ends_with(';');
         }
-        previous_terminated = terminator.is_match(trimmed) && trimmed.ends_with(';');
     }
-}
 
-fn rust_function_blocks(source: &str) -> Vec<FunctionBlock> {
-    let function_regex = Regex::new(
-        r"(pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)",
-    )
-    .expect("static regex compiles");
-    let lines: Vec<&str> = source.lines().collect();
-    let mut blocks = Vec::new();
+    fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut blocks = Vec::new();
 
-    for (index, line) in lines.iter().enumerate() {
-        let Some(captures) = function_regex.captures(line) else {
-            continue;
-        };
-        let Some(name) = captures.get(2) else {
-            continue;
-        };
-        let params = captures
-            .get(3)
-            .map(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let start = function_start_index(&lines, index);
-        let mut depth = 0isize;
-        let mut seen_open = false;
-        let mut end = index;
+        for item in &ast.items {
+            collect_function_blocks(item, &lines, &mut blocks);
+        }
 
-        for (inner_index, inner_line) in lines.iter().enumerate().skip(index) {
-            for character in inner_line.chars() {
-                match character {
-                    '{' => {
-                        depth += 1;
-                        seen_open = true;
+        blocks
+    }
+
+    fn collect_function_blocks(item: &Item, lines: &[&str], blocks: &mut Vec<FunctionBlock>) {
+        match item {
+            Item::Fn(item_fn) => blocks.push(function_block_from_parts(FunctionBlockParts {
+                lines,
+                name: item_fn.sig.ident.to_string(),
+                param_count: count_params(&item_fn.sig.inputs),
+                visibility: &item_fn.vis,
+                attrs: &item_fn.attrs,
+                returns_bool: returns_bool(&item_fn.sig.output),
+                name_start: item_fn.sig.ident.span().start(),
+                block_end: item_fn.block.span().end(),
+            })),
+            Item::Impl(item_impl) => {
+                for impl_item in &item_impl.items {
+                    if let ImplItem::Fn(method) = impl_item {
+                        blocks.push(function_block_from_parts(FunctionBlockParts {
+                            lines,
+                            name: method.sig.ident.to_string(),
+                            param_count: count_params(&method.sig.inputs),
+                            visibility: &method.vis,
+                            attrs: &method.attrs,
+                            returns_bool: returns_bool(&method.sig.output),
+                            name_start: method.sig.ident.span().start(),
+                            block_end: method.block.span().end(),
+                        }));
                     }
-                    '}' => depth -= 1,
-                    _ => {}
                 }
             }
-            end = inner_index;
-            if seen_open && depth <= 0 {
-                break;
+            Item::Mod(item_mod) => {
+                if let Some((_, items)) = &item_mod.content {
+                    for nested in items {
+                        collect_function_blocks(nested, lines, blocks);
+                    }
+                }
             }
-        }
-
-        let body = lines[start..=end].join("\n");
-        let is_public = captures.get(1).is_some();
-        let is_test = lines[start..=index]
-            .iter()
-            .any(|candidate| candidate.contains("#[test]"))
-            || name.as_str().starts_with("test_");
-        blocks.push(FunctionBlock {
-            name: name.as_str().to_string(),
-            params,
-            start_line: start + 1,
-            line_count: end.saturating_sub(start) + 1,
-            body,
-            is_public,
-            is_test,
-        });
-    }
-
-    blocks
-}
-
-fn function_start_index(lines: &[&str], index: usize) -> usize {
-    let mut start = index;
-    while start > 0 {
-        let previous = lines[start - 1].trim();
-        if previous.starts_with("#[") || previous.starts_with("///") || previous.is_empty() {
-            start -= 1;
-            continue;
-        }
-        break;
-    }
-    start
-}
-
-fn count_parameters(params: &str) -> usize {
-    params
-        .split(',')
-        .map(str::trim)
-        .filter(|param| {
-            !param.is_empty() && *param != "self" && *param != "&self" && *param != "&mut self"
-        })
-        .count()
-}
-
-fn has_doc_comment_before(block: &str) -> bool {
-    block
-        .lines()
-        .take_while(|line| !line.contains("fn "))
-        .any(|line| line.trim_start().starts_with("///"))
-}
-
-fn has_doc_comment_before_line(source: &str, line: usize) -> bool {
-    let lines: Vec<&str> = source.lines().collect();
-    if line <= 1 {
-        return false;
-    }
-    let mut index = line.saturating_sub(2);
-    loop {
-        let current = lines.get(index).map(|line| line.trim()).unwrap_or_default();
-        if current.starts_with("///") {
-            return true;
-        }
-        if !current.is_empty() && !current.starts_with("#[") {
-            return false;
-        }
-        if index == 0 {
-            break;
-        }
-        index -= 1;
-    }
-    false
-}
-
-fn is_generic_name(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "process" | "handle" | "do_it" | "run" | "execute" | "manage"
-    )
-}
-
-fn max_nesting_depth(source: &str) -> usize {
-    let mut depth = 0usize;
-    let mut max_depth = 0usize;
-    for character in source.chars() {
-        match character {
-            '{' => {
-                depth += 1;
-                max_depth = max_depth.max(depth);
-            }
-            '}' => depth = depth.saturating_sub(1),
             _ => {}
         }
     }
-    max_depth.saturating_sub(1)
-}
 
-fn finding(
-    rule_id: &str,
-    message: impl Into<String>,
-    file: &SourceFile,
-    line: Option<usize>,
-    severity: Severity,
-    pillar: Pillar,
-) -> Finding {
-    Finding::new(
-        rule_id,
-        message,
-        file.display_path.clone(),
-        line,
-        severity,
-        pillar,
-        Confidence::High,
-        None,
-        None,
-        json!({}),
-    )
-}
-
-fn block_finding(
-    rule_id: &str,
-    message: impl Into<String>,
-    file: &SourceFile,
-    block: &FunctionBlock,
-    severity: Severity,
-    pillar: Pillar,
-) -> Finding {
-    Finding::new(
-        rule_id,
-        message,
-        file.display_path.clone(),
-        Some(block.start_line),
-        severity,
-        pillar,
-        Confidence::High,
-        Some(block.name.clone()),
-        None,
-        json!({}),
-    )
-}
-
-fn count_regex(source: &str, pattern: &str) -> usize {
-    Regex::new(pattern)
-        .expect("static regex compiles")
-        .find_iter(source)
-        .count()
-}
-
-fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
-    source
-        .lines()
-        .enumerate()
-        .find_map(|(index, line)| line.contains(needle).then_some(index + 1))
-}
-
-fn byte_line(source: &str, byte_index: usize) -> usize {
-    source[..byte_index.min(source.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1
-}
-
-fn redact(value: &str) -> String {
-    let char_count = value.chars().count();
-    if char_count <= 8 {
-        return format!("{} (redacted, {char_count} chars)", "*".repeat(char_count));
+    struct FunctionBlockParts<'a> {
+        lines: &'a [&'a str],
+        name: String,
+        param_count: usize,
+        visibility: &'a Visibility,
+        attrs: &'a [syn::Attribute],
+        returns_bool: bool,
+        name_start: LineColumn,
+        block_end: LineColumn,
     }
-    let start: String = value.chars().take(4).collect();
-    let end: String = value
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{start}...{end} (redacted, {char_count} chars)")
+
+    fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> FunctionBlock {
+        let function_index = line_from_span(parts.name_start).saturating_sub(1);
+        let start = function_start_index(parts.lines, function_index);
+        let end = line_from_span(parts.block_end)
+            .saturating_sub(1)
+            .min(parts.lines.len().saturating_sub(1))
+            .max(start);
+        let body = line_slice(parts.lines, start, end);
+        let is_test = has_test_attr(parts.attrs);
+
+        FunctionBlock {
+            name: parts.name,
+            param_count: parts.param_count,
+            start_line: start + 1,
+            line_count: end.saturating_sub(start) + 1,
+            body,
+            is_public: is_public(parts.visibility),
+            is_test,
+            returns_bool: parts.returns_bool,
+            ignore_without_reason: has_ignore_without_reason(parts.attrs),
+        }
+    }
+
+    fn function_start_index(lines: &[&str], index: usize) -> usize {
+        let mut start = index;
+        while start > 0 {
+            let previous = lines[start - 1].trim();
+            if previous.starts_with("#[") || previous.starts_with("///") || previous.is_empty() {
+                start -= 1;
+                continue;
+            }
+            break;
+        }
+        start
+    }
+
+    fn line_slice(lines: &[&str], start: usize, end: usize) -> String {
+        if lines.is_empty() {
+            return String::new();
+        }
+        lines[start..=end].join("\n")
+    }
+
+    fn count_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>) -> usize {
+        inputs
+            .iter()
+            .filter(|input| !matches!(input, FnArg::Receiver(_)))
+            .count()
+    }
+
+    fn returns_bool(output: &ReturnType) -> bool {
+        let ReturnType::Type(_, ty) = output else {
+            return false;
+        };
+        let Type::Path(path) = ty.as_ref() else {
+            return false;
+        };
+        path.path.is_ident("bool")
+    }
+
+    fn is_public(visibility: &Visibility) -> bool {
+        !matches!(visibility, Visibility::Inherited)
+    }
+
+    fn has_doc_attr(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|attr| attr.path().is_ident("doc"))
+    }
+
+    fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|attr| attr.path().is_ident("test"))
+    }
+
+    fn has_ignore_without_reason(attrs: &[syn::Attribute]) -> bool {
+        attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("ignore"))
+            .any(|attr| match &attr.meta {
+                syn::Meta::Path(_) => true,
+                syn::Meta::List(list) => list.tokens.is_empty(),
+                syn::Meta::NameValue(value) => match &value.value {
+                    syn::Expr::Lit(lit) => match &lit.lit {
+                        syn::Lit::Str(reason) => reason.value().trim().is_empty(),
+                        _ => true,
+                    },
+                    _ => true,
+                },
+            })
+    }
+
+    fn has_doc_comment_before(block: &str) -> bool {
+        block
+            .lines()
+            .take_while(|line| !line.contains("fn "))
+            .any(|line| line.trim_start().starts_with("///"))
+    }
+
+    fn is_generic_name(name: &str) -> bool {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "process" | "handle" | "do_it" | "run" | "execute" | "manage"
+        )
+    }
+
+    fn is_boolean_predicate_name(name: &str) -> bool {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            lower if lower.starts_with("is_")
+                || lower.starts_with("has_")
+                || lower.starts_with("can_")
+                || lower.starts_with("should_")
+                || lower.starts_with("allows_")
+                || lower.starts_with("supports_")
+                || lower.starts_with("contains_")
+                || lower.starts_with("needs_")
+                || lower.starts_with("uses_")
+        )
+    }
+
+    fn is_placeholder_identifier(name: &str) -> bool {
+        matches!(name, "foo" | "bar" | "baz" | "qux")
+    }
+
+    fn strip_rust_string_literals(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut output = String::with_capacity(source.len());
+        let mut index = 0usize;
+
+        while index < bytes.len() {
+            if let Some(raw_end) = raw_string_end(bytes, index) {
+                mask_bytes(bytes, index, raw_end, &mut output);
+                index = raw_end;
+                continue;
+            }
+
+            if bytes[index] == b'"' {
+                output.push(' ');
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    mask_byte(byte, &mut output);
+                    index += 1;
+                    if byte == b'\\' && index < bytes.len() {
+                        mask_byte(bytes[index], &mut output);
+                        index += 1;
+                        continue;
+                    }
+                    if byte == b'"' {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            output.push(bytes[index] as char);
+            index += 1;
+        }
+
+        output
+    }
+
+    fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+        if bytes.get(start).copied()? != b'r' {
+            return None;
+        }
+
+        let mut cursor = start + 1;
+        let mut hashes = 0usize;
+        while bytes.get(cursor) == Some(&b'#') {
+            hashes += 1;
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'"') {
+            return None;
+        }
+        cursor += 1;
+
+        while cursor < bytes.len() {
+            if bytes[cursor] == b'"' {
+                let mut hash_cursor = cursor + 1;
+                let mut matched = 0usize;
+                while matched < hashes && bytes.get(hash_cursor) == Some(&b'#') {
+                    matched += 1;
+                    hash_cursor += 1;
+                }
+                if matched == hashes {
+                    return Some(hash_cursor);
+                }
+            }
+            cursor += 1;
+        }
+
+        Some(bytes.len())
+    }
+
+    fn mask_bytes(bytes: &[u8], start: usize, end: usize, output: &mut String) {
+        for byte in &bytes[start..end] {
+            mask_byte(*byte, output);
+        }
+    }
+
+    fn mask_byte(byte: u8, output: &mut String) {
+        if byte == b'\n' {
+            output.push('\n');
+        } else {
+            output.push(' ');
+        }
+    }
+
+    fn max_nesting_depth(source: &str) -> usize {
+        let mut depth = 0usize;
+        let mut max_depth = 0usize;
+        for character in source.chars() {
+            match character {
+                '{' => {
+                    depth += 1;
+                    max_depth = max_depth.max(depth);
+                }
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        max_depth.saturating_sub(1)
+    }
+
+    fn approximate_npath(source: &str) -> usize {
+        let branch_decisions = count_regex(source, r"\b(if|match|for|while|loop)\b");
+        let boolean_decisions = count_regex(source, r"&&|\|\||\?");
+        let mut paths = 1usize;
+        for _ in 0..branch_decisions.min(20) {
+            paths = paths.saturating_mul(2);
+        }
+        paths.saturating_add(boolean_decisions)
+    }
+
+    fn has_nearby_safety_comment(lines: &[&str], line_index: usize) -> bool {
+        let start = line_index.saturating_sub(3);
+        lines[start..=line_index]
+            .iter()
+            .any(|line| line.contains("SAFETY:"))
+    }
+
+    fn has_trivial_assertion(source: &str) -> bool {
+        let literal_assert =
+            Regex::new(r"\bassert!\s*\(\s*(true|false)\s*\)").expect("static regex compiles");
+        if literal_assert.is_match(source) {
+            return true;
+        }
+
+        let same_literal = Regex::new(
+            r#"\bassert_eq!\s*\(\s*([0-9]+|"[^"]*"|'[^']*')\s*,\s*([0-9]+|"[^"]*"|'[^']*')\s*\)"#,
+        )
+        .expect("static regex compiles");
+        let has_same_literal = same_literal.captures_iter(source).any(|captures| {
+            captures.get(1).map(|left| left.as_str()) == captures.get(2).map(|right| right.as_str())
+        });
+        has_same_literal
+    }
+
+    fn finding(
+        rule_id: &str,
+        message: impl Into<String>,
+        file: &SourceFile,
+        line: Option<usize>,
+        severity: Severity,
+        pillar: Pillar,
+    ) -> Finding {
+        Finding::new(
+            rule_id,
+            message,
+            file.display_path.clone(),
+            line,
+            severity,
+            pillar,
+            Confidence::High,
+            None,
+            None,
+            json!({}),
+        )
+    }
+
+    fn block_finding(
+        rule_id: &str,
+        message: impl Into<String>,
+        file: &SourceFile,
+        block: &FunctionBlock,
+        severity: Severity,
+        pillar: Pillar,
+    ) -> Finding {
+        block_finding_with_metadata(rule_id, message, file, block, severity, pillar, json!({}))
+    }
+
+    fn block_finding_with_metadata(
+        rule_id: &str,
+        message: impl Into<String>,
+        file: &SourceFile,
+        block: &FunctionBlock,
+        severity: Severity,
+        pillar: Pillar,
+        metadata: Value,
+    ) -> Finding {
+        block_finding_with_extras(
+            rule_id,
+            message,
+            file,
+            block,
+            severity,
+            pillar,
+            BlockFindingExtras {
+                confidence: Confidence::High,
+                metadata,
+            },
+        )
+    }
+
+    struct BlockFindingExtras {
+        confidence: Confidence,
+        metadata: Value,
+    }
+
+    fn block_finding_with_extras(
+        rule_id: &str,
+        message: impl Into<String>,
+        file: &SourceFile,
+        block: &FunctionBlock,
+        severity: Severity,
+        pillar: Pillar,
+        extras: BlockFindingExtras,
+    ) -> Finding {
+        Finding::new(
+            rule_id,
+            message,
+            file.display_path.clone(),
+            Some(block.start_line),
+            severity,
+            pillar,
+            extras.confidence,
+            Some(block.name.clone()),
+            None,
+            extras.metadata,
+        )
+    }
+
+    fn count_regex(source: &str, pattern: &str) -> usize {
+        Regex::new(pattern)
+            .expect("static regex compiles")
+            .find_iter(source)
+            .count()
+    }
+
+    fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
+        source
+            .lines()
+            .enumerate()
+            .find_map(|(index, line)| line.contains(needle).then_some(index + 1))
+    }
+
+    fn byte_line(source: &str, byte_index: usize) -> usize {
+        source[..byte_index.min(source.len())]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1
+    }
+
+    fn redact(value: &str) -> String {
+        let char_count = value.chars().count();
+        if char_count <= 8 {
+            return format!("{} (redacted, {char_count} chars)", "*".repeat(char_count));
+        }
+        let start: String = value.chars().take(4).collect();
+        let end: String = value
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        format!("{start}...{end} (redacted, {char_count} chars)")
+    }
+
+    fn looks_high_entropy(value: &str) -> bool {
+        if value.chars().count() < 32 {
+            return false;
+        }
+        let has_upper = value
+            .chars()
+            .any(|character| character.is_ascii_uppercase());
+        let has_lower = value
+            .chars()
+            .any(|character| character.is_ascii_lowercase());
+        let has_digit = value.chars().any(|character| character.is_ascii_digit());
+        has_upper && has_lower && has_digit && shannon_entropy(value) >= 4.2
+    }
+
+    fn shannon_entropy(value: &str) -> f64 {
+        let mut counts: HashMap<char, usize> = HashMap::new();
+        for character in value.chars() {
+            *counts.entry(character).or_default() += 1;
+        }
+        let length = value.chars().count() as f64;
+        counts
+            .values()
+            .map(|count| {
+                let probability = *count as f64 / length;
+                -probability * probability.log2()
+            })
+            .sum()
+    }
 }
 
 fn summarize(findings: &[Finding]) -> Summary {
@@ -1616,15 +2423,23 @@ fn score_report(findings: &[Finding]) -> ScoreReport {
         by_pillar.entry(finding.pillar).or_default().push(finding);
     }
 
-    let pillars: Vec<PillarScore> = by_pillar
-        .iter()
-        .map(|(pillar, pillar_findings)| {
+    let mut pillar_order: Vec<Pillar> = SCORE_PILLARS.to_vec();
+    for pillar in by_pillar.keys() {
+        if !pillar_order.contains(pillar) {
+            pillar_order.push(*pillar);
+        }
+    }
+
+    let pillars: Vec<PillarScore> = pillar_order
+        .into_iter()
+        .map(|pillar| {
+            let pillar_findings = by_pillar.get(&pillar).cloned().unwrap_or_default();
             let penalty: f64 = pillar_findings
                 .iter()
-                .map(|finding| severity_penalty(finding.severity))
+                .map(|finding| finding_penalty(finding))
                 .sum();
             PillarScore {
-                pillar: *pillar,
+                pillar,
                 score: (100.0 - penalty).max(0.0),
                 findings: pillar_findings.len(),
             }
@@ -1643,7 +2458,7 @@ fn score_report(findings: &[Finding]) -> ScoreReport {
             .entry(finding.file_path.clone())
             .or_insert((0, 0.0));
         entry.0 += 1;
-        entry.1 += severity_penalty(finding.severity);
+        entry.1 += finding_penalty(finding);
     }
     let mut top_offenders: Vec<FileScore> = file_counts
         .into_iter()
@@ -1653,7 +2468,12 @@ fn score_report(findings: &[Finding]) -> ScoreReport {
             findings,
         })
         .collect();
-    top_offenders.sort_by(|left, right| left.score.total_cmp(&right.score));
+    top_offenders.sort_by(|left, right| {
+        left.score
+            .total_cmp(&right.score)
+            .then_with(|| right.findings.cmp(&left.findings))
+            .then_with(|| left.file_path.cmp(&right.file_path))
+    });
     top_offenders.truncate(10);
 
     ScoreReport {
@@ -1664,11 +2484,23 @@ fn score_report(findings: &[Finding]) -> ScoreReport {
     }
 }
 
+fn finding_penalty(finding: &Finding) -> f64 {
+    severity_penalty(finding.severity) * confidence_weight(finding.confidence)
+}
+
 fn severity_penalty(severity: Severity) -> f64 {
     match severity {
         Severity::Advisory => 1.5,
         Severity::Warning => 4.0,
         Severity::Error => 8.0,
+    }
+}
+
+fn confidence_weight(confidence: Confidence) -> f64 {
+    match confidence {
+        Confidence::Low => 0.5,
+        Confidence::Medium => 0.75,
+        Confidence::High => 1.0,
     }
 }
 
@@ -2056,9 +2888,28 @@ fn handle_dashboard_request(mut stream: TcpStream, default_root: &Path) {
     let request_line = request.lines().next().unwrap_or_default();
     let target = request_line.split_whitespace().nth(1).unwrap_or("/");
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let response = dashboard_response(path, query, default_root);
+    respond(
+        &mut stream,
+        response.status,
+        response.content_type,
+        &response.body,
+    );
+}
 
+struct DashboardResponse {
+    status: &'static str,
+    content_type: &'static str,
+    body: String,
+}
+
+fn dashboard_response(path: &str, query: &str, default_root: &Path) -> DashboardResponse {
     match path {
-        "/health" => respond(&mut stream, "200 OK", "text/plain; charset=utf-8", "ok"),
+        "/health" => DashboardResponse {
+            status: "200 OK",
+            content_type: "text/plain; charset=utf-8",
+            body: "ok".to_string(),
+        },
         "/scan" => {
             let params = parse_query(query);
             let root = params
@@ -2069,15 +2920,12 @@ fn handle_dashboard_request(mut stream: TcpStream, default_root: &Path) {
                 .get("path")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
-            let previous_dir = std::env::current_dir().ok();
-            if std::env::set_current_dir(&root).is_err() {
-                respond(
-                    &mut stream,
-                    "400 Bad Request",
-                    "text/plain; charset=utf-8",
-                    "invalid projectRoot",
-                );
-                return;
+            if !root.is_dir() {
+                return DashboardResponse {
+                    status: "400 Bad Request",
+                    content_type: "text/plain; charset=utf-8",
+                    body: "invalid projectRoot".to_string(),
+                };
             }
             let options = AnalysisOptions {
                 paths: vec![scan_path],
@@ -2092,26 +2940,25 @@ fn handle_dashboard_request(mut stream: TcpStream, default_root: &Path) {
                 generate_baseline: None,
                 no_baseline: false,
             };
-            let body = run_analysis(&options)
+            let body = run_analysis_in_project(&root, &options)
                 .map(|report| dashboard_shell(&report, &root))
                 .unwrap_or_else(|error| format!("<pre>{}</pre>", html_escape(&error)));
-            if let Some(previous_dir) = previous_dir {
-                let _ = std::env::set_current_dir(previous_dir);
+            DashboardResponse {
+                status: "200 OK",
+                content_type: "text/html; charset=utf-8",
+                body,
             }
-            respond(&mut stream, "200 OK", "text/html; charset=utf-8", &body);
         }
-        "/" => respond(
-            &mut stream,
-            "200 OK",
-            "text/html; charset=utf-8",
-            &dashboard_index(default_root),
-        ),
-        _ => respond(
-            &mut stream,
-            "404 Not Found",
-            "text/plain; charset=utf-8",
-            "not found",
-        ),
+        "/" => DashboardResponse {
+            status: "200 OK",
+            content_type: "text/html; charset=utf-8",
+            body: dashboard_index(default_root),
+        },
+        _ => DashboardResponse {
+            status: "404 Not Found",
+            content_type: "text/plain; charset=utf-8",
+            body: "not found".to_string(),
+        },
     }
 }
 
@@ -2236,10 +3083,298 @@ fn path_matches(pattern: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
+
+    fn analysis_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("analysis lock")
+    }
+
+    fn analyse_test_paths(paths: Vec<PathBuf>) -> AnalysisReport {
+        analyse_project_paths(Path::new("."), paths)
+    }
+
+    fn analyse_project_paths(project_root: &Path, paths: Vec<PathBuf>) -> AnalysisReport {
+        run_analysis_in_project(
+            project_root,
+            &AnalysisOptions {
+                paths,
+                config: None,
+                no_config: true,
+                format: OutputFormat::Json,
+                fail_on: FailThreshold::None,
+                include_ignored: false,
+                diff: None,
+                history_file: None,
+                baseline: None,
+                generate_baseline: None,
+                no_baseline: true,
+            },
+        )
+        .expect("analysis succeeds")
+    }
+
+    fn run_project_analysis(
+        project_root: &Path,
+        options: AnalysisOptions,
+    ) -> Result<AnalysisReport, String> {
+        run_analysis_in_project(project_root, &options)
+    }
+
+    fn test_finding(
+        rule_id: &str,
+        file_path: &str,
+        line: usize,
+        severity: Severity,
+        pillar: Pillar,
+    ) -> Finding {
+        test_finding_with_confidence(rule_id, file_path, line, severity, pillar, Confidence::High)
+    }
+
+    fn test_finding_with_confidence(
+        rule_id: &str,
+        file_path: &str,
+        line: usize,
+        severity: Severity,
+        pillar: Pillar,
+        confidence: Confidence,
+    ) -> Finding {
+        Finding::new(
+            rule_id,
+            format!("{rule_id} message"),
+            file_path,
+            Some(line),
+            severity,
+            pillar,
+            confidence,
+            Some("symbol".to_string()),
+            Some("Remediate the issue.".to_string()),
+            json!({}),
+        )
+    }
+
+    fn sample_report() -> AnalysisReport {
+        let findings = vec![Finding::new(
+            "security.process-command",
+            "Use <escaped> command & args",
+            "src/lib.rs",
+            Some(7),
+            Severity::Warning,
+            Pillar::Security,
+            Confidence::High,
+            Some("run".to_string()),
+            Some("Validate command arguments.".to_string()),
+            json!({}),
+        )];
+        let summary = summarize(&findings);
+        let score = score_report(&findings);
+        AnalysisReport {
+            schema_version: "gruff.analysis.v1".to_string(),
+            tool: ToolInfo {
+                name: "gruff-rs".to_string(),
+                version: VERSION.to_string(),
+            },
+            run: RunInfo {
+                project_root: ".".to_string(),
+                format: "json".to_string(),
+                fail_on: "none".to_string(),
+                generated_at: "2026-05-13T00:00:00Z".to_string(),
+            },
+            summary,
+            paths: PathSummary {
+                analysed_files: 1,
+                ignored_paths: Vec::new(),
+                missing_paths: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+            findings,
+            score,
+            baseline: None,
+        }
+    }
+
+    fn rule_ids(report: &AnalysisReport) -> BTreeSet<&str> {
+        report
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect()
+    }
+
+    fn assert_has_rule(report: &AnalysisReport, rule_id: &str) {
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == rule_id),
+            "expected rule `{rule_id}` in findings: {:?}",
+            rule_ids(report)
+        );
+    }
+
+    fn assert_missing_rule(report: &AnalysisReport, rule_id: &str) {
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == rule_id),
+            "unexpected rule `{rule_id}` in findings: {:?}",
+            rule_ids(report)
+        );
+    }
+
+    fn default_test_options() -> AnalysisOptions {
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            config: None,
+            no_config: false,
+            format: OutputFormat::Json,
+            fail_on: FailThreshold::None,
+            include_ignored: false,
+            diff: None,
+            history_file: None,
+            baseline: None,
+            generate_baseline: None,
+            no_baseline: true,
+        }
+    }
+
+    fn write_default_config(dir: &Path, body: &str) {
+        fs::write(dir.join(".gruff.json"), body).expect("config write");
+    }
+
+    fn write_yaml_config(dir: &Path, body: &str) {
+        fs::write(dir.join(".gruff.yaml"), body).expect("yaml config write");
+    }
+
+    #[test]
+    fn fixture_scan_contract_preserves_existing_sample_findings() {
+        let _guard = analysis_lock();
+        let report = analyse_test_paths(vec![PathBuf::from("fixtures/sample.rs")]);
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_eq!(report.summary.total, 12);
+
+        let expected = [
+            (
+                "docs.missing-public-doc",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(1),
+                Some("SampleAnalyzer"),
+                "33f9dd5201230832",
+            ),
+            (
+                "modernisation.public-field",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(2),
+                None,
+                "bc7bce7d0361e8e7",
+            ),
+            (
+                "docs.missing-public-doc",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("process"),
+                "44dc31cc3f2fddf6",
+            ),
+            (
+                "naming.generic-function",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("process"),
+                "c3694de68d5ae921",
+            ),
+            (
+                "size.parameter-count",
+                Severity::Warning,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("process"),
+                "ec04a7b3fcf15f6d",
+            ),
+            (
+                "security.process-command",
+                Severity::Warning,
+                "fixtures/sample.rs",
+                Some(11),
+                None,
+                "c83527501efb5e12",
+            ),
+            (
+                "waste.unwrap-expect",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(11),
+                None,
+                "80bf1a6b54a67ccf",
+            ),
+            (
+                "sensitive-data.aws-access-key",
+                Severity::Error,
+                "fixtures/sample.rs",
+                Some(16),
+                None,
+                "1aae444024c630df",
+            ),
+            (
+                "sensitive-data.database-url-password",
+                Severity::Error,
+                "fixtures/sample.rs",
+                Some(17),
+                None,
+                "79a7540d1b61cf02",
+            ),
+            (
+                "test-quality.no-assertions",
+                Severity::Warning,
+                "fixtures/sample.rs",
+                Some(23),
+                Some("test_sleeps_without_assertion"),
+                "7d01e1f8fa08edc9",
+            ),
+            (
+                "test-quality.sleep-in-test",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(23),
+                Some("test_sleeps_without_assertion"),
+                "8e9591ae5cdf9beb",
+            ),
+            (
+                "dead-code.unused-private-function",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(25),
+                Some("test_sleeps_without_assertion"),
+                "b83f8c23ee44d8f3",
+            ),
+        ];
+
+        for (rule_id, severity, path, line, symbol, fingerprint) in expected {
+            assert!(
+                report.findings.iter().any(|finding| {
+                    finding.rule_id == rule_id
+                        && finding.severity == severity
+                        && finding.file_path == path
+                        && finding.line == line
+                        && finding.symbol.as_deref() == symbol
+                        && finding.fingerprint == fingerprint
+                }),
+                "missing expected fixture finding `{rule_id}` at {path}:{line:?}"
+            );
+        }
+    }
 
     #[test]
     fn analysis_finds_core_rust_smells() {
+        let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         let rust_file = dir.path().join("bad.rs");
         fs::write(
@@ -2264,24 +3399,7 @@ fn test_no_assert() {
 "#,
         )
         .expect("fixture write");
-        let previous = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(dir.path()).expect("set cwd");
-
-        let report = run_analysis(&AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            config: None,
-            no_config: true,
-            format: OutputFormat::Json,
-            fail_on: FailThreshold::None,
-            include_ignored: false,
-            diff: None,
-            history_file: None,
-            baseline: None,
-            generate_baseline: None,
-            no_baseline: true,
-        })
-        .expect("analysis succeeds");
-        std::env::set_current_dir(previous).expect("restore cwd");
+        let report = analyse_project_paths(dir.path(), vec![PathBuf::from(".")]);
 
         let rule_ids: BTreeSet<&str> = report
             .findings
@@ -2292,6 +3410,695 @@ fn test_no_assert() {
         assert!(rule_ids.contains("size.parameter-count"));
         assert!(rule_ids.contains("test-quality.no-assertions"));
         assert!(rule_ids.contains("modernisation.public-field"));
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_rule_ids_and_sorts_definitions() {
+        let registry = rules::builtin_registry();
+        assert!(registry
+            .definitions()
+            .windows(2)
+            .all(|window| window[0].id < window[1].id));
+        assert!(registry.contains("security.process-command"));
+
+        let duplicate = registry.definitions()[0];
+        assert!(rules::RuleRegistry::new(vec![duplicate, duplicate]).is_err());
+    }
+
+    #[test]
+    fn config_rejects_unknown_root_keys_and_rule_ids() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_default_config(dir.path(), r#"{ "unknown": true }"#);
+        let error = load_config(dir.path(), &options).expect_err("unknown root key rejected");
+        assert!(error.contains("unknown key `unknown`"), "{error}");
+
+        write_default_config(
+            dir.path(),
+            r#"{ "rules": { "unknown.rule": { "enabled": false } } }"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown rule rejected");
+        assert!(error.contains("unknown rule id `unknown.rule`"), "{error}");
+    }
+
+    #[test]
+    fn config_rejects_unknown_thresholds_and_options() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_default_config(
+            dir.path(),
+            r#"{ "rules": { "size.parameter-count": { "thresholds": { "bogus": 1 } } } }"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown threshold rejected");
+        assert!(error.contains("unknown threshold `bogus`"), "{error}");
+
+        write_default_config(
+            dir.path(),
+            r#"{ "rules": { "size.parameter-count": { "options": { "bogus": true } } } }"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown option rejected");
+        assert!(error.contains("unknown option `bogus`"), "{error}");
+    }
+
+    #[test]
+    fn yaml_config_is_default_and_json_config_still_works_explicitly() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("sample.rs"),
+            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+    println!("{}{}{}{}{}", b, c, d, e, f);
+    if a {
+        println!("active");
+    }
+}
+"#,
+        )
+        .expect("fixture write");
+        write_default_config(dir.path(), r#"{ "unknown": true }"#);
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  size.parameter-count:
+    threshold: 10
+"#,
+        );
+
+        let yaml_default = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("yaml config is the preferred default");
+        assert_missing_rule(&yaml_default, "size.parameter-count");
+
+        let json_explicit = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                config: Some(PathBuf::from(".gruff.json")),
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect_err("explicit json config is still parsed and validated");
+        assert!(
+            json_explicit.contains("unknown key `unknown`"),
+            "{json_explicit}"
+        );
+    }
+
+    #[test]
+    fn yaml_threshold_shorthand_is_strict() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  complexity.cognitive:
+    threshold: 20
+"#,
+        );
+        let config =
+            load_config(dir.path(), &options).expect("single threshold shorthand accepted");
+        assert_eq!(config.threshold("complexity.cognitive", "warn", 15.0), 20.0);
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  complexity.cyclomatic:
+    threshold: 20
+"#,
+        );
+        let error =
+            load_config(dir.path(), &options).expect_err("multi-threshold shorthand rejected");
+        assert!(
+            error.contains("threshold` is only supported for rules with exactly one threshold"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn config_disables_rules_and_overrides_thresholds() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("sample.rs"),
+            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+    if a {
+        std::process::Command::new("sh").arg("-c").arg(b).spawn().unwrap();
+    }
+    println!("{}{}{}{}", c, d, e, f);
+}
+"#,
+        )
+        .expect("fixture write");
+        write_default_config(
+            dir.path(),
+            r#"{
+  "rules": {
+    "security.process-command": { "enabled": false },
+    "size.parameter-count": { "thresholds": { "warn": 10 } }
+  }
+}"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        let rule_ids: BTreeSet<&str> = report
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect();
+        assert!(!rule_ids.contains("security.process-command"));
+        assert!(!rule_ids.contains("size.parameter-count"));
+    }
+
+    #[test]
+    fn rule_fixtures_prove_complexity_and_naming_rules() {
+        let _guard = analysis_lock();
+        let positive = analyse_test_paths(vec![PathBuf::from(
+            "tests/fixtures/rules/complexity_naming_positive.rs",
+        )]);
+        let negative = analyse_test_paths(vec![PathBuf::from(
+            "tests/fixtures/rules/complexity_naming_negative.rs",
+        )]);
+
+        assert_has_rule(&positive, "complexity.nesting-depth");
+        assert_has_rule(&positive, "complexity.npath");
+        assert_has_rule(&positive, "naming.boolean-prefix");
+        assert_has_rule(&positive, "naming.placeholder-identifier");
+
+        assert_missing_rule(&negative, "complexity.nesting-depth");
+        assert_missing_rule(&negative, "complexity.npath");
+        assert_missing_rule(&negative, "naming.boolean-prefix");
+        assert_missing_rule(&negative, "naming.placeholder-identifier");
+    }
+
+    #[test]
+    fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
+        let _guard = analysis_lock();
+        let security_positive = analyse_test_paths(vec![PathBuf::from(
+            "tests/fixtures/rules/security_sensitive_positive.rs",
+        )]);
+        let security_negative = analyse_test_paths(vec![PathBuf::from(
+            "tests/fixtures/rules/security_sensitive_negative.rs",
+        )]);
+        let test_positive = analyse_test_paths(vec![PathBuf::from(
+            "tests/fixtures/rules/test_quality_positive.rs",
+        )]);
+        let test_negative = analyse_test_paths(vec![PathBuf::from(
+            "tests/fixtures/rules/test_quality_negative.rs",
+        )]);
+
+        assert_has_rule(&security_positive, "security.unsafe-block");
+        assert_has_rule(&security_positive, "sensitive-data.hardcoded-env-value");
+        assert_has_rule(&security_positive, "sensitive-data.high-entropy-string");
+
+        assert_missing_rule(&security_negative, "security.unsafe-block");
+        assert_missing_rule(&security_negative, "sensitive-data.hardcoded-env-value");
+        assert_missing_rule(&security_negative, "sensitive-data.high-entropy-string");
+
+        assert_has_rule(&test_positive, "test-quality.ignored-without-reason");
+        assert_has_rule(&test_positive, "test-quality.long-test");
+        assert_has_rule(&test_positive, "test-quality.trivial-assertion");
+
+        assert_missing_rule(&test_negative, "test-quality.ignored-without-reason");
+        assert_missing_rule(&test_negative, "test-quality.long-test");
+        assert_missing_rule(&test_negative, "test-quality.trivial-assertion");
+        assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
+        assert_missing_rule(&test_negative, "test-quality.no-assertions");
+    }
+
+    #[test]
+    fn missing_readme_is_project_scoped() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("lib.rs"), "pub fn documented() {}\n").expect("fixture write");
+
+        let missing = analyse_project_paths(dir.path(), vec![PathBuf::from("lib.rs")]);
+        fs::write(dir.path().join("README.md"), "# Temporary fixture\n").expect("readme write");
+        let present = analyse_project_paths(dir.path(), vec![PathBuf::from("lib.rs")]);
+
+        assert_has_rule(&missing, "docs.missing-readme");
+        assert_missing_rule(&present, "docs.missing-readme");
+    }
+
+    #[test]
+    fn baseline_generation_and_exact_suppression_are_stable() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("sample.rs"),
+            r#"pub fn process(command: String) {
+    std::process::Command::new("sh").arg(command).spawn().unwrap();
+}
+"#,
+        )
+        .expect("fixture write");
+
+        let before = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert!(!before.findings.is_empty());
+
+        let baseline_path = dir.path().join("baseline.json");
+        write_baseline(&baseline_path, &[before.findings[0].clone()]).expect("baseline write");
+
+        let suppressed = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                baseline: Some(PathBuf::from("baseline.json")),
+                no_config: true,
+                no_baseline: false,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_eq!(suppressed.findings.len(), before.findings.len() - 1);
+        assert_eq!(
+            suppressed
+                .baseline
+                .as_ref()
+                .map(|baseline| baseline.suppressed),
+            Some(1)
+        );
+
+        let mut baseline_json: Value =
+            serde_json::from_str(&fs::read_to_string(&baseline_path).expect("baseline read"))
+                .expect("baseline json");
+        baseline_json["entries"][0]["message"] = json!("changed message stays suppressible");
+        fs::write(
+            &baseline_path,
+            serde_json::to_string_pretty(&baseline_json).expect("baseline serialize"),
+        )
+        .expect("baseline rewrite");
+        let message_changed = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                baseline: Some(PathBuf::from("baseline.json")),
+                no_config: true,
+                no_baseline: false,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_eq!(
+            message_changed
+                .baseline
+                .as_ref()
+                .map(|baseline| baseline.suppressed),
+            Some(1)
+        );
+
+        baseline_json["entries"][0]["filePath"] = json!("other.rs");
+        fs::write(
+            &baseline_path,
+            serde_json::to_string_pretty(&baseline_json).expect("baseline serialize"),
+        )
+        .expect("baseline rewrite");
+        let file_changed = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                baseline: Some(PathBuf::from("baseline.json")),
+                no_config: true,
+                no_baseline: false,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_eq!(file_changed.findings.len(), before.findings.len());
+        assert_eq!(
+            file_changed
+                .baseline
+                .as_ref()
+                .map(|baseline| baseline.suppressed),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn baseline_generation_and_failure_modes_are_reported_cleanly() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(dir.path().join("sample.rs"), "pub fn process() {}\n").expect("fixture write");
+
+        let generated_path = dir.path().join("baseline.json");
+        let generated = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                generate_baseline: Some(PathBuf::from("baseline.json")),
+                no_config: true,
+                ..default_test_options()
+            },
+        )
+        .expect("baseline generation succeeds");
+        assert!(generated
+            .baseline
+            .as_ref()
+            .is_some_and(|baseline| baseline.generated));
+        let baseline_json: Value =
+            serde_json::from_str(&fs::read_to_string(&generated_path).expect("baseline read"))
+                .expect("baseline json");
+        assert_eq!(baseline_json["schemaVersion"], "gruff.baseline.v1");
+        assert!(baseline_json["entries"].as_array().is_some());
+
+        fs::write(
+            dir.path().join("bad-baseline.json"),
+            r#"{ "schemaVersion": "wrong", "entries": [] }"#,
+        )
+        .expect("bad baseline write");
+        let invalid_schema = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                baseline: Some(PathBuf::from("bad-baseline.json")),
+                no_config: true,
+                no_baseline: false,
+                ..default_test_options()
+            },
+        )
+        .expect_err("invalid baseline schema rejected");
+        assert!(invalid_schema.contains("unsupported baseline schema"));
+
+        let missing = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                baseline: Some(PathBuf::from("missing-baseline.json")),
+                no_config: true,
+                no_baseline: false,
+                ..default_test_options()
+            },
+        )
+        .expect_err("missing baseline rejected");
+        assert!(missing.contains("unable to read baseline"));
+    }
+
+    #[test]
+    fn scoring_includes_all_static_pillars_and_weights_findings() {
+        let clean = score_report(&[]);
+        assert_eq!(clean.composite, 100.0);
+        assert_eq!(clean.grade, "A");
+        assert_eq!(clean.pillars.len(), SCORE_PILLARS.len());
+        assert!(clean.pillars.iter().all(|pillar| pillar.findings == 0));
+
+        let findings = vec![
+            test_finding(
+                "security.process-command",
+                "src/a.rs",
+                1,
+                Severity::Error,
+                Pillar::Security,
+            ),
+            test_finding_with_confidence(
+                "dead-code.unused-private-function",
+                "src/b.rs",
+                1,
+                Severity::Warning,
+                Pillar::DeadCode,
+                Confidence::Low,
+            ),
+            test_finding(
+                "docs.todo-density",
+                "src/b.rs",
+                2,
+                Severity::Advisory,
+                Pillar::Documentation,
+            ),
+        ];
+        let score = score_report(&findings);
+        assert_eq!(score.grade, "A");
+        assert_eq!(score.top_offenders[0].file_path, "src/a.rs");
+        let security = score
+            .pillars
+            .iter()
+            .find(|pillar| pillar.pillar == Pillar::Security)
+            .expect("security pillar");
+        let dead_code = score
+            .pillars
+            .iter()
+            .find(|pillar| pillar.pillar == Pillar::DeadCode)
+            .expect("dead-code pillar");
+        assert_eq!(security.score, 92.0);
+        assert_eq!(dead_code.score, 98.0);
+
+        assert_eq!(grade(90.0), "A");
+        assert_eq!(grade(80.0), "B");
+        assert_eq!(grade(70.0), "C");
+        assert_eq!(grade(60.0), "D");
+        assert_eq!(grade(59.9), "F");
+    }
+
+    #[test]
+    fn source_discovery_covers_ignores_text_files_and_missing_paths() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::create_dir_all(dir.path().join("target")).expect("target dir");
+        fs::create_dir_all(dir.path().join("ignored")).expect("ignored dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "/// Ready.\npub fn is_ready() -> bool { true }\n",
+        )
+        .expect("rust write");
+        fs::write(
+            dir.path().join("target/secret.env"),
+            concat!("DATABASE_", "PASSWORD=target-secret-123\n"),
+        )
+        .expect("target secret write");
+        fs::write(
+            dir.path().join("ignored/secret.env"),
+            concat!("DATABASE_", "PASSWORD=ignored-secret-123\n"),
+        )
+        .expect("ignored secret write");
+        write_default_config(dir.path(), r#"{ "paths": { "ignore": ["ignored/**"] } }"#);
+
+        let default_scan = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert!(default_scan
+            .paths
+            .ignored_paths
+            .contains(&"target".to_string()));
+        assert!(default_scan
+            .paths
+            .ignored_paths
+            .contains(&"ignored".to_string()));
+        assert_missing_rule(&default_scan, "sensitive-data.hardcoded-env-value");
+
+        let include_ignored = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                include_ignored: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_has_rule(&include_ignored, "sensitive-data.hardcoded-env-value");
+
+        let text_scan = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("target/secret.env")],
+                no_config: true,
+                include_ignored: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("text scan succeeds");
+        assert_has_rule(&text_scan, "sensitive-data.hardcoded-env-value");
+
+        let missing = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("missing.rs")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("missing path is diagnostic, not hard error");
+        assert_eq!(missing.diagnostics.len(), 1);
+        assert_eq!(missing.diagnostics[0].diagnostic_type, "missing-path");
+    }
+
+    #[test]
+    fn report_renderers_escape_and_preserve_contracts() {
+        let report = sample_report();
+
+        let json_output = render_report(&report, OutputFormat::Json);
+        let decoded: Value = serde_json::from_str(&json_output).expect("json report");
+        assert_eq!(decoded["schemaVersion"], "gruff.analysis.v1");
+        assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
+
+        let text = render_report(&report, OutputFormat::Text);
+        assert!(text.contains("gruff-rs"));
+        assert!(text.contains("security.process-command"));
+
+        let markdown = render_report(&report, OutputFormat::Markdown);
+        assert!(markdown.starts_with("# gruff-rs report"));
+        assert!(markdown.contains("`security.process-command`"));
+
+        let github = render_report(&report, OutputFormat::Github);
+        assert!(github.starts_with("::warning file=src/lib.rs,line=7"));
+
+        let html = render_report(&report, OutputFormat::Html);
+        assert!(html.contains("Use &lt;escaped&gt; command &amp; args"));
+        assert!(!html.contains("Use <escaped> command & args"));
+
+        let hotspot: Value = serde_json::from_str(&render_report(&report, OutputFormat::Hotspot))
+            .expect("hotspot json");
+        assert_eq!(hotspot["schemaVersion"], "gruff.hotspot.v1");
+        assert_eq!(hotspot["files"][0]["filePath"], "src/lib.rs");
+    }
+
+    #[test]
+    fn report_json_keeps_deterministic_finding_order() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(dir.path().join("b.rs"), "pub fn process() {}\n").expect("b write");
+        fs::write(dir.path().join("a.rs"), "pub fn process() {}\n").expect("a write");
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("b.rs"), PathBuf::from("a.rs")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        let ordered_paths: Vec<&str> = report
+            .findings
+            .iter()
+            .map(|finding| finding.file_path.as_str())
+            .collect();
+        assert_eq!(ordered_paths, vec!["a.rs", "a.rs", "b.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn dashboard_scan_preserves_cwd_and_report_paths() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(dir.path().join("sample.rs"), "pub fn process() {}\n").expect("sample write");
+        let cwd_before = std::env::current_dir().expect("cwd");
+        let query = format!(
+            "projectRoot={}&path=sample.rs",
+            dir.path().to_string_lossy()
+        );
+
+        let response = dashboard_response("/scan", &query, Path::new("."));
+
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(std::env::current_dir().expect("cwd"), cwd_before);
+        assert!(response.body.contains("Dashboard scan"));
+        assert!(response.body.contains("sample.rs"));
+        assert!(!response
+            .body
+            .contains(&dir.path().join("sample.rs").display().to_string()));
+    }
+
+    #[test]
+    fn parser_handles_raw_strings_macros_impls_and_test_attributes() {
+        let _guard = analysis_lock();
+        let report = analyse_test_paths(vec![
+            PathBuf::from("tests/fixtures/parser/raw_strings.rs"),
+            PathBuf::from("tests/fixtures/parser/macros_impls.rs"),
+        ]);
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+
+        let parameter_count = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == "size.parameter-count"
+                    && finding.file_path == "tests/fixtures/parser/macros_impls.rs"
+                    && finding.symbol.as_deref() == Some("process")
+            })
+            .expect("impl method parameter-count finding");
+        assert_eq!(parameter_count.line, Some(12));
+
+        let no_assertions = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == "test-quality.no-assertions"
+                    && finding.file_path == "tests/fixtures/parser/macros_impls.rs"
+                    && finding.symbol.as_deref() == Some("test_macro_fixture")
+            })
+            .expect("test attribute no-assertions finding");
+        assert_eq!(no_assertions.line, Some(20));
+    }
+
+    #[test]
+    fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
+        let _guard = analysis_lock();
+        let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
+
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].diagnostic_type, "parse-error");
+        assert_eq!(
+            report.diagnostics[0].file_path.as_deref(),
+            Some("tests/fixtures/parser/invalid.rs")
+        );
+
+        let rule_ids: BTreeSet<&str> = report
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect();
+        assert!(rule_ids.contains("sensitive-data.aws-access-key"));
+        assert!(!rule_ids.contains("size.function-length"));
     }
 
     #[test]
