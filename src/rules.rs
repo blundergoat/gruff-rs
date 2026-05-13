@@ -104,6 +104,9 @@ const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("items", 12.0)];
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("versions", 2.0)];
+const METRICS_HALSTEAD_VOLUME_THRESHOLDS: &[ThresholdDefinition] = &[threshold("volume", 900.0)];
+const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLDS: &[ThresholdDefinition] =
+    &[threshold("minimum", 45.0)];
 const TODO_DENSITY_THRESHOLDS: &[ThresholdDefinition] = &[threshold("markers", 4.0)];
 const FILE_LENGTH_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("warn", 400.0), threshold("error", 800.0)];
@@ -365,6 +368,26 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
             "Flags public struct fields that expose representation.",
         ),
         rule(
+            "metrics.halstead-volume",
+            "Halstead-style volume",
+            Pillar::Complexity,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            METRICS_HALSTEAD_VOLUME_THRESHOLDS,
+            "Flags functions whose deterministic token volume exceeds the configured threshold.",
+        ),
+        rule(
+            "metrics.maintainability-pressure",
+            "Maintainability pressure",
+            Pillar::Complexity,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            METRICS_MAINTAINABILITY_PRESSURE_THRESHOLDS,
+            "Flags functions whose maintainability pressure score falls below the configured minimum.",
+        ),
+        rule(
             "naming.generic-function",
             "Generic function name",
             Pillar::Naming,
@@ -403,6 +426,36 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
             Confidence::Medium,
             &[],
             "Flags very short local variable names outside accepted abbreviations.",
+        ),
+        rule(
+            "performance.clone-in-loop",
+            "Clone in loop",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            &[],
+            "Flags clone calls inside loop bodies as allocation hot spot candidates.",
+        ),
+        rule(
+            "performance.format-in-loop",
+            "Format in loop",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            &[],
+            "Flags format! calls inside loop bodies as allocation hot spot candidates.",
+        ),
+        rule(
+            "performance.regex-in-loop",
+            "Regex construction in loop",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            &[],
+            "Flags Regex::new calls inside loop bodies.",
         ),
         rule(
             "security.process-command",

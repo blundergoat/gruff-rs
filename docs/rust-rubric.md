@@ -7,9 +7,9 @@
 | Pillar | Current scope |
 | --- | --- |
 | Size | File length, function length, and parameter-count thresholds. |
-| Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, and conservative NPath approximation. |
+| Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, conservative NPath approximation, Halstead-style token volume, and maintainability pressure. |
 | Dead code | Private functions with no same-file call sites, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
-| Waste | Unwrap/expect, clone candidates, unreachable statements, production panic/placeholder hazards, public API unwraps, and narrow async/concurrency hazards. |
+| Waste | Unwrap/expect, clone candidates, unreachable statements, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
 | Naming | Generic function names, short variables, bool predicate prefixes, and placeholder identifiers. |
 | Documentation | Public Rust API documentation, TODO/FIXME density, root README presence, and package metadata presence. |
 | Modernisation | Public struct fields that expose representation. |
@@ -28,6 +28,10 @@ Project-level architecture rules report structural facts from the read-only proj
 
 Error-handling and concurrency rules are deliberately syntactic. Production panic and placeholder findings skip test functions and helpers inside `tests` modules; public API unwrap findings add API-context signal on top of the broader unwrap/expect rule. Async/concurrency findings use medium confidence unless the scanner has only a narrow source pattern such as an async function calling `std::thread::sleep`, a lock binding that appears to cross `.await`, or an unbounded channel constructor. These checks complement Clippy by making the patterns visible in Gruff reports and scoring; they do not claim runtime deadlock certainty or type-aware error taxonomy.
 
+Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside loop bodies. They are reported as waste because the current report schema does not define a separate performance pillar.
+
+Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default `volume` threshold of `900`. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default `minimum` threshold of `45`. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+
 ## Deferred
 
 - Type-aware unused symbol and call-graph dead-code certainty.
@@ -35,5 +39,5 @@ Error-handling and concurrency rules are deliberately syntactic. Production pani
 - Vulnerability advisory, package freshness, and license policy checks that need live external data or organization-specific policy.
 - Framework-specific test rules for mocking, fixtures, async runtimes, and data providers.
 - Broad error swallowing, excessive task spawning, runtime deadlock detection, and type-aware error taxonomy.
-- Maintainability-index and Halstead-style metrics until the token model and scoring calibration are stable.
+- Type-aware allocation analysis, needless collection-before-iteration claims, large-literal allocation claims, benchmarks, and runtime profiling ingestion.
 - Automatic fixes.

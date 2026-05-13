@@ -45,6 +45,10 @@ rules:
       error: 20
   dependency.duplicate-locked-version:
     threshold: 2
+  metrics.halstead-volume:
+    threshold: 900
+  metrics.maintainability-pressure:
+    threshold: 45
 ```
 
 Use `--no-config` to ignore project config.
@@ -54,6 +58,8 @@ as data and do not query registries, run Cargo, or consume vulnerability feeds.
 Project architecture and dead-code candidate checks are also local-only. They use
 the discovered Rust sources and phrase cross-file unused private items as
 candidates because the scanner does not run rustc type resolution.
+Performance and metric checks use syntactic source patterns and deterministic
+token counts, not benchmarks or runtime profiling.
 
 ## Baselines
 

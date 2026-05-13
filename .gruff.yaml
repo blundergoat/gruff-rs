@@ -35,6 +35,10 @@ rules:
     threshold: 4
   dependency.duplicate-locked-version:
     threshold: 2
+  metrics.halstead-volume:
+    threshold: 900
+  metrics.maintainability-pressure:
+    threshold: 45
   size.file-length:
     thresholds:
       warn: 400

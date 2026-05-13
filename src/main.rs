@@ -573,6 +573,13 @@ struct FunctionBlock {
     ignore_without_reason: bool,
 }
 
+struct FunctionMetrics {
+    total_tokens: usize,
+    unique_tokens: usize,
+    halstead_volume: f64,
+    maintainability_score: f64,
+}
+
 impl FunctionBlock {
     fn is_test_context(&self) -> bool {
         self.is_test || self.test_context
@@ -2557,6 +2564,9 @@ mod built_in_rules {
                 ));
             }
 
+            analyse_metric_block(file, block, &searchable_body, cyclomatic, config, findings);
+            analyse_performance_block(file, block, &searchable_body, findings);
+
             if block.line_count > 45 && cyclomatic > 10 {
                 findings.push(block_finding(
                     "design.god-function",
@@ -2721,6 +2731,140 @@ mod built_in_rules {
                 },
             ));
         }
+    }
+
+    fn analyse_metric_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        cyclomatic: usize,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let metrics = function_metrics(searchable_body, cyclomatic);
+        let volume_threshold = config.threshold("metrics.halstead-volume", "volume", 900.0);
+        if metrics.halstead_volume > volume_threshold {
+            findings.push(block_finding_with_extras(
+                "metrics.halstead-volume",
+                format!(
+                    "Function `{}` has Halstead-style volume {:.1}, above the threshold of {:.1}.",
+                    block.name, metrics.halstead_volume, volume_threshold
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Complexity,
+                BlockFindingExtras {
+                    confidence: Confidence::Medium,
+                    remediation: Some(
+                        "Split dense logic into smaller functions with simpler token flow."
+                            .to_string(),
+                    ),
+                    metadata: json!({
+                        "totalTokens": metrics.total_tokens,
+                        "uniqueTokens": metrics.unique_tokens,
+                        "halsteadVolume": round1(metrics.halstead_volume),
+                        "threshold": volume_threshold
+                    }),
+                },
+            ));
+        }
+
+        let minimum_score = config.threshold("metrics.maintainability-pressure", "minimum", 45.0);
+        if metrics.maintainability_score < minimum_score {
+            findings.push(block_finding_with_extras(
+                "metrics.maintainability-pressure",
+                format!(
+                    "Function `{}` has maintainability pressure score {:.1}, below the minimum of {:.1}.",
+                    block.name, metrics.maintainability_score, minimum_score
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Complexity,
+                BlockFindingExtras {
+                    confidence: Confidence::Medium,
+                    remediation: Some(
+                        "Reduce line count, branching, or token volume before relying on this function as stable hot-path code."
+                            .to_string(),
+                    ),
+                    metadata: json!({
+                        "score": round1(metrics.maintainability_score),
+                        "minimum": minimum_score,
+                        "totalTokens": metrics.total_tokens,
+                        "cyclomatic": cyclomatic,
+                        "halsteadVolume": round1(metrics.halstead_volume)
+                    }),
+                },
+            ));
+        }
+    }
+
+    fn analyse_performance_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let checks = [
+            PerformanceCheck {
+                rule_id: "performance.regex-in-loop",
+                pattern: r"\bRegex::new\s*\(",
+                severity: Severity::Warning,
+                confidence: Confidence::High,
+                label: "Regex::new",
+                remediation: "Move regex construction out of the loop or cache the compiled regex.",
+            },
+            PerformanceCheck {
+                rule_id: "performance.format-in-loop",
+                pattern: r"\bformat!\s*\(",
+                severity: Severity::Advisory,
+                confidence: Confidence::Medium,
+                label: "format!",
+                remediation:
+                    "Reuse buffers or move formatting out of the loop when allocation matters.",
+            },
+            PerformanceCheck {
+                rule_id: "performance.clone-in-loop",
+                pattern: r"\.clone\s*\(",
+                severity: Severity::Advisory,
+                confidence: Confidence::Medium,
+                label: "clone()",
+                remediation: "Clone outside the loop or borrow values when ownership permits.",
+            },
+        ];
+
+        for check in checks {
+            let occurrences = loop_pattern_count(searchable_body, check.pattern);
+            if occurrences == 0 {
+                continue;
+            }
+            findings.push(block_finding_with_extras(
+                check.rule_id,
+                format!(
+                    "Function `{}` calls {} inside a loop {} time(s).",
+                    block.name, check.label, occurrences
+                ),
+                file,
+                block,
+                check.severity,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: check.confidence,
+                    remediation: Some(check.remediation.to_string()),
+                    metadata: json!({ "pattern": check.label, "occurrences": occurrences }),
+                },
+            ));
+        }
+    }
+
+    struct PerformanceCheck {
+        rule_id: &'static str,
+        pattern: &'static str,
+        severity: Severity,
+        confidence: Confidence,
+        label: &'static str,
+        remediation: &'static str,
     }
 
     fn analyse_concurrency_block(
@@ -3568,6 +3712,79 @@ mod built_in_rules {
             paths = paths.saturating_mul(2);
         }
         paths.saturating_add(boolean_decisions)
+    }
+
+    fn function_metrics(source: &str, cyclomatic: usize) -> FunctionMetrics {
+        let tokens = metric_tokens(source);
+        let unique_tokens: BTreeSet<&str> = tokens.iter().map(String::as_str).collect();
+        let total_tokens = tokens.len();
+        let unique_count = unique_tokens.len();
+        let halstead_volume = if unique_count <= 1 {
+            0.0
+        } else {
+            total_tokens as f64 * (unique_count as f64).log2()
+        };
+        let pressure =
+            total_tokens as f64 * 0.08 + cyclomatic as f64 * 2.0 + halstead_volume / 60.0;
+        let maintainability_score = 100.0 - pressure.min(100.0);
+
+        FunctionMetrics {
+            total_tokens,
+            unique_tokens: unique_count,
+            halstead_volume,
+            maintainability_score,
+        }
+    }
+
+    fn metric_tokens(source: &str) -> Vec<String> {
+        Regex::new(
+            r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||::|->|=>|[{}()\[\];,.:+\-*/%&|^!<>?=]",
+        )
+        .expect("static regex compiles")
+        .find_iter(source)
+        .map(|token| token.as_str().to_string())
+        .collect()
+    }
+
+    fn round1(value: f64) -> f64 {
+        (value * 10.0).round() / 10.0
+    }
+
+    fn loop_pattern_count(source: &str, pattern: &str) -> usize {
+        let pattern = Regex::new(pattern).expect("static regex compiles");
+        let loop_start = Regex::new(r"\b(for|while|loop)\b").expect("static regex compiles");
+        let mut depth = 0usize;
+        let mut loop_depths = Vec::new();
+        let mut pending_loop = false;
+        let mut occurrences = 0usize;
+
+        for line in source.lines() {
+            if !loop_depths.is_empty() && pattern.is_match(line) {
+                occurrences += pattern.find_iter(line).count();
+            }
+            if loop_start.is_match(line) {
+                pending_loop = true;
+            }
+
+            for character in line.chars() {
+                match character {
+                    '{' => {
+                        depth += 1;
+                        if pending_loop {
+                            loop_depths.push(depth);
+                            pending_loop = false;
+                        }
+                    }
+                    '}' => {
+                        loop_depths.retain(|loop_depth| *loop_depth < depth);
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        occurrences
     }
 
     fn has_nearby_safety_comment(lines: &[&str], line_index: usize) -> bool {
@@ -4583,6 +4800,21 @@ mod tests {
             "unexpected rule `{rule_id}` in findings: {:?}",
             rule_ids(report)
         );
+    }
+
+    fn metric_metadata_number(
+        report: &AnalysisReport,
+        rule_id: &str,
+        symbol: &str,
+        key: &str,
+    ) -> f64 {
+        report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == rule_id && finding.symbol.as_deref() == Some(symbol))
+            .and_then(|finding| finding.metadata.get(key))
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("missing `{key}` metadata for `{rule_id}` `{symbol}`"))
     }
 
     fn default_test_options() -> AnalysisOptions {
@@ -5955,6 +6187,273 @@ async fn async_step() {}
         assert_missing_rule(&negative, "concurrency.blocking-call-in-async");
         assert_missing_rule(&negative, "concurrency.lock-across-await");
         assert_missing_rule(&negative, "concurrency.unbounded-channel");
+    }
+
+    #[test]
+    fn performance_rules_flag_loop_scoped_hotspots() {
+        let _guard = analysis_lock();
+        let positive_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(positive_dir.path().join("src")).expect("src dir");
+        fs::write(positive_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            positive_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "performance-positive-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for performance rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            positive_dir.path().join("src/lib.rs"),
+            r#"pub fn loop_hotspots(values: &[String]) -> Vec<String> {
+    let mut output = Vec::new();
+    for value in values {
+        let regex = Regex::new("ready").unwrap();
+        if regex.is_match(value) {
+            output.push(format!("{}", value.clone()));
+        }
+    }
+    output
+}
+"#,
+        )
+        .expect("positive lib write");
+
+        let positive = run_project_analysis(
+            positive_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("performance positive analysis succeeds");
+        assert_has_rule(&positive, "performance.regex-in-loop");
+        assert_has_rule(&positive, "performance.format-in-loop");
+        assert_has_rule(&positive, "performance.clone-in-loop");
+
+        let regex = positive
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "performance.regex-in-loop")
+            .expect("regex-in-loop finding");
+        assert_eq!(regex.symbol.as_deref(), Some("loop_hotspots"));
+        assert_eq!(regex.metadata["pattern"], json!("Regex::new"));
+        assert_eq!(regex.metadata["occurrences"], json!(1));
+        assert!(regex.message.contains("Regex::new"));
+
+        let waste = positive
+            .score
+            .pillars
+            .iter()
+            .find(|pillar| pillar.pillar == Pillar::Waste)
+            .expect("waste score");
+        assert!(
+            waste.findings >= 3,
+            "expected performance findings in waste: {waste:?}"
+        );
+
+        let negative_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(negative_dir.path().join("src")).expect("src dir");
+        fs::write(negative_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            negative_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "performance-negative-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for performance rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            negative_dir.path().join("src/lib.rs"),
+            r#"pub fn setup_outside_loop(values: &[String]) -> Vec<String> {
+    let regex = Regex::new("ready").unwrap();
+    let label = format!("{}", values.len());
+    let cloned = label.clone();
+    let mut output = Vec::new();
+    for value in values {
+        if regex.is_match(value) {
+            output.push(cloned.to_string());
+        }
+    }
+    output
+}
+"#,
+        )
+        .expect("negative lib write");
+
+        let negative = run_project_analysis(
+            negative_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("performance negative analysis succeeds");
+        assert_missing_rule(&negative, "performance.regex-in-loop");
+        assert_missing_rule(&negative, "performance.format-in-loop");
+        assert_missing_rule(&negative, "performance.clone-in-loop");
+    }
+
+    #[test]
+    fn metrics_rules_calibrate_thresholds_and_formatting_stability() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "metrics-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for metrics rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            r#"pub fn compact(input: i32) -> i32 { if input > 0 { input + 1 } else { input - 1 } }
+
+pub fn spaced(input: i32) -> i32 {
+    if input > 0 {
+        input + 1
+    } else {
+        input - 1
+    }
+}
+
+pub fn complex_metric(values: &[i32]) -> i32 {
+    let mut total = 0;
+    for value in values {
+        if *value > 10 {
+            total += *value;
+        } else if *value < -10 {
+            total -= *value;
+        } else {
+            total += 1;
+        }
+        match *value {
+            0 => total += 3,
+            1 | 2 => total += 5,
+            _ => total += 8,
+        }
+        while total < 100 {
+            total += *value;
+            if total % 2 == 0 {
+                total += 1;
+            }
+            break;
+        }
+    }
+    total
+}
+"#,
+        )
+        .expect("metrics lib write");
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  metrics.halstead-volume:
+    threshold: 1
+  metrics.maintainability-pressure:
+    threshold: 100
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("metrics analysis succeeds");
+        assert_has_rule(&report, "metrics.halstead-volume");
+        assert_has_rule(&report, "metrics.maintainability-pressure");
+
+        let compact_volume = metric_metadata_number(
+            &report,
+            "metrics.halstead-volume",
+            "compact",
+            "halsteadVolume",
+        );
+        let spaced_volume = metric_metadata_number(
+            &report,
+            "metrics.halstead-volume",
+            "spaced",
+            "halsteadVolume",
+        );
+        assert_eq!(compact_volume, spaced_volume);
+
+        let compact_score = metric_metadata_number(
+            &report,
+            "metrics.maintainability-pressure",
+            "compact",
+            "score",
+        );
+        let spaced_score = metric_metadata_number(
+            &report,
+            "metrics.maintainability-pressure",
+            "spaced",
+            "score",
+        );
+        assert_eq!(compact_score, spaced_score);
+
+        let complex = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == "metrics.halstead-volume"
+                    && finding.symbol.as_deref() == Some("complex_metric")
+            })
+            .expect("complex metric volume finding");
+        assert!(complex.metadata["totalTokens"].as_u64().unwrap_or_default() > 50);
+        assert!(complex
+            .metadata
+            .get("halsteadVolume")
+            .and_then(Value::as_f64)
+            .is_some_and(|volume| volume > 100.0));
+
+        let complexity = report
+            .score
+            .pillars
+            .iter()
+            .find(|pillar| pillar.pillar == Pillar::Complexity)
+            .expect("complexity score");
+        assert!(
+            complexity.findings >= 2,
+            "expected metric findings in complexity: {complexity:?}"
+        );
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  metrics.halstead-volume:
+    thresholds:
+      bogus: 1
+"#,
+        );
+        let error =
+            load_config(dir.path(), &default_test_options()).expect_err("bad metric threshold");
+        assert!(
+            error.contains("unknown threshold `bogus` for rule `metrics.halstead-volume`"),
+            "{error}"
+        );
     }
 
     #[test]
