@@ -12,7 +12,7 @@
 ## Source
 
 `src/` = Rust source directory.
-`src/main.rs` = CLI orchestration, analyzer pipeline, parsed source/project context construction, config loading, renderers, dashboard server, path helpers, built-in rule dispatch module, and unit tests.
+`src/main.rs` = CLI orchestration, analyzer pipeline, parsed source/project context construction, config loading, renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
 `src/rules.rs` = Rule metadata contracts and the sorted built-in rule registry used by config validation and `list-rules`.
 
 ## Fixtures
@@ -20,7 +20,7 @@
 `fixtures/` = Sample input files for analyzer smoke tests and manual scans.
 `fixtures/README.md` = Notes that analyzer fixtures are intentionally noisy inputs.
 `fixtures/sample.rs` = Intentionally noisy Rust sample containing secret-like strings, command execution, long parameters, and a weak test.
-`fixtures/rubric.rs` = Expanded rubric smoke fixture for complexity, naming, size, documentation, and design findings.
+`fixtures/rubric.rs` = Expanded rubric smoke fixture for complexity, naming, size, documentation, design, and metric findings.
 `tests/` = Rust test support files and parser fixtures used by unit tests.
 `tests/fixtures/README.md` = Fixture grouping notes for parser, rule, and temp-project scanner tests.
 `tests/fixtures/parser/` = Parser-focused Rust inputs covering raw strings, macros/impl methods, test attributes, and invalid Rust.
@@ -29,7 +29,7 @@
 ## Scripts
 
 `scripts/` = Project shell entrypoints.
-`scripts/check.sh` = Formatting, Clippy, and unit-test gate.
+`scripts/check.sh` = Formatting, Clippy, unit-test, rule-listing, fixture-scan, and self-scan gate.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
 
 ## Documentation And Harness

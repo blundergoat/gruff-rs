@@ -88,7 +88,8 @@ cargo run -- list-rules --format json
 ```
 
 `scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, fixture scan,
-and self-scan diagnostics smoke checks.
+and self-scan diagnostics smoke checks. Self-scan findings are visible under
+`--fail-on none`; diagnostics are treated as gate failures.
 
 ## Fixtures
 
