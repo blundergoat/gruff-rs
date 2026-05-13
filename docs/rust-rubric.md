@@ -1,6 +1,6 @@
 # Rust Rubric
 
-`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Rules are advisory by default unless they report likely secrets or higher-risk complexity.
+`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings.
 
 ## Pillars
 
@@ -20,7 +20,7 @@
 
 ## Rule Selection
 
-The v0.1 expansion chooses rules that can be proven with clear positive and negative fixtures. Syntax-sensitive rules use the Rust AST model; text rules are reserved for source/config scans such as secrets. Project rules use a read-only project context built from discovered sources, `Cargo.toml`, and `Cargo.lock`. Rules that mainly need type resolution, live registry data, whole-project call graphs, framework knowledge, or high-noise semantic inference are deferred.
+The v0.1 expansion chooses rule additions that can be backed by clear fixture coverage. Focused positive and negative fixtures cover selected rule families, while the normal fixture scan preserves representative findings across the expanded rubric. Syntax-sensitive rules use the Rust AST model; text rules are reserved for source/config scans such as secrets. Project rules use a read-only project context built from discovered sources, `Cargo.toml`, and `Cargo.lock`. Rules that mainly need type resolution, live registry data, whole-project call graphs, framework knowledge, or high-noise semantic inference are deferred.
 
 The scanner intentionally complements `cargo clippy` instead of restating every lint. For example, unsafe-block findings enforce a reportable `SAFETY:` explanation for scoring, while complexity metrics produce deterministic report data for project trends.
 
@@ -30,7 +30,7 @@ Error-handling and concurrency rules are deliberately syntactic. Production pani
 
 Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside loop bodies. They are reported as waste because the current report schema does not define a separate performance pillar.
 
-Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default `volume` threshold of `900`. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default `minimum` threshold of `45`. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default `volume` threshold of `900`. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default `minimum` threshold of `45`. Config may use the `threshold` shorthand for these single-threshold rules; the canonical threshold names are `volume` and `minimum`. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
 
 ## Deferred
 

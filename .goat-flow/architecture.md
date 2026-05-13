@@ -4,7 +4,7 @@
 
 `gruff-rs` is a Rust binary implemented through `src/main.rs` plus focused modules such as `src/rules.rs`. The binary has four user-facing modes: `analyse` walks source trees and emits findings, `report` renders analysis output to a file or stdout, `list-rules` prints registry metadata, and `dashboard` starts a small local HTTP server for browser-driven scans.
 
-The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `src/main.rs` for now. Rule metadata and the built-in rule registry live in `src/rules.rs`; built-in rule dispatch is behind a module boundary. Supporting shell entrypoints live in `scripts/check.sh` and `scripts/start-dev.sh`; intentionally noisy analyzer input lives in `fixtures/sample.rs`.
+The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `src/main.rs` for now. Rule metadata and the built-in rule registry live in `src/rules.rs`; built-in rule dispatch is behind a module boundary. Supporting shell entrypoints live in `scripts/check.sh` and `scripts/start-dev.sh`; intentionally noisy analyzer inputs live in `fixtures/` and `tests/fixtures/`.
 
 ## Request Flow
 
@@ -16,7 +16,7 @@ For dashboard scans, `run_dashboard` binds the requested host and port, `handle_
 
 There is no authentication layer. The dashboard defaults to loopback through `scripts/start-dev.sh`, so exposing it on a non-loopback host should be treated as a trust-boundary change.
 
-The analyzer reads user-selected files and does not execute analyzed source. `fixtures/sample.rs` deliberately contains command execution and secret-looking strings so the scanner can prove those rules fire; those fixture strings are test inputs, not runtime credentials.
+The analyzer reads user-selected files and does not execute analyzed source. Fixture files deliberately contain command execution, secret-looking strings, parser edge cases, and noisy rule examples so the scanner can prove those rules fire; those fixture strings are test inputs, not runtime credentials.
 
 ## Data Flow
 
@@ -38,5 +38,5 @@ CI lives in `.github/workflows/ci.yml` and runs the same local preflight command
 - Cargo metadata readers parse `Cargo.toml` and `Cargo.lock` as data only. They must not run Cargo, build scripts, proc macros, package hooks, or network requests.
 - Project-aware dead-code and architecture rules are candidate/structural checks. They must not claim type-aware certainty, module-cycle certainty, or cfg-matrix certainty without a new analysis model.
 - Advanced metric rules use deterministic token counts and calibrated thresholds for advisory findings. They complement, but do not replace, the existing `score` object in `gruff.analysis.v1`.
-- `fixtures/sample.rs` is intentionally bad code and should not be cleaned up without replacing the analyzer coverage it provides.
+- `fixtures/` and `tests/fixtures/` intentionally contain noisy or invalid inputs and should not be cleaned up without replacing the analyzer coverage they provide.
 - `.gruff.yaml` is the default project config contract. Keep `.gruff.yml` and explicit `.gruff.json` compatibility unless a config compatibility decision replaces them.
