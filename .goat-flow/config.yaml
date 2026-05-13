@@ -1,0 +1,8 @@
+version: "1.6.4"
+
+agents:
+  - codex
+  - claude
+
+skills:
+  install: all

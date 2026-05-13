@@ -1,0 +1,53 @@
+# Codex CLI config template - copy to .codex/config.toml
+#
+# Key differences from Claude Code:
+# - This file enables the hooks engine with the current Codex feature flag
+# - Filesystem allow/deny policy uses Codex permission profiles, not Claude's
+#   settings.json permissions.allow/permissions.deny syntax
+# - Hook registrations live in .codex/hooks.json for goat-flow installs
+# - The shipped codex-hooks.json template registers the PreToolUse deny hook
+# - Command deny policy still lives in the Bash-matched PreToolUse hook because
+#   Codex permission profiles describe filesystem/network access, not shell
+#   command pattern denies like git push or sudo
+default_permissions = "goat-flow"
+
+[features]
+hooks = true
+
+[permissions.goat-flow.filesystem]
+glob_scan_max_depth = 3
+
+[permissions.goat-flow.filesystem.":project_roots"]
+"." = "write"
+# Codex read rules must be exact paths or trailing "/**" subtrees.
+".env.example" = "read"
+".env" = "none"
+"**/.env" = "none"
+".env.*" = "none"
+"**/.env.*" = "none"
+".envrc" = "none"
+"**/.envrc" = "none"
+"secrets/**" = "none"
+"**/secrets/**" = "none"
+"*.pem" = "none"
+"**/*.pem" = "none"
+"*.key" = "none"
+"**/*.key" = "none"
+"*.pfx" = "none"
+"**/*.pfx" = "none"
+"credentials*" = "none"
+"**/credentials*" = "none"
+".ssh/**" = "none"
+"**/.ssh/**" = "none"
+".aws/**" = "none"
+"**/.aws/**" = "none"
+".docker/config.json" = "none"
+"**/.docker/config.json" = "none"
+".gnupg/**" = "none"
+"**/.gnupg/**" = "none"
+".npmrc" = "none"
+"**/.npmrc" = "none"
+".pypirc" = "none"
+"**/.pypirc" = "none"
+".kube/config" = "none"
+"**/.kube/config" = "none"

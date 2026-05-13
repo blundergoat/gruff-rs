@@ -1,0 +1,20 @@
+# Rust build output
+/target/
+
+# Analyzer side files (baseline + history are workspace-local)
+/.gruff-history.json
+/gruff-baseline.json
+
+# Agent-local settings (machine-specific, not shared)
+.claude/settings.local.json
+
+# IDE / editor metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
