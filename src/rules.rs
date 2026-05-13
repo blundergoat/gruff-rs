@@ -98,6 +98,10 @@ const COMPLEXITY_NESTING_DEPTH_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("warn", 4.0), threshold("error", 6.0)];
 const COMPLEXITY_NPATH_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("warn", 32.0), threshold("error", 128.0)];
+const ARCHITECTURE_LARGE_MODULE_THRESHOLDS: &[ThresholdDefinition] = &[threshold("items", 25.0)];
+const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLDS: &[ThresholdDefinition] = &[threshold("modules", 8.0)];
+const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLDS: &[ThresholdDefinition] =
+    &[threshold("items", 12.0)];
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("versions", 2.0)];
 const TODO_DENSITY_THRESHOLDS: &[ThresholdDefinition] = &[threshold("markers", 4.0)];
@@ -110,6 +114,36 @@ const TEST_LONG_THRESHOLDS: &[ThresholdDefinition] = &[threshold("warn", 30.0)];
 
 fn builtin_definitions() -> Vec<RuleDefinition> {
     vec![
+        rule(
+            "architecture.large-module",
+            "Large module",
+            Pillar::Design,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::High,
+            ARCHITECTURE_LARGE_MODULE_THRESHOLDS,
+            "Flags modules with more indexed items than the configured threshold.",
+        ),
+        rule(
+            "architecture.module-fan-out",
+            "Module fan-out",
+            Pillar::Design,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::High,
+            ARCHITECTURE_MODULE_FAN_OUT_THRESHOLDS,
+            "Flags files that declare many child modules.",
+        ),
+        rule(
+            "architecture.public-api-surface",
+            "Public API surface",
+            Pillar::Design,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::High,
+            ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLDS,
+            "Flags modules with many public exports.",
+        ),
         rule(
             "complexity.cognitive",
             "Cognitive complexity",
@@ -159,6 +193,16 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
             Confidence::Low,
             &[],
             "Flags private functions with no same-file call sites.",
+        ),
+        rule(
+            "dead-code.unused-private-item-candidate",
+            "Unused private item candidate",
+            Pillar::DeadCode,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::Medium,
+            &[],
+            "Flags private items whose names are not referenced elsewhere in discovered Rust sources.",
         ),
         rule(
             "dependency.duplicate-locked-version",
@@ -249,6 +293,66 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
             Confidence::High,
             TODO_DENSITY_THRESHOLDS,
             "Flags files with dense TODO or FIXME markers.",
+        ),
+        rule(
+            "concurrency.blocking-call-in-async",
+            "Blocking call in async function",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::Medium,
+            &[],
+            "Flags narrow blocking call patterns inside async functions.",
+        ),
+        rule(
+            "concurrency.lock-across-await",
+            "Lock guard across await",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::Medium,
+            &[],
+            "Flags lock guard bindings that appear to live across an await point.",
+        ),
+        rule(
+            "concurrency.unbounded-channel",
+            "Unbounded channel",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            &[],
+            "Flags unbounded channel constructors in production code.",
+        ),
+        rule(
+            "error-handling.production-panic",
+            "Production panic",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            &[],
+            "Flags panic! calls in non-test functions without a local invariant comment.",
+        ),
+        rule(
+            "error-handling.public-unwrap",
+            "Public API unwrap",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            &[],
+            "Flags unwrap or expect calls in public non-test functions.",
+        ),
+        rule(
+            "error-handling.unimplemented-placeholder",
+            "Unimplemented placeholder",
+            Pillar::Waste,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            &[],
+            "Flags todo! and unimplemented! placeholders in non-test functions.",
         ),
         rule(
             "modernisation.public-field",

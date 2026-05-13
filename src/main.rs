@@ -258,6 +258,7 @@ struct ProjectContext {
     root_path: PathBuf,
     manifest: Option<ManifestSummary>,
     lockfile: Option<LockfileSummary>,
+    rust_sources: Vec<RustSourceSummary>,
     modules: Vec<ModuleSummary>,
     items: Vec<ItemSummary>,
     call_names: Vec<CallNameSummary>,
@@ -299,12 +300,19 @@ struct LockedPackageSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct RustSourceSummary {
+    file_path: String,
+    source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ModuleSummary {
     file_path: String,
     module_path: String,
     line: usize,
     public: bool,
     inline: bool,
+    cfg_gated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +323,15 @@ struct ItemSummary {
     kind: String,
     line: usize,
     public: bool,
+    cfg_gated: bool,
+    test_context: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProjectItemContext {
+    public: bool,
+    cfg_gated: bool,
+    test_context: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,8 +567,16 @@ struct FunctionBlock {
     body: String,
     is_public: bool,
     is_test: bool,
+    test_context: bool,
+    is_async: bool,
     returns_bool: bool,
     ignore_without_reason: bool,
+}
+
+impl FunctionBlock {
+    fn is_test_context(&self) -> bool {
+        self.is_test || self.test_context
+    }
 }
 
 fn main() -> ExitCode {
@@ -1163,17 +1188,23 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
     let mut diagnostics = Vec::new();
     let manifest = read_manifest_summary(project_root, &mut diagnostics);
     let lockfile = read_lockfile_summary(project_root, &mut diagnostics);
+    let mut rust_sources = Vec::new();
     let mut modules = Vec::new();
     let mut items = Vec::new();
     let mut call_names = Vec::new();
 
     for source in sources {
         if let Some(ast) = &source.rust_ast {
+            rust_sources.push(RustSourceSummary {
+                file_path: source.file.display_path.clone(),
+                source: source.source.clone(),
+            });
+            let module_path = inferred_file_module_path(&source.file);
             collect_project_rust_index(
                 &source.file,
                 &source.source,
                 ast,
-                "",
+                &module_path,
                 &mut modules,
                 &mut items,
                 &mut call_names,
@@ -1187,12 +1218,14 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
             left.module_path.as_str(),
             left.line,
             left.inline,
+            left.cfg_gated,
         )
             .cmp(&(
                 right.file_path.as_str(),
                 right.module_path.as_str(),
                 right.line,
                 right.inline,
+                right.cfg_gated,
             ))
     });
     items.sort_by(|left, right| {
@@ -1202,6 +1235,8 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
             left.name.as_str(),
             left.kind.as_str(),
             left.line,
+            left.cfg_gated,
+            left.test_context,
         )
             .cmp(&(
                 right.file_path.as_str(),
@@ -1209,6 +1244,8 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
                 right.name.as_str(),
                 right.kind.as_str(),
                 right.line,
+                right.cfg_gated,
+                right.test_context,
             ))
     });
     call_names.sort_by(|left, right| {
@@ -1219,11 +1256,13 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
         ))
     });
     call_names.dedup();
+    rust_sources.sort_by(|left, right| left.file_path.cmp(&right.file_path));
 
     ProjectContext {
         root_path: project_root.to_path_buf(),
         manifest,
         lockfile,
+        rust_sources,
         modules,
         items,
         call_names,
@@ -1512,7 +1551,7 @@ fn collect_project_rust_index(
     items: &mut Vec<ItemSummary>,
     call_names: &mut Vec<CallNameSummary>,
 ) {
-    collect_project_items(file, &ast.items, module_path, modules, items);
+    collect_project_items(file, &ast.items, module_path, false, false, modules, items);
     collect_call_names(file, source, call_names);
 }
 
@@ -1520,6 +1559,8 @@ fn collect_project_items(
     file: &SourceFile,
     syn_items: &[Item],
     module_path: &str,
+    cfg_context: bool,
+    test_context: bool,
     modules: &mut Vec<ModuleSummary>,
     items: &mut Vec<ItemSummary>,
 ) {
@@ -1531,7 +1572,11 @@ fn collect_project_items(
                 item_fn.sig.ident.to_string(),
                 "function",
                 line_from_span(item_fn.sig.ident.span().start()),
-                visibility_is_public(&item_fn.vis),
+                ProjectItemContext {
+                    public: visibility_is_public(&item_fn.vis),
+                    cfg_gated: cfg_context || has_cfg_attr(&item_fn.attrs),
+                    test_context: test_context || has_test_attr(&item_fn.attrs),
+                },
             )),
             Item::Struct(item_struct) => items.push(project_item(
                 file,
@@ -1539,7 +1584,11 @@ fn collect_project_items(
                 item_struct.ident.to_string(),
                 "struct",
                 line_from_span(item_struct.ident.span().start()),
-                visibility_is_public(&item_struct.vis),
+                ProjectItemContext {
+                    public: visibility_is_public(&item_struct.vis),
+                    cfg_gated: cfg_context || has_cfg_attr(&item_struct.attrs),
+                    test_context,
+                },
             )),
             Item::Enum(item_enum) => items.push(project_item(
                 file,
@@ -1547,7 +1596,11 @@ fn collect_project_items(
                 item_enum.ident.to_string(),
                 "enum",
                 line_from_span(item_enum.ident.span().start()),
-                visibility_is_public(&item_enum.vis),
+                ProjectItemContext {
+                    public: visibility_is_public(&item_enum.vis),
+                    cfg_gated: cfg_context || has_cfg_attr(&item_enum.attrs),
+                    test_context,
+                },
             )),
             Item::Trait(item_trait) => items.push(project_item(
                 file,
@@ -1555,7 +1608,11 @@ fn collect_project_items(
                 item_trait.ident.to_string(),
                 "trait",
                 line_from_span(item_trait.ident.span().start()),
-                visibility_is_public(&item_trait.vis),
+                ProjectItemContext {
+                    public: visibility_is_public(&item_trait.vis),
+                    cfg_gated: cfg_context || has_cfg_attr(&item_trait.attrs),
+                    test_context,
+                },
             )),
             Item::Impl(item_impl) => {
                 for impl_item in &item_impl.items {
@@ -1566,22 +1623,39 @@ fn collect_project_items(
                             method.sig.ident.to_string(),
                             "method",
                             line_from_span(method.sig.ident.span().start()),
-                            visibility_is_public(&method.vis),
+                            ProjectItemContext {
+                                public: visibility_is_public(&method.vis),
+                                cfg_gated: cfg_context
+                                    || has_cfg_attr(&item_impl.attrs)
+                                    || has_cfg_attr(&method.attrs),
+                                test_context: test_context || has_test_attr(&method.attrs),
+                            },
                         ));
                     }
                 }
             }
             Item::Mod(item_mod) => {
                 let current_module = module_name(module_path, &item_mod.ident.to_string());
+                let module_cfg_gated = cfg_context || has_cfg_attr(&item_mod.attrs);
+                let module_test_context = test_context || is_test_module(item_mod);
                 modules.push(ModuleSummary {
                     file_path: file.display_path.clone(),
                     module_path: current_module.clone(),
                     line: line_from_span(item_mod.ident.span().start()),
                     public: visibility_is_public(&item_mod.vis),
                     inline: item_mod.content.is_some(),
+                    cfg_gated: module_cfg_gated,
                 });
                 if let Some((_, nested)) = &item_mod.content {
-                    collect_project_items(file, nested, &current_module, modules, items);
+                    collect_project_items(
+                        file,
+                        nested,
+                        &current_module,
+                        module_cfg_gated,
+                        module_test_context,
+                        modules,
+                        items,
+                    );
                 }
             }
             _ => {}
@@ -1595,7 +1669,7 @@ fn project_item(
     name: String,
     kind: &str,
     line: usize,
-    public: bool,
+    context: ProjectItemContext,
 ) -> ItemSummary {
     ItemSummary {
         file_path: file.display_path.clone(),
@@ -1603,7 +1677,9 @@ fn project_item(
         name,
         kind: kind.to_string(),
         line,
-        public,
+        public: context.public,
+        cfg_gated: context.cfg_gated,
+        test_context: context.test_context,
     }
 }
 
@@ -1613,6 +1689,42 @@ fn module_name(parent: &str, name: &str) -> String {
     } else {
         format!("{parent}::{name}")
     }
+}
+
+fn inferred_file_module_path(file: &SourceFile) -> String {
+    let Some(path) = file.display_path.strip_prefix("src/") else {
+        return String::new();
+    };
+    if matches!(path, "lib.rs" | "main.rs") {
+        return String::new();
+    }
+
+    let without_extension = path
+        .strip_suffix("/mod.rs")
+        .or_else(|| path.strip_suffix(".rs"))
+        .unwrap_or(path);
+    without_extension.replace('/', "::")
+}
+
+fn has_cfg_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
+}
+
+fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| path_ends_with(attr, "test"))
+}
+
+fn path_ends_with(attr: &syn::Attribute, name: &str) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
+}
+
+fn is_test_module(item_mod: &syn::ItemMod) -> bool {
+    item_mod.ident == "tests" || has_test_attr(&item_mod.attrs)
 }
 
 fn collect_call_names(file: &SourceFile, source: &str, call_names: &mut Vec<CallNameSummary>) {
@@ -1668,8 +1780,226 @@ fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<Finding> {
     }
 
     analyse_dependency_rules(context, config, &mut findings);
+    analyse_architecture_rules(context, config, &mut findings);
+    analyse_project_dead_code_rules(context, config, &mut findings);
 
     findings
+}
+
+fn analyse_architecture_rules(
+    context: &ProjectContext,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    analyse_module_fan_out(context, config, findings);
+    analyse_public_api_surface(context, config, findings);
+    analyse_large_modules(context, config, findings);
+}
+
+fn analyse_module_fan_out(context: &ProjectContext, config: &Config, findings: &mut Vec<Finding>) {
+    let rule_id = "architecture.module-fan-out";
+    if !config.rule_enabled(rule_id) {
+        return;
+    }
+    let threshold = config.threshold(rule_id, "modules", 8.0) as usize;
+    let mut by_file: BTreeMap<&str, Vec<&ModuleSummary>> = BTreeMap::new();
+    for module in context.modules.iter().filter(|module| !module.cfg_gated) {
+        by_file
+            .entry(module.file_path.as_str())
+            .or_default()
+            .push(module);
+    }
+
+    for (file_path, modules) in by_file {
+        if modules.len() <= threshold {
+            continue;
+        }
+        let first_line = modules.iter().map(|module| module.line).min().unwrap_or(1);
+        findings.push(Finding::new(
+            rule_id,
+            format!(
+                "File `{file_path}` declares {} child modules, above the threshold of {threshold}.",
+                modules.len()
+            ),
+            file_path.to_string(),
+            Some(first_line),
+            Severity::Advisory,
+            Pillar::Design,
+            Confidence::High,
+            Some(file_path.to_string()),
+            Some(
+                "Split module declarations across clearer parent modules when the fan-out grows."
+                    .to_string(),
+            ),
+            json!({ "modules": modules.len(), "threshold": threshold }),
+        ));
+    }
+}
+
+fn analyse_public_api_surface(
+    context: &ProjectContext,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let rule_id = "architecture.public-api-surface";
+    if !config.rule_enabled(rule_id) {
+        return;
+    }
+    let threshold = config.threshold(rule_id, "items", 12.0) as usize;
+    let mut by_module: BTreeMap<(String, String), Vec<&ItemSummary>> = BTreeMap::new();
+    for item in context.items.iter().filter(|item| {
+        item.public && !item.cfg_gated && !item.test_context && item.kind != "method"
+    }) {
+        by_module
+            .entry((item.file_path.clone(), item.module_path.clone()))
+            .or_default()
+            .push(item);
+    }
+
+    for ((file_path, module_path), items) in by_module {
+        if items.len() <= threshold {
+            continue;
+        }
+        let first_line = items.iter().map(|item| item.line).min().unwrap_or(1);
+        let module = module_label(&file_path, &module_path);
+        findings.push(Finding::new(
+            rule_id,
+            format!(
+                "Module `{module}` exposes {} public items, above the threshold of {threshold}.",
+                items.len()
+            ),
+            file_path,
+            Some(first_line),
+            Severity::Advisory,
+            Pillar::Design,
+            Confidence::High,
+            Some(module.clone()),
+            Some(
+                "Group related public API items behind smaller modules or facade types."
+                    .to_string(),
+            ),
+            json!({ "publicItems": items.len(), "threshold": threshold, "module": module }),
+        ));
+    }
+}
+
+fn analyse_large_modules(context: &ProjectContext, config: &Config, findings: &mut Vec<Finding>) {
+    let rule_id = "architecture.large-module";
+    if !config.rule_enabled(rule_id) {
+        return;
+    }
+    let threshold = config.threshold(rule_id, "items", 25.0) as usize;
+    let mut by_module: BTreeMap<(String, String), Vec<&ItemSummary>> = BTreeMap::new();
+    for item in context
+        .items
+        .iter()
+        .filter(|item| !item.cfg_gated && !item.test_context)
+    {
+        by_module
+            .entry((item.file_path.clone(), item.module_path.clone()))
+            .or_default()
+            .push(item);
+    }
+
+    for ((file_path, module_path), items) in by_module {
+        if items.len() <= threshold {
+            continue;
+        }
+        let first_line = items.iter().map(|item| item.line).min().unwrap_or(1);
+        let module = module_label(&file_path, &module_path);
+        findings.push(Finding::new(
+            rule_id,
+            format!(
+                "Module `{module}` contains {} indexed items, above the threshold of {threshold}.",
+                items.len()
+            ),
+            file_path,
+            Some(first_line),
+            Severity::Advisory,
+            Pillar::Design,
+            Confidence::High,
+            Some(module.clone()),
+            Some(
+                "Split unrelated responsibilities into smaller modules with narrower APIs."
+                    .to_string(),
+            ),
+            json!({ "items": items.len(), "threshold": threshold, "module": module }),
+        ));
+    }
+}
+
+fn module_label(file_path: &str, module_path: &str) -> String {
+    if module_path.is_empty() {
+        file_path.to_string()
+    } else {
+        module_path.to_string()
+    }
+}
+
+fn analyse_project_dead_code_rules(
+    context: &ProjectContext,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let rule_id = "dead-code.unused-private-item-candidate";
+    if !config.rule_enabled(rule_id) {
+        return;
+    }
+
+    for item in context.items.iter().filter(|item| {
+        !item.public
+            && !item.cfg_gated
+            && !item.test_context
+            && matches!(item.kind.as_str(), "function" | "struct" | "enum" | "trait")
+            && item.name != "main"
+    }) {
+        if rust_identifier_occurrences(context, &item.name) > 1 {
+            continue;
+        }
+        let symbol = item_symbol(item);
+        findings.push(Finding::new(
+            rule_id,
+            format!(
+                "Private {} `{}` is an unused candidate; no other discovered Rust source references its name.",
+                item.kind, item.name
+            ),
+            item.file_path.clone(),
+            Some(item.line),
+            Severity::Advisory,
+            Pillar::DeadCode,
+            Confidence::Medium,
+            Some(symbol.clone()),
+            Some(
+                "Remove the item, make the reference explicit, or keep it documented if it is used through macros or cfg-specific builds."
+                    .to_string(),
+            ),
+            json!({ "kind": item.kind.as_str(), "module": item.module_path.as_str(), "candidate": true }),
+        ));
+    }
+}
+
+fn item_symbol(item: &ItemSummary) -> String {
+    if item.module_path.is_empty() {
+        item.name.clone()
+    } else {
+        format!("{}::{}", item.module_path, item.name)
+    }
+}
+
+fn rust_identifier_occurrences(context: &ProjectContext, name: &str) -> usize {
+    context
+        .rust_sources
+        .iter()
+        .map(|source| identifier_occurrences(&source.source, name))
+        .sum()
+}
+
+fn identifier_occurrences(source: &str, name: &str) -> usize {
+    let pattern = format!(r"\b{}\b", regex::escape(name));
+    Regex::new(&pattern)
+        .expect("escaped identifier regex compiles")
+        .find_iter(source)
+        .count()
 }
 
 fn analyse_dependency_rules(
@@ -2188,6 +2518,7 @@ mod built_in_rules {
                     Pillar::Complexity,
                     BlockFindingExtras {
                         confidence: Confidence::Medium,
+                        remediation: None,
                         metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
                     },
                 ));
@@ -2204,6 +2535,7 @@ mod built_in_rules {
                     Pillar::Complexity,
                     BlockFindingExtras {
                         confidence: Confidence::Medium,
+                        remediation: None,
                         metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
                     },
                 ));
@@ -2277,6 +2609,7 @@ mod built_in_rules {
                     Pillar::Naming,
                     BlockFindingExtras {
                         confidence: Confidence::Medium,
+                        remediation: None,
                         metadata: json!({}),
                     },
                 ));
@@ -2298,6 +2631,225 @@ mod built_in_rules {
 
             if block.is_test {
                 analyse_test_block(file, block, config, findings);
+            }
+            if !block.is_test_context() {
+                analyse_error_handling_block(file, block, &searchable_body, findings);
+                analyse_concurrency_block(file, block, &searchable_body, findings);
+            }
+        }
+    }
+
+    fn analyse_error_handling_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        if Regex::new(r"\bpanic!\s*\(")
+            .expect("static regex compiles")
+            .is_match(searchable_body)
+            && !has_nearby_invariant_comment(searchable_body)
+        {
+            findings.push(block_finding_with_extras(
+                "error-handling.production-panic",
+                format!(
+                    "Function `{}` calls panic! in production code.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: Confidence::High,
+                    remediation: Some(
+                        "Return an error or document the invariant that makes the panic unreachable."
+                            .to_string(),
+                    ),
+                    metadata: json!({ "macro": "panic!" }),
+                },
+            ));
+        }
+
+        if Regex::new(r"\b(todo!|unimplemented!)\s*\(")
+            .expect("static regex compiles")
+            .is_match(searchable_body)
+        {
+            findings.push(block_finding_with_extras(
+                "error-handling.unimplemented-placeholder",
+                format!(
+                    "Function `{}` contains todo!/unimplemented! placeholder code.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: Confidence::High,
+                    remediation: Some(
+                        "Replace the placeholder with implemented behavior before shipping."
+                            .to_string(),
+                    ),
+                    metadata: json!({ "macros": ["todo!", "unimplemented!"] }),
+                },
+            ));
+        }
+
+        if block.is_public
+            && Regex::new(r"\.(unwrap|expect)\s*\(")
+                .expect("static regex compiles")
+                .is_match(searchable_body)
+        {
+            findings.push(block_finding_with_extras(
+                "error-handling.public-unwrap",
+                format!(
+                    "Public function `{}` uses unwrap()/expect() in its implementation.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: Confidence::High,
+                    remediation: Some(
+                        "Return a Result or map the failure into the public API contract."
+                            .to_string(),
+                    ),
+                    metadata: json!({}),
+                },
+            ));
+        }
+    }
+
+    fn analyse_concurrency_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        if block.is_async {
+            analyse_async_blocking_calls(file, block, searchable_body, findings);
+            analyse_lock_across_await(file, block, searchable_body, findings);
+        }
+
+        if Regex::new(
+            r"\b(std::sync::mpsc::channel|mpsc::unbounded_channel|unbounded_channel)(?:\s*::\s*<[^>]+>)?\s*\(",
+        )
+            .expect("static regex compiles")
+            .is_match(searchable_body)
+        {
+            findings.push(block_finding_with_extras(
+                "concurrency.unbounded-channel",
+                format!(
+                    "Function `{}` creates an unbounded channel.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: Confidence::Medium,
+                    remediation: Some(
+                        "Prefer a bounded channel or document the producer/consumer backpressure policy."
+                            .to_string(),
+                    ),
+                    metadata: json!({ "pattern": "unbounded-channel" }),
+                },
+            ));
+        }
+    }
+
+    fn analyse_async_blocking_calls(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let blocking_patterns = [
+            ("std::thread::sleep", "std::thread::sleep"),
+            ("std::fs::read_to_string", "std::fs::read_to_string"),
+            ("std::fs::read", "std::fs::read"),
+            ("std::fs::write", "std::fs::write"),
+            ("std::process::Command::new", "std::process::Command::new"),
+        ];
+        for (pattern, label) in blocking_patterns {
+            if searchable_body.contains(pattern) {
+                findings.push(block_finding_with_extras(
+                    "concurrency.blocking-call-in-async",
+                    format!(
+                        "Async function `{}` calls blocking API `{label}`.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Waste,
+                    BlockFindingExtras {
+                        confidence: Confidence::Medium,
+                        remediation: Some(
+                            "Use an async equivalent or move blocking work behind a dedicated blocking task."
+                                .to_string(),
+                        ),
+                        metadata: json!({ "pattern": label }),
+                    },
+                ));
+                break;
+            }
+        }
+    }
+
+    fn analyse_lock_across_await(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let lock_binding = Regex::new(
+            r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*\.(?:lock|read|write)\s*\([^;]*;",
+        )
+        .expect("static regex compiles");
+        let lines: Vec<&str> = searchable_body.lines().collect();
+        for (line_index, line) in lines.iter().enumerate() {
+            let Some(captures) = lock_binding.captures(line) else {
+                continue;
+            };
+            let guard = captures
+                .get(1)
+                .map(|guard| guard.as_str())
+                .unwrap_or("guard");
+            let later_lines = &lines[line_index + 1..];
+            let dropped_before_await = later_lines
+                .iter()
+                .take_while(|candidate| !candidate.contains(".await"))
+                .any(|candidate| candidate.contains(&format!("drop({guard})")));
+            if later_lines
+                .iter()
+                .any(|candidate| candidate.contains(".await"))
+                && !dropped_before_await
+            {
+                findings.push(block_finding_with_extras(
+                    "concurrency.lock-across-await",
+                    format!(
+                        "Async function `{}` appears to hold lock guard `{guard}` across await.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Waste,
+                    BlockFindingExtras {
+                        confidence: Confidence::Medium,
+                        remediation: Some(
+                            "Drop the guard before awaiting or use an async-aware lock."
+                                .to_string(),
+                        ),
+                        metadata: json!({ "guard": guard }),
+                    },
+                ));
+                break;
             }
         }
     }
@@ -2714,13 +3266,18 @@ mod built_in_rules {
         let mut blocks = Vec::new();
 
         for item in &ast.items {
-            collect_function_blocks(item, &lines, &mut blocks);
+            collect_function_blocks(item, &lines, false, &mut blocks);
         }
 
         blocks
     }
 
-    fn collect_function_blocks(item: &Item, lines: &[&str], blocks: &mut Vec<FunctionBlock>) {
+    fn collect_function_blocks(
+        item: &Item,
+        lines: &[&str],
+        test_context: bool,
+        blocks: &mut Vec<FunctionBlock>,
+    ) {
         match item {
             Item::Fn(item_fn) => blocks.push(function_block_from_parts(FunctionBlockParts {
                 lines,
@@ -2728,6 +3285,8 @@ mod built_in_rules {
                 param_count: count_params(&item_fn.sig.inputs),
                 visibility: &item_fn.vis,
                 attrs: &item_fn.attrs,
+                test_context,
+                is_async: item_fn.sig.asyncness.is_some(),
                 returns_bool: returns_bool(&item_fn.sig.output),
                 name_start: item_fn.sig.ident.span().start(),
                 block_end: item_fn.block.span().end(),
@@ -2741,6 +3300,8 @@ mod built_in_rules {
                             param_count: count_params(&method.sig.inputs),
                             visibility: &method.vis,
                             attrs: &method.attrs,
+                            test_context,
+                            is_async: method.sig.asyncness.is_some(),
                             returns_bool: returns_bool(&method.sig.output),
                             name_start: method.sig.ident.span().start(),
                             block_end: method.block.span().end(),
@@ -2750,8 +3311,9 @@ mod built_in_rules {
             }
             Item::Mod(item_mod) => {
                 if let Some((_, items)) = &item_mod.content {
+                    let nested_test_context = test_context || item_mod.ident == "tests";
                     for nested in items {
-                        collect_function_blocks(nested, lines, blocks);
+                        collect_function_blocks(nested, lines, nested_test_context, blocks);
                     }
                 }
             }
@@ -2765,6 +3327,8 @@ mod built_in_rules {
         param_count: usize,
         visibility: &'a Visibility,
         attrs: &'a [syn::Attribute],
+        test_context: bool,
+        is_async: bool,
         returns_bool: bool,
         name_start: LineColumn,
         block_end: LineColumn,
@@ -2788,6 +3352,8 @@ mod built_in_rules {
             body,
             is_public: is_public(parts.visibility),
             is_test,
+            test_context: parts.test_context,
+            is_async: parts.is_async,
             returns_bool: parts.returns_bool,
             ignore_without_reason: has_ignore_without_reason(parts.attrs),
         }
@@ -3011,6 +3577,12 @@ mod built_in_rules {
             .any(|line| line.contains("SAFETY:"))
     }
 
+    fn has_nearby_invariant_comment(source: &str) -> bool {
+        source
+            .lines()
+            .any(|line| line.contains("PANIC:") || line.contains("INVARIANT:"))
+    }
+
     fn has_trivial_assertion(source: &str) -> bool {
         let literal_assert =
             Regex::new(r"\bassert!\s*\(\s*(true|false)\s*\)").expect("static regex compiles");
@@ -3079,6 +3651,7 @@ mod built_in_rules {
             pillar,
             BlockFindingExtras {
                 confidence: Confidence::High,
+                remediation: None,
                 metadata,
             },
         )
@@ -3086,6 +3659,7 @@ mod built_in_rules {
 
     struct BlockFindingExtras {
         confidence: Confidence,
+        remediation: Option<String>,
         metadata: Value,
     }
 
@@ -3107,7 +3681,7 @@ mod built_in_rules {
             pillar,
             extras.confidence,
             Some(block.name.clone()),
-            None,
+            extras.remediation,
             extras.metadata,
         )
     }
@@ -4054,7 +4628,7 @@ mod tests {
         let report = analyse_test_paths(vec![PathBuf::from("fixtures/sample.rs")]);
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert_eq!(report.summary.total, 12);
+        assert_eq!(report.summary.total, 13);
 
         let expected = [
             (
@@ -4080,6 +4654,14 @@ mod tests {
                 Some(7),
                 Some("process"),
                 "44dc31cc3f2fddf6",
+            ),
+            (
+                "error-handling.public-unwrap",
+                Severity::Warning,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("process"),
+                "826987132b0ba61b",
             ),
             (
                 "naming.generic-function",
@@ -4848,6 +5430,531 @@ rules:
             ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn architecture_rules_flag_module_shape_and_public_surface() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "architecture-positive-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for architecture rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            r#"pub mod api {
+    pub struct One;
+    pub struct Two;
+    pub enum Three {
+        Ready,
+    }
+    pub trait Four {}
+}
+mod alpha;
+mod beta;
+mod gamma;
+"#,
+        )
+        .expect("lib write");
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  architecture.module-fan-out:
+    threshold: 2
+  architecture.public-api-surface:
+    threshold: 2
+  architecture.large-module:
+    threshold: 3
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("architecture analysis succeeds");
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_has_rule(&report, "architecture.module-fan-out");
+        assert_has_rule(&report, "architecture.public-api-surface");
+        assert_has_rule(&report, "architecture.large-module");
+
+        let fan_out = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "architecture.module-fan-out")
+            .expect("module fan-out finding");
+        assert_eq!(fan_out.file_path, "src/lib.rs");
+        assert_eq!(fan_out.line, Some(1));
+        assert_eq!(fan_out.symbol.as_deref(), Some("src/lib.rs"));
+        assert_eq!(fan_out.metadata["modules"], json!(4));
+        assert!(fan_out.message.contains("4 child modules"));
+
+        let public_surface = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "architecture.public-api-surface")
+            .expect("public API finding");
+        assert_eq!(public_surface.symbol.as_deref(), Some("api"));
+        assert_eq!(public_surface.metadata["publicItems"], json!(4));
+
+        let large_module = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "architecture.large-module")
+            .expect("large module finding");
+        assert_eq!(large_module.symbol.as_deref(), Some("api"));
+        assert_eq!(large_module.metadata["items"], json!(4));
+    }
+
+    #[test]
+    fn architecture_rules_accept_small_modules_and_validate_thresholds() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "architecture-negative-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for architecture rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            r#"pub mod api {
+    pub struct One;
+}
+mod alpha;
+"#,
+        )
+        .expect("lib write");
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("small architecture analysis succeeds");
+        assert_missing_rule(&report, "architecture.module-fan-out");
+        assert_missing_rule(&report, "architecture.public-api-surface");
+        assert_missing_rule(&report, "architecture.large-module");
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  architecture.large-module:
+    thresholds:
+      bogus: 2
+"#,
+        );
+        let error =
+            load_config(dir.path(), &default_test_options()).expect_err("bad threshold rejected");
+        assert!(
+            error.contains("unknown threshold `bogus` for rule `architecture.large-module`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn dead_code_project_candidates_use_conservative_cross_file_evidence() {
+        let _guard = analysis_lock();
+        let positive_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(positive_dir.path().join("src")).expect("src dir");
+        fs::write(positive_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            positive_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "dead-code-positive-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for dead-code rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            positive_dir.path().join("src/lib.rs"),
+            r#"fn isolated_helper() {}
+
+struct HiddenType;
+
+enum HiddenEnum {
+    Ready,
+}
+
+trait HiddenTrait {}
+
+fn referenced_helper() {}
+
+pub fn entry() {
+    referenced_helper();
+}
+"#,
+        )
+        .expect("positive lib write");
+
+        let positive = run_project_analysis(
+            positive_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("dead-code positive analysis succeeds");
+        assert_has_rule(&positive, "dead-code.unused-private-item-candidate");
+        let candidate = positive
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == "dead-code.unused-private-item-candidate"
+                    && finding.symbol.as_deref() == Some("isolated_helper")
+            })
+            .expect("isolated helper candidate");
+        assert!(candidate.message.contains("candidate"));
+        assert!(matches!(candidate.confidence, Confidence::Medium));
+        assert_eq!(candidate.metadata["candidate"], json!(true));
+
+        let negative_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(negative_dir.path().join("src")).expect("src dir");
+        fs::write(negative_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            negative_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "dead-code-negative-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for dead-code rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            negative_dir.path().join("src/lib.rs"),
+            r#"macro_rules! register {
+    ($item:ident) => {};
+}
+
+fn macro_registered() {}
+register!(macro_registered);
+
+#[cfg(feature = "optional")]
+fn cfg_only() {}
+
+#[test]
+fn test_only_helper() {}
+
+mod tests {
+    fn module_test_helper() {}
+}
+
+fn referenced_helper() {}
+
+pub fn entry() {
+    referenced_helper();
+}
+"#,
+        )
+        .expect("negative lib write");
+
+        let negative = run_project_analysis(
+            negative_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("dead-code negative analysis succeeds");
+        assert_missing_rule(&negative, "dead-code.unused-private-item-candidate");
+    }
+
+    #[test]
+    fn error_handling_rules_flag_production_hazards_and_skip_tests() {
+        let _guard = analysis_lock();
+        let positive_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(positive_dir.path().join("src")).expect("src dir");
+        fs::write(positive_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            positive_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "error-handling-positive-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for error-handling rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            positive_dir.path().join("src/lib.rs"),
+            r#"pub fn parse_public(input: &str) -> usize {
+    input.parse::<usize>().unwrap()
+}
+
+pub fn production_panic(flag: bool) {
+    if flag {
+        panic!("broken invariant");
+    }
+}
+
+fn unfinished() {
+    todo!("finish this branch");
+}
+
+fn private_unwrap(input: &str) -> usize {
+    input.parse::<usize>().unwrap()
+}
+"#,
+        )
+        .expect("positive lib write");
+
+        let positive = run_project_analysis(
+            positive_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("error-handling positive analysis succeeds");
+        assert_has_rule(&positive, "error-handling.production-panic");
+        assert_has_rule(&positive, "error-handling.unimplemented-placeholder");
+        assert_has_rule(&positive, "error-handling.public-unwrap");
+        assert_has_rule(&positive, "waste.unwrap-expect");
+
+        let public_unwrap = positive
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "error-handling.public-unwrap")
+            .expect("public unwrap finding");
+        assert_eq!(public_unwrap.symbol.as_deref(), Some("parse_public"));
+        assert_eq!(public_unwrap.severity, Severity::Warning);
+        assert!(matches!(public_unwrap.confidence, Confidence::High));
+        assert!(public_unwrap
+            .remediation
+            .as_deref()
+            .is_some_and(|message| message.contains("Result")));
+
+        let panic = positive
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "error-handling.production-panic")
+            .expect("production panic finding");
+        assert_eq!(panic.symbol.as_deref(), Some("production_panic"));
+        assert!(panic.message.contains("panic!"));
+
+        let negative_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(negative_dir.path().join("src")).expect("src dir");
+        fs::write(negative_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            negative_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "error-handling-negative-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for error-handling rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            negative_dir.path().join("src/lib.rs"),
+            r#"pub fn parse_public(input: &str) -> Result<usize, std::num::ParseIntError> {
+    input.parse::<usize>()
+}
+
+pub fn documented_invariant(flag: bool) {
+    // PANIC: this branch represents an impossible state checked by the caller.
+    if flag {
+        panic!("documented invariant");
+    }
+}
+
+#[test]
+fn panic_in_test() {
+    panic!("expected failure");
+}
+
+mod tests {
+    pub fn helper_placeholder() {
+        todo!("test helper");
+    }
+}
+"#,
+        )
+        .expect("negative lib write");
+
+        let negative = run_project_analysis(
+            negative_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("error-handling negative analysis succeeds");
+        assert_missing_rule(&negative, "error-handling.production-panic");
+        assert_missing_rule(&negative, "error-handling.unimplemented-placeholder");
+        assert_missing_rule(&negative, "error-handling.public-unwrap");
+    }
+
+    #[test]
+    fn concurrency_rules_flag_narrow_async_and_channel_patterns() {
+        let _guard = analysis_lock();
+        let positive_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(positive_dir.path().join("src")).expect("src dir");
+        fs::write(positive_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            positive_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "concurrency-positive-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for concurrency rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            positive_dir.path().join("src/lib.rs"),
+            r#"pub async fn blocks_runtime() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+
+pub async fn holds_lock(lock: &std::sync::Mutex<String>) {
+    let guard = lock.lock().unwrap();
+    async_step().await;
+    println!("{}", *guard);
+}
+
+pub fn creates_unbounded_channel() {
+    let (_tx, _rx) = std::sync::mpsc::channel::<String>();
+}
+
+async fn async_step() {}
+"#,
+        )
+        .expect("positive lib write");
+
+        let positive = run_project_analysis(
+            positive_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("concurrency positive analysis succeeds");
+        assert_has_rule(&positive, "concurrency.blocking-call-in-async");
+        assert_has_rule(&positive, "concurrency.lock-across-await");
+        assert_has_rule(&positive, "concurrency.unbounded-channel");
+
+        let blocking = positive
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "concurrency.blocking-call-in-async")
+            .expect("blocking async finding");
+        assert_eq!(blocking.symbol.as_deref(), Some("blocks_runtime"));
+        assert!(blocking.message.contains("std::thread::sleep"));
+        assert!(matches!(blocking.confidence, Confidence::Medium));
+
+        let lock = positive
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "concurrency.lock-across-await")
+            .expect("lock across await finding");
+        assert_eq!(lock.symbol.as_deref(), Some("holds_lock"));
+        assert_eq!(lock.metadata["guard"], json!("guard"));
+
+        let negative_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(negative_dir.path().join("src")).expect("src dir");
+        fs::write(negative_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            negative_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "concurrency-negative-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for concurrency rule tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            negative_dir.path().join("src/lib.rs"),
+            r#"pub async fn async_timer() {
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+}
+
+pub async fn drops_before_await(lock: &std::sync::Mutex<String>) {
+    let guard = lock.lock().unwrap();
+    drop(guard);
+    async_step().await;
+}
+
+pub fn bounded_channel() {
+    let (_tx, _rx) = tokio::sync::mpsc::channel::<String>(16);
+}
+
+mod tests {
+    pub async fn blocking_test_helper() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    pub fn test_channel_helper() {
+        let (_tx, _rx) = std::sync::mpsc::channel::<String>();
+    }
+}
+
+async fn async_step() {}
+"#,
+        )
+        .expect("negative lib write");
+
+        let negative = run_project_analysis(
+            negative_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("concurrency negative analysis succeeds");
+        assert_missing_rule(&negative, "concurrency.blocking-call-in-async");
+        assert_missing_rule(&negative, "concurrency.lock-across-await");
+        assert_missing_rule(&negative, "concurrency.unbounded-channel");
     }
 
     #[test]

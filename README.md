@@ -30,6 +30,12 @@ allowlists:
     - db
   secretPreviews: []
 rules:
+  architecture.large-module:
+    threshold: 25
+  architecture.module-fan-out:
+    threshold: 8
+  architecture.public-api-surface:
+    threshold: 12
   size.parameter-count:
     enabled: true
     threshold: 5
@@ -45,6 +51,9 @@ Use `--no-config` to ignore project config.
 
 Cargo dependency checks are local-only. They read `Cargo.toml` and `Cargo.lock`
 as data and do not query registries, run Cargo, or consume vulnerability feeds.
+Project architecture and dead-code candidate checks are also local-only. They use
+the discovered Rust sources and phrase cross-file unused private items as
+candidates because the scanner does not run rustc type resolution.
 
 ## Baselines
 

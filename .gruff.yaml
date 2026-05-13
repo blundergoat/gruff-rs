@@ -11,6 +11,12 @@ allowlists:
     - rx
   secretPreviews: []
 rules:
+  architecture.large-module:
+    threshold: 25
+  architecture.module-fan-out:
+    threshold: 8
+  architecture.public-api-surface:
+    threshold: 12
   complexity.cognitive:
     threshold: 15
   complexity.cyclomatic:
