@@ -1,10 +1,14 @@
 # Glossary
 
+Last reviewed 2026-05-14.
+
 ## Analyzer Terms
 
 Finding = One reported issue with a rule ID, severity, pillar, confidence, location, and fingerprint. Findings are produced by `analyse_source` in `src/main.rs`.
 
 Pillar = Quality category used for scoring, such as security, size, naming, sensitive data, or test quality. Pillar scores are assembled by `score_report` in `src/main.rs`.
+
+Rule ID = Stable public rule identifier using the gruff-family `<namespace>.<rule-slug>` convention, for example `size.file-length`, `docs.todo-density`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` are documented rule families; the emitted pillar may still be `design`, `complexity`, `security`, or `waste`.
 
 Baseline = A JSON suppression file for accepted findings. Baseline entries match findings by fingerprint, rule ID, and file path.
 
@@ -30,4 +34,4 @@ Fixture = Intentionally flawed sample input under `fixtures/` used to exercise a
 
 History file = Optional JSON side file updated by `record_history` to capture score/finding counts over time.
 
-Config = Optional JSON settings input parsed by `load_config` to ignore paths, allow abbreviations or secret previews, and tune rule thresholds.
+Config = Optional settings input parsed by `load_config` from `.gruff.yaml`, `.gruff.yml`, `.gruff.json`, or an explicit `--config` path. Shared keys are `paths.ignore`, `allowlists.acceptedAbbreviations`, `allowlists.secretPreviews`, and `rules`; Rust currently does not implement `selection`.
