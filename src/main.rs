@@ -233,8 +233,95 @@ struct SourceFile {
 struct SourceUnit<'a> {
     file: &'a SourceFile,
     source: &'a str,
+    rust_ast: Option<&'a syn::File>,
+}
+
+struct ParsedSource {
+    file: SourceFile,
+    source: String,
     rust_ast: Option<syn::File>,
     diagnostics: Vec<RunDiagnostic>,
+}
+
+impl ParsedSource {
+    fn unit(&self) -> SourceUnit<'_> {
+        SourceUnit {
+            file: &self.file,
+            source: &self.source,
+            rust_ast: self.rust_ast.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectContext {
+    root_path: PathBuf,
+    manifest: Option<ManifestSummary>,
+    lockfile: Option<LockfileSummary>,
+    modules: Vec<ModuleSummary>,
+    items: Vec<ItemSummary>,
+    call_names: Vec<CallNameSummary>,
+    diagnostics: Vec<RunDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManifestSummary {
+    file_path: String,
+    package_line: usize,
+    package_name: Option<String>,
+    package_description: Option<String>,
+    package_license: Option<String>,
+    dependencies: Vec<DependencySummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DependencySummary {
+    name: String,
+    section: String,
+    line: usize,
+    requirement: Option<String>,
+    path: Option<String>,
+    git: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockfileSummary {
+    file_path: String,
+    packages: Vec<LockedPackageSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockedPackageSummary {
+    name: String,
+    version: String,
+    line: usize,
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleSummary {
+    file_path: String,
+    module_path: String,
+    line: usize,
+    public: bool,
+    inline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ItemSummary {
+    file_path: String,
+    module_path: String,
+    name: String,
+    kind: String,
+    line: usize,
+    public: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallNameSummary {
+    file_path: String,
+    name: String,
+    line: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -349,7 +436,7 @@ impl Finding {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct RunDiagnostic {
     diagnostic_type: String,
@@ -601,22 +688,16 @@ fn run_analysis_in_project(
         });
     }
 
-    findings.extend(analyse_project(project_root, &config));
+    let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
+    diagnostics.extend(read_diagnostics);
 
-    for source_file in &discovery.files {
-        match fs::read_to_string(&source_file.absolute_path) {
-            Ok(source) => {
-                let source_unit = parse_source_unit(source_file, &source);
-                findings.extend(analyse_source(&source_unit, &config));
-                diagnostics.extend(source_unit.diagnostics);
-            }
-            Err(error) => diagnostics.push(RunDiagnostic {
-                diagnostic_type: "read-error".to_string(),
-                message: format!("Unable to read file: {error}"),
-                file_path: Some(source_file.display_path.clone()),
-                line: Some(1),
-            }),
-        }
+    let project_context = build_project_context(project_root, &parsed_sources);
+    diagnostics.extend(project_context.diagnostics.iter().cloned());
+    findings.extend(analyse_project(&project_context, &config));
+
+    for parsed_source in &parsed_sources {
+        findings.extend(analyse_source(&parsed_source.unit(), &config));
+        diagnostics.extend(parsed_source.diagnostics.iter().cloned());
     }
 
     let mut baseline_report = None;
@@ -1021,9 +1102,28 @@ fn string_array(value: &Value, path: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn parse_source_unit<'a>(file: &'a SourceFile, source: &'a str) -> SourceUnit<'a> {
+fn read_and_parse_sources(files: &[SourceFile]) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
+    let mut parsed_sources = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for source_file in files {
+        match fs::read_to_string(&source_file.absolute_path) {
+            Ok(source) => parsed_sources.push(parse_source_file(source_file.clone(), source)),
+            Err(error) => diagnostics.push(RunDiagnostic {
+                diagnostic_type: "read-error".to_string(),
+                message: format!("Unable to read file: {error}"),
+                file_path: Some(source_file.display_path.clone()),
+                line: Some(1),
+            }),
+        }
+    }
+
+    (parsed_sources, diagnostics)
+}
+
+fn parse_source_file(file: SourceFile, source: String) -> ParsedSource {
     if !file.is_rust {
-        return SourceUnit {
+        return ParsedSource {
             file,
             source,
             rust_ast: None,
@@ -1031,24 +1131,27 @@ fn parse_source_unit<'a>(file: &'a SourceFile, source: &'a str) -> SourceUnit<'a
         };
     }
 
-    match syn::parse_file(source) {
-        Ok(ast) => SourceUnit {
+    match syn::parse_file(&source) {
+        Ok(ast) => ParsedSource {
             file,
             source,
             rust_ast: Some(ast),
             diagnostics: Vec::new(),
         },
-        Err(error) => SourceUnit {
-            file,
-            source,
-            rust_ast: None,
-            diagnostics: vec![RunDiagnostic {
-                diagnostic_type: "parse-error".to_string(),
-                message: format!("Rust parser error: {error}"),
-                file_path: Some(file.display_path.clone()),
-                line: Some(line_from_span(error.span().start())),
-            }],
-        },
+        Err(error) => {
+            let display_path = file.display_path.clone();
+            ParsedSource {
+                file,
+                source,
+                rust_ast: None,
+                diagnostics: vec![RunDiagnostic {
+                    diagnostic_type: "parse-error".to_string(),
+                    message: format!("Rust parser error: {error}"),
+                    file_path: Some(display_path),
+                    line: Some(line_from_span(error.span().start())),
+                }],
+            }
+        }
     }
 }
 
@@ -1056,23 +1159,705 @@ fn line_from_span(position: LineColumn) -> usize {
     position.line.max(1)
 }
 
-fn analyse_project(project_root: &Path, config: &Config) -> Vec<Finding> {
-    if project_root.join("README.md").exists() || !config.rule_enabled("docs.missing-readme") {
-        return Vec::new();
+fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> ProjectContext {
+    let mut diagnostics = Vec::new();
+    let manifest = read_manifest_summary(project_root, &mut diagnostics);
+    let lockfile = read_lockfile_summary(project_root, &mut diagnostics);
+    let mut modules = Vec::new();
+    let mut items = Vec::new();
+    let mut call_names = Vec::new();
+
+    for source in sources {
+        if let Some(ast) = &source.rust_ast {
+            collect_project_rust_index(
+                &source.file,
+                &source.source,
+                ast,
+                "",
+                &mut modules,
+                &mut items,
+                &mut call_names,
+            );
+        }
     }
 
-    vec![Finding::new(
-        "docs.missing-readme",
-        "Project root does not contain a README.md file.",
-        "README.md",
-        Some(1),
+    modules.sort_by(|left, right| {
+        (
+            left.file_path.as_str(),
+            left.module_path.as_str(),
+            left.line,
+            left.inline,
+        )
+            .cmp(&(
+                right.file_path.as_str(),
+                right.module_path.as_str(),
+                right.line,
+                right.inline,
+            ))
+    });
+    items.sort_by(|left, right| {
+        (
+            left.file_path.as_str(),
+            left.module_path.as_str(),
+            left.name.as_str(),
+            left.kind.as_str(),
+            left.line,
+        )
+            .cmp(&(
+                right.file_path.as_str(),
+                right.module_path.as_str(),
+                right.name.as_str(),
+                right.kind.as_str(),
+                right.line,
+            ))
+    });
+    call_names.sort_by(|left, right| {
+        (left.file_path.as_str(), left.name.as_str(), left.line).cmp(&(
+            right.file_path.as_str(),
+            right.name.as_str(),
+            right.line,
+        ))
+    });
+    call_names.dedup();
+
+    ProjectContext {
+        root_path: project_root.to_path_buf(),
+        manifest,
+        lockfile,
+        modules,
+        items,
+        call_names,
+        diagnostics,
+    }
+}
+
+fn read_manifest_summary(
+    project_root: &Path,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Option<ManifestSummary> {
+    let path = project_root.join("Cargo.toml");
+    if !path.exists() {
+        return None;
+    }
+
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            diagnostics.push(RunDiagnostic {
+                diagnostic_type: "manifest-read-error".to_string(),
+                message: format!("Unable to read Cargo.toml: {error}"),
+                file_path: Some("Cargo.toml".to_string()),
+                line: Some(1),
+            });
+            return None;
+        }
+    };
+
+    let value = match raw.parse::<toml::Value>() {
+        Ok(value) => value,
+        Err(_) => {
+            diagnostics.push(RunDiagnostic {
+                diagnostic_type: "manifest-parse-error".to_string(),
+                message:
+                    "Invalid Cargo.toml; fix TOML syntax before project rules use manifest data."
+                        .to_string(),
+                file_path: Some("Cargo.toml".to_string()),
+                line: Some(1),
+            });
+            return None;
+        }
+    };
+
+    let package_name = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    let package_description = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("description"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    let package_license = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("license"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    let dependency_lines = manifest_dependency_lines(&raw);
+    let mut dependencies = Vec::new();
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        collect_manifest_dependencies(&value, section, &dependency_lines, &mut dependencies);
+    }
+    dependencies.sort_by(|left, right| {
+        (left.section.as_str(), left.name.as_str())
+            .cmp(&(right.section.as_str(), right.name.as_str()))
+    });
+
+    Some(ManifestSummary {
+        file_path: "Cargo.toml".to_string(),
+        package_line: manifest_package_line(&raw),
+        package_name,
+        package_description,
+        package_license,
+        dependencies,
+    })
+}
+
+fn collect_manifest_dependencies(
+    value: &toml::Value,
+    section: &str,
+    dependency_lines: &HashMap<(String, String), usize>,
+    dependencies: &mut Vec<DependencySummary>,
+) {
+    let Some(table) = value.get(section).and_then(toml::Value::as_table) else {
+        return;
+    };
+
+    for (name, dependency) in table {
+        let (requirement, path, git) = if let Some(requirement) = dependency.as_str() {
+            (Some(requirement.to_string()), None, None)
+        } else if let Some(table) = dependency.as_table() {
+            (
+                table
+                    .get("version")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                table
+                    .get("path")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                table
+                    .get("git")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+            )
+        } else {
+            (None, None, None)
+        };
+
+        dependencies.push(DependencySummary {
+            name: name.clone(),
+            section: section.to_string(),
+            line: dependency_lines
+                .get(&(section.to_string(), name.clone()))
+                .copied()
+                .unwrap_or(1),
+            requirement,
+            path,
+            git,
+        });
+    }
+}
+
+fn manifest_package_line(raw: &str) -> usize {
+    raw.lines()
+        .enumerate()
+        .find_map(|(index, line)| (line.trim() == "[package]").then_some(index + 1))
+        .unwrap_or(1)
+}
+
+fn manifest_dependency_lines(raw: &str) -> HashMap<(String, String), usize> {
+    let mut lines = HashMap::new();
+    let mut current_section: Option<String> = None;
+
+    for (index, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section = trimmed.trim_matches(&['[', ']'][..]).to_string();
+            current_section = matches!(
+                section.as_str(),
+                "dependencies" | "dev-dependencies" | "build-dependencies"
+            )
+            .then_some(section);
+            continue;
+        }
+
+        let Some(section) = &current_section else {
+            continue;
+        };
+        let Some((name, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let name = name.trim().trim_matches('"').trim_matches('\'');
+        if !name.is_empty() && !name.starts_with('#') {
+            lines.insert((section.clone(), name.to_string()), index + 1);
+        }
+    }
+
+    lines
+}
+
+fn read_lockfile_summary(
+    project_root: &Path,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Option<LockfileSummary> {
+    let path = project_root.join("Cargo.lock");
+    if !path.exists() {
+        return None;
+    }
+
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            diagnostics.push(RunDiagnostic {
+                diagnostic_type: "lockfile-read-error".to_string(),
+                message: format!("Unable to read Cargo.lock: {error}"),
+                file_path: Some("Cargo.lock".to_string()),
+                line: Some(1),
+            });
+            return None;
+        }
+    };
+
+    let value = match raw.parse::<toml::Value>() {
+        Ok(value) => value,
+        Err(_) => {
+            diagnostics.push(RunDiagnostic {
+                diagnostic_type: "lockfile-parse-error".to_string(),
+                message: "Invalid Cargo.lock; regenerate or fix TOML syntax before project rules use lockfile data."
+                    .to_string(),
+                file_path: Some("Cargo.lock".to_string()),
+                line: Some(1),
+            });
+            return None;
+        }
+    };
+
+    let package_lines = lockfile_package_lines(&raw);
+    let mut packages = value
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|package| {
+            let table = package.as_table()?;
+            let name = table.get("name")?.as_str()?.to_string();
+            let version = table.get("version")?.as_str()?.to_string();
+            let source = table
+                .get("source")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string);
+            let line = package_lines
+                .get(&(name.clone(), version.clone()))
+                .copied()
+                .unwrap_or(1);
+            Some(LockedPackageSummary {
+                name,
+                version,
+                line,
+                source,
+            })
+        })
+        .collect::<Vec<_>>();
+    packages.sort_by(|left, right| {
+        (
+            left.name.as_str(),
+            left.version.as_str(),
+            left.source.as_deref(),
+        )
+            .cmp(&(
+                right.name.as_str(),
+                right.version.as_str(),
+                right.source.as_deref(),
+            ))
+    });
+
+    Some(LockfileSummary {
+        file_path: "Cargo.lock".to_string(),
+        packages,
+    })
+}
+
+fn lockfile_package_lines(raw: &str) -> HashMap<(String, String), usize> {
+    let mut lines = HashMap::new();
+    let mut current_name: Option<(String, usize)> = None;
+
+    for (index, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "[[package]]" {
+            current_name = None;
+            continue;
+        }
+        if let Some(name) = quoted_toml_value(trimmed, "name") {
+            current_name = Some((name, index + 1));
+            continue;
+        }
+        if let (Some((name, line)), Some(version)) =
+            (&current_name, quoted_toml_value(trimmed, "version"))
+        {
+            lines.insert((name.clone(), version), *line);
+        }
+    }
+
+    lines
+}
+
+fn quoted_toml_value(line: &str, key: &str) -> Option<String> {
+    let (left, right) = line.split_once('=')?;
+    if left.trim() != key {
+        return None;
+    }
+    Some(right.trim().trim_matches('"').to_string())
+}
+
+fn collect_project_rust_index(
+    file: &SourceFile,
+    source: &str,
+    ast: &syn::File,
+    module_path: &str,
+    modules: &mut Vec<ModuleSummary>,
+    items: &mut Vec<ItemSummary>,
+    call_names: &mut Vec<CallNameSummary>,
+) {
+    collect_project_items(file, &ast.items, module_path, modules, items);
+    collect_call_names(file, source, call_names);
+}
+
+fn collect_project_items(
+    file: &SourceFile,
+    syn_items: &[Item],
+    module_path: &str,
+    modules: &mut Vec<ModuleSummary>,
+    items: &mut Vec<ItemSummary>,
+) {
+    for item in syn_items {
+        match item {
+            Item::Fn(item_fn) => items.push(project_item(
+                file,
+                module_path,
+                item_fn.sig.ident.to_string(),
+                "function",
+                line_from_span(item_fn.sig.ident.span().start()),
+                visibility_is_public(&item_fn.vis),
+            )),
+            Item::Struct(item_struct) => items.push(project_item(
+                file,
+                module_path,
+                item_struct.ident.to_string(),
+                "struct",
+                line_from_span(item_struct.ident.span().start()),
+                visibility_is_public(&item_struct.vis),
+            )),
+            Item::Enum(item_enum) => items.push(project_item(
+                file,
+                module_path,
+                item_enum.ident.to_string(),
+                "enum",
+                line_from_span(item_enum.ident.span().start()),
+                visibility_is_public(&item_enum.vis),
+            )),
+            Item::Trait(item_trait) => items.push(project_item(
+                file,
+                module_path,
+                item_trait.ident.to_string(),
+                "trait",
+                line_from_span(item_trait.ident.span().start()),
+                visibility_is_public(&item_trait.vis),
+            )),
+            Item::Impl(item_impl) => {
+                for impl_item in &item_impl.items {
+                    if let ImplItem::Fn(method) = impl_item {
+                        items.push(project_item(
+                            file,
+                            module_path,
+                            method.sig.ident.to_string(),
+                            "method",
+                            line_from_span(method.sig.ident.span().start()),
+                            visibility_is_public(&method.vis),
+                        ));
+                    }
+                }
+            }
+            Item::Mod(item_mod) => {
+                let current_module = module_name(module_path, &item_mod.ident.to_string());
+                modules.push(ModuleSummary {
+                    file_path: file.display_path.clone(),
+                    module_path: current_module.clone(),
+                    line: line_from_span(item_mod.ident.span().start()),
+                    public: visibility_is_public(&item_mod.vis),
+                    inline: item_mod.content.is_some(),
+                });
+                if let Some((_, nested)) = &item_mod.content {
+                    collect_project_items(file, nested, &current_module, modules, items);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn project_item(
+    file: &SourceFile,
+    module_path: &str,
+    name: String,
+    kind: &str,
+    line: usize,
+    public: bool,
+) -> ItemSummary {
+    ItemSummary {
+        file_path: file.display_path.clone(),
+        module_path: module_path.to_string(),
+        name,
+        kind: kind.to_string(),
+        line,
+        public,
+    }
+}
+
+fn module_name(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}::{name}")
+    }
+}
+
+fn collect_call_names(file: &SourceFile, source: &str, call_names: &mut Vec<CallNameSummary>) {
+    let regex = Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(").expect("static regex compiles");
+    for capture in regex.captures_iter(source) {
+        let Some(name) = capture.get(1) else {
+            continue;
+        };
+        if matches!(
+            name.as_str(),
+            "fn" | "if" | "match" | "while" | "for" | "loop" | "return"
+        ) {
+            continue;
+        }
+        call_names.push(CallNameSummary {
+            file_path: file.display_path.clone(),
+            name: name.as_str().to_string(),
+            line: byte_line(source, name.start()),
+        });
+    }
+}
+
+fn visibility_is_public(visibility: &Visibility) -> bool {
+    !matches!(visibility, Visibility::Inherited)
+}
+
+fn byte_line(source: &str, byte_index: usize) -> usize {
+    source[..byte_index.min(source.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    if !context.root_path.join("README.md").exists() && config.rule_enabled("docs.missing-readme") {
+        findings.push(Finding::new(
+            "docs.missing-readme",
+            "Project root does not contain a README.md file.",
+            "README.md",
+            Some(1),
+            Severity::Advisory,
+            Pillar::Documentation,
+            Confidence::High,
+            None,
+            Some(
+                "Add a README.md that explains the project purpose and local commands.".to_string(),
+            ),
+            json!({}),
+        ));
+    }
+
+    analyse_dependency_rules(context, config, &mut findings);
+
+    findings
+}
+
+fn analyse_dependency_rules(
+    context: &ProjectContext,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    if let Some(manifest) = &context.manifest {
+        analyse_manifest_metadata(manifest, config, findings);
+        for dependency in &manifest.dependencies {
+            analyse_manifest_dependency(manifest, dependency, config, findings);
+        }
+    }
+
+    if let Some(lockfile) = &context.lockfile {
+        analyse_lockfile_duplicates(lockfile, config, findings);
+    }
+}
+
+fn analyse_manifest_metadata(
+    manifest: &ManifestSummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let rule_id = "dependency.missing-package-metadata";
+    if !config.rule_enabled(rule_id) {
+        return;
+    }
+
+    let mut missing = Vec::new();
+    if is_missing_text(manifest.package_description.as_deref()) {
+        missing.push("description");
+    }
+    if is_missing_text(manifest.package_license.as_deref()) {
+        missing.push("license");
+    }
+    if missing.is_empty() {
+        return;
+    }
+
+    let package = manifest
+        .package_name
+        .clone()
+        .unwrap_or_else(|| "package".to_string());
+    findings.push(Finding::new(
+        rule_id,
+        format!(
+            "Package `{package}` is missing Cargo metadata: {}.",
+            missing.join(", ")
+        ),
+        manifest.file_path.clone(),
+        Some(manifest.package_line),
         Severity::Advisory,
         Pillar::Documentation,
         Confidence::High,
-        None,
-        Some("Add a README.md that explains the project purpose and local commands.".to_string()),
-        json!({}),
-    )]
+        Some(package),
+        Some("Add package description and license metadata to Cargo.toml.".to_string()),
+        json!({ "missing": missing }),
+    ));
+}
+
+fn analyse_manifest_dependency(
+    manifest: &ManifestSummary,
+    dependency: &DependencySummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    if let Some(git) = &dependency.git {
+        let rule_id = "dependency.git-source";
+        if config.rule_enabled(rule_id) {
+            findings.push(Finding::new(
+                rule_id,
+                format!(
+                    "Dependency `{}` in `{}` uses a git source.",
+                    dependency.name, dependency.section
+                ),
+                manifest.file_path.clone(),
+                Some(dependency.line),
+                Severity::Warning,
+                Pillar::Security,
+                Confidence::High,
+                Some(dependency.name.clone()),
+                Some(
+                    "Prefer a crates.io release, or pin and review the git dependency.".to_string(),
+                ),
+                json!({ "section": dependency.section, "git": git }),
+            ));
+        }
+    }
+
+    if let Some(path) = &dependency.path {
+        let rule_id = "dependency.path-source";
+        if config.rule_enabled(rule_id) {
+            findings.push(Finding::new(
+                rule_id,
+                format!(
+                    "Dependency `{}` in `{}` uses a local path source.",
+                    dependency.name, dependency.section
+                ),
+                manifest.file_path.clone(),
+                Some(dependency.line),
+                Severity::Advisory,
+                Pillar::Security,
+                Confidence::High,
+                Some(dependency.name.clone()),
+                Some("Confirm the path dependency is intentional and available in CI.".to_string()),
+                json!({ "section": dependency.section, "path": path }),
+            ));
+        }
+    }
+
+    if let Some(requirement) = &dependency.requirement {
+        let rule_id = "dependency.wildcard-version";
+        if config.rule_enabled(rule_id) && is_wildcard_requirement(requirement) {
+            findings.push(Finding::new(
+                rule_id,
+                format!(
+                    "Dependency `{}` in `{}` uses wildcard version `{requirement}`.",
+                    dependency.name, dependency.section
+                ),
+                manifest.file_path.clone(),
+                Some(dependency.line),
+                Severity::Warning,
+                Pillar::Security,
+                Confidence::High,
+                Some(dependency.name.clone()),
+                Some("Use an explicit compatible version requirement.".to_string()),
+                json!({ "section": dependency.section, "requirement": requirement }),
+            ));
+        }
+    }
+}
+
+fn analyse_lockfile_duplicates(
+    lockfile: &LockfileSummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let rule_id = "dependency.duplicate-locked-version";
+    if !config.rule_enabled(rule_id) {
+        return;
+    }
+    let allowed_versions = config.threshold(rule_id, "versions", 2.0) as usize;
+    let mut by_name: BTreeMap<&str, Vec<&LockedPackageSummary>> = BTreeMap::new();
+    for package in &lockfile.packages {
+        by_name.entry(&package.name).or_default().push(package);
+    }
+
+    for (name, packages) in by_name {
+        let versions: BTreeSet<&str> = packages
+            .iter()
+            .map(|package| package.version.as_str())
+            .collect();
+        if versions.len() <= allowed_versions {
+            continue;
+        }
+        let first_line = packages
+            .iter()
+            .map(|package| package.line)
+            .min()
+            .unwrap_or(1);
+        let versions: Vec<&str> = versions.into_iter().collect();
+        findings.push(Finding::new(
+            rule_id,
+            format!(
+                "Package `{name}` is locked at {} versions, above the threshold of {allowed_versions}.",
+                versions.len()
+            ),
+            lockfile.file_path.clone(),
+            Some(first_line),
+            Severity::Advisory,
+            Pillar::Security,
+            Confidence::High,
+            Some(name.to_string()),
+            Some("Align dependency requirements so Cargo can resolve a single version when possible.".to_string()),
+            json!({ "versions": versions }),
+        ));
+    }
+}
+
+fn is_missing_text(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim().is_empty())
+}
+
+fn is_wildcard_requirement(requirement: &str) -> bool {
+    requirement
+        .split(',')
+        .any(|part| part.trim() == "*" || part.trim().ends_with(".*"))
 }
 
 fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
@@ -1085,7 +1870,7 @@ mod built_in_rules {
     pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
         let mut findings = Vec::new();
         analyse_text_rules(unit.file, unit.source, config, &mut findings);
-        if let Some(ast) = &unit.rust_ast {
+        if let Some(ast) = unit.rust_ast {
             analyse_rust_rules(unit.file, unit.source, ast, config, &mut findings);
         }
         findings
@@ -3250,6 +4035,19 @@ mod tests {
         fs::write(dir.join(".gruff.yaml"), body).expect("yaml config write");
     }
 
+    fn project_context_for_test(project_root: &Path) -> ProjectContext {
+        let options = AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        };
+        let discovery = discover_sources(project_root, &options, &Config::default());
+        let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
+        assert!(read_diagnostics.is_empty(), "{read_diagnostics:?}");
+        build_project_context(project_root, &parsed_sources)
+    }
+
     #[test]
     fn fixture_scan_contract_preserves_existing_sample_findings() {
         let _guard = analysis_lock();
@@ -3647,6 +4445,409 @@ rules:
         assert_missing_rule(&test_negative, "test-quality.trivial-assertion");
         assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
         assert_missing_rule(&test_negative, "test-quality.no-assertions");
+    }
+
+    #[test]
+    fn project_model_indexes_manifest_modules_items_and_calls_deterministically() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "project-model-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1"
+regex = { version = "1", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            dir.path().join("Cargo.lock"),
+            r#"# This file is automatically @generated by Cargo.
+version = 3
+
+[[package]]
+name = "project-model-fixture"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+        )
+        .expect("lockfile write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            r#"pub mod api {
+    pub struct Public;
+
+    fn helper() {}
+
+    pub fn call_helper() {
+        helper();
+    }
+
+    impl Public {
+        pub fn new() -> Self {
+            Public
+        }
+    }
+}
+
+mod external;
+"#,
+        )
+        .expect("lib write");
+        fs::write(
+            dir.path().join("src/external.rs"),
+            "pub fn visible_external() {}\n",
+        )
+        .expect("external write");
+
+        let first = project_context_for_test(dir.path());
+        let second = project_context_for_test(dir.path());
+
+        assert_eq!(first.manifest, second.manifest);
+        assert_eq!(first.lockfile, second.lockfile);
+        assert_eq!(first.modules, second.modules);
+        assert_eq!(first.items, second.items);
+        assert_eq!(first.call_names, second.call_names);
+        assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+
+        let manifest = first.manifest.as_ref().expect("manifest summary");
+        assert_eq!(manifest.file_path, "Cargo.toml");
+        assert_eq!(
+            manifest.package_name.as_deref(),
+            Some("project-model-fixture")
+        );
+        assert!(manifest.dependencies.iter().any(|dependency| {
+            dependency.section == "dependencies"
+                && dependency.name == "serde"
+                && dependency.requirement.as_deref() == Some("1")
+        }));
+        assert!(manifest.dependencies.iter().any(|dependency| {
+            dependency.section == "dev-dependencies"
+                && dependency.name == "tempfile"
+                && dependency.requirement.as_deref() == Some("3")
+        }));
+
+        let lockfile = first.lockfile.as_ref().expect("lockfile summary");
+        assert_eq!(lockfile.file_path, "Cargo.lock");
+        assert!(lockfile
+            .packages
+            .iter()
+            .any(|package| package.name == "serde" && package.version == "1.0.0"));
+
+        assert!(first.modules.iter().any(|module| {
+            module.file_path == "src/lib.rs"
+                && module.module_path == "api"
+                && module.public
+                && module.inline
+        }));
+        assert!(first.modules.iter().any(|module| {
+            module.file_path == "src/lib.rs"
+                && module.module_path == "external"
+                && !module.public
+                && !module.inline
+        }));
+        assert!(first.items.iter().any(|item| {
+            item.file_path == "src/lib.rs"
+                && item.module_path == "api"
+                && item.name == "Public"
+                && item.kind == "struct"
+                && item.public
+        }));
+        assert!(first.items.iter().any(|item| {
+            item.file_path == "src/lib.rs"
+                && item.module_path == "api"
+                && item.name == "helper"
+                && item.kind == "function"
+                && !item.public
+        }));
+        assert!(first.call_names.iter().any(|call| {
+            call.file_path == "src/lib.rs" && call.name == "helper" && call.line == 7
+        }));
+    }
+
+    #[test]
+    fn project_model_handles_missing_and_invalid_cargo_metadata() {
+        let _guard = analysis_lock();
+        let missing_dir = tempdir().expect("tempdir");
+        fs::create_dir_all(missing_dir.path().join("src")).expect("src dir");
+        fs::write(missing_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(missing_dir.path().join("src/lib.rs"), "pub fn ready() {}\n").expect("lib write");
+        let missing = project_context_for_test(missing_dir.path());
+        assert!(missing.manifest.is_none());
+        assert!(missing.lockfile.is_none());
+        assert!(missing.diagnostics.is_empty(), "{:?}", missing.diagnostics);
+
+        let invalid_manifest_dir = tempdir().expect("tempdir");
+        fs::write(invalid_manifest_dir.path().join("README.md"), "# Fixture\n")
+            .expect("readme write");
+        fs::write(invalid_manifest_dir.path().join("Cargo.toml"), "[package\n")
+            .expect("manifest write");
+        let invalid_manifest = project_context_for_test(invalid_manifest_dir.path());
+        assert!(invalid_manifest.manifest.is_none());
+        assert_eq!(invalid_manifest.diagnostics.len(), 1);
+        assert_eq!(
+            invalid_manifest.diagnostics[0].diagnostic_type,
+            "manifest-parse-error"
+        );
+        assert_eq!(
+            invalid_manifest.diagnostics[0].file_path.as_deref(),
+            Some("Cargo.toml")
+        );
+        assert!(!invalid_manifest.diagnostics[0]
+            .message
+            .to_ascii_lowercase()
+            .contains("parser"));
+
+        let invalid_lock_dir = tempdir().expect("tempdir");
+        fs::write(invalid_lock_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            invalid_lock_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "invalid-lock-fixture"
+version = "0.1.0"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(invalid_lock_dir.path().join("Cargo.lock"), "[package\n")
+            .expect("lockfile write");
+        let invalid_lock = project_context_for_test(invalid_lock_dir.path());
+        assert!(invalid_lock.manifest.is_some());
+        assert_eq!(invalid_lock.diagnostics.len(), 1);
+        assert_eq!(
+            invalid_lock.diagnostics[0].diagnostic_type,
+            "lockfile-parse-error"
+        );
+        assert_eq!(
+            invalid_lock.diagnostics[0].file_path.as_deref(),
+            Some("Cargo.lock")
+        );
+    }
+
+    #[test]
+    fn dependency_rules_flag_local_manifest_and_lockfile_posture() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "dependency-positive-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wildcard = "*"
+gitdep = { git = "https://example.invalid/repo.git", rev = "1111111111111111111111111111111111111111" }
+pathdep = { path = "../local-path" }
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            dir.path().join("Cargo.lock"),
+            r#"version = 3
+
+[[package]]
+name = "duplicate"
+version = "1.0.0"
+
+[[package]]
+name = "duplicate"
+version = "2.0.0"
+
+[[package]]
+name = "duplicate"
+version = "3.0.0"
+"#,
+        )
+        .expect("lockfile write");
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert_has_rule(&report, "dependency.git-source");
+        assert_has_rule(&report, "dependency.path-source");
+        assert_has_rule(&report, "dependency.wildcard-version");
+        assert_has_rule(&report, "dependency.duplicate-locked-version");
+        assert_has_rule(&report, "dependency.missing-package-metadata");
+
+        let git = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "dependency.git-source")
+            .expect("git source finding");
+        assert_eq!(git.file_path, "Cargo.toml");
+        assert_eq!(git.line, Some(8));
+        assert_eq!(git.symbol.as_deref(), Some("gitdep"));
+        assert_eq!(git.pillar, Pillar::Security);
+
+        let metadata = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "dependency.missing-package-metadata")
+            .expect("metadata finding");
+        assert_eq!(metadata.file_path, "Cargo.toml");
+        assert_eq!(metadata.line, Some(1));
+        assert_eq!(metadata.pillar, Pillar::Documentation);
+
+        let duplicate = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "dependency.duplicate-locked-version")
+            .expect("duplicate lockfile finding");
+        assert_eq!(duplicate.file_path, "Cargo.lock");
+        assert_eq!(duplicate.line, Some(4));
+        assert_eq!(duplicate.symbol.as_deref(), Some("duplicate"));
+
+        let security = report
+            .score
+            .pillars
+            .iter()
+            .find(|pillar| pillar.pillar == Pillar::Security)
+            .expect("security score");
+        assert!(
+            security.findings >= 4,
+            "expected dependency findings to affect security: {security:?}"
+        );
+    }
+
+    #[test]
+    fn dependency_rules_accept_clean_manifest_and_config_threshold() {
+        let _guard = analysis_lock();
+        let clean_dir = tempdir().expect("tempdir");
+        fs::write(clean_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            clean_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "dependency-negative-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for dependency rule tests."
+license = "MIT"
+
+[dependencies]
+serde = "1"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            clean_dir.path().join("Cargo.lock"),
+            r#"version = 3
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+"#,
+        )
+        .expect("lockfile write");
+        let clean = run_project_analysis(
+            clean_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("clean analysis succeeds");
+        assert_missing_rule(&clean, "dependency.git-source");
+        assert_missing_rule(&clean, "dependency.path-source");
+        assert_missing_rule(&clean, "dependency.wildcard-version");
+        assert_missing_rule(&clean, "dependency.duplicate-locked-version");
+        assert_missing_rule(&clean, "dependency.missing-package-metadata");
+
+        let threshold_dir = tempdir().expect("tempdir");
+        fs::write(threshold_dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            threshold_dir.path().join("Cargo.toml"),
+            r#"[package]
+name = "dependency-threshold-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Synthetic fixture for dependency threshold tests."
+license = "MIT"
+"#,
+        )
+        .expect("manifest write");
+        fs::write(
+            threshold_dir.path().join("Cargo.lock"),
+            r#"version = 3
+
+[[package]]
+name = "duplicate"
+version = "1.0.0"
+
+[[package]]
+name = "duplicate"
+version = "2.0.0"
+
+[[package]]
+name = "duplicate"
+version = "3.0.0"
+"#,
+        )
+        .expect("lockfile write");
+        write_yaml_config(
+            threshold_dir.path(),
+            r#"
+rules:
+  dependency.duplicate-locked-version:
+    threshold: 3
+"#,
+        );
+        let thresholded = run_project_analysis(
+            threshold_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("thresholded analysis succeeds");
+        assert_missing_rule(&thresholded, "dependency.duplicate-locked-version");
+
+        write_yaml_config(
+            threshold_dir.path(),
+            r#"
+rules:
+  dependency.duplicate-locked-version:
+    thresholds:
+      bogus: 2
+"#,
+        );
+        let error =
+            load_config(threshold_dir.path(), &default_test_options()).expect_err("bad threshold");
+        assert!(
+            error.contains(
+                "unknown threshold `bogus` for rule `dependency.duplicate-locked-version`"
+            ),
+            "{error}"
+        );
     }
 
     #[test]

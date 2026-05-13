@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum RuleKind {
+    Project,
     Text,
     Rust,
 }
@@ -97,6 +98,8 @@ const COMPLEXITY_NESTING_DEPTH_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("warn", 4.0), threshold("error", 6.0)];
 const COMPLEXITY_NPATH_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("warn", 32.0), threshold("error", 128.0)];
+const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS: &[ThresholdDefinition] =
+    &[threshold("versions", 2.0)];
 const TODO_DENSITY_THRESHOLDS: &[ThresholdDefinition] = &[threshold("markers", 4.0)];
 const FILE_LENGTH_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("warn", 400.0), threshold("error", 800.0)];
@@ -158,6 +161,56 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
             "Flags private functions with no same-file call sites.",
         ),
         rule(
+            "dependency.duplicate-locked-version",
+            "Duplicate locked dependency version",
+            Pillar::Security,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::High,
+            DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS,
+            "Flags packages locked at more versions than the configured threshold.",
+        ),
+        rule(
+            "dependency.git-source",
+            "Git dependency source",
+            Pillar::Security,
+            RuleKind::Project,
+            Severity::Warning,
+            Confidence::High,
+            &[],
+            "Flags dependencies sourced directly from git repositories.",
+        ),
+        rule(
+            "dependency.missing-package-metadata",
+            "Missing package metadata",
+            Pillar::Documentation,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::High,
+            &[],
+            "Flags packages missing description or license metadata.",
+        ),
+        rule(
+            "dependency.path-source",
+            "Path dependency source",
+            Pillar::Security,
+            RuleKind::Project,
+            Severity::Advisory,
+            Confidence::High,
+            &[],
+            "Flags dependencies sourced from local filesystem paths.",
+        ),
+        rule(
+            "dependency.wildcard-version",
+            "Wildcard dependency version",
+            Pillar::Security,
+            RuleKind::Project,
+            Severity::Warning,
+            Confidence::High,
+            &[],
+            "Flags dependency requirements that use wildcard versions.",
+        ),
+        rule(
             "design.god-function",
             "God function",
             Pillar::Design,
@@ -181,7 +234,7 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
             "docs.missing-readme",
             "Missing README",
             Pillar::Documentation,
-            RuleKind::Text,
+            RuleKind::Project,
             Severity::Advisory,
             Confidence::High,
             &[],

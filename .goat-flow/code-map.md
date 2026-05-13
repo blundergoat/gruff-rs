@@ -12,7 +12,7 @@
 ## Source
 
 `src/` = Rust source directory.
-`src/main.rs` = CLI orchestration, analyzer pipeline, config loading, renderers, dashboard server, path helpers, built-in rule dispatch module, and unit tests.
+`src/main.rs` = CLI orchestration, analyzer pipeline, parsed source/project context construction, config loading, renderers, dashboard server, path helpers, built-in rule dispatch module, and unit tests.
 `src/rules.rs` = Rule metadata contracts and the sorted built-in rule registry used by config validation and `list-rules`.
 
 ## Fixtures

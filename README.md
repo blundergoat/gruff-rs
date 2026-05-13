@@ -37,9 +37,14 @@ rules:
     thresholds:
       warn: 10
       error: 20
+  dependency.duplicate-locked-version:
+    threshold: 2
 ```
 
 Use `--no-config` to ignore project config.
+
+Cargo dependency checks are local-only. They read `Cargo.toml` and `Cargo.lock`
+as data and do not query registries, run Cargo, or consume vulnerability feeds.
 
 ## Baselines
 

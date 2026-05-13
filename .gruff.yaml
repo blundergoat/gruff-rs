@@ -27,6 +27,8 @@ rules:
       error: 128
   docs.todo-density:
     threshold: 4
+  dependency.duplicate-locked-version:
+    threshold: 2
   size.file-length:
     thresholds:
       warn: 400

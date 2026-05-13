@@ -8,7 +8,7 @@ The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `s
 
 ## Request Flow
 
-For CLI analysis, `main` parses Clap commands, `run_analysis` loads config, `discover_sources` walks input paths, builds a `SourceUnit` for each readable file, `analyse_source` dispatches text and Rust rules, then `render_report` selects text, JSON, HTML, Markdown, GitHub annotation, or hotspot output. `list-rules` renders sorted built-in registry definitions as text or JSON.
+For CLI analysis, `main` parses Clap commands, `run_analysis` loads config, `discover_sources` walks input paths, reads each file into a parsed source record, builds an internal `ProjectContext`, dispatches project rules, then dispatches text and Rust rules through `analyse_source`. `render_report` selects text, JSON, HTML, Markdown, GitHub annotation, or hotspot output. `list-rules` renders sorted built-in registry definitions as text or JSON.
 
 For dashboard scans, `run_dashboard` binds the requested host and port, `handle_dashboard_request` handles `/`, `/health`, and `/scan`, then `/scan` builds an `AnalysisOptions` value and renders the same report HTML through `dashboard_shell`. Dashboard scans call the analysis pipeline with an explicit project root instead of changing the process working directory.
 
@@ -20,7 +20,9 @@ The analyzer reads user-selected files and does not execute analyzed source. `fi
 
 ## Data Flow
 
-Input paths become `SourceFile` records, then `SourceUnit` records containing raw text, parser diagnostics, and an optional `syn` Rust AST. Text rules run for every supported file. Rust AST rules run only when parsing succeeds; parse failures emit a `parse-error` diagnostic while still allowing text-only checks such as sensitive-data detection. Findings are sorted and deduplicated by fingerprint before rendering. Baseline generation and history recording write JSON side files whose names are ignored by `.gitignore`; absence of those files in a clean checkout is normal.
+Input paths become `SourceFile` records, then owned parsed-source records containing raw text, parser diagnostics, and an optional `syn` Rust AST. `ProjectContext` is built from those parsed sources plus read-only `Cargo.toml` and `Cargo.lock` summaries, module summaries, item summaries, and call-name summaries. The project context is internal analysis state and is not serialized into `gruff.analysis.v1`.
+
+Project rules run against `ProjectContext`. Text rules run for every supported file. Rust AST rules run only when parsing succeeds; parse failures emit a `parse-error` diagnostic while still allowing text-only checks such as sensitive-data detection. Findings are sorted and deduplicated by fingerprint before rendering. Baseline generation and history recording write JSON side files whose names are ignored by `.gitignore`; absence of those files in a clean checkout is normal.
 
 Rule tuning is loaded by `load_config` from an explicit config path or the first default project config found in this order: `.gruff.yaml`, `.gruff.yml`, `.gruff.json`. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes return command errors. The committed `.gruff.yaml` mirrors current defaults and documents the Rust-native config shape. Scoring includes all built-in static pillars even when a pillar has zero findings, so clean or narrow scans still communicate coverage.
 
@@ -33,5 +35,6 @@ CI lives in `.github/workflows/ci.yml` and runs the same local preflight command
 - `src/main.rs` contains public report schema strings such as `gruff.analysis.v1`; changing them is a compatibility decision.
 - Rule IDs and fingerprints are output contracts because baselines use fingerprints and consumers may key on rule IDs.
 - Rust parsing uses `syn` with span locations; parser changes must preserve fixture line, symbol, and fingerprint contracts unless an explicit compatibility decision says otherwise.
+- Cargo metadata readers parse `Cargo.toml` and `Cargo.lock` as data only. They must not run Cargo, build scripts, proc macros, package hooks, or network requests.
 - `fixtures/sample.rs` is intentionally bad code and should not be cleaned up without replacing the analyzer coverage it provides.
 - `.gruff.yaml` is the default project config contract. Keep `.gruff.yml` and explicit `.gruff.json` compatibility unless a config compatibility decision replaces them.
