@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+set -eu
+
+PRG="$0"
+while [ -h "$PRG" ]; do
+	SCRIPT_DIR="$(unset CDPATH; cd -- "$(dirname -- "$PRG")" && pwd)"
+	PRG="$(readlink "$PRG")"
+	case "$PRG" in
+		/*) ;;
+		*) PRG="$SCRIPT_DIR/$PRG" ;;
+	esac
+done
+
+SCRIPT_DIR="$(unset CDPATH; cd -- "$(dirname -- "$PRG")" && pwd)"
+PACKAGE_DIR="$SCRIPT_DIR/.."
+
+exec cargo run --quiet --manifest-path "$PACKAGE_DIR/Cargo.toml" -- "$@"

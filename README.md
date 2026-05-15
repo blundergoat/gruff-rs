@@ -5,13 +5,16 @@ Rust project quality analyzer with deterministic, schema-versioned reports.
 ## Commands
 
 ```bash
-cargo run -- analyse fixtures --format json --fail-on none
-cargo run -- analyse src --format text --fail-on none
-cargo run -- list-rules --format text
-cargo run -- list-rules --format json
-cargo run -- report src --format html --output gruff-report.html
+./bin/gruff-rs analyse fixtures --format json --fail-on none
+./bin/gruff-rs analyse src --format text --fail-on none
+./bin/gruff-rs list-rules --format text
+./bin/gruff-rs list-rules --format json
+./bin/gruff-rs report src --format html --output gruff-report.html
 bash scripts/start-dev.sh
 ```
+
+From a source checkout, `bin/gruff-rs` resolves this repository's Cargo manifest
+and forwards arguments to the Rust CLI.
 
 Report formats for `analyse` are `text`, `json`, `html`, `markdown`, `github`, and
 `hotspot`. The `report` command supports static `html` and `json` output.
@@ -123,13 +126,13 @@ framework-specific, and runtime checks.
 Generate a baseline from the current findings:
 
 ```bash
-cargo run -- analyse src --format json --fail-on none --generate-baseline
+./bin/gruff-rs analyse src --format json --fail-on none --generate-baseline
 ```
 
 Apply the default `gruff-baseline.json` when present:
 
 ```bash
-cargo run -- analyse src --format json --fail-on none --baseline
+./bin/gruff-rs analyse src --format json --fail-on none --baseline
 ```
 
 Baseline suppression is exact on fingerprint, rule id, and file path. Message text,
@@ -152,9 +155,9 @@ downstream consumers may key on them. Changing a rule id, fingerprint inputs, or
 
 ```bash
 bash scripts/check.sh
-cargo run -- analyse fixtures --format json --fail-on none
-cargo run -- analyse src --format json --fail-on none
-cargo run -- list-rules --format json
+./bin/gruff-rs analyse fixtures --format json --fail-on none
+./bin/gruff-rs analyse src --format json --fail-on none
+./bin/gruff-rs list-rules --format json
 ```
 
 `scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, fixture scan,
@@ -169,7 +172,7 @@ replacement preserves the rule coverage.
 
 ## Troubleshooting
 
-- Parse diagnostics: run `cargo run -- analyse <path> --format json --fail-on none` and inspect `diagnostics`; Rust AST rules are skipped for parse-failed files while text rules still run.
+- Parse diagnostics: run `./bin/gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`; Rust AST rules are skipped for parse-failed files while text rules still run.
 - Config errors: check unknown root keys, unknown rule ids, unsupported threshold names, and invalid value shapes in `.gruff.yaml`.
 - Baselines: regenerate only after confirming the current findings are intentionally accepted.
 - Intentional fixture findings: use `fixtures/README.md` and `tests/fixtures/README.md` to confirm whether a noisy file is a test input.

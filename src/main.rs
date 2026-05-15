@@ -13,6 +13,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 use walkdir::{DirEntry, WalkDir};
@@ -24,6 +25,10 @@ mod summary;
 const VERSION: &str = "0.1.0-dev";
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff.yaml", ".gruff.yml", ".gruff.json"];
+
+fn static_regex(lock: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
+    lock.get_or_init(|| Regex::new(pattern).expect("static regex compiles"))
+}
 
 /// Symfony-Console-style colours for help output: yellow section headers,
 /// green flag/command literals, dimmed placeholders. Matches the gruff-php
@@ -2471,6 +2476,86 @@ fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
 mod built_in_rules {
     use super::*;
 
+    struct RegexRule {
+        rule_id: &'static str,
+        regex: &'static OnceLock<Regex>,
+        pattern: &'static str,
+        message: &'static str,
+    }
+
+    static AWS_ACCESS_KEY_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PRIVATE_KEY_REGEX: OnceLock<Regex> = OnceLock::new();
+    static JWT_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
+    static DATABASE_URL_PASSWORD_REGEX: OnceLock<Regex> = OnceLock::new();
+    static API_KEY_PATTERN_REGEX: OnceLock<Regex> = OnceLock::new();
+
+    const SENSITIVE_PATTERNS: &[RegexRule] = &[
+        RegexRule {
+            rule_id: "sensitive-data.aws-access-key",
+            regex: &AWS_ACCESS_KEY_REGEX,
+            pattern: r"AKIA[0-9A-Z]{16}",
+            message: "AWS access key pattern detected.",
+        },
+        RegexRule {
+            rule_id: "sensitive-data.private-key",
+            regex: &PRIVATE_KEY_REGEX,
+            pattern: r"BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY",
+            message: "Private key block detected.",
+        },
+        RegexRule {
+            rule_id: "sensitive-data.jwt-token",
+            regex: &JWT_TOKEN_REGEX,
+            pattern: r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+            message: "JWT-looking token detected.",
+        },
+        RegexRule {
+            rule_id: "sensitive-data.database-url-password",
+            regex: &DATABASE_URL_PASSWORD_REGEX,
+            pattern: r"[a-z]+://[^:\s]+:[^@\s]+@",
+            message: "Database URL appears to include a password.",
+        },
+        RegexRule {
+            rule_id: "sensitive-data.api-key-pattern",
+            regex: &API_KEY_PATTERN_REGEX,
+            pattern: r"(sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
+            message: "API key pattern detected.",
+        },
+    ];
+
+    static TEST_ASSERTION_REGEX: OnceLock<Regex> = OnceLock::new();
+    static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+    static LOOP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+    static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
+    static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+
+    const TEST_CHECKS: &[RegexRule] = &[
+        RegexRule {
+            rule_id: "test-quality.sleep-in-test",
+            regex: &SLEEP_IN_TEST_REGEX,
+            pattern: r"(std::thread::sleep|tokio::time::sleep)",
+            message: "Test sleeps instead of synchronising on behaviour.",
+        },
+        RegexRule {
+            rule_id: "test-quality.loop-in-test",
+            regex: &LOOP_IN_TEST_REGEX,
+            pattern: r"\b(for|while|loop)\b",
+            message: "Test contains loop logic.",
+        },
+        RegexRule {
+            rule_id: "test-quality.conditional-logic",
+            regex: &CONDITIONAL_LOGIC_REGEX,
+            pattern: r"\b(if|match)\b",
+            message: "Test contains conditional logic.",
+        },
+        RegexRule {
+            rule_id: "test-quality.unwrap-in-test",
+            regex: &UNWRAP_IN_TEST_REGEX,
+            pattern: r"\.unwrap\(\)",
+            message: "Test uses unwrap(), which can hide setup intent.",
+        },
+    ];
+
+    /// Run enabled text and Rust rules for one parsed source unit.
     pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
         let mut findings = Vec::new();
         analyse_text_rules(unit.file, unit.source, config, &mut findings);
@@ -2533,44 +2618,15 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let patterns = [
-            (
-                "sensitive-data.aws-access-key",
-                r"AKIA[0-9A-Z]{16}",
-                "AWS access key pattern detected.",
-            ),
-            (
-                "sensitive-data.private-key",
-                r"BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY",
-                "Private key block detected.",
-            ),
-            (
-                "sensitive-data.jwt-token",
-                r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
-                "JWT-looking token detected.",
-            ),
-            (
-                "sensitive-data.database-url-password",
-                r"[a-z]+://[^:\s]+:[^@\s]+@",
-                "Database URL appears to include a password.",
-            ),
-            (
-                "sensitive-data.api-key-pattern",
-                r"(sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
-                "API key pattern detected.",
-            ),
-        ];
-
-        for (rule_id, pattern, message) in patterns {
-            let regex = Regex::new(pattern).expect("static regex compiles");
-            for capture in regex.find_iter(source) {
+        for rule in SENSITIVE_PATTERNS {
+            for capture in static_regex(rule.regex, rule.pattern).find_iter(source) {
                 let preview = redact(capture.as_str());
                 if config.secret_previews.contains(&preview) {
                     continue;
                 }
                 findings.push(Finding::new(
-                    rule_id,
-                    message,
+                    rule.rule_id,
+                    rule.message,
                     file.display_path.clone(),
                     Some(byte_line(source, capture.start())),
                     Severity::Error,
@@ -3314,10 +3370,10 @@ mod built_in_rules {
             ));
         }
 
-        if !Regex::new(
+        if !static_regex(
+            &TEST_ASSERTION_REGEX,
             r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
         )
-        .expect("static regex compiles")
         .is_match(&searchable_body)
         {
             findings.push(block_finding(
@@ -3333,37 +3389,11 @@ mod built_in_rules {
             ));
         }
 
-        let checks = [
-            (
-                "test-quality.sleep-in-test",
-                r"(std::thread::sleep|tokio::time::sleep)",
-                "Test sleeps instead of synchronising on behaviour.",
-            ),
-            (
-                "test-quality.loop-in-test",
-                r"\b(for|while|loop)\b",
-                "Test contains loop logic.",
-            ),
-            (
-                "test-quality.conditional-logic",
-                r"\b(if|match)\b",
-                "Test contains conditional logic.",
-            ),
-            (
-                "test-quality.unwrap-in-test",
-                r"\.unwrap\(\)",
-                "Test uses unwrap(), which can hide setup intent.",
-            ),
-        ];
-
-        for (rule_id, pattern, message) in checks {
-            if Regex::new(pattern)
-                .expect("static regex compiles")
-                .is_match(&searchable_body)
-            {
+        for rule in TEST_CHECKS {
+            if static_regex(rule.regex, rule.pattern).is_match(&searchable_body) {
                 findings.push(block_finding(
-                    rule_id,
-                    message,
+                    rule.rule_id,
+                    rule.message,
                     file,
                     block,
                     Severity::Advisory,

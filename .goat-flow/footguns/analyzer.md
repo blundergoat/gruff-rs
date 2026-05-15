@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-13
+last_reviewed: 2026-05-16
 ---
 
 ## Footgun: Fixture Findings Are Intentional
@@ -25,7 +25,7 @@ Without that split, self-scan can report rule examples embedded inside unit-test
 
 **Status:** resolved | **Created:** 2026-05-13 | **Resolved:** 2026-05-13 | **Evidence:** ACTUAL_MEASURED
 
-Before M04, `src/main.rs` (search: `std::env::set_current_dir(&root)`) handled dashboard `/scan` by changing the process working directory before calling `run_analysis`, then restoring the previous directory afterward.
+Before M04, dashboard `/scan` changed the process working directory before calling `run_analysis`, then restored the previous directory afterward.
 
 M04 replaced that with `src/main.rs` (search: `fn run_analysis_in_project`) and `src/main.rs` (search: `fn dashboard_response`), so dashboard scans pass an explicit project root and do not mutate cwd. Regression coverage lives in `src/main.rs` (search: `dashboard_scan_preserves_cwd_and_report_paths`).
 
@@ -35,4 +35,4 @@ M04 replaced that with `src/main.rs` (search: `fn run_analysis_in_project`) and 
 
 Before M01, `src/main.rs` (search: `fn rust_function_blocks`) extracted functions with a regex and brace-depth scan, and `parse_diagnostics` only checked delimiter balance.
 
-M01 replaced that path with `src/main.rs` (search: `fn parse_source_unit`) using `syn::parse_file` and `src/main.rs` (search: `fn rust_function_blocks`) walking the parsed AST. The regression proof is `cargo run --quiet -- analyse src --format json --fail-on none` exiting 0 with zero diagnostics and `cargo test` passing parser fixtures for raw strings, macros, impl methods, test attributes, and invalid Rust.
+M01 replaced that path with `src/main.rs` (search: `fn parse_source_file`) using `syn::parse_file` and `src/main.rs` (search: `fn rust_function_blocks`) walking the parsed AST. The regression proof is `cargo run --quiet -- analyse src --format json --fail-on none` exiting 0 with zero diagnostics and `cargo test` passing parser fixtures for raw strings, macros, impl methods, test attributes, and invalid Rust.

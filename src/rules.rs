@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+/// Broad execution context for a built-in rule.
 pub(crate) enum RuleKind {
     Project,
     Text,
@@ -12,6 +13,7 @@ pub(crate) enum RuleKind {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Numeric threshold exposed by a configurable rule.
 pub(crate) struct ThresholdDefinition {
     pub(crate) name: &'static str,
     pub(crate) default: f64,
@@ -19,6 +21,7 @@ pub(crate) struct ThresholdDefinition {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Boolean or string option exposed by a configurable rule.
 pub(crate) struct OptionDefinition {
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
@@ -26,6 +29,7 @@ pub(crate) struct OptionDefinition {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Public metadata contract for a built-in analyzer rule.
 pub(crate) struct RuleDefinition {
     pub(crate) id: &'static str,
     pub(crate) name: &'static str,
@@ -41,11 +45,13 @@ pub(crate) struct RuleDefinition {
 }
 
 #[derive(Debug)]
+/// Sorted registry for built-in rule metadata.
 pub(crate) struct RuleRegistry {
     definitions: Vec<RuleDefinition>,
 }
 
 impl RuleRegistry {
+    /// Build a sorted rule registry and reject duplicate rule ids.
     pub(crate) fn new(mut definitions: Vec<RuleDefinition>) -> Result<Self, String> {
         definitions.sort_by(|left, right| left.id.cmp(right.id));
         let mut seen = BTreeSet::new();
@@ -57,10 +63,12 @@ impl RuleRegistry {
         Ok(Self { definitions })
     }
 
+    /// Return all rule definitions in deterministic rule-id order.
     pub(crate) fn definitions(&self) -> &[RuleDefinition] {
         &self.definitions
     }
 
+    /// Look up a rule definition by stable rule id.
     pub(crate) fn get(&self, rule_id: &str) -> Option<&RuleDefinition> {
         self.definitions
             .binary_search_by(|definition| definition.id.cmp(rule_id))
@@ -68,10 +76,12 @@ impl RuleRegistry {
             .map(|index| &self.definitions[index])
     }
 
+    /// Return whether the registry contains a rule id.
     pub(crate) fn contains(&self, rule_id: &str) -> bool {
         self.get(rule_id).is_some()
     }
 
+    /// Return whether a rule exposes a named threshold.
     pub(crate) fn supports_threshold(&self, rule_id: &str, threshold: &str) -> bool {
         self.get(rule_id).is_some_and(|definition| {
             definition
@@ -81,14 +91,22 @@ impl RuleRegistry {
         })
     }
 
+    /// Return whether a rule exposes a named option.
     pub(crate) fn supports_option(&self, rule_id: &str, option: &str) -> bool {
         self.get(rule_id)
             .is_some_and(|definition| definition.options.iter().any(|item| item.name == option))
     }
 }
 
+/// Build the static registry of rules shipped with this binary.
 pub(crate) fn builtin_registry() -> RuleRegistry {
-    RuleRegistry::new(builtin_definitions()).expect("built-in rule definitions are unique")
+    match RuleRegistry::new(builtin_definitions()) {
+        Ok(registry) => registry,
+        Err(error) => {
+            // PANIC: duplicate built-in rule ids are programmer errors caught by tests.
+            panic!("invalid built-in rule definitions: {error}");
+        }
+    }
 }
 
 const COMPLEXITY_COGNITIVE_THRESHOLDS: &[ThresholdDefinition] = &[threshold("warn", 15.0)];

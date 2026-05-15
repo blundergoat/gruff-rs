@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 const SCHEMA_VERSION: &str = "gruff.summary.v1";
 
+/// Render a compact summary view from a full analysis report.
 pub(crate) fn render(report: &AnalysisReport, top: usize, format: SummaryFormat) -> String {
     let digest = SummaryDigest::build(report, top);
     match format {
