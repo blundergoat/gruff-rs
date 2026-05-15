@@ -42,6 +42,8 @@ Unknown keys and unknown rule ids are rejected.
 paths:
   ignore:
     - target/**
+    - fixtures/**
+    - tests/fixtures/**
 allowlists:
   acceptedAbbreviations:
     - id

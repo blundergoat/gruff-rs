@@ -1,6 +1,8 @@
 paths:
   ignore:
     - target/**
+    - fixtures/**
+    - tests/fixtures/**
 allowlists:
   acceptedAbbreviations:
     - id
