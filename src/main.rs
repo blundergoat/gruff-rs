@@ -1,5 +1,7 @@
 use chrono::Utc;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::builder::styling;
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use proc_macro2::LineColumn;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -17,31 +19,185 @@ use walkdir::{DirEntry, WalkDir};
 
 mod html_report;
 mod rules;
+mod summary;
 
 const VERSION: &str = "0.1.0-dev";
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff.yaml", ".gruff.yml", ".gruff.json"];
 
+/// Symfony-Console-style colours for help output: yellow section headers,
+/// green flag/command literals, dimmed placeholders. Matches the gruff-php
+/// help layout users may be coming from.
+const HELP_STYLES: styling::Styles = styling::Styles::styled()
+    .header(
+        styling::Style::new()
+            .fg_color(Some(styling::Color::Ansi(styling::AnsiColor::Yellow)))
+            .bold(),
+    )
+    .usage(
+        styling::Style::new()
+            .fg_color(Some(styling::Color::Ansi(styling::AnsiColor::Yellow)))
+            .bold(),
+    )
+    .literal(styling::Style::new().fg_color(Some(styling::Color::Ansi(styling::AnsiColor::Green))))
+    .placeholder(styling::Style::new().dimmed())
+    .error(
+        styling::Style::new()
+            .fg_color(Some(styling::Color::Ansi(styling::AnsiColor::Red)))
+            .bold(),
+    )
+    .valid(styling::Style::new().fg_color(Some(styling::Color::Ansi(styling::AnsiColor::Green))))
+    .invalid(
+        styling::Style::new().fg_color(Some(styling::Color::Ansi(styling::AnsiColor::Yellow))),
+    );
+
+const HELP_TEMPLATE: &str = "\
+{before-help}{name} {version}\n\n\
+\x1b[1m\x1b[33mUsage:\x1b[0m\n  {usage}\n\n\
+\x1b[1m\x1b[33mOptions:\x1b[0m\n{options}\n\n\
+\x1b[1m\x1b[33mAvailable commands:\x1b[0m\n{subcommands}{after-help}";
+
+const SUBCOMMAND_HELP_TEMPLATE: &str = "\
+{before-help}\x1b[1m\x1b[33mDescription:\x1b[0m\n  {about}\n\n\
+\x1b[1m\x1b[33mUsage:\x1b[0m\n  {usage}\n\n\
+{all-args}{after-help}";
+
 #[derive(Parser)]
 #[command(
     name = "gruff-rs",
     version = VERSION,
-    about = "Rust project quality analysis."
+    about = "Rust project quality analysis.",
+    styles = HELP_STYLES,
+    help_template = HELP_TEMPLATE,
+    subcommand_help_heading = "Available commands",
+    subcommand_value_name = "command",
+    arg_required_else_help = true,
 )]
 struct Cli {
+    #[command(flatten)]
+    global: GlobalOptions,
     #[command(subcommand)]
     command: Commands,
 }
 
+// Symfony-Console-style global flags shared by every subcommand.
+// `--silent` and `-q/--quiet` gate the primary stdout writer. `--ansi`/`--no-ansi`
+// is reserved for the text renderer's future colour mode; today the text renderer
+// emits no ANSI, so these flags accept and store but otherwise do not change
+// output. `-v/-vv/-vvv` is a count flag the analyzer can opt into for stderr
+// debug traces. `-n/--no-interaction` is accepted for parity and ignored;
+// gruff-rs is non-interactive.
+#[derive(Args, Clone, Debug, Default)]
+struct GlobalOptions {
+    /// Do not output any message.
+    #[arg(long, global = true)]
+    silent: bool,
+    /// Only errors are displayed. All other output is suppressed.
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
+    /// Force ANSI output.
+    #[arg(long, global = true, conflicts_with = "no_ansi")]
+    ansi: bool,
+    /// Disable ANSI output.
+    #[arg(long = "no-ansi", global = true)]
+    no_ansi: bool,
+    /// Increase the verbosity of stderr messages (-v, -vv, -vvv).
+    #[arg(short = 'v', long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+    /// Do not ask any interactive question (accepted for CLI parity; gruff-rs is non-interactive).
+    #[arg(short = 'n', long, global = true)]
+    no_interaction: bool,
+}
+
+impl GlobalOptions {
+    fn writer(&self) -> OutputWriter {
+        OutputWriter {
+            silent: self.silent,
+            quiet: self.quiet,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OutputWriter {
+    silent: bool,
+    quiet: bool,
+}
+
+impl OutputWriter {
+    fn emit(self, outcome: RunOutcome, body: &str) {
+        if self.silent {
+            return;
+        }
+        if self.quiet && !outcome.is_failure() {
+            return;
+        }
+        println!("{body}");
+    }
+
+    /// Emit a body that is not gated by the success/failure outcome of an
+    /// analysis run (e.g. completion scripts, list-rules output).
+    fn emit_unconditional(self, body: &str) {
+        if self.silent {
+            return;
+        }
+        println!("{body}");
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunOutcome {
+    Success,
+    ThresholdHit,
+    DiagnosticsFailed,
+}
+
+impl RunOutcome {
+    fn classify(report: &AnalysisReport, fail_on: FailThreshold) -> Self {
+        if !report.diagnostics.is_empty() {
+            return Self::DiagnosticsFailed;
+        }
+        if report
+            .findings
+            .iter()
+            .any(|finding| fail_on.triggered_by(finding.severity))
+        {
+            return Self::ThresholdHit;
+        }
+        Self::Success
+    }
+
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Self::Success => ExitCode::SUCCESS,
+            Self::ThresholdHit => ExitCode::from(1),
+            Self::DiagnosticsFailed => ExitCode::from(2),
+        }
+    }
+
+    fn is_failure(self) -> bool {
+        !matches!(self, Self::Success)
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
+    /// Run gruff analysis.
     Analyse(AnalyseArgs),
+    /// Render a gruff report to stdout or a file.
     Report(ReportArgs),
+    /// List gruff rule metadata.
     ListRules(ListRulesArgs),
+    /// Serve the local gruff dashboard.
     Dashboard(DashboardArgs),
+    /// Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders.
+    Summary(SummaryArgs),
+    /// Dump the shell completion script.
+    Completion(CompletionArgs),
 }
 
 #[derive(Args, Clone)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 struct AnalyseArgs {
     #[arg(value_name = "paths")]
     paths: Vec<PathBuf>,
@@ -68,6 +224,7 @@ struct AnalyseArgs {
 }
 
 #[derive(Args)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 struct ReportArgs {
     #[arg(value_name = "paths")]
     paths: Vec<PathBuf>,
@@ -88,6 +245,7 @@ struct ReportArgs {
 }
 
 #[derive(Args)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 struct DashboardArgs {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -98,9 +256,36 @@ struct DashboardArgs {
 }
 
 #[derive(Args)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 struct ListRulesArgs {
     #[arg(long, default_value = "text")]
     format: RuleListFormat,
+}
+
+#[derive(Args, Clone)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
+struct SummaryArgs {
+    #[arg(value_name = "paths")]
+    paths: Vec<PathBuf>,
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    no_config: bool,
+    #[arg(long, default_value = "text")]
+    format: SummaryFormat,
+    /// How many top rules and file offenders to list.
+    #[arg(long, default_value_t = 10)]
+    top: usize,
+    #[arg(long)]
+    include_ignored: bool,
+}
+
+#[derive(Args, Clone)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
+struct CompletionArgs {
+    /// Shell to emit completions for.
+    #[arg(long, default_value = "bash")]
+    shell: Shell,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, PartialEq, Eq)]
@@ -124,6 +309,12 @@ impl OutputFormat {
             Self::Hotspot => "hotspot",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SummaryFormat {
+    Text,
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -616,17 +807,18 @@ impl FunctionBlock {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let global = cli.global.clone();
+    let writer = global.writer();
     match cli.command {
         Commands::Analyse(args) => {
             let options = options_from_analyse(args);
             let scope = RequestedScope::from_options(&options);
             match run_analysis(&options) {
                 Ok(report) => {
-                    println!(
-                        "{}",
-                        render_report_with_scope(&report, &scope, options.format)
-                    );
-                    exit_for(&report, options.fail_on)
+                    let outcome = RunOutcome::classify(&report, options.fail_on);
+                    let rendered = render_report_with_scope(&report, &scope, options.format);
+                    writer.emit(outcome, &rendered);
+                    outcome.exit_code()
                 }
                 Err(error) => {
                     eprintln!("gruff-rs: {error}");
@@ -634,9 +826,11 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Commands::Report(args) => run_report(args),
-        Commands::ListRules(args) => run_list_rules(args),
+        Commands::Report(args) => run_report(args, writer),
+        Commands::ListRules(args) => run_list_rules(args, writer),
         Commands::Dashboard(args) => run_dashboard(args),
+        Commands::Summary(args) => run_summary(args, writer),
+        Commands::Completion(args) => run_completion(args, writer),
     }
 }
 
@@ -656,7 +850,7 @@ fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
     }
 }
 
-fn run_report(args: ReportArgs) -> ExitCode {
+fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     let format = match args.format {
         ReportFormat::Html => OutputFormat::Html,
         ReportFormat::Json => OutputFormat::Json,
@@ -678,6 +872,7 @@ fn run_report(args: ReportArgs) -> ExitCode {
     let scope = RequestedScope::from_options(&options);
     match run_analysis(&options) {
         Ok(report) => {
+            let outcome = RunOutcome::classify(&report, args.fail_on);
             let rendered = render_report_with_scope(&report, &scope, format);
             if let Some(output) = args.output {
                 if let Err(error) = fs::write(&output, rendered) {
@@ -685,9 +880,9 @@ fn run_report(args: ReportArgs) -> ExitCode {
                     return ExitCode::from(2);
                 }
             } else {
-                println!("{rendered}");
+                writer.emit(outcome, &rendered);
             }
-            exit_for(&report, args.fail_on)
+            outcome.exit_code()
         }
         Err(error) => {
             eprintln!("gruff-rs: {error}");
@@ -696,28 +891,67 @@ fn run_report(args: ReportArgs) -> ExitCode {
     }
 }
 
-fn run_list_rules(args: ListRulesArgs) -> ExitCode {
+fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
     let registry = rules::builtin_registry();
-    match args.format {
+    let body = match args.format {
         RuleListFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(registry.definitions()).expect("rules serialize")
-            );
+            serde_json::to_string_pretty(registry.definitions()).expect("rules serialize")
         }
         RuleListFormat::Text => {
+            let mut out = String::new();
             for definition in registry.definitions() {
-                println!(
-                    "{} [{}] {:?} {:?} - {}",
+                out.push_str(&format!(
+                    "{} [{}] {:?} {:?} - {}\n",
                     definition.id,
                     definition.tier,
                     definition.pillar,
                     definition.default_severity,
                     definition.description
-                );
+                ));
             }
+            out.trim_end_matches('\n').to_string()
+        }
+    };
+    writer.emit_unconditional(&body);
+    ExitCode::SUCCESS
+}
+
+fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
+    let options = AnalysisOptions {
+        paths: args.paths,
+        config: args.config,
+        no_config: args.no_config,
+        format: OutputFormat::Text,
+        fail_on: FailThreshold::None,
+        include_ignored: args.include_ignored,
+        diff: None,
+        history_file: None,
+        baseline: None,
+        generate_baseline: None,
+        no_baseline: false,
+    };
+
+    match run_analysis(&options) {
+        Ok(report) => {
+            let outcome = RunOutcome::classify(&report, FailThreshold::None);
+            let rendered = summary::render(&report, args.top, args.format);
+            writer.emit(outcome, &rendered);
+            outcome.exit_code()
+        }
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            ExitCode::from(2)
         }
     }
+}
+
+fn run_completion(args: CompletionArgs, writer: OutputWriter) -> ExitCode {
+    if writer.silent {
+        return ExitCode::SUCCESS;
+    }
+    let mut command = Cli::command();
+    let bin_name = command.get_name().to_string();
+    clap_complete::generate(args.shell, &mut command, bin_name, &mut std::io::stdout());
     ExitCode::SUCCESS
 }
 
@@ -4271,21 +4505,6 @@ fn html_escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn exit_for(report: &AnalysisReport, fail_on: FailThreshold) -> ExitCode {
-    if !report.diagnostics.is_empty() {
-        return ExitCode::from(2);
-    }
-    if report
-        .findings
-        .iter()
-        .any(|finding| fail_on.triggered_by(finding.severity))
-    {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    }
 }
 
 fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
