@@ -15,6 +15,7 @@ use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 use walkdir::{DirEntry, WalkDir};
 
+mod html_report;
 mod rules;
 
 const VERSION: &str = "0.1.0-dev";
@@ -178,6 +179,33 @@ struct AnalysisOptions {
     baseline: Option<PathBuf>,
     generate_baseline: Option<PathBuf>,
     no_baseline: bool,
+}
+
+/// Renderer-only view of which paths and diff mode the user asked for.
+///
+/// This is intentionally not serialised onto `AnalysisReport`. The HTML
+/// renderer uses it to populate the masthead "paths" and "scope" labels; other
+/// renderers ignore it.
+#[derive(Clone, Default, Debug)]
+struct RequestedScope {
+    paths: Vec<String>,
+    diff_label: Option<String>,
+}
+
+impl RequestedScope {
+    fn from_options(options: &AnalysisOptions) -> Self {
+        let paths = if options.paths.is_empty() {
+            vec![".".to_string()]
+        } else {
+            options
+                .paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect()
+        };
+        let diff_label = options.diff.as_ref().map(|mode| format!("diff · {mode}"));
+        Self { paths, diff_label }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -591,9 +619,13 @@ fn main() -> ExitCode {
     match cli.command {
         Commands::Analyse(args) => {
             let options = options_from_analyse(args);
+            let scope = RequestedScope::from_options(&options);
             match run_analysis(&options) {
                 Ok(report) => {
-                    println!("{}", render_report(&report, options.format));
+                    println!(
+                        "{}",
+                        render_report_with_scope(&report, &scope, options.format)
+                    );
                     exit_for(&report, options.fail_on)
                 }
                 Err(error) => {
@@ -643,9 +675,10 @@ fn run_report(args: ReportArgs) -> ExitCode {
         no_baseline: args.no_baseline,
     };
 
+    let scope = RequestedScope::from_options(&options);
     match run_analysis(&options) {
         Ok(report) => {
-            let rendered = render_report(&report, format);
+            let rendered = render_report_with_scope(&report, &scope, format);
             if let Some(output) = args.output {
                 if let Err(error) = fs::write(&output, rendered) {
                     eprintln!("gruff-rs: unable to write {}: {error}", output.display());
@@ -4091,10 +4124,19 @@ fn grade(score: f64) -> String {
     .to_string()
 }
 
+#[cfg(test)]
 fn render_report(report: &AnalysisReport, format: OutputFormat) -> String {
+    render_report_with_scope(report, &RequestedScope::default(), format)
+}
+
+fn render_report_with_scope(
+    report: &AnalysisReport,
+    scope: &RequestedScope,
+    format: OutputFormat,
+) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(report).expect("report serializes"),
-        OutputFormat::Html => render_html(report),
+        OutputFormat::Html => html_report::render(report, scope),
         OutputFormat::Markdown => render_markdown(report),
         OutputFormat::Github => render_github(report),
         OutputFormat::Hotspot => render_hotspot(report),
@@ -4198,90 +4240,6 @@ fn render_hotspot(report: &AnalysisReport) -> String {
         "files": report.score.top_offenders,
     }))
     .expect("hotspot serializes")
-}
-
-fn render_html(report: &AnalysisReport) -> String {
-    let findings = report
-        .findings
-        .iter()
-        .take(250)
-        .map(|finding| {
-            format!(
-                "<li><strong>{}</strong> <code>{}</code>:{}<br>{}</li>",
-                html_escape(&finding.rule_id),
-                html_escape(&finding.file_path),
-                finding.line.unwrap_or(1),
-                html_escape(&finding.message)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let pillars = report
-        .score
-        .pillars
-        .iter()
-        .map(|pillar| {
-            format!(
-                "<tr><td>{:?}</td><td>{:.1}</td><td>{}</td></tr>",
-                pillar.pillar, pillar.score, pillar.findings
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>gruff-rs report</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 0; color: #172026; background: #f7f8fa; }}
-    header {{ background: #172026; color: white; padding: 24px; }}
-    main {{ max-width: 1120px; margin: 0 auto; padding: 24px; }}
-    .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }}
-    .stat, section {{ background: white; border: 1px solid #d9e0e7; border-radius: 8px; padding: 16px; }}
-    code {{ background: #eef2f6; padding: 1px 4px; border-radius: 4px; }}
-    li {{ margin: 0 0 12px; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    td, th {{ border-bottom: 1px solid #e5e9ef; padding: 8px; text-align: left; }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>gruff-rs</h1>
-    <p>Score {score:.1} ({grade}) · {total} findings · {files} files</p>
-  </header>
-  <main>
-    <div class="stats">
-      <div class="stat"><strong>{advisory}</strong><br>Advisory</div>
-      <div class="stat"><strong>{warning}</strong><br>Warning</div>
-      <div class="stat"><strong>{error}</strong><br>Error</div>
-      <div class="stat"><strong>{files}</strong><br>Files</div>
-    </div>
-    <section>
-      <h2>Pillars</h2>
-      <table><thead><tr><th>Pillar</th><th>Score</th><th>Findings</th></tr></thead><tbody>{pillars}</tbody></table>
-    </section>
-    <section>
-      <h2>Findings</h2>
-      <ol>{findings}</ol>
-    </section>
-  </main>
-</body>
-</html>"#,
-        score = report.score.composite,
-        grade = report.score.grade,
-        total = report.summary.total,
-        files = report.paths.analysed_files,
-        advisory = report.summary.advisory,
-        warning = report.summary.warning,
-        error = report.summary.error,
-        pillars = pillars,
-        findings = findings
-    )
 }
 
 fn severity_label(severity: Severity) -> &'static str {
@@ -4516,8 +4474,9 @@ fn dashboard_response(path: &str, query: &str, default_root: &Path) -> Dashboard
                 generate_baseline: None,
                 no_baseline: false,
             };
+            let scope = RequestedScope::from_options(&options);
             let body = run_analysis_in_project(&root, &options)
-                .map(|report| dashboard_shell(&report, &root))
+                .map(|report| dashboard_shell(&report, &scope, &root))
                 .unwrap_or_else(|error| format!("<pre>{}</pre>", html_escape(&error)));
             DashboardResponse {
                 status: "200 OK",
@@ -4570,15 +4529,22 @@ fn dashboard_index(root: &Path) -> String {
     )
 }
 
-fn dashboard_shell(report: &AnalysisReport, root: &Path) -> String {
-    let report_html = render_html(report);
-    report_html.replace(
-        "<main>",
-        &format!(
-            r#"<main><section><strong>Dashboard scan</strong><br>Project: <code>{}</code><br><a href="/">Change target</a></section>"#,
-            html_escape(&root.display().to_string())
-        ),
-    )
+fn dashboard_shell(report: &AnalysisReport, scope: &RequestedScope, root: &Path) -> String {
+    let report_html = html_report::render(report, scope);
+    let banner = format!(
+        r#"<div class="dashboard-banner" role="region" aria-label="Dashboard scan"><strong>Dashboard scan</strong> · Project: <code>{}</code> · <a href="/">Change target</a></div>"#,
+        html_escape(&root.display().to_string())
+    );
+    if let Some(position) = report_html.find("<body>") {
+        let insert_at = position + "<body>".len();
+        let mut output = String::with_capacity(report_html.len() + banner.len());
+        output.push_str(&report_html[..insert_at]);
+        output.push_str(&banner);
+        output.push_str(&report_html[insert_at..]);
+        output
+    } else {
+        format!("{banner}{report_html}")
+    }
 }
 
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {

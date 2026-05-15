@@ -8,7 +8,9 @@ The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `s
 
 ## Request Flow
 
-For CLI analysis, `main` parses Clap commands, `run_analysis` loads config, `discover_sources` walks input paths, reads each file into a parsed source record, builds an internal `ProjectContext`, dispatches project rules, then dispatches text and Rust rules through `analyse_source`. `render_report` selects text, JSON, HTML, Markdown, GitHub annotation, or hotspot output. `list-rules` renders sorted built-in registry definitions as text or JSON.
+For CLI analysis, `main` parses Clap commands, `run_analysis` loads config, `discover_sources` walks input paths, reads each file into a parsed source record, builds an internal `ProjectContext`, dispatches project rules, then dispatches text and Rust rules through `analyse_source`. `render_report_with_scope` selects text, JSON, HTML, Markdown, GitHub annotation, or hotspot output, threading a renderer-only `RequestedScope` (requested paths plus diff label) into HTML rendering without serialising it onto `AnalysisReport`. `list-rules` renders sorted built-in registry definitions as text or JSON.
+
+The HTML inspection report lives in `src/html_report.rs`. It builds a renderer-internal `ReportView` view-model that derives pillar grade letters, per-pillar severity counts, top-offender grade pills, and a bucketed cyclomatic-complexity distribution from finding metadata. Visual identity (italic-serif `gruff.rs` wordmark, L-bracket "paper" container, rotated grade stamp, pillar grid, complexity histogram, severity-tagged finding rows, forge-orange accent) is shared by `analyse --format html` and the dashboard iframe body.
 
 For dashboard scans, `run_dashboard` binds the requested host and port, `handle_dashboard_request` handles `/`, `/health`, and `/scan`, then `/scan` builds an `AnalysisOptions` value and renders the same report HTML through `dashboard_shell`. Dashboard scans call the analysis pipeline with an explicit project root instead of changing the process working directory.
 

@@ -12,7 +12,8 @@
 ## Source
 
 `src/` = Rust source directory.
-`src/main.rs` = CLI orchestration, analyzer pipeline, parsed source/project context construction, config loading, renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
+`src/main.rs` = CLI orchestration, analyzer pipeline, parsed source/project context construction, config loading, text/markdown/github/hotspot renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
+`src/html_report.rs` = HTML inspection report renderer; builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/rules.rs` = Rule metadata contracts and the sorted built-in rule registry used by config validation and `list-rules`.
 
 ## Fixtures
