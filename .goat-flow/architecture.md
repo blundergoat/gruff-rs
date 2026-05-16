@@ -45,7 +45,7 @@ metadata from the registry, and run diagnostics as invocation notifications. It
 must not change `gruff.analysis.v1`, rule ids, fingerprints, baseline matching,
 scoring, or fail-on behavior.
 
-Rule tuning is loaded by `load_config` from an explicit config path or the first default project config found in this order: `.gruff.yaml`, `.gruff.yml`, `.gruff.json`. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes return command errors. The committed `.gruff.yaml` mirrors the main tunable defaults without becoming a generated dump of every built-in rule. Scoring includes all built-in static pillars even when a pillar has zero findings, so clean or narrow scans still communicate coverage.
+Rule tuning is loaded by `load_config` from an explicit config path or the first default project config found in this order: `.gruff.yaml`, `.gruff.yml`, `.gruff.json`. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes return command errors. The committed `.gruff.yaml` explicitly enumerates every built-in rule so the local rubric surface is visible while preserving the curated threshold overrides. Scoring includes all built-in static pillars even when a pillar has zero findings, so clean or narrow scans still communicate coverage.
 
 ## Deployment / Operations
 
