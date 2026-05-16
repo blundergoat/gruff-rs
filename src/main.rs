@@ -2628,6 +2628,7 @@ mod built_in_rules {
     static LOOP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
     static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
     static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PROCESS_COMMAND_REGEX: OnceLock<Regex> = OnceLock::new();
 
     const TEST_CHECKS: &[RegexRule] = &[
         RegexRule {
@@ -2862,6 +2863,8 @@ mod built_in_rules {
                     Pillar::Size,
                 ));
             }
+
+            analyse_process_command_block(file, block, &searchable_body, findings);
 
             let params = block.param_count;
             if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
@@ -3511,8 +3514,6 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let searchable_source = strip_rust_string_literals(source);
-        let command_regex = Regex::new(r"(std::process::Command|Command)::new\s*\(")
-            .expect("static regex compiles");
         let unwrap_regex = Regex::new(r"\.(unwrap|expect)\s*\(").expect("static regex compiles");
         let unsafe_regex = Regex::new(r"\bunsafe\s*\{").expect("static regex compiles");
         let clone_regex = Regex::new(r"\.clone\(\)").expect("static regex compiles");
@@ -3522,17 +3523,6 @@ mod built_in_rules {
 
         for (line_index, line) in lines.iter().enumerate() {
             let line_number = line_index + 1;
-
-            if command_regex.is_match(line) {
-                findings.push(finding(
-                "security.process-command",
-                "Process command execution is used; validate command arguments are not user-controlled.",
-                file,
-                Some(line_number),
-                Severity::Warning,
-                Pillar::Security,
-            ));
-            }
 
             if unsafe_regex.is_match(line) && !has_nearby_safety_comment(&lines, line_index) {
                 findings.push(finding(
@@ -3591,6 +3581,7 @@ mod built_in_rules {
 
                 if name.len() <= 2
                     && !matches!(name, "i" | "j" | "k")
+                    && !name.starts_with('_')
                     && !config
                         .accepted_abbreviations
                         .contains(&name.to_ascii_lowercase())
@@ -3612,6 +3603,30 @@ mod built_in_rules {
         }
 
         analyse_unreachable(file, &searchable_source, findings);
+    }
+
+    fn analyse_process_command_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let command_regex = static_regex(
+            &PROCESS_COMMAND_REGEX,
+            r"(std::process::Command|Command)::new\s*\(",
+        );
+        for (line_offset, line) in searchable_body.lines().enumerate() {
+            if command_regex.is_match(line) {
+                findings.push(finding(
+                    "security.process-command",
+                    "Process command execution is used; validate command arguments are not user-controlled.",
+                    file,
+                    Some(block.start_line + line_offset),
+                    Severity::Warning,
+                    Pillar::Security,
+                ));
+            }
+        }
     }
 
     fn analyse_item_rules(file: &SourceFile, ast: &syn::File, findings: &mut Vec<Finding>) {
@@ -3710,7 +3725,7 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         for item in &ast.items {
-            analyse_dead_code_item(file, item, source, findings);
+            analyse_dead_code_item(file, item, source, false, findings);
         }
     }
 
@@ -3718,15 +3733,20 @@ mod built_in_rules {
         file: &SourceFile,
         item: &Item,
         source: &str,
+        test_context: bool,
         findings: &mut Vec<Finding>,
     ) {
         match item {
             Item::Fn(item_fn) => analyse_dead_function(
                 file,
-                &item_fn.vis,
-                item_fn.sig.ident.to_string(),
-                item_fn.sig.ident.span(),
                 source,
+                DeadFunctionCandidate {
+                    visibility: &item_fn.vis,
+                    attrs: &item_fn.attrs,
+                    name: item_fn.sig.ident.to_string(),
+                    span: item_fn.sig.ident.span(),
+                    test_context,
+                },
                 findings,
             ),
             Item::Impl(item_impl) => {
@@ -3734,10 +3754,14 @@ mod built_in_rules {
                     if let ImplItem::Fn(method) = impl_item {
                         analyse_dead_function(
                             file,
-                            &method.vis,
-                            method.sig.ident.to_string(),
-                            method.sig.ident.span(),
                             source,
+                            DeadFunctionCandidate {
+                                visibility: &method.vis,
+                                attrs: &method.attrs,
+                                name: method.sig.ident.to_string(),
+                                span: method.sig.ident.span(),
+                                test_context,
+                            },
                             findings,
                         );
                     }
@@ -3745,8 +3769,9 @@ mod built_in_rules {
             }
             Item::Mod(item_mod) => {
                 if let Some((_, items)) = &item_mod.content {
+                    let nested_test_context = test_context || item_mod.ident == "tests";
                     for nested in items {
-                        analyse_dead_code_item(file, nested, source, findings);
+                        analyse_dead_code_item(file, nested, source, nested_test_context, findings);
                     }
                 }
             }
@@ -3754,19 +3779,31 @@ mod built_in_rules {
         }
     }
 
-    fn analyse_dead_function(
-        file: &SourceFile,
-        visibility: &Visibility,
+    struct DeadFunctionCandidate<'a> {
+        visibility: &'a Visibility,
+        attrs: &'a [syn::Attribute],
         name: String,
         span: proc_macro2::Span,
+        test_context: bool,
+    }
+
+    fn analyse_dead_function(
+        file: &SourceFile,
         source: &str,
+        candidate: DeadFunctionCandidate<'_>,
         findings: &mut Vec<Finding>,
     ) {
-        if is_public(visibility) {
+        let DeadFunctionCandidate {
+            visibility,
+            attrs,
+            name,
+            span,
+            test_context,
+        } = candidate;
+        if is_public(visibility) || name == "main" || has_test_attr(attrs) || test_context {
             return;
         }
-        let needle = format!("{name}(");
-        if source.matches(&needle).count() <= 1 {
+        if function_call_count(source, &name) == 0 {
             findings.push(Finding::new(
                 "dead-code.unused-private-function",
                 format!("Private function `{name}` appears to be unused in this file."),
@@ -3779,6 +3816,20 @@ mod built_in_rules {
                 Some("Remove the function or add a real call site.".to_string()),
                 json!({}),
             ));
+        }
+    }
+
+    fn function_call_count(source: &str, name: &str) -> usize {
+        let escaped = regex::escape(name);
+        let call_regex = Regex::new(&format!(r"\b{escaped}\s*(?:::\s*<[^>]+>)?\s*\("))
+            .expect("generated function-call regex compiles");
+        let simple_definition_regex = Regex::new(&format!(r"\bfn\s+{escaped}\s*\("))
+            .expect("generated function-definition regex compiles");
+        let count = call_regex.find_iter(source).count();
+        if simple_definition_regex.is_match(source) {
+            count.saturating_sub(1)
+        } else {
+            count
         }
     }
 
@@ -4157,14 +4208,20 @@ mod built_in_rules {
         let mut occurrences = 0usize;
 
         for line in source.lines() {
-            if !loop_depths.is_empty() && pattern.is_match(line) {
-                occurrences += pattern.find_iter(line).count();
-            }
+            let matches: Vec<usize> = pattern.find_iter(line).map(|found| found.start()).collect();
+            let mut next_match = 0usize;
             if loop_start.is_match(line) {
                 pending_loop = true;
             }
 
-            for character in line.chars() {
+            for (byte_index, character) in line.char_indices() {
+                while next_match < matches.len() && matches[next_match] <= byte_index {
+                    if !loop_depths.is_empty() {
+                        occurrences += 1;
+                    }
+                    next_match += 1;
+                }
+
                 match character {
                     '{' => {
                         depth += 1;
@@ -4179,6 +4236,13 @@ mod built_in_rules {
                     }
                     _ => {}
                 }
+            }
+
+            while next_match < matches.len() {
+                if !loop_depths.is_empty() {
+                    occurrences += 1;
+                }
+                next_match += 1;
             }
         }
 
@@ -5176,7 +5240,7 @@ mod tests {
         let report = analyse_test_paths(vec![PathBuf::from("fixtures/sample.rs")]);
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert_eq!(report.summary.total, 13);
+        assert_eq!(report.summary.total, 12);
 
         let expected = [
             (
@@ -5274,14 +5338,6 @@ mod tests {
                 Some(23),
                 Some("test_sleeps_without_assertion"),
                 "8e9591ae5cdf9beb",
-            ),
-            (
-                "dead-code.unused-private-function",
-                Severity::Advisory,
-                "fixtures/sample.rs",
-                Some(25),
-                Some("test_sleeps_without_assertion"),
-                "b83f8c23ee44d8f3",
             ),
         ];
 
@@ -7408,5 +7464,1398 @@ rules:
 
         let rendered = render_report(&report, OutputFormat::Json);
         assert!(rendered.contains("\"schemaVersion\": \"gruff.analysis.v1\""));
+    }
+
+    const CALIBRATION_BASELINE_MANIFEST: &str = r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Calibration baseline."
+license = "MIT"
+
+[dependencies]
+serde = "1"
+"#;
+
+    const CALIBRATION_BASELINE_LOCKFILE: &str = r#"# This file is automatically @generated by Cargo.
+version = 3
+
+[[package]]
+name = "calibration-fixture"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+
+    fn calibration_baseline(root: &Path) {
+        fs::create_dir_all(root.join("src")).expect("calibration src dir");
+        fs::write(root.join("README.md"), "# Calibration\n").expect("calibration readme");
+        fs::write(root.join("Cargo.toml"), CALIBRATION_BASELINE_MANIFEST)
+            .expect("calibration manifest");
+        fs::write(root.join("Cargo.lock"), CALIBRATION_BASELINE_LOCKFILE)
+            .expect("calibration lockfile");
+    }
+
+    fn write_lib(root: &Path, content: &str) {
+        fs::write(root.join("src/lib.rs"), content).expect("calibration lib");
+    }
+
+    fn baseline_with_lib(root: &Path, lib_content: &str) {
+        calibration_baseline(root);
+        write_lib(root, lib_content);
+    }
+
+    fn module_with_n_items(count: usize) -> String {
+        let mut body = String::from("/// Probe.\n");
+        for index in 0..count {
+            body.push_str(&format!("/// Item {index}.\npub fn item_{index}() {{}}\n"));
+        }
+        body
+    }
+
+    fn module_with_n_mod_decls(count: usize) -> String {
+        let mut body = String::from("/// Root.\n");
+        for index in 0..count {
+            body.push_str(&format!("mod child_{index} {{ pub fn unused() {{}} }}\n"));
+        }
+        body
+    }
+
+    type Setup = Box<dyn Fn(&Path)>;
+
+    struct CalibrationCase {
+        rule_id: &'static str,
+        positive: Setup,
+        negative: Setup,
+    }
+
+    fn case(rule_id: &'static str, positive: Setup, negative: Setup) -> CalibrationCase {
+        CalibrationCase {
+            rule_id,
+            positive,
+            negative,
+        }
+    }
+
+    fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
+        let positive_dir = tempdir().expect("calibration positive tempdir");
+        (case.positive)(positive_dir.path());
+        let positive_report = run_project_analysis(
+            positive_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("calibration positive analysis succeeds");
+        let positive_fired = positive_report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == case.rule_id);
+
+        let negative_dir = tempdir().expect("calibration negative tempdir");
+        (case.negative)(negative_dir.path());
+        let negative_report = run_project_analysis(
+            negative_dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("calibration negative analysis succeeds");
+        let negative_fired = negative_report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == case.rule_id);
+
+        (positive_fired, negative_fired)
+    }
+
+    fn calibration_cases() -> Vec<CalibrationCase> {
+        vec![
+            // ----- architecture -----
+            case(
+                "architecture.large-module",
+                Box::new(|root| baseline_with_lib(root, &module_with_n_items(28))),
+                Box::new(|root| baseline_with_lib(root, &module_with_n_items(3))),
+            ),
+            case(
+                "architecture.module-fan-out",
+                Box::new(|root| baseline_with_lib(root, &module_with_n_mod_decls(10))),
+                Box::new(|root| baseline_with_lib(root, &module_with_n_mod_decls(2))),
+            ),
+            case(
+                "architecture.public-api-surface",
+                Box::new(|root| baseline_with_lib(root, &module_with_n_items(15))),
+                Box::new(|root| baseline_with_lib(root, &module_with_n_items(3))),
+            ),
+            // ----- complexity -----
+            case(
+                "complexity.cognitive",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn complex(items: &[i32], flag_a: bool, flag_b: bool, flag_c: bool) -> i32 {
+    let mut total = 0;
+    for value in items {
+        if flag_a {
+            if flag_b {
+                if flag_c {
+                    if *value > 0 {
+                        total += value;
+                    } else if *value < 0 {
+                        total -= value;
+                    }
+                }
+            }
+        }
+        if flag_a && flag_b {
+            total += 1;
+        } else if flag_b || flag_c {
+            total -= 1;
+        }
+    }
+    total
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn simple(value: i32) -> i32 {
+    value + 1
+}
+"#,
+                    )
+                }),
+            ),
+            case(
+                "complexity.cyclomatic",
+                Box::new(|root| {
+                    let mut body = String::from("/// Probe.\npub fn many_branches(value: i32) -> i32 {\n    let mut total = 0;\n");
+                    for index in 0..15 {
+                        body.push_str(&format!(
+                            "    if value == {index} {{ total += {index}; }}\n"
+                        ));
+                    }
+                    body.push_str("    total\n}\n");
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn straight_line(value: i32) -> i32 { value + 1 }\n",
+                    )
+                }),
+            ),
+            case(
+                "complexity.nesting-depth",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn deeply_nested(flag_a: bool, flag_b: bool, flag_c: bool, flag_d: bool, flag_e: bool) -> i32 {
+    if flag_a {
+        if flag_b {
+            if flag_c {
+                if flag_d {
+                    if flag_e {
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn shallow(flag_a: bool, flag_b: bool) -> i32 {
+    if flag_a && flag_b {
+        return 1;
+    }
+    0
+}
+"#,
+                    )
+                }),
+            ),
+            case(
+                "complexity.npath",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn many_paths(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool) -> i32 {
+    if a { 1 } else { 0 };
+    if b { 1 } else { 0 };
+    if c { 1 } else { 0 };
+    if d { 1 } else { 0 };
+    if e { 1 } else { 0 };
+    if f { 1 } else { 0 };
+    0
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn linear(a: bool) -> i32 { if a { 1 } else { 0 } }\n",
+                    )
+                }),
+            ),
+            // ----- concurrency -----
+            case(
+                "concurrency.blocking-call-in-async",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub async fn blocks() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn synchronous() { std::thread::sleep(std::time::Duration::from_millis(1)); }\n",
+                    )
+                }),
+            ),
+            case(
+                "concurrency.lock-across-await",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub async fn holds(lock: &std::sync::Mutex<i32>) {
+    let guard = lock.lock().unwrap();
+    other().await;
+    println!("{}", *guard);
+}
+
+async fn other() {}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub async fn drops_first(lock: &std::sync::Mutex<i32>) {
+    let guard = lock.lock().unwrap();
+    drop(guard);
+    other().await;
+}
+
+async fn other() {}
+"#,
+                    )
+                }),
+            ),
+            case(
+                "concurrency.unbounded-channel",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn make_channel() { let (_tx, _rx) = std::sync::mpsc::channel::<i32>(); }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn make_channel() { let (_tx, _rx) = std::sync::mpsc::sync_channel::<i32>(16); }\n",
+                    )
+                }),
+            ),
+            // ----- dead code -----
+            case(
+                "dead-code.unused-private-function",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn never_called() {}\npub fn entry() {}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn helper() {}\npub fn entry() { helper(); }\n",
+                    )
+                }),
+            ),
+            case(
+                "dead-code.unused-private-item-candidate",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn unused_isolated_widget() {}\npub fn entry() {}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn helper_widget() {}\npub fn entry() { helper_widget(); }\n",
+                    )
+                }),
+            ),
+            // ----- dependency -----
+            case(
+                "dependency.duplicate-locked-version",
+                Box::new(|root| {
+                    calibration_baseline(root);
+                    fs::write(
+                        root.join("Cargo.lock"),
+                        r#"# generated
+version = 3
+
+[[package]]
+name = "calibration-fixture"
+version = "0.1.0"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+
+[[package]]
+name = "serde"
+version = "1.0.1"
+
+[[package]]
+name = "serde"
+version = "1.0.2"
+"#,
+                    )
+                    .expect("dup lock");
+                    write_lib(root, "/// Probe.\npub fn entry() {}\n");
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "dependency.git-source",
+                Box::new(|root| {
+                    calibration_baseline(root);
+                    fs::write(
+                        root.join("Cargo.toml"),
+                        r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "git source fixture"
+license = "MIT"
+
+[dependencies]
+serde = { git = "https://example.test/serde" }
+"#,
+                    )
+                    .expect("git manifest");
+                    write_lib(root, "/// Probe.\npub fn entry() {}\n");
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "dependency.missing-package-metadata",
+                Box::new(|root| {
+                    fs::create_dir_all(root.join("src")).expect("src dir");
+                    fs::write(root.join("README.md"), "# Calibration\n").expect("readme");
+                    fs::write(
+                        root.join("Cargo.toml"),
+                        r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+"#,
+                    )
+                    .expect("bare manifest");
+                    fs::write(root.join("Cargo.lock"), CALIBRATION_BASELINE_LOCKFILE)
+                        .expect("lockfile");
+                    write_lib(root, "/// Probe.\npub fn entry() {}\n");
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "dependency.path-source",
+                Box::new(|root| {
+                    calibration_baseline(root);
+                    fs::write(
+                        root.join("Cargo.toml"),
+                        r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "path source fixture"
+license = "MIT"
+
+[dependencies]
+helper = { path = "../helper" }
+"#,
+                    )
+                    .expect("path manifest");
+                    write_lib(root, "/// Probe.\npub fn entry() {}\n");
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "dependency.wildcard-version",
+                Box::new(|root| {
+                    calibration_baseline(root);
+                    fs::write(
+                        root.join("Cargo.toml"),
+                        r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "wildcard fixture"
+license = "MIT"
+
+[dependencies]
+serde = "*"
+"#,
+                    )
+                    .expect("wildcard manifest");
+                    write_lib(root, "/// Probe.\npub fn entry() {}\n");
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            // ----- design -----
+            case(
+                "design.god-function",
+                Box::new(|root| {
+                    let mut body = String::from(
+                        "/// Probe.\npub fn god(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool) -> i32 {\n    let mut total = 0;\n",
+                    );
+                    for index in 0..60 {
+                        body.push_str(&format!(
+                            "    if a && b {{\n        total += {index};\n    }}\n"
+                        ));
+                    }
+                    body.push_str("    total\n}\n");
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn small(a: i32) -> i32 { a + 1 }\n")
+                }),
+            ),
+            // ----- docs -----
+            case(
+                "docs.missing-public-doc",
+                Box::new(|root| baseline_with_lib(root, "pub fn undocumented_entry() {}\n")),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Documented entry.\npub fn entry() {}\n")
+                }),
+            ),
+            case(
+                "docs.missing-readme",
+                Box::new(|root| {
+                    fs::create_dir_all(root.join("src")).expect("src dir");
+                    fs::write(root.join("Cargo.toml"), CALIBRATION_BASELINE_MANIFEST)
+                        .expect("manifest");
+                    fs::write(root.join("Cargo.lock"), CALIBRATION_BASELINE_LOCKFILE)
+                        .expect("lockfile");
+                    write_lib(root, "/// Probe.\npub fn entry() {}\n");
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "docs.todo-density",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\n// TODO: one\n// TODO: two\n// FIXME: three\n// TODO: four\npub fn entry() {}\n",
+                    )
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            // ----- error handling -----
+            case(
+                "error-handling.production-panic",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn always_panics() { panic!(\"boom\"); }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn returns_value() -> i32 { 1 }\n")
+                }),
+            ),
+            case(
+                "error-handling.public-unwrap",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let value: Option<i32> = Some(1); value.unwrap(); }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> Option<i32> { Some(1) }\n",
+                    )
+                }),
+            ),
+            case(
+                "error-handling.unimplemented-placeholder",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> i32 { todo!(\"unfinished\") }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 0 }\n")
+                }),
+            ),
+            // ----- metrics -----
+            case(
+                "metrics.halstead-volume",
+                Box::new(|root| {
+                    let mut body = String::from(
+                        "/// Probe.\npub fn dense(a: i32, b: i32, c: i32, d: i32, e: i32) -> i32 {\n    let mut acc = 0;\n",
+                    );
+                    for index in 0..60 {
+                        body.push_str(&format!(
+                            "    acc = acc + (a * {index}) - (b ^ {index}) | (c & {index}) + (d % ({index} + 1)) * (e + {index});\n"
+                        ));
+                    }
+                    body.push_str("    acc\n}\n");
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn small(a: i32) -> i32 { a + 1 }\n")
+                }),
+            ),
+            case(
+                "metrics.maintainability-pressure",
+                Box::new(|root| {
+                    let mut body = String::from(
+                        "/// Probe.\npub fn dense(a: i32, b: i32, c: i32, d: i32, e: i32) -> i32 {\n    let mut acc = 0;\n",
+                    );
+                    for index in 0..60 {
+                        body.push_str(&format!(
+                            "    if a == {index} {{ acc += b * {index} - c + d / ({index} + 1) - e; }}\n"
+                        ));
+                    }
+                    body.push_str("    acc\n}\n");
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn small(a: i32) -> i32 { a + 1 }\n")
+                }),
+            ),
+            // ----- modernisation -----
+            case(
+                "modernisation.public-field",
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub struct Wide { pub value: i32 }\n")
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub struct Narrow { value: i32 }\nimpl Narrow { /// Read.\npub fn value(&self) -> i32 { self.value } }\n",
+                    )
+                }),
+            ),
+            // ----- naming -----
+            case(
+                "naming.boolean-prefix",
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn ready() -> bool { true }\n")
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn is_ready() -> bool { true }\n")
+                }),
+            ),
+            case(
+                "naming.generic-function",
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn process() {}\n")),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn ingest_payload() {}\n")
+                }),
+            ),
+            case(
+                "naming.placeholder-identifier",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let foo = 1; let _ = foo; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let count = 1; let _ = count; }\n",
+                    )
+                }),
+            ),
+            case(
+                "naming.short-variable",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> i32 { let xy = 1; xy + 1 }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> i32 { let count = 1; count + 1 }\n",
+                    )
+                }),
+            ),
+            // ----- performance -----
+            case(
+                "performance.clone-in-loop",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn entry(values: Vec<String>) {
+    for value in values {
+        let _owned = value.clone();
+    }
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(value: &String) { let _owned = value.clone(); }\n",
+                    )
+                }),
+            ),
+            case(
+                "performance.format-in-loop",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn entry(values: Vec<i32>) {
+    for value in values {
+        let _formatted = format!("{value}");
+    }
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(value: i32) { let _formatted = format!(\"{value}\"); }\n",
+                    )
+                }),
+            ),
+            case(
+                "performance.regex-in-loop",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        r#"/// Probe.
+pub fn entry(values: Vec<i32>) {
+    for value in values {
+        let _compiled = regex::Regex::new("^a$");
+        let _consume = value;
+    }
+}
+"#,
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _compiled = regex::Regex::new(\"^a$\"); }\n",
+                    )
+                }),
+            ),
+            // ----- security -----
+            case(
+                "security.process-command",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = std::process::Command::new(\"ls\"); }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> &'static str { \"ls\" }\n",
+                    )
+                }),
+            ),
+            case(
+                "security.unsafe-block",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(p: *const u8) -> u8 { unsafe { *p } }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(p: *const u8) -> u8 {\n    // SAFETY: caller validated pointer.\n    unsafe { *p }\n}\n",
+                    )
+                }),
+            ),
+            // ----- sensitive data -----
+            case(
+                "sensitive-data.api-key-pattern",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"ghp_aaaaaaaaaaaaaaaaaaaaaa\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"safe-string\"; }\n",
+                    )
+                }),
+            ),
+            case(
+                "sensitive-data.aws-access-key",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"AKIAABCDEFGHIJKLMNOP\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"safe-string\"; }\n",
+                    )
+                }),
+            ),
+            case(
+                "sensitive-data.database-url-password",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"postgres://user:secret@db/app\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"postgres://db/app\"; }\n",
+                    )
+                }),
+            ),
+            case(
+                "sensitive-data.hardcoded-env-value",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD=correct-horse-battery-123\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD\"; }\n",
+                    )
+                }),
+            ),
+            case(
+                "sensitive-data.high-entropy-string",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"Q7m2P9x8R4s6T1v3W5y7Z0a2B4c6D8e0\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"hello world\"; }\n",
+                    )
+                }),
+            ),
+            case(
+                "sensitive-data.jwt-token",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"plain-string\"; }\n",
+                    )
+                }),
+            ),
+            case(
+                "sensitive-data.private-key",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"-----BEGIN RSA PRIVATE KEY-----\"; }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() { let _ = \"plain-string\"; }\n",
+                    )
+                }),
+            ),
+            // ----- size -----
+            case(
+                "size.file-length",
+                Box::new(|root| {
+                    let mut body = String::from("/// Probe.\npub fn entry() {}\n");
+                    for index in 0..420 {
+                        body.push_str(&format!("// filler line {index}\n"));
+                    }
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "size.function-length",
+                Box::new(|root| {
+                    let mut body = String::from("/// Probe.\npub fn long_entry() {\n");
+                    for index in 0..40 {
+                        body.push_str(&format!("    let _ = {index};\n"));
+                    }
+                    body.push_str("}\n");
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
+            ),
+            case(
+                "size.parameter-count",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 { a + b + c + d + e + f }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn entry(a: i32) -> i32 { a }\n")
+                }),
+            ),
+            // ----- test quality -----
+            case(
+                "test-quality.conditional-logic",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let value = 1;\n        if value > 0 { assert_eq!(value, 1); } else { assert_eq!(value, 0); }\n    }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2 + 2, 4); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.ignored-without-reason",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[ignore]\n    fn skipped() { assert_eq!(1, 1); }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[ignore = \"flaky on CI\"]\n    fn skipped() { assert_eq!(1, 1); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.long-test",
+                Box::new(|root| {
+                    let mut body = String::from(
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn long() {\n        let value = 0;\n",
+                    );
+                    for index in 0..40 {
+                        body.push_str(&format!("        let value = value + {index};\n"));
+                    }
+                    body.push_str("        assert_eq!(value, 780);\n    }\n}\n");
+                    baseline_with_lib(root, &body);
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn quick() { assert_eq!(2 + 2, 4); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.loop-in-test",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let mut sum = 0;\n        for index in 0..3 { sum += index; }\n        assert_eq!(sum, 3);\n    }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(1 + 2, 3); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.no-assertions",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { let _ = 1; }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(1, 1); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.sleep-in-test",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        std::thread::sleep(std::time::Duration::from_millis(1));\n        assert_eq!(1, 1);\n    }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2, 2); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.trivial-assertion",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert!(true); }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { let actual = 2 + 2; assert_eq!(actual, 4); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "test-quality.unwrap-in-test",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let value: Option<i32> = Some(1);\n        let v = value.unwrap();\n        assert_eq!(v, 1);\n    }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(1, 1); }\n}\n",
+                    )
+                }),
+            ),
+            // ----- waste -----
+            case(
+                "waste.unnecessary-clone-candidate",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(value: &String) -> String { value.clone() }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry(value: String) -> String { value }\n",
+                    )
+                }),
+            ),
+            case(
+                "waste.unreachable-code",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> i32 {\n    return 1;\n    let _ignored = 2;\n    3\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 1 }\n")
+                }),
+            ),
+            case(
+                "waste.unwrap-expect",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn entry() { let value: Option<i32> = Some(1); value.unwrap(); }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn entry(value: Option<i32>) -> Option<i32> { value }\n",
+                    )
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn rule_calibration_matrix_covers_every_rule() {
+        let _guard = analysis_lock();
+        let cases = calibration_cases();
+        let registry = crate::rules::builtin_registry();
+
+        let cases_by_rule: BTreeSet<&str> = cases.iter().map(|case| case.rule_id).collect();
+        let registry_ids: BTreeSet<&str> = registry
+            .definitions()
+            .iter()
+            .map(|definition| definition.id)
+            .collect();
+
+        let missing_cases: Vec<&str> = registry_ids.difference(&cases_by_rule).copied().collect();
+        let stale_cases: Vec<&str> = cases_by_rule.difference(&registry_ids).copied().collect();
+
+        let mut report_lines: Vec<String> = Vec::new();
+        let mut missing_positive: Vec<&str> = Vec::new();
+        let mut leaked_negative: Vec<&str> = Vec::new();
+
+        for case in &cases {
+            let (positive_fired, negative_fired) = run_calibration_case(case);
+            report_lines.push(format!(
+                "{rule}: positive={positive} negative={negative}",
+                rule = case.rule_id,
+                positive = if positive_fired { "FIRES" } else { "MISS" },
+                negative = if negative_fired { "FIRES" } else { "silent" },
+            ));
+            if !positive_fired {
+                missing_positive.push(case.rule_id);
+            }
+            if negative_fired {
+                leaked_negative.push(case.rule_id);
+            }
+        }
+
+        eprintln!("\n=== Calibration matrix ===");
+        for line in &report_lines {
+            eprintln!("{line}");
+        }
+        eprintln!(
+            "Coverage: {}/{} rules have calibration cases. Missing: {missing_cases:?}. Stale: {stale_cases:?}",
+            cases_by_rule.len(),
+            registry_ids.len(),
+        );
+        eprintln!(
+            "Under-strict (positive missed): {missing_positive:?}\nOver-strict (negative fired): {leaked_negative:?}\n"
+        );
+
+        assert!(
+            missing_cases.is_empty(),
+            "calibration matrix missing cases for rules: {missing_cases:?}"
+        );
+        assert!(
+            stale_cases.is_empty(),
+            "calibration matrix references unknown rules: {stale_cases:?}"
+        );
+        assert!(
+            missing_positive.is_empty() && leaked_negative.is_empty(),
+            "calibration mismatches: under-strict={missing_positive:?}, over-strict={leaked_negative:?}"
+        );
+    }
+
+    /// Proves that `naming.short-variable` ignores idiomatic throwaway bindings.
+    #[test]
+    fn calibration_naming_short_variable_ignores_underscore_binding() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            "/// Probe.\npub fn entry() { let value = 1; let _ = value; }\n",
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let underscore_finding = report.findings.iter().find(|finding| {
+            finding.rule_id == "naming.short-variable" && finding.symbol.as_deref() == Some("_")
+        });
+        assert!(
+            underscore_finding.is_none(),
+            "calibration expected `naming.short-variable` to ignore `let _`; \
+             findings={:?}",
+            rule_ids(&report)
+        );
+    }
+
+    /// Proves that `performance.clone-in-loop` catches single-line loop bodies.
+    #[test]
+    fn calibration_performance_loop_rules_catch_single_line_loops() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            "/// Probe.\npub fn entry(values: Vec<String>) { for value in values { let _ = value.clone(); } }\n",
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_has_rule(&report, "performance.clone-in-loop");
+    }
+
+    /// Proves that `dead-code.unused-private-function` skips harness entry points.
+    #[test]
+    fn calibration_dead_code_skips_test_attr_and_main() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r#"/// Probe.
+pub fn library_entry() {}
+
+#[cfg(test)]
+mod inner {
+    #[test]
+    fn private_test_only_called_by_runner() {
+        assert_eq!(1, 1);
+    }
+}
+
+fn main() {}
+"#,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let main_dead = report.findings.iter().any(|finding| {
+            finding.rule_id == "dead-code.unused-private-function"
+                && finding.symbol.as_deref() == Some("main")
+        });
+        let test_dead = report.findings.iter().any(|finding| {
+            finding.rule_id == "dead-code.unused-private-function"
+                && finding.symbol.as_deref() == Some("private_test_only_called_by_runner")
+        });
+        assert!(
+            !main_dead,
+            "calibration expected `dead-code.unused-private-function` to skip `fn main`; \
+             findings={:?}",
+            rule_ids(&report)
+        );
+        assert!(
+            !test_dead,
+            "calibration expected `dead-code.unused-private-function` to skip `#[test]` fn; \
+             findings={:?}",
+            rule_ids(&report)
+        );
+    }
+
+    /// Proves that `security.process-command` catches live process construction
+    /// while ignoring command snippets embedded in fixture strings.
+    #[test]
+    fn calibration_security_process_command_detects_code_not_fixture_text() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+pub fn live_command() {
+    let mut command = std::process::Command::new("git");
+    command.arg("status");
+}
+
+/// Probe.
+pub fn fixture_text() {
+    let snippet = r#"std::process::Command::new("sh");"#;
+    println!("{snippet}");
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let command_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "security.process-command")
+            .collect();
+        assert_eq!(
+            command_findings.len(),
+            1,
+            "calibration expected exactly one live process-command finding; findings={command_findings:?}"
+        );
+        assert_eq!(command_findings[0].symbol.as_deref(), None);
+        assert_eq!(command_findings[0].line, Some(3));
+    }
+
+    /// Documents that complexity, metric, and size rules treat test-context
+    /// functions identically to production code. A long, branchy
+    /// `#[cfg(test)] mod tests` setup function gets flagged with
+    /// `complexity.cyclomatic` (potentially at error severity), `size.function-length`,
+    /// `metrics.halstead-volume`, and `metrics.maintainability-pressure` even
+    /// though tests legitimately have these properties.
+    #[test]
+    fn calibration_finding_complexity_does_not_skip_test_context() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        let mut body = String::from(
+            "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
+        );
+        for index in 0..30 {
+            body.push_str(&format!("        if {index} > 0 {{ total += {index}; }}\n"));
+        }
+        body.push_str("        assert_eq!(total, 465);\n    }\n}\n");
+        baseline_with_lib(dir.path(), &body);
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let test_cyclomatic = report.findings.iter().any(|finding| {
+            finding.rule_id == "complexity.cyclomatic"
+                && finding.symbol.as_deref() == Some("long_setup")
+        });
+        assert!(
+            test_cyclomatic,
+            "calibration probe expected `complexity.cyclomatic` to fire on a test function; \
+             findings={:?}",
+            rule_ids(&report)
+        );
+    }
+
+    /// Documents that `sensitive-data.api-key-pattern` only recognises four
+    /// formats (`sk_live_`, `ghp_`, `sk-ant-`, `xox*-`) and silently misses
+    /// many widely-used API keys: Stripe `sk_test_`/`pk_*`, GitHub
+    /// `gho_`/`ghu_`/`ghs_`/`ghr_`, OpenAI `sk-`, Google `AIza`, and Azure
+    /// connection strings. The fixture below uses real-looking but synthetic
+    /// patterns and confirms the rule misses each.
+    #[test]
+    fn calibration_finding_api_key_pattern_misses_common_formats() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r#"/// Probe.
+pub fn entry() {
+    let _stripe_test = "sk_test_aaaaaaaaaaaaaaaaaaaaaaaa";
+    let _stripe_pub = "pk_live_aaaaaaaaaaaaaaaaaaaaaaaa";
+    let _github_oauth = "gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let _google_api = "AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+}
+"#,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_missing_rule(&report, "sensitive-data.api-key-pattern");
+    }
+
+    /// Documents that `sensitive-data.hardcoded-env-value` matches inside
+    /// arbitrary string literals, so the rule fires on its own test fixtures
+    /// when they contain `DATABASE_PASSWORD=...` patterns. The codebase works
+    /// around this by splitting the literal with `concat!("DATABASE_", "PASSWORD=...")`,
+    /// which is a brittle evasion. The rule should at minimum offer a
+    /// per-fixture scope or a test-context skip rather than relying on
+    /// concat-based obfuscation in source.
+    #[test]
+    fn calibration_finding_hardcoded_env_value_fires_inside_test_fixtures() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r#"/// Probe.
+pub fn entry() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fixture_text_contains_secret_pattern() {
+        let fixture = "DATABASE_PASSWORD=correct-horse-battery-123";
+        assert!(fixture.contains("PASSWORD"));
+    }
+}
+"#,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_has_rule(&report, "sensitive-data.hardcoded-env-value");
     }
 }

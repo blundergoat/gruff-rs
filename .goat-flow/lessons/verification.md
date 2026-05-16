@@ -25,3 +25,15 @@ target function.
 
 If a fix introduces setup data, prefer module-level constants or small helpers
 over adding bulky local tables to an already near-threshold function.
+
+## Lesson: Calibration Fixes Must Update Fixture Contracts
+
+**Created:** 2026-05-16
+
+When changing analyzer rule semantics, rerun the full unit suite after targeted
+calibration tests. A desired rule behavior change can invalidate fixture-count
+contracts, and the first failing assertion may poison the shared analysis lock
+so later failures look unrelated.
+
+After fixing the first semantic mismatch, rerun the full suite before diagnosing
+the lock-poison follow-on failures.
