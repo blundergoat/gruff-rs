@@ -1570,6 +1570,29 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
     let mut diagnostics = Vec::new();
     let manifest = read_manifest_summary(project_root, &mut diagnostics);
     let lockfile = read_lockfile_summary(project_root, &mut diagnostics);
+    let mut index = project_index(sources);
+    sort_project_index(&mut index);
+
+    ProjectContext {
+        root_path: project_root.to_path_buf(),
+        manifest,
+        lockfile,
+        rust_sources: index.rust_sources,
+        modules: index.modules,
+        items: index.items,
+        call_names: index.call_names,
+        diagnostics,
+    }
+}
+
+struct ProjectIndex {
+    rust_sources: Vec<RustSourceSummary>,
+    modules: Vec<ModuleSummary>,
+    items: Vec<ItemSummary>,
+    call_names: Vec<CallNameSummary>,
+}
+
+fn project_index(sources: &[ParsedSource]) -> ProjectIndex {
     let mut rust_sources = Vec::new();
     let mut modules = Vec::new();
     let mut items = Vec::new();
@@ -1593,7 +1616,31 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
             );
         }
     }
+    ProjectIndex {
+        rust_sources,
+        modules,
+        items,
+        call_names,
+    }
+}
 
+fn sort_project_index(index: &mut ProjectIndex) {
+    sort_project_modules(&mut index.modules);
+    sort_project_items(&mut index.items);
+    index.call_names.sort_by(|left, right| {
+        (left.file_path.as_str(), left.name.as_str(), left.line).cmp(&(
+            right.file_path.as_str(),
+            right.name.as_str(),
+            right.line,
+        ))
+    });
+    index.call_names.dedup();
+    index
+        .rust_sources
+        .sort_by(|left, right| left.file_path.cmp(&right.file_path));
+}
+
+fn sort_project_modules(modules: &mut [ModuleSummary]) {
     modules.sort_by(|left, right| {
         (
             left.file_path.as_str(),
@@ -1610,6 +1657,9 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
                 right.cfg_gated,
             ))
     });
+}
+
+fn sort_project_items(items: &mut [ItemSummary]) {
     items.sort_by(|left, right| {
         (
             left.file_path.as_str(),
@@ -1630,38 +1680,30 @@ fn build_project_context(project_root: &Path, sources: &[ParsedSource]) -> Proje
                 right.test_context,
             ))
     });
-    call_names.sort_by(|left, right| {
-        (left.file_path.as_str(), left.name.as_str(), left.line).cmp(&(
-            right.file_path.as_str(),
-            right.name.as_str(),
-            right.line,
-        ))
-    });
-    call_names.dedup();
-    rust_sources.sort_by(|left, right| left.file_path.cmp(&right.file_path));
-
-    ProjectContext {
-        root_path: project_root.to_path_buf(),
-        manifest,
-        lockfile,
-        rust_sources,
-        modules,
-        items,
-        call_names,
-        diagnostics,
-    }
 }
 
 fn read_manifest_summary(
     project_root: &Path,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> Option<ManifestSummary> {
+    let raw = read_manifest_raw(project_root, diagnostics)?;
+    let value = parse_manifest_value(&raw, diagnostics)?;
+    Some(ManifestSummary {
+        file_path: "Cargo.toml".to_string(),
+        package_line: manifest_package_line(&raw),
+        package_name: manifest_package_field(&value, "name"),
+        package_description: manifest_package_field(&value, "description"),
+        package_license: manifest_package_field(&value, "license"),
+        dependencies: manifest_dependencies(&value, &raw),
+    })
+}
+
+fn read_manifest_raw(project_root: &Path, diagnostics: &mut Vec<RunDiagnostic>) -> Option<String> {
     let path = project_root.join("Cargo.toml");
     if !path.exists() {
         return None;
     }
-
-    let raw = match fs::read_to_string(&path) {
+    Some(match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) => {
             diagnostics.push(RunDiagnostic {
@@ -1672,9 +1714,11 @@ fn read_manifest_summary(
             });
             return None;
         }
-    };
+    })
+}
 
-    let value = match raw.parse::<toml::Value>() {
+fn parse_manifest_value(raw: &str, diagnostics: &mut Vec<RunDiagnostic>) -> Option<toml::Value> {
+    Some(match raw.parse::<toml::Value>() {
         Ok(value) => value,
         Err(_) => {
             diagnostics.push(RunDiagnostic {
@@ -1687,44 +1731,29 @@ fn read_manifest_summary(
             });
             return None;
         }
-    };
+    })
+}
 
-    let package_name = value
+fn manifest_package_field(value: &toml::Value, field: &str) -> Option<String> {
+    value
         .get("package")
         .and_then(toml::Value::as_table)
-        .and_then(|package| package.get("name"))
+        .and_then(|package| package.get(field))
         .and_then(toml::Value::as_str)
-        .map(str::to_string);
-    let package_description = value
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .and_then(|package| package.get("description"))
-        .and_then(toml::Value::as_str)
-        .map(str::to_string);
-    let package_license = value
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .and_then(|package| package.get("license"))
-        .and_then(toml::Value::as_str)
-        .map(str::to_string);
-    let dependency_lines = manifest_dependency_lines(&raw);
+        .map(str::to_string)
+}
+
+fn manifest_dependencies(value: &toml::Value, raw: &str) -> Vec<DependencySummary> {
+    let dependency_lines = manifest_dependency_lines(raw);
     let mut dependencies = Vec::new();
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        collect_manifest_dependencies(&value, section, &dependency_lines, &mut dependencies);
+        collect_manifest_dependencies(value, section, &dependency_lines, &mut dependencies);
     }
     dependencies.sort_by(|left, right| {
         (left.section.as_str(), left.name.as_str())
             .cmp(&(right.section.as_str(), right.name.as_str()))
     });
-
-    Some(ManifestSummary {
-        file_path: "Cargo.toml".to_string(),
-        package_line: manifest_package_line(&raw),
-        package_name,
-        package_description,
-        package_license,
-        dependencies,
-    })
+    dependencies
 }
 
 fn collect_manifest_dependencies(
@@ -1815,12 +1844,20 @@ fn read_lockfile_summary(
     project_root: &Path,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> Option<LockfileSummary> {
+    let raw = read_lockfile_raw(project_root, diagnostics)?;
+    let value = parse_lockfile_value(&raw, diagnostics)?;
+    Some(LockfileSummary {
+        file_path: "Cargo.lock".to_string(),
+        packages: locked_packages(&value, &raw),
+    })
+}
+
+fn read_lockfile_raw(project_root: &Path, diagnostics: &mut Vec<RunDiagnostic>) -> Option<String> {
     let path = project_root.join("Cargo.lock");
     if !path.exists() {
         return None;
     }
-
-    let raw = match fs::read_to_string(&path) {
+    Some(match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(error) => {
             diagnostics.push(RunDiagnostic {
@@ -1831,9 +1868,11 @@ fn read_lockfile_summary(
             });
             return None;
         }
-    };
+    })
+}
 
-    let value = match raw.parse::<toml::Value>() {
+fn parse_lockfile_value(raw: &str, diagnostics: &mut Vec<RunDiagnostic>) -> Option<toml::Value> {
+    Some(match raw.parse::<toml::Value>() {
         Ok(value) => value,
         Err(_) => {
             diagnostics.push(RunDiagnostic {
@@ -1845,9 +1884,11 @@ fn read_lockfile_summary(
             });
             return None;
         }
-    };
+    })
+}
 
-    let package_lines = lockfile_package_lines(&raw);
+fn locked_packages(value: &toml::Value, raw: &str) -> Vec<LockedPackageSummary> {
+    let package_lines = lockfile_package_lines(raw);
     let mut packages = value
         .get("package")
         .and_then(toml::Value::as_array)
@@ -1885,11 +1926,7 @@ fn read_lockfile_summary(
                 right.source.as_deref(),
             ))
     });
-
-    Some(LockfileSummary {
-        file_path: "Cargo.lock".to_string(),
-        packages,
-    })
+    packages
 }
 
 fn lockfile_package_lines(raw: &str) -> HashMap<(String, String), usize> {
@@ -1946,102 +1983,179 @@ fn collect_project_items(
     modules: &mut Vec<ModuleSummary>,
     items: &mut Vec<ItemSummary>,
 ) {
+    let scope = ProjectItemScope {
+        file,
+        module_path,
+        cfg_context,
+        test_context,
+    };
     for item in syn_items {
-        match item {
-            Item::Fn(item_fn) => items.push(project_item(
-                file,
-                module_path,
-                item_fn.sig.ident.to_string(),
-                "function",
-                line_from_span(item_fn.sig.ident.span().start()),
-                ProjectItemContext {
-                    public: visibility_is_public(&item_fn.vis),
-                    cfg_gated: cfg_context || has_cfg_attr(&item_fn.attrs),
-                    test_context: test_context || has_test_attr(&item_fn.attrs),
-                },
-            )),
-            Item::Struct(item_struct) => items.push(project_item(
-                file,
-                module_path,
-                item_struct.ident.to_string(),
-                "struct",
-                line_from_span(item_struct.ident.span().start()),
-                ProjectItemContext {
-                    public: visibility_is_public(&item_struct.vis),
-                    cfg_gated: cfg_context || has_cfg_attr(&item_struct.attrs),
-                    test_context,
-                },
-            )),
-            Item::Enum(item_enum) => items.push(project_item(
-                file,
-                module_path,
-                item_enum.ident.to_string(),
-                "enum",
-                line_from_span(item_enum.ident.span().start()),
-                ProjectItemContext {
-                    public: visibility_is_public(&item_enum.vis),
-                    cfg_gated: cfg_context || has_cfg_attr(&item_enum.attrs),
-                    test_context,
-                },
-            )),
-            Item::Trait(item_trait) => items.push(project_item(
-                file,
-                module_path,
-                item_trait.ident.to_string(),
-                "trait",
-                line_from_span(item_trait.ident.span().start()),
-                ProjectItemContext {
-                    public: visibility_is_public(&item_trait.vis),
-                    cfg_gated: cfg_context || has_cfg_attr(&item_trait.attrs),
-                    test_context,
-                },
-            )),
-            Item::Impl(item_impl) => {
-                for impl_item in &item_impl.items {
-                    if let ImplItem::Fn(method) = impl_item {
-                        items.push(project_item(
-                            file,
-                            module_path,
-                            method.sig.ident.to_string(),
-                            "method",
-                            line_from_span(method.sig.ident.span().start()),
-                            ProjectItemContext {
-                                public: visibility_is_public(&method.vis),
-                                cfg_gated: cfg_context
-                                    || has_cfg_attr(&item_impl.attrs)
-                                    || has_cfg_attr(&method.attrs),
-                                test_context: test_context || has_test_attr(&method.attrs),
-                            },
-                        ));
-                    }
-                }
-            }
-            Item::Mod(item_mod) => {
-                let current_module = module_name(module_path, &item_mod.ident.to_string());
-                let module_cfg_gated = cfg_context || has_cfg_attr(&item_mod.attrs);
-                let module_test_context = test_context || is_test_module(item_mod);
-                modules.push(ModuleSummary {
-                    file_path: file.display_path.clone(),
-                    module_path: current_module.clone(),
-                    line: line_from_span(item_mod.ident.span().start()),
-                    public: visibility_is_public(&item_mod.vis),
-                    inline: item_mod.content.is_some(),
-                    cfg_gated: module_cfg_gated,
-                });
-                if let Some((_, nested)) = &item_mod.content {
-                    collect_project_items(
-                        file,
-                        nested,
-                        &current_module,
-                        module_cfg_gated,
-                        module_test_context,
-                        modules,
-                        items,
-                    );
-                }
-            }
-            _ => {}
+        collect_project_item(scope, item, modules, items);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProjectItemScope<'a> {
+    file: &'a SourceFile,
+    module_path: &'a str,
+    cfg_context: bool,
+    test_context: bool,
+}
+
+fn collect_project_item(
+    scope: ProjectItemScope<'_>,
+    item: &Item,
+    modules: &mut Vec<ModuleSummary>,
+    items: &mut Vec<ItemSummary>,
+) {
+    match item {
+        Item::Fn(item_fn) => collect_project_function(scope, item_fn, items),
+        Item::Struct(item_struct) => collect_project_struct(scope, item_struct, items),
+        Item::Enum(item_enum) => collect_project_enum(scope, item_enum, items),
+        Item::Trait(item_trait) => collect_project_trait(scope, item_trait, items),
+        Item::Impl(item_impl) => collect_project_impl(scope, item_impl, items),
+        Item::Mod(item_mod) => collect_project_module(scope, item_mod, modules, items),
+        _ => {}
+    }
+}
+
+fn collect_project_function(
+    scope: ProjectItemScope<'_>,
+    item_fn: &syn::ItemFn,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope.file,
+        scope.module_path,
+        item_fn.sig.ident.to_string(),
+        "function",
+        line_from_span(item_fn.sig.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_fn.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_fn.attrs),
+            test_context: scope.test_context || has_test_attr(&item_fn.attrs),
+        },
+    ));
+}
+
+fn collect_project_struct(
+    scope: ProjectItemScope<'_>,
+    item_struct: &syn::ItemStruct,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope.file,
+        scope.module_path,
+        item_struct.ident.to_string(),
+        "struct",
+        line_from_span(item_struct.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_struct.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_struct.attrs),
+            test_context: scope.test_context,
+        },
+    ));
+}
+
+fn collect_project_enum(
+    scope: ProjectItemScope<'_>,
+    item_enum: &syn::ItemEnum,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope.file,
+        scope.module_path,
+        item_enum.ident.to_string(),
+        "enum",
+        line_from_span(item_enum.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_enum.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_enum.attrs),
+            test_context: scope.test_context,
+        },
+    ));
+}
+
+fn collect_project_trait(
+    scope: ProjectItemScope<'_>,
+    item_trait: &syn::ItemTrait,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope.file,
+        scope.module_path,
+        item_trait.ident.to_string(),
+        "trait",
+        line_from_span(item_trait.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_trait.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_trait.attrs),
+            test_context: scope.test_context,
+        },
+    ));
+}
+
+fn collect_project_impl(
+    scope: ProjectItemScope<'_>,
+    item_impl: &syn::ItemImpl,
+    items: &mut Vec<ItemSummary>,
+) {
+    for impl_item in &item_impl.items {
+        if let ImplItem::Fn(method) = impl_item {
+            collect_project_method(scope, item_impl, method, items);
         }
+    }
+}
+
+fn collect_project_method(
+    scope: ProjectItemScope<'_>,
+    item_impl: &syn::ItemImpl,
+    method: &syn::ImplItemFn,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope.file,
+        scope.module_path,
+        method.sig.ident.to_string(),
+        "method",
+        line_from_span(method.sig.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&method.vis),
+            cfg_gated: scope.cfg_context
+                || has_cfg_attr(&item_impl.attrs)
+                || has_cfg_attr(&method.attrs),
+            test_context: scope.test_context || has_test_attr(&method.attrs),
+        },
+    ));
+}
+
+fn collect_project_module(
+    scope: ProjectItemScope<'_>,
+    item_mod: &syn::ItemMod,
+    modules: &mut Vec<ModuleSummary>,
+    items: &mut Vec<ItemSummary>,
+) {
+    let current_module = module_name(scope.module_path, &item_mod.ident.to_string());
+    let module_cfg_gated = scope.cfg_context || has_cfg_attr(&item_mod.attrs);
+    let module_test_context = scope.test_context || is_test_module(item_mod);
+    modules.push(ModuleSummary {
+        file_path: scope.file.display_path.clone(),
+        module_path: current_module.clone(),
+        line: line_from_span(item_mod.ident.span().start()),
+        public: visibility_is_public(&item_mod.vis),
+        inline: item_mod.content.is_some(),
+        cfg_gated: module_cfg_gated,
+    });
+    if let Some((_, nested)) = &item_mod.content {
+        collect_project_items(
+            scope.file,
+            nested,
+            &current_module,
+            module_cfg_gated,
+            module_test_context,
+            modules,
+            items,
+        );
     }
 }
 
@@ -2473,6 +2587,17 @@ fn analyse_manifest_dependency(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
+    analyse_git_dependency(manifest, dependency, config, findings);
+    analyse_path_dependency(manifest, dependency, config, findings);
+    analyse_wildcard_dependency(manifest, dependency, config, findings);
+}
+
+fn analyse_git_dependency(
+    manifest: &ManifestSummary,
+    dependency: &DependencySummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
     if let Some(git) = &dependency.git {
         let rule_id = "dependency.git-source";
         if config.rule_enabled(rule_id) {
@@ -2495,7 +2620,14 @@ fn analyse_manifest_dependency(
             ));
         }
     }
+}
 
+fn analyse_path_dependency(
+    manifest: &ManifestSummary,
+    dependency: &DependencySummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
     if let Some(path) = &dependency.path {
         let rule_id = "dependency.path-source";
         if config.rule_enabled(rule_id) {
@@ -2516,7 +2648,14 @@ fn analyse_manifest_dependency(
             ));
         }
     }
+}
 
+fn analyse_wildcard_dependency(
+    manifest: &ManifestSummary,
+    dependency: &DependencySummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
     if let Some(requirement) = &dependency.requirement {
         let rule_id = "dependency.wildcard-version";
         if config.rule_enabled(rule_id) && is_wildcard_requirement(requirement) {
@@ -2655,6 +2794,12 @@ mod built_in_rules {
     static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
     static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
     static PROCESS_COMMAND_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PANIC_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PLACEHOLDER_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
+    static UNWRAP_EXPECT_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
+    static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
+    static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
+    static VARIABLE_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
 
     const TEST_CHECKS: &[RegexRule] = &[
         RegexRule {
@@ -2826,47 +2971,71 @@ mod built_in_rules {
         ranges: &mut Vec<(usize, usize)>,
     ) {
         match item {
-            Item::Fn(item_fn) => {
-                if test_context
-                    || has_test_attr(&item_fn.attrs)
-                    || has_cfg_test_attr(&item_fn.attrs)
-                {
-                    push_item_line_range(item, ranges);
-                }
-            }
+            Item::Fn(item_fn) => collect_function_test_range(item, item_fn, test_context, ranges),
             Item::Impl(item_impl) => {
-                let item_test_context = test_context
-                    || has_test_attr(&item_impl.attrs)
-                    || has_cfg_test_attr(&item_impl.attrs);
-                if item_test_context {
-                    push_item_line_range(item, ranges);
-                }
-                for impl_item in &item_impl.items {
-                    if let ImplItem::Fn(method) = impl_item {
-                        let method_test_context = item_test_context
-                            || has_test_attr(&method.attrs)
-                            || has_cfg_test_attr(&method.attrs);
-                        if method_test_context {
-                            push_span_line_range(method.span(), ranges);
-                        }
-                    }
-                }
+                collect_impl_test_ranges(item, item_impl, test_context, ranges)
             }
-            Item::Mod(item_mod) => {
-                let item_test_context = test_context || is_test_module(item_mod);
-                if item_test_context {
-                    push_item_line_range(item, ranges);
-                }
-                if let Some((_, items)) = &item_mod.content {
-                    for nested in items {
-                        collect_test_context_line_ranges(nested, item_test_context, ranges);
-                    }
-                }
-            }
+            Item::Mod(item_mod) => collect_module_test_ranges(item, item_mod, test_context, ranges),
             _ => {
                 if test_context {
                     push_item_line_range(item, ranges);
                 }
+            }
+        }
+    }
+
+    fn collect_function_test_range(
+        item: &Item,
+        item_fn: &syn::ItemFn,
+        test_context: bool,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        if test_context || has_test_attr(&item_fn.attrs) || has_cfg_test_attr(&item_fn.attrs) {
+            push_item_line_range(item, ranges);
+        }
+    }
+
+    fn collect_impl_test_ranges(
+        item: &Item,
+        item_impl: &syn::ItemImpl,
+        test_context: bool,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        let item_test_context =
+            test_context || has_test_attr(&item_impl.attrs) || has_cfg_test_attr(&item_impl.attrs);
+        if item_test_context {
+            push_item_line_range(item, ranges);
+        }
+        for impl_item in &item_impl.items {
+            if let ImplItem::Fn(method) = impl_item {
+                collect_impl_method_test_range(method, item_test_context, ranges);
+            }
+        }
+    }
+
+    fn collect_impl_method_test_range(
+        method: &syn::ImplItemFn,
+        item_test_context: bool,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        if item_test_context || has_test_attr(&method.attrs) || has_cfg_test_attr(&method.attrs) {
+            push_span_line_range(method.span(), ranges);
+        }
+    }
+
+    fn collect_module_test_ranges(
+        item: &Item,
+        item_mod: &syn::ItemMod,
+        test_context: bool,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        let item_test_context = test_context || is_test_module(item_mod);
+        if item_test_context {
+            push_item_line_range(item, ranges);
+        }
+        if let Some((_, items)) = &item_mod.content {
+            for nested in items {
+                collect_test_context_line_ranges(nested, item_test_context, ranges);
             }
         }
     }
@@ -2944,246 +3113,320 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         for block in blocks {
-            let searchable_body = strip_rust_string_literals(&block.body);
+            analyse_block(file, block, config, findings);
+        }
+    }
 
-            analyse_process_command_block(file, block, &searchable_body, findings);
-            if block.is_test {
-                analyse_test_block(file, block, config, findings);
-            }
-            if block.is_test_context() {
-                continue;
-            }
+    fn analyse_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let searchable_body = strip_rust_string_literals(&block.body);
+        analyse_process_command_block(file, block, &searchable_body, findings);
+        if block.is_test {
+            analyse_test_block(file, block, config, findings);
+        }
+        if block.is_test_context() {
+            return;
+        }
 
-            let method_warn = config.threshold("size.function-length", "warn", 30.0) as usize;
-            let method_error = config.threshold("size.function-length", "error", 60.0) as usize;
-            if block.line_count > method_error {
-                findings.push(block_finding(
-                    "size.function-length",
-                    format!(
-                        "Function `{}` has {} lines, above the error threshold of {method_error}.",
-                        block.name, block.line_count
-                    ),
-                    file,
-                    block,
-                    Severity::Error,
-                    Pillar::Size,
-                ));
-            } else if block.line_count > method_warn {
-                findings.push(block_finding(
-                    "size.function-length",
-                    format!(
-                        "Function `{}` has {} lines, above the warning threshold of {method_warn}.",
-                        block.name, block.line_count
-                    ),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Size,
-                ));
-            }
+        analyse_block_size(file, block, config, findings);
+        let cyclomatic = analyse_block_complexity(file, block, &searchable_body, config, findings);
+        analyse_metric_block(file, block, &searchable_body, cyclomatic, config, findings);
+        analyse_performance_block(file, block, &searchable_body, findings);
+        analyse_design_block(file, block, cyclomatic, findings);
+        analyse_block_naming(file, block, findings);
+        analyse_public_function_doc(file, block, findings);
+        analyse_error_handling_block(file, block, &searchable_body, findings);
+        analyse_concurrency_block(file, block, &searchable_body, findings);
+    }
 
-            let params = block.param_count;
-            if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
-                findings.push(block_finding(
-                    "size.parameter-count",
-                    format!("Function `{}` declares {params} parameters.", block.name),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Size,
-                ));
-            }
+    fn analyse_block_size(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let method_warn = config.threshold("size.function-length", "warn", 30.0) as usize;
+        let method_error = config.threshold("size.function-length", "error", 60.0) as usize;
+        if block.line_count > method_error {
+            findings.push(block_finding(
+                "size.function-length",
+                format!(
+                    "Function `{}` has {} lines, above the error threshold of {method_error}.",
+                    block.name, block.line_count
+                ),
+                file,
+                block,
+                Severity::Error,
+                Pillar::Size,
+            ));
+        } else if block.line_count > method_warn {
+            findings.push(block_finding(
+                "size.function-length",
+                format!(
+                    "Function `{}` has {} lines, above the warning threshold of {method_warn}.",
+                    block.name, block.line_count
+                ),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Size,
+            ));
+        }
 
-            let cyclomatic = count_regex(
-                &searchable_body,
-                r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
-            ) + 1;
-            if cyclomatic > config.threshold("complexity.cyclomatic", "error", 20.0) as usize {
-                findings.push(block_finding_with_metadata(
-                    "complexity.cyclomatic",
-                    format!(
-                        "Function `{}` has cyclomatic complexity {cyclomatic}.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Error,
-                    Pillar::Complexity,
-                    json!({ "complexity": cyclomatic }),
-                ));
-            } else if cyclomatic > config.threshold("complexity.cyclomatic", "warn", 10.0) as usize
-            {
-                findings.push(block_finding_with_metadata(
-                    "complexity.cyclomatic",
-                    format!(
-                        "Function `{}` has cyclomatic complexity {cyclomatic}.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Complexity,
-                    json!({ "complexity": cyclomatic }),
-                ));
-            }
+        let params = block.param_count;
+        if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
+            findings.push(block_finding(
+                "size.parameter-count",
+                format!("Function `{}` declares {params} parameters.", block.name),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Size,
+            ));
+        }
+    }
 
-            let nesting = max_nesting_depth(&searchable_body);
-            let nesting_error = config.threshold("complexity.nesting-depth", "error", 6.0) as usize;
-            let nesting_warn = config.threshold("complexity.nesting-depth", "warn", 4.0) as usize;
-            if nesting > nesting_error {
-                findings.push(block_finding_with_metadata(
-                    "complexity.nesting-depth",
-                    format!("Function `{}` has nesting depth {nesting}.", block.name),
-                    file,
-                    block,
-                    Severity::Error,
-                    Pillar::Complexity,
-                    json!({ "nestingDepth": nesting }),
-                ));
-            } else if nesting > nesting_warn {
-                findings.push(block_finding_with_metadata(
-                    "complexity.nesting-depth",
-                    format!("Function `{}` has nesting depth {nesting}.", block.name),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Complexity,
-                    json!({ "nestingDepth": nesting }),
-                ));
-            }
+    fn analyse_block_complexity(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) -> usize {
+        let cyclomatic = count_regex(
+            searchable_body,
+            r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
+        ) + 1;
+        analyse_cyclomatic_complexity(file, block, cyclomatic, config, findings);
+        let nesting = max_nesting_depth(searchable_body);
+        analyse_nesting_depth(file, block, nesting, config, findings);
+        analyse_npath_complexity(
+            file,
+            block,
+            approximate_npath(searchable_body),
+            config,
+            findings,
+        );
+        analyse_cognitive_complexity(file, block, cyclomatic, nesting, config, findings);
+        cyclomatic
+    }
 
-            let npath = approximate_npath(&searchable_body);
-            let npath_error = config.threshold("complexity.npath", "error", 128.0) as usize;
-            let npath_warn = config.threshold("complexity.npath", "warn", 32.0) as usize;
-            if npath > npath_error {
-                findings.push(block_finding_with_extras(
-                    "complexity.npath",
-                    format!(
-                        "Function `{}` has approximate NPath complexity {npath}.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Error,
-                    Pillar::Complexity,
-                    BlockFindingExtras {
-                        confidence: Confidence::Medium,
-                        remediation: None,
-                        metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
-                    },
-                ));
-            } else if npath > npath_warn {
-                findings.push(block_finding_with_extras(
-                    "complexity.npath",
-                    format!(
-                        "Function `{}` has approximate NPath complexity {npath}.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Complexity,
-                    BlockFindingExtras {
-                        confidence: Confidence::Medium,
-                        remediation: None,
-                        metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
-                    },
-                ));
-            }
+    fn analyse_cyclomatic_complexity(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        cyclomatic: usize,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let severity = if cyclomatic
+            > config.threshold("complexity.cyclomatic", "error", 20.0) as usize
+        {
+            Severity::Error
+        } else if cyclomatic > config.threshold("complexity.cyclomatic", "warn", 10.0) as usize {
+            Severity::Warning
+        } else {
+            return;
+        };
+        findings.push(block_finding_with_metadata(
+            "complexity.cyclomatic",
+            format!(
+                "Function `{}` has cyclomatic complexity {cyclomatic}.",
+                block.name
+            ),
+            file,
+            block,
+            severity,
+            Pillar::Complexity,
+            json!({ "complexity": cyclomatic }),
+        ));
+    }
 
-            let cognitive = cyclomatic + nesting.saturating_mul(2);
-            if cognitive > config.threshold("complexity.cognitive", "warn", 15.0) as usize {
-                findings.push(block_finding_with_metadata(
-                    "complexity.cognitive",
-                    format!(
-                        "Function `{}` has cognitive complexity {cognitive}.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Complexity,
-                    json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
-                ));
-            }
+    fn analyse_nesting_depth(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        nesting: usize,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let severity =
+            if nesting > config.threshold("complexity.nesting-depth", "error", 6.0) as usize {
+                Severity::Error
+            } else if nesting > config.threshold("complexity.nesting-depth", "warn", 4.0) as usize {
+                Severity::Warning
+            } else {
+                return;
+            };
+        findings.push(block_finding_with_metadata(
+            "complexity.nesting-depth",
+            format!("Function `{}` has nesting depth {nesting}.", block.name),
+            file,
+            block,
+            severity,
+            Pillar::Complexity,
+            json!({ "nestingDepth": nesting }),
+        ));
+    }
 
-            analyse_metric_block(file, block, &searchable_body, cyclomatic, config, findings);
-            analyse_performance_block(file, block, &searchable_body, findings);
+    fn analyse_npath_complexity(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        npath: usize,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let severity = if npath > config.threshold("complexity.npath", "error", 128.0) as usize {
+            Severity::Error
+        } else if npath > config.threshold("complexity.npath", "warn", 32.0) as usize {
+            Severity::Warning
+        } else {
+            return;
+        };
+        findings.push(block_finding_with_extras(
+            "complexity.npath",
+            format!(
+                "Function `{}` has approximate NPath complexity {npath}.",
+                block.name
+            ),
+            file,
+            block,
+            severity,
+            Pillar::Complexity,
+            BlockFindingExtras {
+                confidence: Confidence::Medium,
+                remediation: None,
+                metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
+            },
+        ));
+    }
 
-            if block.line_count > 45 && cyclomatic > 10 {
-                findings.push(block_finding(
-                    "design.god-function",
-                    format!("Function `{}` is both long and complex.", block.name),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Design,
-                ));
-            }
+    fn analyse_cognitive_complexity(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        cyclomatic: usize,
+        nesting: usize,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let cognitive = cyclomatic + nesting.saturating_mul(2);
+        if cognitive <= config.threshold("complexity.cognitive", "warn", 15.0) as usize {
+            return;
+        }
+        findings.push(block_finding_with_metadata(
+            "complexity.cognitive",
+            format!(
+                "Function `{}` has cognitive complexity {cognitive}.",
+                block.name
+            ),
+            file,
+            block,
+            Severity::Warning,
+            Pillar::Complexity,
+            json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
+        ));
+    }
 
-            if is_generic_name(&block.name) {
-                findings.push(block_finding(
-                    "naming.generic-function",
-                    format!(
-                        "Function `{}` is too generic to explain intent.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Advisory,
-                    Pillar::Naming,
-                ));
-            }
+    fn analyse_design_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        cyclomatic: usize,
+        findings: &mut Vec<Finding>,
+    ) {
+        if block.line_count > 45 && cyclomatic > 10 {
+            findings.push(block_finding(
+                "design.god-function",
+                format!("Function `{}` is both long and complex.", block.name),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Design,
+            ));
+        }
+    }
 
-            if block.returns_bool && !is_boolean_predicate_name(&block.name) {
-                findings.push(block_finding(
-                    "naming.boolean-prefix",
-                    format!(
-                        "Boolean function `{}` should read like a predicate.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Advisory,
-                    Pillar::Naming,
-                ));
-            }
+    fn analyse_block_naming(file: &SourceFile, block: &FunctionBlock, findings: &mut Vec<Finding>) {
+        if is_generic_name(&block.name) {
+            findings.push(block_finding(
+                "naming.generic-function",
+                format!(
+                    "Function `{}` is too generic to explain intent.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Naming,
+            ));
+        }
+        analyse_boolean_block_name(file, block, findings);
+        analyse_placeholder_block_name(file, block, findings);
+    }
 
-            if is_placeholder_identifier(&block.name) {
-                findings.push(block_finding_with_extras(
-                    "naming.placeholder-identifier",
-                    format!(
-                        "Function `{}` uses a placeholder name instead of domain language.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Advisory,
-                    Pillar::Naming,
-                    BlockFindingExtras {
-                        confidence: Confidence::Medium,
-                        remediation: None,
-                        metadata: json!({}),
-                    },
-                ));
-            }
+    fn analyse_boolean_block_name(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        findings: &mut Vec<Finding>,
+    ) {
+        if block.returns_bool && !is_boolean_predicate_name(&block.name) {
+            findings.push(block_finding(
+                "naming.boolean-prefix",
+                format!(
+                    "Boolean function `{}` should read like a predicate.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Naming,
+            ));
+        }
+    }
 
-            if block.is_public && !has_doc_comment_before(&block.body) {
-                findings.push(block_finding(
-                    "docs.missing-public-doc",
-                    format!(
-                        "Public function `{}` is missing a Rust doc comment.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Advisory,
-                    Pillar::Documentation,
-                ));
-            }
+    fn analyse_placeholder_block_name(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        findings: &mut Vec<Finding>,
+    ) {
+        if is_placeholder_identifier(&block.name) {
+            findings.push(block_finding_with_extras(
+                "naming.placeholder-identifier",
+                format!(
+                    "Function `{}` uses a placeholder name instead of domain language.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Naming,
+                BlockFindingExtras {
+                    confidence: Confidence::Medium,
+                    remediation: None,
+                    metadata: json!({}),
+                },
+            ));
+        }
+    }
 
-            analyse_error_handling_block(file, block, &searchable_body, findings);
-            analyse_concurrency_block(file, block, &searchable_body, findings);
+    fn analyse_public_function_doc(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        findings: &mut Vec<Finding>,
+    ) {
+        if block.is_public && !has_doc_comment_before(&block.body) {
+            findings.push(block_finding(
+                "docs.missing-public-doc",
+                format!(
+                    "Public function `{}` is missing a Rust doc comment.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Documentation,
+            ));
         }
     }
 
@@ -3193,11 +3436,20 @@ mod built_in_rules {
         searchable_body: &str,
         findings: &mut Vec<Finding>,
     ) {
-        if Regex::new(r"\bpanic!\s*\(")
-            .expect("static regex compiles")
-            .is_match(searchable_body)
-            && !has_nearby_invariant_comment(searchable_body)
-        {
+        analyse_panic_block(file, block, searchable_body, findings);
+        analyse_placeholder_block(file, block, searchable_body, findings);
+        analyse_public_unwrap_block(file, block, searchable_body, findings);
+    }
+
+    fn analyse_panic_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let has_panic =
+            static_regex(&PANIC_MACRO_REGEX, r"\bpanic!\s*\(").is_match(searchable_body);
+        if has_panic && !has_nearby_invariant_comment(searchable_body) {
             findings.push(block_finding_with_extras(
                 "error-handling.production-panic",
                 format!(
@@ -3218,9 +3470,15 @@ mod built_in_rules {
                 },
             ));
         }
+    }
 
-        if Regex::new(r"\b(todo!|unimplemented!)\s*\(")
-            .expect("static regex compiles")
+    fn analyse_placeholder_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        if static_regex(&PLACEHOLDER_MACRO_REGEX, r"\b(todo!|unimplemented!)\s*\(")
             .is_match(searchable_body)
         {
             findings.push(block_finding_with_extras(
@@ -3243,12 +3501,17 @@ mod built_in_rules {
                 },
             ));
         }
+    }
 
-        if block.is_public
-            && Regex::new(r"\.(unwrap|expect)\s*\(")
-                .expect("static regex compiles")
-                .is_match(searchable_body)
-        {
+    fn analyse_public_unwrap_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let has_unwrap = static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(")
+            .is_match(searchable_body);
+        if block.is_public && has_unwrap {
             findings.push(block_finding_with_extras(
                 "error-handling.public-unwrap",
                 format!(
@@ -3280,6 +3543,17 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let metrics = function_metrics(searchable_body, cyclomatic);
+        analyse_halstead_volume(file, block, &metrics, config, findings);
+        analyse_maintainability_pressure(file, block, &metrics, cyclomatic, config, findings);
+    }
+
+    fn analyse_halstead_volume(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        metrics: &FunctionMetrics,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
         let volume_threshold = config.threshold("metrics.halstead-volume", "volume", 900.0);
         if metrics.halstead_volume > volume_threshold {
             findings.push(block_finding_with_extras(
@@ -3307,7 +3581,16 @@ mod built_in_rules {
                 },
             ));
         }
+    }
 
+    fn analyse_maintainability_pressure(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        metrics: &FunctionMetrics,
+        cyclomatic: usize,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
         let minimum_score = config.threshold("metrics.maintainability-pressure", "minimum", 45.0);
         if metrics.maintainability_score < minimum_score {
             findings.push(block_finding_with_extras(
@@ -3542,6 +3825,14 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
+        analyse_ignored_test(file, block, findings);
+        analyse_test_size(file, block, config, findings);
+        let searchable_body = strip_rust_string_literals(&block.body);
+        analyse_test_assertions(file, block, &searchable_body, findings);
+        analyse_test_regex_checks(file, block, &searchable_body, findings);
+    }
+
+    fn analyse_ignored_test(file: &SourceFile, block: &FunctionBlock, findings: &mut Vec<Finding>) {
         if block.ignore_without_reason {
             findings.push(block_finding(
                 "test-quality.ignored-without-reason",
@@ -3555,7 +3846,14 @@ mod built_in_rules {
                 Pillar::TestQuality,
             ));
         }
+    }
 
+    fn analyse_test_size(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
         let long_test_warn = config.threshold("test-quality.long-test", "warn", 30.0) as usize;
         if block.line_count > long_test_warn {
             findings.push(block_finding_with_metadata(
@@ -3571,10 +3869,15 @@ mod built_in_rules {
                 json!({ "lines": block.line_count }),
             ));
         }
+    }
 
-        let searchable_body = strip_rust_string_literals(&block.body);
-
-        if has_trivial_assertion(&searchable_body) {
+    fn analyse_test_assertions(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        if has_trivial_assertion(searchable_body) {
             findings.push(block_finding(
                 "test-quality.trivial-assertion",
                 format!("Test `{}` contains a trivial assertion.", block.name),
@@ -3589,7 +3892,7 @@ mod built_in_rules {
             &TEST_ASSERTION_REGEX,
             r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
         )
-        .is_match(&searchable_body)
+        .is_match(searchable_body)
         {
             findings.push(block_finding(
                 "test-quality.no-assertions",
@@ -3603,9 +3906,16 @@ mod built_in_rules {
                 Pillar::TestQuality,
             ));
         }
+    }
 
+    fn analyse_test_regex_checks(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
         for rule in TEST_CHECKS {
-            if static_regex(rule.regex, rule.pattern).is_match(&searchable_body) {
+            if static_regex(rule.regex, rule.pattern).is_match(searchable_body) {
                 findings.push(block_finding(
                     rule.rule_id,
                     rule.message,
@@ -3625,49 +3935,90 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let searchable_source = strip_rust_string_literals(source);
-        let unwrap_regex = Regex::new(r"\.(unwrap|expect)\s*\(").expect("static regex compiles");
-        let unsafe_regex = Regex::new(r"\bunsafe\s*\{").expect("static regex compiles");
-        let clone_regex = Regex::new(r"\.clone\(\)").expect("static regex compiles");
-        let variable_regex = Regex::new(r"\b(?:let|for)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)")
-            .expect("static regex compiles");
         let lines: Vec<&str> = searchable_source.lines().collect();
+        let context = LineRuleContext {
+            file,
+            lines: &lines,
+            config,
+        };
 
         for (line_index, line) in lines.iter().enumerate() {
-            let line_number = line_index + 1;
+            context.analyse_line(line_index, line, findings);
+        }
 
-            if unsafe_regex.is_match(line) && !has_nearby_safety_comment(&lines, line_index) {
+        analyse_unreachable(file, &searchable_source, findings);
+    }
+
+    struct LineRuleContext<'a> {
+        file: &'a SourceFile,
+        lines: &'a [&'a str],
+        config: &'a Config,
+    }
+
+    impl LineRuleContext<'_> {
+        fn analyse_line(&self, line_index: usize, line: &str, findings: &mut Vec<Finding>) {
+            let line_number = line_index + 1;
+            self.analyse_safety_line(line, line_index, line_number, findings);
+            self.analyse_waste_line(line, line_number, findings);
+            self.analyse_variable_names(line, line_number, findings);
+        }
+
+        fn analyse_safety_line(
+            &self,
+            line: &str,
+            line_index: usize,
+            line_number: usize,
+            findings: &mut Vec<Finding>,
+        ) {
+            let has_unsafe = static_regex(&UNSAFE_BLOCK_REGEX, r"\bunsafe\s*\{").is_match(line);
+            if has_unsafe && !has_nearby_safety_comment(self.lines, line_index) {
                 findings.push(finding(
                     "security.unsafe-block",
                     "Unsafe block lacks a nearby SAFETY rationale.",
-                    file,
+                    self.file,
                     Some(line_number),
                     Severity::Warning,
                     Pillar::Security,
                 ));
             }
+        }
 
-            if unwrap_regex.is_match(line) && !line.contains("#[test]") {
+        fn analyse_waste_line(&self, line: &str, line_number: usize, findings: &mut Vec<Finding>) {
+            if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
+                && !line.contains("#[test]")
+            {
                 findings.push(finding(
                     "waste.unwrap-expect",
                     "unwrap()/expect() can turn recoverable errors into panics.",
-                    file,
+                    self.file,
                     Some(line_number),
                     Severity::Advisory,
                     Pillar::Waste,
                 ));
             }
 
-            if clone_regex.is_match(line) {
+            if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line) {
                 findings.push(finding(
                     "waste.unnecessary-clone-candidate",
                     "clone() call may be avoidable; confirm ownership requires it.",
-                    file,
+                    self.file,
                     Some(line_number),
                     Severity::Advisory,
                     Pillar::Waste,
                 ));
             }
+        }
 
+        fn analyse_variable_names(
+            &self,
+            line: &str,
+            line_number: usize,
+            findings: &mut Vec<Finding>,
+        ) {
+            let variable_regex = static_regex(
+                &VARIABLE_BINDING_REGEX,
+                r"\b(?:let|for)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+            );
             for variable in variable_regex
                 .captures_iter(line)
                 .filter_map(|captures| captures.get(1))
@@ -3679,7 +4030,7 @@ mod built_in_rules {
                         format!(
                             "Variable `{name}` uses a placeholder name instead of domain language."
                         ),
-                        file.display_path.clone(),
+                        self.file.display_path.clone(),
                         Some(line_number),
                         Severity::Advisory,
                         Pillar::Naming,
@@ -3693,14 +4044,15 @@ mod built_in_rules {
                 if name.len() <= 2
                     && !matches!(name, "i" | "j" | "k")
                     && !name.starts_with('_')
-                    && !config
+                    && !self
+                        .config
                         .accepted_abbreviations
                         .contains(&name.to_ascii_lowercase())
                 {
                     findings.push(Finding::new(
                         "naming.short-variable",
                         format!("Variable `{name}` is too short to explain intent."),
-                        file.display_path.clone(),
+                        self.file.display_path.clone(),
                         Some(line_number),
                         Severity::Advisory,
                         Pillar::Naming,
@@ -3712,8 +4064,6 @@ mod built_in_rules {
                 }
             }
         }
-
-        analyse_unreachable(file, &searchable_source, findings);
     }
 
     fn analyse_process_command_block(
@@ -3748,65 +4098,98 @@ mod built_in_rules {
 
     fn analyse_public_item(file: &SourceFile, item: &Item, findings: &mut Vec<Finding>) {
         match item {
-            Item::Mod(item_mod) => {
-                if is_public(&item_mod.vis) && !has_doc_attr(&item_mod.attrs) {
-                    push_missing_public_item_doc(
-                        file,
-                        item_mod.ident.to_string(),
-                        item_mod.ident.span(),
-                        findings,
-                    );
-                }
-                if let Some((_, items)) = &item_mod.content {
-                    for nested in items {
-                        analyse_public_item(file, nested, findings);
-                    }
-                }
-            }
-            Item::Struct(item_struct) => {
-                if is_public(&item_struct.vis) && !has_doc_attr(&item_struct.attrs) {
-                    push_missing_public_item_doc(
-                        file,
-                        item_struct.ident.to_string(),
-                        item_struct.ident.span(),
-                        findings,
-                    );
-                }
-                for field in &item_struct.fields {
-                    if is_public(&field.vis) {
-                        findings.push(finding(
-                        "modernisation.public-field",
-                        "Public struct field exposes representation; prefer accessors when invariants matter.",
-                        file,
-                        Some(line_from_span(field.span().start())),
-                        Severity::Advisory,
-                        Pillar::Modernisation,
-                    ));
-                    }
-                }
-            }
+            Item::Mod(item_mod) => analyse_public_module_item(file, item_mod, findings),
+            Item::Struct(item_struct) => analyse_public_struct_item(file, item_struct, findings),
             Item::Enum(item_enum) => {
-                if is_public(&item_enum.vis) && !has_doc_attr(&item_enum.attrs) {
-                    push_missing_public_item_doc(
-                        file,
-                        item_enum.ident.to_string(),
-                        item_enum.ident.span(),
-                        findings,
-                    );
-                }
+                analyse_public_named_item_doc(
+                    file,
+                    &item_enum.vis,
+                    &item_enum.attrs,
+                    item_enum.ident.to_string(),
+                    item_enum.ident.span(),
+                    findings,
+                );
             }
             Item::Trait(item_trait) => {
-                if is_public(&item_trait.vis) && !has_doc_attr(&item_trait.attrs) {
-                    push_missing_public_item_doc(
-                        file,
-                        item_trait.ident.to_string(),
-                        item_trait.ident.span(),
-                        findings,
-                    );
-                }
+                analyse_public_named_item_doc(
+                    file,
+                    &item_trait.vis,
+                    &item_trait.attrs,
+                    item_trait.ident.to_string(),
+                    item_trait.ident.span(),
+                    findings,
+                );
             }
             _ => {}
         }
+    }
+
+    fn analyse_public_module_item(
+        file: &SourceFile,
+        item_mod: &syn::ItemMod,
+        findings: &mut Vec<Finding>,
+    ) {
+        analyse_public_named_item_doc(
+            file,
+            &item_mod.vis,
+            &item_mod.attrs,
+            item_mod.ident.to_string(),
+            item_mod.ident.span(),
+            findings,
+        );
+        if let Some((_, items)) = &item_mod.content {
+            for nested in items {
+                analyse_public_item(file, nested, findings);
+            }
+        }
+    }
+
+    fn analyse_public_struct_item(
+        file: &SourceFile,
+        item_struct: &syn::ItemStruct,
+        findings: &mut Vec<Finding>,
+    ) {
+        analyse_public_named_item_doc(
+            file,
+            &item_struct.vis,
+            &item_struct.attrs,
+            item_struct.ident.to_string(),
+            item_struct.ident.span(),
+            findings,
+        );
+        for field in &item_struct.fields {
+            if is_public(&field.vis) {
+                push_public_field_finding(file, field.span(), findings);
+            }
+        }
+    }
+
+    fn analyse_public_named_item_doc(
+        file: &SourceFile,
+        visibility: &Visibility,
+        attrs: &[syn::Attribute],
+        name: String,
+        span: proc_macro2::Span,
+        findings: &mut Vec<Finding>,
+    ) {
+        if is_public(visibility) && !has_doc_attr(attrs) {
+            push_missing_public_item_doc(file, name, span, findings);
+        }
+    }
+
+    fn push_public_field_finding(
+        file: &SourceFile,
+        span: proc_macro2::Span,
+        findings: &mut Vec<Finding>,
+    ) {
+        findings.push(finding(
+            "modernisation.public-field",
+            "Public struct field exposes representation; prefer accessors when invariants matter.",
+            file,
+            Some(line_from_span(span.start())),
+            Severity::Advisory,
+            Pillar::Modernisation,
+        ));
     }
 
     fn push_missing_public_item_doc(
@@ -4313,51 +4696,84 @@ mod built_in_rules {
     fn loop_pattern_count(source: &str, pattern: &str) -> usize {
         let pattern = Regex::new(pattern).expect("static regex compiles");
         let loop_start = Regex::new(r"\b(for|while|loop)\b").expect("static regex compiles");
-        let mut depth = 0usize;
-        let mut loop_depths = Vec::new();
-        let mut pending_loop = false;
-        let mut occurrences = 0usize;
+        let mut state = LoopPatternState::default();
 
         for line in source.lines() {
+            state.process_line(line, &pattern, &loop_start);
+        }
+
+        state.occurrences
+    }
+
+    #[derive(Default)]
+    struct LoopPatternState {
+        depth: usize,
+        loop_depths: Vec<usize>,
+        pending_loop: bool,
+        occurrences: usize,
+    }
+
+    impl LoopPatternState {
+        fn process_line(&mut self, line: &str, pattern: &Regex, loop_start: &Regex) {
             let matches: Vec<usize> = pattern.find_iter(line).map(|found| found.start()).collect();
             let mut next_match = 0usize;
             if loop_start.is_match(line) {
-                pending_loop = true;
+                self.pending_loop = true;
             }
-
             for (byte_index, character) in line.char_indices() {
-                while next_match < matches.len() && matches[next_match] <= byte_index {
-                    if !loop_depths.is_empty() {
-                        occurrences += 1;
-                    }
-                    next_match += 1;
-                }
-
-                match character {
-                    '{' => {
-                        depth += 1;
-                        if pending_loop {
-                            loop_depths.push(depth);
-                            pending_loop = false;
-                        }
-                    }
-                    '}' => {
-                        loop_depths.retain(|loop_depth| *loop_depth < depth);
-                        depth = depth.saturating_sub(1);
-                    }
-                    _ => {}
-                }
+                next_match = self.count_matches_until(&matches, next_match, byte_index);
+                self.apply_source_char(character);
             }
+            self.count_remaining_matches(&matches, next_match);
+        }
 
+        fn count_matches_until(
+            &mut self,
+            matches: &[usize],
+            mut next_match: usize,
+            byte_index: usize,
+        ) -> usize {
+            while next_match < matches.len() && matches[next_match] <= byte_index {
+                self.count_match_inside_loop();
+                next_match += 1;
+            }
+            next_match
+        }
+
+        fn count_remaining_matches(&mut self, matches: &[usize], mut next_match: usize) {
             while next_match < matches.len() {
-                if !loop_depths.is_empty() {
-                    occurrences += 1;
-                }
+                self.count_match_inside_loop();
                 next_match += 1;
             }
         }
 
-        occurrences
+        fn count_match_inside_loop(&mut self) {
+            if !self.loop_depths.is_empty() {
+                self.occurrences += 1;
+            }
+        }
+
+        fn apply_source_char(&mut self, character: char) {
+            match character {
+                '{' => self.enter_scope(),
+                '}' => self.leave_scope(),
+                _ => {}
+            }
+        }
+
+        fn enter_scope(&mut self) {
+            self.depth += 1;
+            if self.pending_loop {
+                self.loop_depths.push(self.depth);
+                self.pending_loop = false;
+            }
+        }
+
+        fn leave_scope(&mut self) {
+            self.loop_depths
+                .retain(|loop_depth| *loop_depth < self.depth);
+            self.depth = self.depth.saturating_sub(1);
+        }
     }
 
     fn has_nearby_safety_comment(lines: &[&str], line_index: usize) -> bool {
@@ -4567,6 +4983,19 @@ fn summarize(findings: &[Finding]) -> Summary {
 }
 
 fn score_report(findings: &[Finding]) -> ScoreReport {
+    let pillars = pillar_scores(findings);
+    let composite = composite_score(&pillars);
+    let top_offenders = top_file_scores(findings);
+
+    ScoreReport {
+        composite,
+        grade: grade(composite),
+        pillars,
+        top_offenders,
+    }
+}
+
+fn pillar_scores(findings: &[Finding]) -> Vec<PillarScore> {
     let mut by_pillar: BTreeMap<Pillar, Vec<&Finding>> = BTreeMap::new();
     for finding in findings {
         by_pillar.entry(finding.pillar).or_default().push(finding);
@@ -4594,13 +5023,18 @@ fn score_report(findings: &[Finding]) -> ScoreReport {
             }
         })
         .collect();
+    pillars
+}
 
-    let composite = if pillars.is_empty() {
+fn composite_score(pillars: &[PillarScore]) -> f64 {
+    if pillars.is_empty() {
         100.0
     } else {
         pillars.iter().map(|pillar| pillar.score).sum::<f64>() / pillars.len() as f64
-    };
+    }
+}
 
+fn top_file_scores(findings: &[Finding]) -> Vec<FileScore> {
     let mut file_counts: BTreeMap<String, (usize, f64)> = BTreeMap::new();
     for finding in findings {
         let entry = file_counts
@@ -4624,13 +5058,7 @@ fn score_report(findings: &[Finding]) -> ScoreReport {
             .then_with(|| left.file_path.cmp(&right.file_path))
     });
     top_offenders.truncate(10);
-
-    ScoreReport {
-        composite,
-        grade: grade(composite),
-        pillars,
-        top_offenders,
-    }
+    top_offenders
 }
 
 fn finding_penalty(finding: &Finding) -> f64 {
