@@ -34,10 +34,37 @@ Advanced metric rules use deterministic tokenization after Rust string literals 
 
 ## Deferred
 
-- Type-aware unused symbol and call-graph dead-code certainty.
-- Module cycle, coupling, and crate-graph rules that need a reliable import graph.
+- Type-aware unused symbol and call-graph dead-code certainty. Peer unlocks:
+  rust-analyzer HIR/Semantics APIs and Clippy late-pass boundaries, but ADR-008
+  requires no-execute default analysis.
+- Module cycle, coupling, and crate-graph rules that need a reliable import
+  graph. Peer unlocks: rust-analyzer crate graphs and semantic databases;
+  default gruff scans still avoid Cargo/build-script execution.
 - Vulnerability advisory, package freshness, and license policy checks that need live external data or organization-specific policy.
-- Framework-specific test rules for mocking, fixtures, async runtimes, and data providers.
-- Broad error swallowing, excessive task spawning, runtime deadlock detection, and type-aware error taxonomy.
-- Type-aware allocation analysis, needless collection-before-iteration claims, large-literal allocation claims, benchmarks, and runtime profiling ingestion.
-- Automatic fixes.
+- Framework-specific test rules for mocking, fixtures, async runtimes, and data
+  providers. Peer unlocks: rust-analyzer path/type resolution can identify
+  framework APIs, but framework policy remains external.
+- Broad error swallowing, excessive task spawning, runtime deadlock detection,
+  and type-aware error taxonomy. Peer unlocks: rust-analyzer type/method
+  resolution and Clippy late lint passes; runtime certainty remains out of
+  static-scan scope.
+- Type-aware allocation analysis, needless collection-before-iteration claims,
+  large-literal allocation claims, benchmarks, and runtime profiling ingestion.
+  Peer unlocks: rust-analyzer type inference and Clippy performance lint
+  structure; profiling remains external data.
+- Automatic fixes. Peer unlocks: Ruff, Biome, Clippy, rust-analyzer, and
+  RuboCop all separate fix safety from severity; ADR-007 requires explicit
+  safe/unsafe metadata before any gruff fix mode.
+- Dedicated CI renderers such as SARIF, Checkstyle XML, and Code Climate JSON.
+  Peer unlocks: Ruff, Biome, Detekt, PMD, Semgrep, and golangci-lint; ADR-006
+  keeps these as renderers over `gruff.analysis.v1`.
+- User-defined rules. Peer unlocks: SwiftLint regex rules, Semgrep pattern
+  rules, and PMD XPath rules; ADR-010 limits the first gruff custom-rule surface
+  to config-only regex rules with reserved `custom.*` ids.
+- Diff/new-code-only reporting. Peer unlocks: Semgrep baseline-by-ref and
+  golangci-lint line-level new-code filters; ADR-009 requires patch-input
+  filtering before direct Git/ref modes.
+- Count baselines, report-level exclusions, and source suppressions. Peer
+  unlocks: SwiftLint count-like baselines, Detekt source suppressions, RuboCop
+  TODO config, and golangci-lint exclusions; ADR-009 keeps exact baselines first
+  and discovery ignores separate from report suppressions.

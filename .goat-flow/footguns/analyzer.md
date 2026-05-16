@@ -19,6 +19,24 @@ The non-obvious failure mode is losing analyzer coverage while making the reposi
 
 Without that split, self-scan can report rule examples embedded inside unit-test fixture strings as if they were real analyzer code. M03 caught this when test-quality checks flagged raw fixture snippets in `src/main.rs` tests.
 
+## Footgun: Diff Mode Currently Executes Git
+
+**Status:** active | **Created:** 2026-05-16 | **Evidence:** ACTUAL_MEASURED
+**hallucination-risk:** high
+**Symptoms:** Treating `--diff` as a pure report filter can accidentally preserve or expand a trust-boundary violation.
+**Why it happens:** `src/main.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument. M23 research in `.goat-flow/scratchpad/related-projects/semgrep/STUDY.md` (search: `Baseline setup executes Git`) and `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `New-code-only mode is a line-level diff filter`) showed that safer new-code filtering can be modeled from patch data after analysis instead of executing Git during ordinary scans.
+**Evidence:** `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md` (search: `Patch-input diff mode should be the first diff implementation`) records the accepted layering and trust-boundary route.
+**Prevention:** Implement patch-input line filtering before any ref-based Git mode. If direct Git/ref diff is still needed, add a separate trust-boundary ADR covering hooks, external diff drivers, path normalization, timeouts, and failure diagnostics.
+
+## Footgun: Report Exclusions Are Not Discovery Ignores
+
+**Status:** active | **Created:** 2026-05-16 | **Evidence:** ACTUAL_MEASURED
+**hallucination-risk:** high
+**Symptoms:** Adding a richer exclusion DSL by widening `paths.ignore` can hide committed files from security and sensitive-data rules instead of only suppressing reviewed findings.
+**Why it happens:** `src/main.rs` (search: `config.ignored_paths = string_array(ignore, "paths.ignore")`) treats `paths.ignore` as discovery-time policy. ADR-004 also separates Git ignore rules from gruff config ignores, while M23 research in `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `Exclusions hide reported issues but do not skip analysis`) identified report-level exclusions as a different layer.
+**Evidence:** `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md` (search: `Report-level`) records the distinction.
+**Prevention:** Keep `paths.ignore` for "do not read" policy. Put future rule/path/message/source suppressions in a post-analysis exclusion layer with reasons and suppression counts.
+
 ## Resolved Entries
 
 ## Footgun: Dashboard Scans Change Process Cwd
