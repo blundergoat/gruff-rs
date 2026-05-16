@@ -6,7 +6,7 @@ use ignore::{DirEntry, WalkBuilder};
 use proc_macro2::LineColumn;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -297,6 +297,7 @@ struct CompletionArgs {
 enum OutputFormat {
     Text,
     Json,
+    Sarif,
     Html,
     Markdown,
     Github,
@@ -308,6 +309,7 @@ impl OutputFormat {
         match self {
             Self::Text => "text",
             Self::Json => "json",
+            Self::Sarif => "sarif",
             Self::Html => "html",
             Self::Markdown => "markdown",
             Self::Github => "github",
@@ -4674,6 +4676,7 @@ fn render_report_with_scope(
 ) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(report).expect("report serializes"),
+        OutputFormat::Sarif => render_sarif(report),
         OutputFormat::Html => html_report::render(report, scope),
         OutputFormat::Markdown => render_markdown(report),
         OutputFormat::Github => render_github(report),
@@ -4780,11 +4783,164 @@ fn render_hotspot(report: &AnalysisReport) -> String {
     .expect("hotspot serializes")
 }
 
+fn render_sarif(report: &AnalysisReport) -> String {
+    let registry = rules::builtin_registry();
+    let rule_indices: HashMap<&str, usize> = registry
+        .definitions()
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| (definition.id, index))
+        .collect();
+    let rules: Vec<Value> = registry
+        .definitions()
+        .iter()
+        .map(|definition| {
+            json!({
+                "id": definition.id,
+                "name": definition.name,
+                "shortDescription": {
+                    "text": definition.name,
+                },
+                "fullDescription": {
+                    "text": definition.description,
+                },
+                "help": {
+                    "text": definition.description,
+                },
+                "properties": {
+                    "pillar": definition.pillar,
+                    "tier": definition.tier,
+                    "kind": definition.kind,
+                    "defaultSeverity": definition.default_severity,
+                    "confidence": definition.confidence,
+                    "defaultEnabled": definition.default_enabled,
+                },
+            })
+        })
+        .collect();
+    let results: Vec<Value> = report
+        .findings
+        .iter()
+        .map(|finding| sarif_result(finding, &rule_indices))
+        .collect();
+
+    serde_json::to_string_pretty(&json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": &report.tool.name,
+                        "semanticVersion": &report.tool.version,
+                        "rules": rules,
+                    },
+                },
+                "results": results,
+                "properties": {
+                    "gruffSchemaVersion": &report.schema_version,
+                    "generatedAt": &report.run.generated_at,
+                    "score": report.score.composite,
+                    "grade": &report.score.grade,
+                },
+            },
+        ],
+    }))
+    .expect("sarif serializes")
+}
+
+fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value {
+    let mut result = Map::new();
+    result.insert("ruleId".to_string(), json!(&finding.rule_id));
+    if let Some(rule_index) = rule_indices.get(finding.rule_id.as_str()) {
+        result.insert("ruleIndex".to_string(), json!(rule_index));
+    }
+    result.insert("level".to_string(), json!(sarif_level(finding.severity)));
+    result.insert(
+        "message".to_string(),
+        json!({
+            "text": &finding.message,
+        }),
+    );
+    result.insert(
+        "locations".to_string(),
+        json!([
+            {
+                "physicalLocation": sarif_physical_location(finding),
+            },
+        ]),
+    );
+    result.insert(
+        "partialFingerprints".to_string(),
+        json!({
+            "gruffFingerprint": &finding.fingerprint,
+        }),
+    );
+
+    let mut properties = Map::new();
+    properties.insert("severity".to_string(), json!(finding.severity));
+    properties.insert("pillar".to_string(), json!(finding.pillar));
+    properties.insert("tier".to_string(), json!(&finding.tier));
+    properties.insert("confidence".to_string(), json!(finding.confidence));
+    if !finding.secondary_pillars.is_empty() {
+        properties.insert(
+            "secondaryPillars".to_string(),
+            json!(&finding.secondary_pillars),
+        );
+    }
+    if let Some(symbol) = &finding.symbol {
+        properties.insert("symbol".to_string(), json!(symbol));
+    }
+    if let Some(remediation) = &finding.remediation {
+        properties.insert("remediation".to_string(), json!(remediation));
+    }
+    if !finding.metadata.is_null() {
+        properties.insert("metadata".to_string(), finding.metadata.clone());
+    }
+    result.insert("properties".to_string(), Value::Object(properties));
+
+    Value::Object(result)
+}
+
+fn sarif_physical_location(finding: &Finding) -> Value {
+    let mut location = Map::new();
+    location.insert(
+        "artifactLocation".to_string(),
+        json!({
+            "uri": sarif_uri(&finding.file_path),
+        }),
+    );
+    if let Some(line) = finding.line {
+        let mut region = Map::new();
+        region.insert("startLine".to_string(), json!(line));
+        if let Some(column) = finding.column {
+            region.insert("startColumn".to_string(), json!(column));
+        }
+        if let Some(end_line) = finding.end_line {
+            region.insert("endLine".to_string(), json!(end_line));
+        }
+        location.insert("region".to_string(), Value::Object(region));
+    }
+    Value::Object(location)
+}
+
+fn sarif_uri(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
 fn severity_label(severity: Severity) -> &'static str {
     match severity {
         Severity::Advisory => "advisory",
         Severity::Warning => "warning",
         Severity::Error => "error",
+    }
+}
+
+fn sarif_level(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Advisory => "note",
     }
 }
 
@@ -7469,6 +7625,50 @@ rules:
         let decoded: Value = serde_json::from_str(&json_output).expect("json report");
         assert_eq!(decoded["schemaVersion"], "gruff.analysis.v1");
         assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
+
+        let sarif: Value = serde_json::from_str(&render_report(&report, OutputFormat::Sarif))
+            .expect("sarif report");
+        assert_eq!(OutputFormat::Sarif.as_str(), "sarif");
+        assert_eq!(sarif["version"], "2.1.0");
+        assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "gruff-rs");
+        assert_eq!(
+            sarif["runs"][0]["properties"]["gruffSchemaVersion"],
+            "gruff.analysis.v1"
+        );
+        let sarif_rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .expect("sarif rules");
+        let sarif_rule_ids: Vec<&str> = sarif_rules
+            .iter()
+            .map(|rule| rule["id"].as_str().expect("sarif rule id"))
+            .collect();
+        let mut sorted_rule_ids = sarif_rule_ids.clone();
+        sorted_rule_ids.sort_unstable();
+        assert_eq!(sarif_rule_ids, sorted_rule_ids);
+        let rule_index = sarif_rule_ids
+            .iter()
+            .position(|rule_id| *rule_id == "security.process-command")
+            .expect("security rule in sarif driver");
+        let sarif_result = &sarif["runs"][0]["results"][0];
+        assert_eq!(sarif_result["ruleId"], "security.process-command");
+        assert_eq!(sarif_result["ruleIndex"].as_u64(), Some(rule_index as u64));
+        assert_eq!(sarif_result["level"], "warning");
+        assert_eq!(
+            sarif_result["message"]["text"],
+            "Use <escaped> command & args"
+        );
+        assert_eq!(
+            sarif_result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/lib.rs"
+        );
+        assert_eq!(
+            sarif_result["locations"][0]["physicalLocation"]["region"]["startLine"],
+            7
+        );
+        assert_eq!(
+            sarif_result["partialFingerprints"]["gruffFingerprint"].as_str(),
+            Some(report.findings[0].fingerprint.as_str())
+        );
 
         let text = render_report(&report, OutputFormat::Text);
         assert!(text.contains("gruff-rs"));

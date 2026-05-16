@@ -55,9 +55,10 @@ Advanced metric rules use deterministic tokenization after Rust string literals 
 - Automatic fixes. Peer unlocks: Ruff, Biome, Clippy, rust-analyzer, and
   RuboCop all separate fix safety from severity; ADR-007 requires explicit
   safe/unsafe metadata before any gruff fix mode.
-- Dedicated CI renderers such as SARIF, Checkstyle XML, and Code Climate JSON.
-  Peer unlocks: Ruff, Biome, Detekt, PMD, Semgrep, and golangci-lint; ADR-006
-  keeps these as renderers over `gruff.analysis.v1`.
+- Additional dedicated CI renderers such as Checkstyle XML and Code Climate
+  JSON. Peer unlocks: Detekt, PMD, Semgrep, and golangci-lint; ADR-006 keeps
+  these as renderers over `gruff.analysis.v1`. SARIF is the first implemented
+  CI renderer.
 - User-defined rules. Peer unlocks: SwiftLint regex rules, Semgrep pattern
   rules, and PMD XPath rules; ADR-010 limits the first gruff custom-rule surface
   to config-only regex rules with reserved `custom.*` ids.

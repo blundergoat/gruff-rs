@@ -6,6 +6,7 @@ Rust project quality analyzer with deterministic, schema-versioned reports.
 
 ```bash
 ./bin/gruff-rs analyse fixtures --format json --fail-on none
+./bin/gruff-rs analyse src --format sarif --fail-on none
 ./bin/gruff-rs analyse src --format text --fail-on none
 ./bin/gruff-rs list-rules --format text
 ./bin/gruff-rs list-rules --format json
@@ -16,8 +17,9 @@ bash scripts/start-dev.sh
 From a source checkout, `bin/gruff-rs` resolves this repository's Cargo manifest
 and forwards arguments to the Rust CLI.
 
-Report formats for `analyse` are `text`, `json`, `html`, `markdown`, `github`, and
-`hotspot`. The `report` command supports static `html` and `json` output.
+Report formats for `analyse` are `text`, `json`, `sarif`, `html`, `markdown`,
+`github`, and `hotspot`. The `report` command supports static `html` and `json`
+output.
 
 `scripts/start-dev.sh` starts the dashboard on `127.0.0.1:8766` by default. The
 dashboard has no authentication; bind it to a non-loopback host only for a trusted
