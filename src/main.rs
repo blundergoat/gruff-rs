@@ -5695,6 +5695,58 @@ rules:
     }
 
     #[test]
+    fn config_secret_previews_allowlist_only_matching_synthetic_values() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        let accepted_fixture = concat!("ghp_", "aaaaaaaaaaaaaaaaaaaaaa");
+        let unlisted_secret = concat!("ghp_", "bbbbbbbbbbbbbbbbbbbbbb");
+        let sample = format!(
+            r#"pub fn entry() {{
+    let accepted_fixture = "{accepted_fixture}";
+    let unlisted_secret = "{unlisted_secret}";
+    println!("{{accepted_fixture}}{{unlisted_secret}}");
+}}
+"#
+        );
+        fs::write(dir.path().join("sample.rs"), sample).expect("fixture write");
+        write_yaml_config(
+            dir.path(),
+            r#"
+allowlists:
+  secretPreviews:
+    - "ghp_...aaaa (redacted, 26 chars)"
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let api_key_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "sensitive-data.api-key-pattern")
+            .collect();
+
+        assert_eq!(
+            api_key_findings.len(),
+            1,
+            "expected only the unlisted API key preview to remain; findings={api_key_findings:?}"
+        );
+        assert_eq!(
+            api_key_findings[0].metadata["preview"],
+            "ghp_...bbbb (redacted, 26 chars)"
+        );
+    }
+
+    #[test]
     fn rule_fixtures_prove_complexity_and_naming_rules() {
         let _guard = analysis_lock();
         let positive = analyse_test_paths(vec![PathBuf::from(

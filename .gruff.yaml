@@ -11,7 +11,20 @@ allowlists:
     - ui
     - tx
     - rx
-  secretPreviews: []
+  secretPreviews:
+    - "ghp_...aaaa (redacted, 26 chars)"
+    - "AKIA...MNOP (redacted, 20 chars)"
+    - "post...ret@ (redacted, 23 chars)"
+    - "eyJh...sw5c (redacted, 85 chars)"
+    - "BEGI... KEY (redacted, 21 chars)"
+    - "sk_t...aaaa (redacted, 32 chars)"
+    - "pk_l...aaaa (redacted, 32 chars)"
+    - "gho_...aaaa (redacted, 40 chars)"
+    - "sk-a...aaaa (redacted, 43 chars)"
+    - "AIza...aaaa (redacted, 39 chars)"
+    - "Endp...aaaa (redacted, 140 chars)"
+    - "DATA...-123 (redacted, 39 chars)"
+    - "DATA...-123 (redacted, 43 chars)"
 rules:
   architecture.large-module:
     threshold: 25
