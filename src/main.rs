@@ -2092,6 +2092,28 @@ fn has_cfg_attr(attrs: &[syn::Attribute]) -> bool {
         .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
 }
 
+fn has_cfg_test_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if !attr.path().is_ident("cfg") && !attr.path().is_ident("cfg_attr") {
+            return false;
+        }
+
+        let syn::Meta::List(list) = &attr.meta else {
+            return false;
+        };
+        let compact_tokens = list.tokens.to_string().replace(' ', "");
+        if compact_tokens.contains("not(test)") {
+            return false;
+        }
+        compact_tokens == "test"
+            || compact_tokens.starts_with("test,")
+            || compact_tokens.contains("any(test")
+            || compact_tokens.contains("all(test")
+            || compact_tokens.contains(",test")
+            || compact_tokens.ends_with(",test)")
+    })
+}
+
 fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| path_ends_with(attr, "test"))
 }
@@ -2104,7 +2126,9 @@ fn path_ends_with(attr: &syn::Attribute, name: &str) -> bool {
 }
 
 fn is_test_module(item_mod: &syn::ItemMod) -> bool {
-    item_mod.ident == "tests" || has_test_attr(&item_mod.attrs)
+    item_mod.ident == "tests"
+        || has_test_attr(&item_mod.attrs)
+        || has_cfg_test_attr(&item_mod.attrs)
 }
 
 fn collect_call_names(file: &SourceFile, source: &str, call_names: &mut Vec<CallNameSummary>) {
@@ -2522,7 +2546,7 @@ fn analyse_lockfile_duplicates(
     if !config.rule_enabled(rule_id) {
         return;
     }
-    let allowed_versions = config.threshold(rule_id, "versions", 2.0) as usize;
+    let allowed_versions = config.threshold(rule_id, "versions", 1.0) as usize;
     let mut by_name: BTreeMap<&str, Vec<&LockedPackageSummary>> = BTreeMap::new();
     for package in &lockfile.packages {
         by_name.entry(&package.name).or_default().push(package);
@@ -2618,7 +2642,7 @@ mod built_in_rules {
         RegexRule {
             rule_id: "sensitive-data.api-key-pattern",
             regex: &API_KEY_PATTERN_REGEX,
-            pattern: r"(sk_live_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
+            pattern: r"(sk_(?:live|test)_[A-Za-z0-9]{16,}|pk_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{32,}|Endpoint=sb://[^;\s]+;[^\s]*SharedAccessKey=[A-Za-z0-9+/=]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
             message: "API key pattern detected.",
         },
     ];
@@ -2660,7 +2684,7 @@ mod built_in_rules {
     /// Run enabled text and Rust rules for one parsed source unit.
     pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
         let mut findings = Vec::new();
-        analyse_text_rules(unit.file, unit.source, config, &mut findings);
+        analyse_text_rules(unit.file, unit.source, unit.rust_ast, config, &mut findings);
         if let Some(ast) = unit.rust_ast {
             analyse_rust_rules(unit.file, unit.source, ast, config, &mut findings);
         }
@@ -2673,6 +2697,7 @@ mod built_in_rules {
     fn analyse_text_rules(
         file: &SourceFile,
         source: &str,
+        rust_ast: Option<&syn::File>,
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
@@ -2711,12 +2736,13 @@ mod built_in_rules {
             ));
         }
 
-        analyse_sensitive_data(file, source, config, findings);
+        analyse_sensitive_data(file, source, rust_ast, config, findings);
     }
 
     fn analyse_sensitive_data(
         file: &SourceFile,
         source: &str,
+        rust_ast: Option<&syn::File>,
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
@@ -2741,13 +2767,14 @@ mod built_in_rules {
             }
         }
 
-        analyse_env_like_secrets(file, source, config, findings);
+        analyse_env_like_secrets(file, source, rust_ast, config, findings);
         analyse_high_entropy_strings(file, source, config, findings);
     }
 
     fn analyse_env_like_secrets(
         file: &SourceFile,
         source: &str,
+        rust_ast: Option<&syn::File>,
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
@@ -2755,8 +2782,13 @@ mod built_in_rules {
             r#"\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*["']?([^"'\s]+)"#,
         )
         .expect("static regex compiles");
+        let test_ranges = rust_ast.map(test_context_line_ranges).unwrap_or_default();
 
         for capture in regex.find_iter(source) {
+            let line = byte_line(source, capture.start());
+            if line_in_ranges(line, &test_ranges) {
+                continue;
+            }
             let preview = redact(capture.as_str());
             if config.secret_previews.contains(&preview) {
                 continue;
@@ -2765,7 +2797,7 @@ mod built_in_rules {
                 "sensitive-data.hardcoded-env-value",
                 "Hardcoded environment-style secret assignment detected.",
                 file.display_path.clone(),
-                Some(byte_line(source, capture.start())),
+                Some(line),
                 Severity::Error,
                 Pillar::SensitiveData,
                 Confidence::High,
@@ -2776,6 +2808,81 @@ mod built_in_rules {
                 json!({ "preview": preview }),
             ));
         }
+    }
+
+    fn test_context_line_ranges(ast: &syn::File) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        for item in &ast.items {
+            collect_test_context_line_ranges(item, false, &mut ranges);
+        }
+        ranges
+    }
+
+    fn collect_test_context_line_ranges(
+        item: &Item,
+        test_context: bool,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        match item {
+            Item::Fn(item_fn) => {
+                if test_context
+                    || has_test_attr(&item_fn.attrs)
+                    || has_cfg_test_attr(&item_fn.attrs)
+                {
+                    push_item_line_range(item, ranges);
+                }
+            }
+            Item::Impl(item_impl) => {
+                let item_test_context = test_context
+                    || has_test_attr(&item_impl.attrs)
+                    || has_cfg_test_attr(&item_impl.attrs);
+                if item_test_context {
+                    push_item_line_range(item, ranges);
+                }
+                for impl_item in &item_impl.items {
+                    if let ImplItem::Fn(method) = impl_item {
+                        let method_test_context = item_test_context
+                            || has_test_attr(&method.attrs)
+                            || has_cfg_test_attr(&method.attrs);
+                        if method_test_context {
+                            push_span_line_range(method.span(), ranges);
+                        }
+                    }
+                }
+            }
+            Item::Mod(item_mod) => {
+                let item_test_context = test_context || is_test_module(item_mod);
+                if item_test_context {
+                    push_item_line_range(item, ranges);
+                }
+                if let Some((_, items)) = &item_mod.content {
+                    for nested in items {
+                        collect_test_context_line_ranges(nested, item_test_context, ranges);
+                    }
+                }
+            }
+            _ => {
+                if test_context {
+                    push_item_line_range(item, ranges);
+                }
+            }
+        }
+    }
+
+    fn push_item_line_range(item: &Item, ranges: &mut Vec<(usize, usize)>) {
+        push_span_line_range(item.span(), ranges);
+    }
+
+    fn push_span_line_range(span: proc_macro2::Span, ranges: &mut Vec<(usize, usize)>) {
+        let start = line_from_span(span.start());
+        let end = line_from_span(span.end()).max(start);
+        ranges.push((start, end));
+    }
+
+    fn line_in_ranges(line: usize, ranges: &[(usize, usize)]) -> bool {
+        ranges
+            .iter()
+            .any(|(start, end)| (*start..=*end).contains(&line))
     }
 
     fn analyse_high_entropy_strings(
@@ -2836,6 +2943,15 @@ mod built_in_rules {
     ) {
         for block in blocks {
             let searchable_body = strip_rust_string_literals(&block.body);
+
+            analyse_process_command_block(file, block, &searchable_body, findings);
+            if block.is_test {
+                analyse_test_block(file, block, config, findings);
+            }
+            if block.is_test_context() {
+                continue;
+            }
+
             let method_warn = config.threshold("size.function-length", "warn", 30.0) as usize;
             let method_error = config.threshold("size.function-length", "error", 60.0) as usize;
             if block.line_count > method_error {
@@ -2863,8 +2979,6 @@ mod built_in_rules {
                     Pillar::Size,
                 ));
             }
-
-            analyse_process_command_block(file, block, &searchable_body, findings);
 
             let params = block.param_count;
             if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
@@ -3066,13 +3180,8 @@ mod built_in_rules {
                 ));
             }
 
-            if block.is_test {
-                analyse_test_block(file, block, config, findings);
-            }
-            if !block.is_test_context() {
-                analyse_error_handling_block(file, block, &searchable_body, findings);
-                analyse_concurrency_block(file, block, &searchable_body, findings);
-            }
+            analyse_error_handling_block(file, block, &searchable_body, findings);
+            analyse_concurrency_block(file, block, &searchable_body, findings);
         }
     }
 
@@ -3769,7 +3878,7 @@ mod built_in_rules {
             }
             Item::Mod(item_mod) => {
                 if let Some((_, items)) = &item_mod.content {
-                    let nested_test_context = test_context || item_mod.ident == "tests";
+                    let nested_test_context = test_context || is_test_module(item_mod);
                     for nested in items {
                         analyse_dead_code_item(file, nested, source, nested_test_context, findings);
                     }
@@ -3904,7 +4013,7 @@ mod built_in_rules {
             }
             Item::Mod(item_mod) => {
                 if let Some((_, items)) = &item_mod.content {
-                    let nested_test_context = test_context || item_mod.ident == "tests";
+                    let nested_test_context = test_context || is_test_module(item_mod);
                     for nested in items {
                         collect_function_blocks(nested, lines, nested_test_context, blocks);
                     }
@@ -5240,7 +5349,15 @@ mod tests {
         let report = analyse_test_paths(vec![PathBuf::from("fixtures/sample.rs")]);
 
         assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        assert_eq!(report.summary.total, 12);
+        assert_eq!(report.summary.total, report.findings.len());
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.file_path == "fixtures/sample.rs")
+                .count(),
+            12
+        );
 
         let expected = [
             (
@@ -7841,10 +7958,6 @@ version = "1.0.0"
 [[package]]
 name = "serde"
 version = "1.0.1"
-
-[[package]]
-name = "serde"
-version = "1.0.2"
 "#,
                     )
                     .expect("dup lock");
@@ -8746,18 +8859,14 @@ pub fn fixture_text() {
         assert_eq!(command_findings[0].line, Some(3));
     }
 
-    /// Documents that complexity, metric, and size rules treat test-context
-    /// functions identically to production code. A long, branchy
-    /// `#[cfg(test)] mod tests` setup function gets flagged with
-    /// `complexity.cyclomatic` (potentially at error severity), `size.function-length`,
-    /// `metrics.halstead-volume`, and `metrics.maintainability-pressure` even
-    /// though tests legitimately have these properties.
+    /// Proves that test-context functions keep dedicated test-quality checks
+    /// without also receiving production complexity, metric, and size findings.
     #[test]
-    fn calibration_finding_complexity_does_not_skip_test_context() {
+    fn calibration_complexity_metrics_size_skip_test_context() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         let mut body = String::from(
-            "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
+            "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod fixtures {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
         );
         for index in 0..30 {
             body.push_str(&format!("        if {index} > 0 {{ total += {index}; }}\n"));
@@ -8774,26 +8883,30 @@ pub fn fixture_text() {
             },
         )
         .expect("analysis succeeds");
-        let test_cyclomatic = report.findings.iter().any(|finding| {
-            finding.rule_id == "complexity.cyclomatic"
-                && finding.symbol.as_deref() == Some("long_setup")
-        });
-        assert!(
-            test_cyclomatic,
-            "calibration probe expected `complexity.cyclomatic` to fire on a test function; \
-             findings={:?}",
-            rule_ids(&report)
-        );
+        assert_has_rule(&report, "test-quality.long-test");
+        for rule_id in [
+            "size.function-length",
+            "complexity.cyclomatic",
+            "complexity.nesting-depth",
+            "complexity.npath",
+            "complexity.cognitive",
+            "metrics.halstead-volume",
+            "metrics.maintainability-pressure",
+        ] {
+            assert!(
+                !report.findings.iter().any(|finding| {
+                    finding.rule_id == rule_id && finding.symbol.as_deref() == Some("long_setup")
+                }),
+                "calibration expected `{rule_id}` to skip test function `long_setup`; findings={:?}",
+                rule_ids(&report)
+            );
+        }
     }
 
-    /// Documents that `sensitive-data.api-key-pattern` only recognises four
-    /// formats (`sk_live_`, `ghp_`, `sk-ant-`, `xox*-`) and silently misses
-    /// many widely-used API keys: Stripe `sk_test_`/`pk_*`, GitHub
-    /// `gho_`/`ghu_`/`ghs_`/`ghr_`, OpenAI `sk-`, Google `AIza`, and Azure
-    /// connection strings. The fixture below uses real-looking but synthetic
-    /// patterns and confirms the rule misses each.
+    /// Proves that `sensitive-data.api-key-pattern` recognises common synthetic
+    /// provider-shaped tokens beyond the original narrow prefix set.
     #[test]
-    fn calibration_finding_api_key_pattern_misses_common_formats() {
+    fn calibration_api_key_pattern_detects_common_formats() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         baseline_with_lib(
@@ -8803,7 +8916,9 @@ pub fn entry() {
     let _stripe_test = "sk_test_aaaaaaaaaaaaaaaaaaaaaaaa";
     let _stripe_pub = "pk_live_aaaaaaaaaaaaaaaaaaaaaaaa";
     let _github_oauth = "gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let _openai_legacy = "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let _google_api = "AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let _azure_bus = "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 }
 "#,
         );
@@ -8817,27 +8932,35 @@ pub fn entry() {
             },
         )
         .expect("analysis succeeds");
-        assert_missing_rule(&report, "sensitive-data.api-key-pattern");
+        let api_key_findings = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "sensitive-data.api-key-pattern")
+            .count();
+        assert_eq!(
+            api_key_findings,
+            6,
+            "calibration expected all common synthetic API-key formats to fire; findings={:?}",
+            rule_ids(&report)
+        );
     }
 
-    /// Documents that `sensitive-data.hardcoded-env-value` matches inside
-    /// arbitrary string literals, so the rule fires on its own test fixtures
-    /// when they contain `DATABASE_PASSWORD=...` patterns. The codebase works
-    /// around this by splitting the literal with `concat!("DATABASE_", "PASSWORD=...")`,
-    /// which is a brittle evasion. The rule should at minimum offer a
-    /// per-fixture scope or a test-context skip rather than relying on
-    /// concat-based obfuscation in source.
+    /// Proves that `sensitive-data.hardcoded-env-value` still catches
+    /// production Rust literals but ignores fixture strings in test context.
     #[test]
-    fn calibration_finding_hardcoded_env_value_fires_inside_test_fixtures() {
+    fn calibration_hardcoded_env_value_skips_test_fixture_strings() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         baseline_with_lib(
             dir.path(),
             r#"/// Probe.
-pub fn entry() {}
+pub fn entry() {
+    let production = "DATABASE_PASSWORD=production-secret-123";
+    assert!(production.contains("DATABASE_PASSWORD"));
+}
 
 #[cfg(test)]
-mod tests {
+mod fixtures {
     #[test]
     fn fixture_text_contains_secret_pattern() {
         let fixture = "DATABASE_PASSWORD=correct-horse-battery-123";
@@ -8856,6 +8979,17 @@ mod tests {
             },
         )
         .expect("analysis succeeds");
-        assert_has_rule(&report, "sensitive-data.hardcoded-env-value");
+        let hardcoded_env_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "sensitive-data.hardcoded-env-value")
+            .collect();
+        assert_eq!(
+            hardcoded_env_findings.len(),
+            1,
+            "calibration expected only the production env-style assignment to fire; findings={:?}",
+            rule_ids(&report)
+        );
+        assert_eq!(hardcoded_env_findings[0].line, Some(3));
     }
 }

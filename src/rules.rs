@@ -121,7 +121,7 @@ const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLDS: &[ThresholdDefinition] = &[thresho
 const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("items", 12.0)];
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("versions", 2.0)];
+    &[threshold("versions", 1.0)];
 const METRICS_HALSTEAD_VOLUME_THRESHOLDS: &[ThresholdDefinition] = &[threshold("volume", 900.0)];
 const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLDS: &[ThresholdDefinition] =
     &[threshold("minimum", 45.0)];
