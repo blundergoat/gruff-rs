@@ -2,8 +2,16 @@ use crate::{
     grade, html_escape, AnalysisReport, FileScore, Finding, Pillar, PillarScore, RequestedScope,
     RunDiagnostic, Severity,
 };
+use std::fmt::Write as _;
 
 const SCHEMA_VERSION: &str = "gruff.analysis.v1";
+const DISTRIBUTION_BUCKETS: [DistributionBucket; 5] = [
+    DistributionBucket::new("1-5", ""),
+    DistributionBucket::new("6-10", ""),
+    DistributionBucket::new("11-15", "warn"),
+    DistributionBucket::new("16-20", "fail"),
+    DistributionBucket::new("21+", "fail"),
+];
 
 /// Render the full HTML inspection report for the given analysis result.
 pub(crate) fn render(report: &AnalysisReport, scope: &RequestedScope) -> String {
@@ -47,6 +55,17 @@ struct DistributionBar {
     label: &'static str,
     count: usize,
     class: &'static str,
+}
+
+struct DistributionBucket {
+    label: &'static str,
+    class: &'static str,
+}
+
+impl DistributionBucket {
+    const fn new(label: &'static str, class: &'static str) -> Self {
+        Self { label, class }
+    }
 }
 
 impl<'a> ReportView<'a> {
@@ -331,30 +350,11 @@ fn offender_row(row: &OffenderRow<'_>) -> String {
 }
 
 fn distribution_section(view: &ReportView<'_>) -> String {
-    let max = view
-        .distribution
-        .iter()
-        .map(|bar| bar.count)
-        .max()
-        .unwrap_or(0)
-        .max(1);
-
+    let max = distribution_max(&view.distribution);
     let mut bars = String::new();
     let mut axis = String::new();
-    for bar in &view.distribution {
-        let height = if bar.count == 0 {
-            4
-        } else {
-            ((bar.count as f64 / max as f64) * 100.0).round() as i64
-        };
-        let height = height.max(4);
-        bars.push_str(&format!(
-            "<div class=\"bar {class}\" style=\"height:{height}%;\"><span class=\"count\">{count}</span></div>",
-            class = html_escape(bar.class),
-            height = height,
-            count = bar.count,
-        ));
-        axis.push_str(&format!("<span>{}</span>", html_escape(bar.label)));
+    for bucket_bar in &view.distribution {
+        push_distribution_bar(&mut bars, &mut axis, bucket_bar, max);
     }
 
     format!(
@@ -371,6 +371,41 @@ fn distribution_section(view: &ReportView<'_>) -> String {
         bars = bars,
         axis = axis,
     )
+}
+
+fn distribution_max(distribution: &[DistributionBar]) -> usize {
+    distribution
+        .iter()
+        .map(|bucket_bar| bucket_bar.count)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+fn push_distribution_bar(
+    bars: &mut String,
+    axis: &mut String,
+    bucket_bar: &DistributionBar,
+    max: usize,
+) {
+    let height = distribution_bar_height(bucket_bar.count, max);
+    let _ = write!(
+        bars,
+        "<div class=\"bar {}\" style=\"height:{}%;\"><span class=\"count\">{}</span></div>",
+        html_escape(bucket_bar.class),
+        height,
+        bucket_bar.count
+    );
+    let _ = write!(axis, "<span>{}</span>", html_escape(bucket_bar.label));
+}
+
+fn distribution_bar_height(count: usize, max: usize) -> i64 {
+    if count == 0 {
+        4
+    } else {
+        ((count as f64 / max as f64) * 100.0).round() as i64
+    }
+    .max(4)
 }
 
 fn findings_section(findings: &[Finding], total: usize) -> String {
@@ -484,50 +519,58 @@ fn build_offender_rows(offenders: &[FileScore]) -> Vec<OffenderRow<'_>> {
 }
 
 fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, String) {
-    let buckets: [(&'static str, &'static str); 5] = [
-        ("1-5", ""),
-        ("6-10", ""),
-        ("11-15", "warn"),
-        ("16-20", "fail"),
-        ("21+", "fail"),
-    ];
-    let mut counts = [0usize; 5];
-    for finding in findings {
-        if finding.rule_id != "complexity.cyclomatic" {
-            continue;
-        }
-        let value = finding
-            .metadata
-            .get("complexity")
-            .and_then(|value| value.as_u64());
-        let Some(value) = value else {
-            continue;
-        };
-        let bucket = match value {
-            v if v <= 5 => 0,
-            v if v <= 10 => 1,
-            v if v <= 15 => 2,
-            v if v <= 20 => 3,
-            _ => 4,
-        };
-        counts[bucket] += 1;
-    }
-
-    let bars: Vec<DistributionBar> = buckets
+    let counts = cyclomatic_distribution_counts(findings);
+    let bars = DISTRIBUTION_BUCKETS
         .iter()
         .zip(counts.iter())
-        .map(|((label, class), count)| DistributionBar {
-            label,
+        .map(|(bucket, count)| DistributionBar {
+            label: bucket.label,
             count: *count,
-            class,
+            class: bucket.class,
         })
         .collect();
 
+    (bars, distribution_summary(&counts))
+}
+
+fn cyclomatic_distribution_counts(findings: &[Finding]) -> [usize; 5] {
+    let mut counts = [0usize; 5];
+    for finding in findings {
+        let Some(value) = cyclomatic_value(finding) else {
+            continue;
+        };
+        counts[cyclomatic_bucket_index(value)] += 1;
+    }
+    counts
+}
+
+fn cyclomatic_value(finding: &Finding) -> Option<u64> {
+    (finding.rule_id == "complexity.cyclomatic")
+        .then(|| {
+            finding
+                .metadata
+                .get("complexity")
+                .and_then(|value| value.as_u64())
+        })
+        .flatten()
+}
+
+fn cyclomatic_bucket_index(value: u64) -> usize {
+    match value {
+        0..=5 => 0,
+        6..=10 => 1,
+        11..=15 => 2,
+        16..=20 => 3,
+        _ => 4,
+    }
+}
+
+fn distribution_summary(counts: &[usize; 5]) -> String {
     let moderate = counts[2];
     let high = counts[3];
     let severe = counts[4];
     let exceeds = moderate + high + severe;
-    let summary = if exceeds == 0 {
+    if exceeds == 0 {
         "No methods exceed cyclomatic complexity 10 in this scan.".to_string()
     } else {
         format!(
@@ -535,8 +578,7 @@ fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, String) {
             noun = if exceeds == 1 { "method" } else { "methods" },
             verb = if exceeds == 1 { "exceeds" } else { "exceed" },
         )
-    };
-    (bars, summary)
+    }
 }
 
 fn verdict_summary(findings: &[Finding], summary: &crate::Summary) -> String {

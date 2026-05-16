@@ -4791,33 +4791,10 @@ fn render_sarif(report: &AnalysisReport) -> String {
         .enumerate()
         .map(|(index, definition)| (definition.id, index))
         .collect();
-    let rules: Vec<Value> = registry
-        .definitions()
-        .iter()
-        .map(|definition| {
-            json!({
-                "id": definition.id,
-                "name": definition.name,
-                "shortDescription": {
-                    "text": definition.name,
-                },
-                "fullDescription": {
-                    "text": definition.description,
-                },
-                "help": {
-                    "text": definition.description,
-                },
-                "properties": {
-                    "pillar": definition.pillar,
-                    "tier": definition.tier,
-                    "kind": definition.kind,
-                    "defaultSeverity": definition.default_severity,
-                    "confidence": definition.confidence,
-                    "defaultEnabled": definition.default_enabled,
-                },
-            })
-        })
-        .collect();
+    let mut rules = Vec::new();
+    for definition in registry.definitions() {
+        rules.push(sarif_rule(definition));
+    }
     let results: Vec<Value> = report
         .findings
         .iter()
@@ -4836,6 +4813,9 @@ fn render_sarif(report: &AnalysisReport) -> String {
                         "rules": rules,
                     },
                 },
+                "invocations": [
+                    sarif_invocation(report),
+                ],
                 "results": results,
                 "properties": {
                     "gruffSchemaVersion": &report.schema_version,
@@ -4849,34 +4829,129 @@ fn render_sarif(report: &AnalysisReport) -> String {
     .expect("sarif serializes")
 }
 
-fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value {
-    let mut result = Map::new();
-    result.insert("ruleId".to_string(), json!(&finding.rule_id));
-    if let Some(rule_index) = rule_indices.get(finding.rule_id.as_str()) {
-        result.insert("ruleIndex".to_string(), json!(rule_index));
+fn sarif_rule(definition: &rules::RuleDefinition) -> Value {
+    json!({
+        "id": definition.id,
+        "name": definition.name,
+        "shortDescription": {
+            "text": definition.name,
+        },
+        "fullDescription": {
+            "text": definition.description,
+        },
+        "help": {
+            "text": definition.description,
+        },
+        "defaultConfiguration": {
+            "level": sarif_level(definition.default_severity),
+        },
+        "properties": sarif_rule_properties(definition),
+    })
+}
+
+fn sarif_rule_properties(definition: &rules::RuleDefinition) -> Value {
+    let mut properties = Map::new();
+    properties.insert("pillar".to_string(), json!(definition.pillar));
+    properties.insert("tier".to_string(), json!(definition.tier));
+    properties.insert("kind".to_string(), json!(definition.kind));
+    properties.insert(
+        "defaultSeverity".to_string(),
+        json!(definition.default_severity),
+    );
+    properties.insert("confidence".to_string(), json!(definition.confidence));
+    properties.insert(
+        "defaultEnabled".to_string(),
+        json!(definition.default_enabled),
+    );
+    if !definition.thresholds.is_empty() {
+        properties.insert("thresholds".to_string(), json!(definition.thresholds));
     }
-    result.insert("level".to_string(), json!(sarif_level(finding.severity)));
-    result.insert(
+    if !definition.options.is_empty() {
+        properties.insert("options".to_string(), json!(definition.options));
+    }
+    Value::Object(properties)
+}
+
+fn sarif_invocation(report: &AnalysisReport) -> Value {
+    let mut notifications = Vec::new();
+    for diagnostic in &report.diagnostics {
+        notifications.push(sarif_notification(diagnostic));
+    }
+    json!({
+        "executionSuccessful": report.diagnostics.is_empty(),
+        "toolExecutionNotifications": notifications,
+    })
+}
+
+fn sarif_notification(diagnostic: &RunDiagnostic) -> Value {
+    let mut notification = Map::new();
+    notification.insert(
+        "descriptor".to_string(),
+        json!({
+            "id": &diagnostic.diagnostic_type,
+        }),
+    );
+    notification.insert("level".to_string(), json!("error"));
+    notification.insert(
         "message".to_string(),
         json!({
-            "text": &finding.message,
+            "text": &diagnostic.message,
         }),
     );
-    result.insert(
-        "locations".to_string(),
+    if let Some(locations) = sarif_diagnostic_locations(diagnostic) {
+        notification.insert("locations".to_string(), locations);
+    }
+    Value::Object(notification)
+}
+
+fn sarif_diagnostic_locations(diagnostic: &RunDiagnostic) -> Option<Value> {
+    diagnostic.file_path.as_ref().map(|file_path| {
         json!([
             {
-                "physicalLocation": sarif_physical_location(finding),
+                "physicalLocation": sarif_physical_location_from_parts(
+                    file_path,
+                    diagnostic.line,
+                    None,
+                    None,
+                ),
             },
-        ]),
-    );
-    result.insert(
-        "partialFingerprints".to_string(),
-        json!({
-            "gruffFingerprint": &finding.fingerprint,
-        }),
-    );
+        ])
+    })
+}
 
+fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value {
+    let mut result = json!({
+        "ruleId": &finding.rule_id,
+        "level": sarif_level(finding.severity),
+        "message": {
+            "text": &finding.message,
+        },
+        "locations": sarif_result_locations(finding),
+        "partialFingerprints": {
+            "gruffFingerprint": &finding.fingerprint,
+        },
+        "properties": sarif_result_properties(finding),
+    });
+    if let Some(rule_index) = rule_indices.get(finding.rule_id.as_str()) {
+        result["ruleIndex"] = json!(rule_index);
+    }
+    result
+}
+
+fn sarif_result_locations(finding: &Finding) -> Value {
+    json!([
+        {
+            "physicalLocation": sarif_physical_location_from_parts(
+                &finding.file_path,
+                finding.line,
+                finding.column,
+                finding.end_line,
+            ),
+        },
+    ])
+}
+
+fn sarif_result_properties(finding: &Finding) -> Value {
     let mut properties = Map::new();
     properties.insert("severity".to_string(), json!(finding.severity));
     properties.insert("pillar".to_string(), json!(finding.pillar));
@@ -4897,26 +4972,29 @@ fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value
     if !finding.metadata.is_null() {
         properties.insert("metadata".to_string(), finding.metadata.clone());
     }
-    result.insert("properties".to_string(), Value::Object(properties));
-
-    Value::Object(result)
+    Value::Object(properties)
 }
 
-fn sarif_physical_location(finding: &Finding) -> Value {
+fn sarif_physical_location_from_parts(
+    file_path: &str,
+    line: Option<usize>,
+    column: Option<usize>,
+    end_line: Option<usize>,
+) -> Value {
     let mut location = Map::new();
     location.insert(
         "artifactLocation".to_string(),
         json!({
-            "uri": sarif_uri(&finding.file_path),
+            "uri": sarif_uri(file_path),
         }),
     );
-    if let Some(line) = finding.line {
+    if let Some(line) = line {
         let mut region = Map::new();
         region.insert("startLine".to_string(), json!(line));
-        if let Some(column) = finding.column {
+        if let Some(column) = column {
             region.insert("startColumn".to_string(), json!(column));
         }
-        if let Some(end_line) = finding.end_line {
+        if let Some(end_line) = end_line {
             region.insert("endLine".to_string(), json!(end_line));
         }
         location.insert("region".to_string(), Value::Object(region));
@@ -4925,7 +5003,28 @@ fn sarif_physical_location(finding: &Finding) -> Value {
 }
 
 fn sarif_uri(path: &str) -> String {
-    path.replace('\\', "/").trim_start_matches("./").to_string()
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches("./");
+    let path = if trimmed.is_empty() { "." } else { trimmed };
+    let mut encoded = String::new();
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                push_percent_encoded(&mut encoded, byte);
+            }
+        }
+    }
+    encoded
+}
+
+fn push_percent_encoded(encoded: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    encoded.push('%');
+    encoded.push(HEX[(byte >> 4) as usize] as char);
+    encoded.push(HEX[(byte & 0x0F) as usize] as char);
 }
 
 fn severity_label(severity: Severity) -> &'static str {
@@ -5390,6 +5489,13 @@ mod tests {
             Some("Validate command arguments.".to_string()),
             json!({}),
         )];
+        sample_report_with(findings, Vec::new())
+    }
+
+    fn sample_report_with(
+        findings: Vec<Finding>,
+        diagnostics: Vec<RunDiagnostic>,
+    ) -> AnalysisReport {
         let summary = summarize(&findings);
         let score = score_report(&findings);
         AnalysisReport {
@@ -5410,11 +5516,15 @@ mod tests {
                 ignored_paths: Vec::new(),
                 missing_paths: Vec::new(),
             },
-            diagnostics: Vec::new(),
+            diagnostics,
             findings,
             score,
             baseline: None,
         }
+    }
+
+    fn sample_sarif(report: &AnalysisReport) -> Value {
+        serde_json::from_str(&render_report(report, OutputFormat::Sarif)).expect("sarif report")
     }
 
     fn rule_ids(report: &AnalysisReport) -> BTreeSet<&str> {
@@ -7689,6 +7799,212 @@ rules:
             .expect("hotspot json");
         assert_eq!(hotspot["schemaVersion"], "gruff.hotspot.v1");
         assert_eq!(hotspot["files"][0]["filePath"], "src/lib.rs");
+    }
+
+    #[test]
+    fn sarif_contract_covers_rules_locations_levels_and_metadata() {
+        let mut error = Finding::new(
+            "complexity.cyclomatic",
+            "Complex function",
+            r".\src\space name.rs",
+            Some(10),
+            Severity::Error,
+            Pillar::Complexity,
+            Confidence::Medium,
+            Some("complex".to_string()),
+            Some("Split branches.".to_string()),
+            json!({}),
+        );
+        error.column = Some(5);
+        error.end_line = Some(12);
+        error.secondary_pillars = vec![Pillar::Size];
+
+        let advisory = Finding::new(
+            "docs.todo-density",
+            "Too many TODOs",
+            "src/hash#name.rs",
+            None,
+            Severity::Advisory,
+            Pillar::Documentation,
+            Confidence::Low,
+            None,
+            None,
+            Value::Null,
+        );
+        let unknown = Finding::new(
+            "custom.example",
+            "Custom warning",
+            "src/q?percent%.rs",
+            Some(3),
+            Severity::Warning,
+            Pillar::Naming,
+            Confidence::High,
+            Some("custom".to_string()),
+            None,
+            json!({ "detail": "kept" }),
+        );
+        let report = sample_report_with(vec![error, advisory, unknown], Vec::new());
+        let sarif = sample_sarif(&report);
+
+        let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .expect("rules");
+        let cyclomatic_rule = rules
+            .iter()
+            .find(|rule| rule["id"] == "complexity.cyclomatic")
+            .expect("cyclomatic rule");
+        assert_eq!(cyclomatic_rule["defaultConfiguration"]["level"], "warning");
+        assert!(cyclomatic_rule["properties"]["thresholds"].is_array());
+        assert!(cyclomatic_rule["properties"]["options"].is_null());
+
+        let results = sarif["runs"][0]["results"].as_array().expect("results");
+        assert_eq!(results[0]["level"], "error");
+        assert_eq!(results[0]["ruleId"], "complexity.cyclomatic");
+        assert!(results[0]["ruleIndex"].is_number());
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/space%20name.rs"
+        );
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["region"]["startLine"],
+            10
+        );
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["region"]["startColumn"],
+            5
+        );
+        assert_eq!(
+            results[0]["locations"][0]["physicalLocation"]["region"]["endLine"],
+            12
+        );
+        assert!(results[0]["locations"][0]["physicalLocation"]["region"]["endColumn"].is_null());
+        assert_eq!(results[0]["properties"]["secondaryPillars"][0], "size");
+        assert_eq!(results[0]["properties"]["metadata"], json!({}));
+        assert_eq!(results[0]["properties"]["remediation"], "Split branches.");
+
+        assert_eq!(results[1]["level"], "note");
+        assert_eq!(
+            results[1]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/hash%23name.rs"
+        );
+        assert!(results[1]["locations"][0]["physicalLocation"]["region"].is_null());
+        assert!(results[1]["properties"]["metadata"].is_null());
+
+        assert_eq!(results[2]["level"], "warning");
+        assert_eq!(results[2]["ruleId"], "custom.example");
+        assert!(results[2]["ruleIndex"].is_null());
+        assert_eq!(
+            results[2]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/q%3Fpercent%25.rs"
+        );
+        assert_eq!(results[2]["properties"]["metadata"]["detail"], "kept");
+    }
+
+    #[test]
+    fn sarif_uri_encodes_reserved_path_characters() {
+        assert_eq!(sarif_uri("./src/lib.rs"), "src/lib.rs");
+        assert_eq!(sarif_uri(r"src\lib.rs"), "src/lib.rs");
+        assert_eq!(sarif_uri("src/space name.rs"), "src/space%20name.rs");
+        assert_eq!(sarif_uri("src/hash#name.rs"), "src/hash%23name.rs");
+        assert_eq!(sarif_uri("src/q?name.rs"), "src/q%3Fname.rs");
+        assert_eq!(sarif_uri("src/percent%name.rs"), "src/percent%25name.rs");
+        assert_eq!(sarif_uri(""), ".");
+    }
+
+    #[test]
+    fn sarif_location_ignores_column_without_start_line() {
+        let location = sarif_physical_location_from_parts("src/lib.rs", None, Some(5), Some(7));
+        assert_eq!(location["artifactLocation"]["uri"], "src/lib.rs");
+        assert!(location["region"].is_null());
+    }
+
+    #[test]
+    fn sarif_maps_diagnostics_to_invocation_notifications() {
+        let report = sample_report_with(
+            Vec::new(),
+            vec![RunDiagnostic {
+                diagnostic_type: "missing-path".to_string(),
+                message: "Input path does not exist: missing.rs".to_string(),
+                file_path: Some("missing.rs".to_string()),
+                line: None,
+            }],
+        );
+        let sarif = sample_sarif(&report);
+
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["executionSuccessful"],
+            false
+        );
+        assert!(sarif["runs"][0]["invocations"][0]["commandLine"].is_null());
+        assert!(sarif["runs"][0]["invocations"][0]["arguments"].is_null());
+        assert!(sarif["runs"][0]["invocations"][0]["workingDirectory"].is_null());
+        let notification = &sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0];
+        assert_eq!(notification["descriptor"]["id"], "missing-path");
+        assert_eq!(notification["level"], "error");
+        assert!(notification["message"]["text"]
+            .as_str()
+            .expect("message")
+            .contains("missing.rs"));
+        assert_eq!(
+            notification["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+            "missing.rs"
+        );
+        assert_eq!(
+            sarif["runs"][0]["results"]
+                .as_array()
+                .expect("results")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn sarif_marks_clean_invocation_successful() {
+        let sarif = sample_sarif(&sample_report());
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+                .as_array()
+                .expect("notifications")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn sarif_parse_error_keeps_text_rule_results() {
+        let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].diagnostic_type, "parse-error");
+        assert_has_rule(&report, "sensitive-data.aws-access-key");
+
+        let sarif = sample_sarif(&report);
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["executionSuccessful"],
+            false
+        );
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["descriptor"]["id"],
+            "parse-error"
+        );
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["locations"][0]
+                ["physicalLocation"]["artifactLocation"]["uri"],
+            "tests/fixtures/parser/invalid.rs"
+        );
+        let result_rule_ids: Vec<&str> = sarif["runs"][0]["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|result| result["ruleId"].as_str().expect("rule id"))
+            .collect();
+        assert!(
+            result_rule_ids.contains(&"sensitive-data.aws-access-key"),
+            "{result_rule_ids:?}"
+        );
     }
 
     #[test]

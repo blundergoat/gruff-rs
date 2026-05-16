@@ -161,18 +161,43 @@ Rule ids and fingerprints are compatibility-sensitive because baselines and
 downstream consumers may key on them. Changing a rule id, fingerprint inputs, or
 `schemaVersion` is a compatibility decision.
 
+### SARIF
+
+`analyse --format sarif` renders SARIF 2.1.0 JSON as an adapter over the native
+analysis report. It does not change `gruff.analysis.v1`, rule ids, finding
+fingerprints, baselines, scoring, or fail-on behavior.
+
+```bash
+./bin/gruff-rs analyse fixtures --format sarif --fail-on none
+```
+
+SARIF driver rules come from the sorted built-in rule registry and include
+native metadata such as pillar, tier, kind, default severity, confidence,
+thresholds, and options. Results carry the native rule id, SARIF severity level,
+message, URI-safe artifact path, region data when available, and
+`partialFingerprints.gruffFingerprint`.
+
+Diagnostics still fail analysis with exit code 2. In SARIF output they are
+reported under `runs[0].invocations[0].toolExecutionNotifications`, with
+`executionSuccessful` set to `false`. Findings are still emitted when a file has
+both diagnostics and text-rule findings.
+
+Local validation uses focused Rust contract tests plus parseable CLI smokes; the
+default gate does not require a networked SARIF schema validator.
+
 ## Local Checks
 
 ```bash
 bash scripts/check.sh
 ./bin/gruff-rs analyse fixtures --format json --fail-on none
+./bin/gruff-rs analyse fixtures --format sarif --fail-on none
 ./bin/gruff-rs analyse src --format json --fail-on none
 ./bin/gruff-rs list-rules --format json
 ```
 
-`scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, fixture scan,
-and self-scan diagnostics smoke checks. Self-scan findings are visible under
-`--fail-on none`; diagnostics are treated as gate failures.
+`scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, JSON and
+SARIF fixture scans, and self-scan diagnostics smoke checks. Self-scan findings
+are visible under `--fail-on none`; diagnostics are treated as gate failures.
 
 ## Fixtures
 
@@ -185,7 +210,7 @@ Run an explicit fixture command when verifying fixture coverage.
 
 ## Troubleshooting
 
-- Parse diagnostics: run `./bin/gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`; Rust AST rules are skipped for parse-failed files while text rules still run.
+- Parse diagnostics: run `./bin/gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`, or use SARIF invocation notifications from `./bin/gruff-rs analyse <path> --format sarif --fail-on none`; Rust AST rules are skipped for parse-failed files while text rules still run.
 - Config errors: check unknown root keys, unknown rule ids, unsupported threshold names, and invalid value shapes in `.gruff.yaml`.
 - Baselines: regenerate only after confirming the current findings are intentionally accepted.
 - Intentional fixture findings: use `fixtures/README.md` and `tests/fixtures/README.md` to confirm whether a noisy file is a test input.

@@ -1,13 +1,13 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-16
+last_reviewed: 2026-05-17
 ---
 
 ## Footgun: Fixture Findings Are Intentional
 
 **Status:** active | **Created:** 2026-05-13 | **Evidence:** ACTUAL_MEASURED
 
-`fixtures/sample.rs` (search: `AKIA1111111111111111`) intentionally includes secret-looking strings, command execution, a long parameter list, and a weak test. Do not "fix" this file as ordinary bad code unless the replacement still proves the analyzer reports those rule families.
+`fixtures/sample.rs` (search: `let api_key =`) intentionally includes secret-looking strings, command execution, a long parameter list, and a weak test. Do not "fix" this file as ordinary bad code unless the replacement still proves the analyzer reports those rule families.
 
 The non-obvious failure mode is losing analyzer coverage while making the repository appear cleaner. The smoke command `cargo run -- analyse fixtures --format json --fail-on none` currently reports findings from this fixture.
 
