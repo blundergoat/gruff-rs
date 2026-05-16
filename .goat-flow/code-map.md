@@ -2,7 +2,7 @@
 
 ## Repository Root
 
-`Cargo.toml` = Rust package metadata and dependencies for the `gruff-rs` binary.
+`Cargo.toml` = Rust package metadata and dependencies for the `gruff-rs` binary, including the `ignore` crate used for Git-ignore-aware source discovery.
 `Cargo.lock` = Locked dependency graph; update through Cargo, not by hand.
 `README.md` = Project overview, CLI examples, and config shape.
 `AGENTS.md` = Codex/goat-flow operating instructions.
@@ -12,7 +12,7 @@
 ## Source
 
 `src/` = Rust source directory.
-`src/main.rs` = CLI orchestration, analyzer pipeline, parsed source/project context construction, config loading, text/markdown/github/hotspot renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
+`src/main.rs` = CLI orchestration, Git-ignore-aware source discovery, analyzer pipeline, parsed source/project context construction, config loading, text/markdown/github/hotspot renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
 `src/html_report.rs` = HTML inspection report renderer; builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/rules.rs` = Rule metadata contracts and the sorted built-in rule registry used by config validation and `list-rules`.
 

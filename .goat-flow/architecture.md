@@ -22,7 +22,19 @@ The analyzer reads user-selected files and does not execute analyzed source. Fix
 
 ## Data Flow
 
-Input paths become `SourceFile` records, then owned parsed-source records containing raw text, parser diagnostics, and an optional `syn` Rust AST. `ProjectContext` is built from those parsed sources plus read-only `Cargo.toml` and `Cargo.lock` summaries, Rust source summaries, module summaries, item summaries, and call-name summaries. Module and item summaries carry conservative cfg/test context so project rules can avoid overclaiming type-aware certainty. The project context is internal analysis state and is not serialized into `gruff.analysis.v1`.
+Input paths are discovered with Git-ignore-aware traversal that reads ignore
+files as data, includes non-ignored dot-directories, and layers `.gruff.yaml`
+`paths.ignore` on top of repository ignore policy. Explicit file paths are still
+accepted as focused scan targets, and `--include-ignored` opts into local ignored
+paths for deliberate inspection while VCS internals stay traversal-blocked.
+Discovered inputs become `SourceFile` records,
+then owned parsed-source records containing raw text, parser diagnostics, and an
+optional `syn` Rust AST. `ProjectContext` is built from those parsed sources plus
+read-only `Cargo.toml` and `Cargo.lock` summaries, Rust source summaries, module
+summaries, item summaries, and call-name summaries. Module and item summaries
+carry conservative cfg/test context so project rules can avoid overclaiming
+type-aware certainty. The project context is internal analysis state and is not
+serialized into `gruff.analysis.v1`.
 
 Project rules run against `ProjectContext`. Text rules run for every supported file. Rust AST rules run only when parsing succeeds; parse failures emit a `parse-error` diagnostic while still allowing text-only checks such as sensitive-data detection. Rust function-scope rules include complexity, naming, test-quality, error-handling, async/concurrency, loop-scoped performance, and deterministic token metrics. Findings are sorted and deduplicated by fingerprint before rendering. Baseline generation and history recording write JSON side files whose names are ignored by `.gitignore`; absence of those files in a clean checkout is normal.
 

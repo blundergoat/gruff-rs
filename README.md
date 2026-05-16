@@ -98,6 +98,12 @@ rules:
 
 Use `--no-config` to ignore project config.
 
+Default directory scans honour Git ignore rules and `.gruff.yaml` `paths.ignore`.
+Committed dot-directories remain eligible for text/security checks when they are
+not ignored by Git. Pass `--include-ignored` for deliberate local inspection of
+ignored paths, or pass an explicit file/directory path to scan a focused target.
+VCS internals such as `.git/` remain blocked during directory traversal.
+
 Cargo dependency checks are local-only. They read `Cargo.toml` and `Cargo.lock`
 as data and do not query registries, run Cargo, or consume vulnerability feeds.
 Project architecture and dead-code candidate checks are also local-only. They use
@@ -171,6 +177,9 @@ and self-scan diagnostics smoke checks. Self-scan findings are visible under
 `fixtures/` and `tests/fixtures/` intentionally contain code and config snippets that
 look noisy. They prove analyzer behavior and should not be cleaned up unless the
 replacement preserves the rule coverage.
+
+The default project config ignores fixture directories during broad self-scans.
+Run an explicit fixture command when verifying fixture coverage.
 
 ## Troubleshooting
 

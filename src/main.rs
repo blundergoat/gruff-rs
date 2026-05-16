@@ -2,6 +2,7 @@ use chrono::Utc;
 use clap::builder::styling;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use ignore::{DirEntry, WalkBuilder};
 use proc_macro2::LineColumn;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -13,10 +14,9 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
-use walkdir::{DirEntry, WalkDir};
 
 mod html_report;
 mod rules;
@@ -1097,7 +1097,7 @@ fn discover_sources(
 ) -> DiscoveryResult {
     let mut files = Vec::new();
     let mut missing_paths = Vec::new();
-    let mut ignored_paths = BTreeSet::new();
+    let ignored_paths = Arc::new(Mutex::new(BTreeSet::new()));
     let input_paths = if options.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
@@ -1116,14 +1116,46 @@ fn discover_sources(
             continue;
         }
 
-        let walker = WalkDir::new(&absolute).into_iter().filter_entry(|entry| {
-            should_descend(entry, project_root, options, config, &mut ignored_paths)
-        });
+        let root_config_ignored = path_is_project_ignored(project_root, &absolute, config);
+        let apply_project_ignore = !root_config_ignored;
+        let filter_root = project_root.to_path_buf();
+        let filter_config = config.clone();
+        let filter_ignored_paths = Arc::clone(&ignored_paths);
+        let include_ignored = options.include_ignored;
+        let mut builder = WalkBuilder::new(&absolute);
+        builder
+            .hidden(false)
+            .parents(!include_ignored)
+            .ignore(!include_ignored)
+            .git_ignore(!include_ignored)
+            .git_global(!include_ignored)
+            .git_exclude(!include_ignored)
+            .filter_entry(move |entry| {
+                should_descend(
+                    entry,
+                    &filter_root,
+                    include_ignored,
+                    &filter_config,
+                    apply_project_ignore,
+                    &filter_ignored_paths,
+                )
+            });
 
-        for entry in walker
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_file())
-        {
+        for entry in builder.build().filter_map(Result::ok).filter(|entry| {
+            entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+        }) {
+            if !should_include_file(
+                &entry,
+                project_root,
+                options,
+                config,
+                apply_project_ignore,
+                &ignored_paths,
+            ) {
+                continue;
+            }
             push_source_file(project_root, entry.path(), &mut files);
         }
     }
@@ -1131,61 +1163,117 @@ fn discover_sources(
     files.sort_by(|left, right| left.display_path.cmp(&right.display_path));
     files.dedup_by(|left, right| left.absolute_path == right.absolute_path);
 
+    let ignored_paths = ignored_paths
+        .lock()
+        .expect("ignored paths lock")
+        .iter()
+        .cloned()
+        .collect();
+
     DiscoveryResult {
         files,
         missing_paths,
-        ignored_paths: ignored_paths.into_iter().collect(),
+        ignored_paths,
     }
 }
 
 fn should_descend(
     entry: &DirEntry,
     project_root: &Path,
-    options: &AnalysisOptions,
+    include_ignored: bool,
     config: &Config,
-    ignored_paths: &mut BTreeSet<String>,
+    apply_project_ignore: bool,
+    ignored_paths: &Mutex<BTreeSet<String>>,
 ) -> bool {
-    if entry.depth() == 0 || !entry.file_type().is_dir() {
+    if entry.depth() == 0
+        || !entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+    {
         return true;
     }
 
     let relative = display_path(project_root, entry.path());
-    if !options.include_ignored && is_default_ignored_dir(&relative) {
-        ignored_paths.insert(relative);
+    if is_vcs_internal_dir(&relative) {
+        record_ignored_path(ignored_paths, relative);
         return false;
     }
 
-    if config
-        .ignored_paths
-        .iter()
-        .any(|pattern| path_matches(pattern, &relative))
+    if !include_ignored && is_default_ignored_dir(&relative) {
+        record_ignored_path(ignored_paths, relative);
+        return false;
+    }
+
+    if !include_ignored
+        && apply_project_ignore
+        && path_is_project_ignored(project_root, entry.path(), config)
     {
-        ignored_paths.insert(relative);
+        record_ignored_path(ignored_paths, relative);
         return false;
     }
 
     true
 }
 
+fn should_include_file(
+    entry: &DirEntry,
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    apply_project_ignore: bool,
+    ignored_paths: &Mutex<BTreeSet<String>>,
+) -> bool {
+    if options.include_ignored || !apply_project_ignore {
+        return true;
+    }
+    if path_is_project_ignored(project_root, entry.path(), config) {
+        record_ignored_path(ignored_paths, display_path(project_root, entry.path()));
+        return false;
+    }
+    true
+}
+
+fn record_ignored_path(ignored_paths: &Mutex<BTreeSet<String>>, path: String) {
+    ignored_paths
+        .lock()
+        .expect("ignored paths lock")
+        .insert(path);
+}
+
+fn path_is_project_ignored(project_root: &Path, path: &Path, config: &Config) -> bool {
+    let relative = display_path(project_root, path);
+    config
+        .ignored_paths
+        .iter()
+        .any(|pattern| path_matches(pattern, &relative))
+}
+
 fn is_default_ignored_dir(relative: &str) -> bool {
-    let first = relative.split('/').next().unwrap_or(relative);
-    matches!(
-        first,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | ".idea"
-            | ".vscode"
-            | "build"
-            | "cache"
-            | "coverage"
-            | "dist"
-            | "generated"
-            | "node_modules"
-            | "target"
-            | "tmp"
-            | "vendor"
-    )
+    relative.split('/').any(|component| {
+        matches!(
+            component,
+            ".git"
+                | ".hg"
+                | ".svn"
+                | ".idea"
+                | ".vscode"
+                | "build"
+                | "cache"
+                | "coverage"
+                | "dist"
+                | "generated"
+                | "node_modules"
+                | "target"
+                | "tmp"
+                | "vendor"
+        )
+    })
+}
+
+fn is_vcs_internal_dir(relative: &str) -> bool {
+    relative
+        .split('/')
+        .any(|component| matches!(component, ".git" | ".hg" | ".svn"))
 }
 
 fn push_source_file(project_root: &Path, path: &Path, files: &mut Vec<SourceFile>) {
@@ -1200,7 +1288,20 @@ fn push_source_file(project_root: &Path, path: &Path, files: &mut Vec<SourceFile
     let is_rust = extension.eq_ignore_ascii_case("rs");
     let is_text = matches!(
         extension,
-        "conf" | "config" | "env" | "ini" | "json" | "toml" | "xml" | "yaml" | "yml"
+        "bash"
+            | "conf"
+            | "config"
+            | "env"
+            | "ini"
+            | "json"
+            | "md"
+            | "markdown"
+            | "sh"
+            | "toml"
+            | "txt"
+            | "xml"
+            | "yaml"
+            | "yml"
     ) || file_name.starts_with(".env");
 
     if is_rust || is_text {
@@ -6908,15 +7009,88 @@ rules:
     fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join(".git/hooks")).expect("git hooks dir");
+        fs::create_dir_all(dir.path().join(".git/info")).expect("git info dir");
+        fs::create_dir_all(dir.path().join(".agents/skills")).expect("agents dir");
+        fs::create_dir_all(dir.path().join(".claude")).expect("claude dir");
+        fs::create_dir_all(dir.path().join(".codex/hooks")).expect("codex dir");
+        fs::create_dir_all(dir.path().join(".github/workflows")).expect("github dir");
+        fs::create_dir_all(dir.path().join(".goat-flow")).expect("goat dir");
+        fs::create_dir_all(dir.path().join("local")).expect("local dir");
+        fs::create_dir_all(dir.path().join("nested")).expect("nested dir");
         fs::create_dir_all(dir.path().join("src")).expect("src dir");
         fs::create_dir_all(dir.path().join("target")).expect("target dir");
         fs::create_dir_all(dir.path().join("ignored")).expect("ignored dir");
+        fs::write(
+            dir.path().join(".gitignore"),
+            "local/**\n.goat-flow/audit-cache.json\n",
+        )
+        .expect("gitignore write");
+        fs::write(dir.path().join(".git/info/exclude"), "info-excluded.env\n")
+            .expect("git exclude write");
+        fs::write(
+            dir.path().join(".git/hooks/pre-commit.sh"),
+            "DATABASE_PASSWORD=git-hook-secret-123\n",
+        )
+        .expect("git hook write");
+        fs::write(dir.path().join("nested/.gitignore"), "secret.env\n")
+            .expect("nested gitignore write");
         fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("info-excluded.env"),
+            concat!("DATABASE_", "PASSWORD=info-excluded-secret-123\n"),
+        )
+        .expect("info excluded write");
+        fs::write(
+            dir.path().join(".agents/skills/demo.md"),
+            "# Demo\nDATABASE_PASSWORD=agents-secret-123\n",
+        )
+        .expect("agents write");
+        fs::write(
+            dir.path().join(".claude/settings.json"),
+            r#"{"DATABASE_PASSWORD":"claude-secret-123"}"#,
+        )
+        .expect("claude write");
+        fs::write(
+            dir.path().join(".codex/hooks/deny-dangerous.sh"),
+            "DATABASE_PASSWORD=codex-secret-123\n",
+        )
+        .expect("codex write");
+        fs::write(
+            dir.path().join(".github/workflows/ci.yml"),
+            "env:\n  DATABASE_PASSWORD=github-secret-123\n",
+        )
+        .expect("github write");
+        fs::write(
+            dir.path().join(".goat-flow/architecture.md"),
+            "# Architecture\nDATABASE_PASSWORD=goat-secret-123\n",
+        )
+        .expect("goat write");
+        fs::write(
+            dir.path().join(".goat-flow/audit-cache.json"),
+            r#"{"DATABASE_PASSWORD":"ignored-goat-secret-123"}"#,
+        )
+        .expect("goat cache write");
         fs::write(
             dir.path().join("src/lib.rs"),
             "/// Ready.\npub fn is_ready() -> bool { true }\n",
         )
         .expect("rust write");
+        fs::write(
+            dir.path().join("local/secret.env"),
+            concat!("DATABASE_", "PASSWORD=local-secret-123\n"),
+        )
+        .expect("local secret write");
+        fs::write(
+            dir.path().join("nested/secret.env"),
+            concat!("DATABASE_", "PASSWORD=nested-secret-123\n"),
+        )
+        .expect("nested secret write");
+        fs::write(
+            dir.path().join("nested/visible.env"),
+            concat!("DATABASE_", "PASSWORD=visible-secret-123\n"),
+        )
+        .expect("nested visible write");
         fs::write(
             dir.path().join("target/secret.env"),
             concat!("DATABASE_", "PASSWORD=target-secret-123\n"),
@@ -6928,6 +7102,45 @@ rules:
         )
         .expect("ignored secret write");
         write_default_config(dir.path(), r#"{ "paths": { "ignore": ["ignored/**"] } }"#);
+
+        let discovery = discover_sources(
+            dir.path(),
+            &AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+            &load_config(
+                dir.path(),
+                &AnalysisOptions {
+                    paths: vec![PathBuf::from(".")],
+                    no_config: false,
+                    no_baseline: true,
+                    ..default_test_options()
+                },
+            )
+            .expect("config loads"),
+        );
+        let discovered_paths: BTreeSet<&str> = discovery
+            .files
+            .iter()
+            .map(|file| file.display_path.as_str())
+            .collect();
+        assert!(discovered_paths.contains(".agents/skills/demo.md"));
+        assert!(discovered_paths.contains(".claude/settings.json"));
+        assert!(discovered_paths.contains(".codex/hooks/deny-dangerous.sh"));
+        assert!(discovered_paths.contains(".github/workflows/ci.yml"));
+        assert!(discovered_paths.contains(".goat-flow/architecture.md"));
+        assert!(discovered_paths.contains("nested/visible.env"));
+        assert!(discovered_paths.contains("src/lib.rs"));
+        assert!(!discovered_paths.contains(".git/hooks/pre-commit.sh"));
+        assert!(!discovered_paths.contains(".goat-flow/audit-cache.json"));
+        assert!(!discovered_paths.contains("info-excluded.env"));
+        assert!(!discovered_paths.contains("local/secret.env"));
+        assert!(!discovered_paths.contains("nested/secret.env"));
+        assert!(!discovered_paths.contains("target/secret.env"));
+        assert!(!discovered_paths.contains("ignored/secret.env"));
 
         let default_scan = run_project_analysis(
             dir.path(),
@@ -6947,7 +7160,22 @@ rules:
             .paths
             .ignored_paths
             .contains(&"ignored".to_string()));
-        assert_missing_rule(&default_scan, "sensitive-data.hardcoded-env-value");
+        assert!(default_scan.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == ".github/workflows/ci.yml"
+        }));
+        assert!(!default_scan.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == "local/secret.env"
+        }));
+        assert!(!default_scan.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == "info-excluded.env"
+        }));
+        assert!(!default_scan.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == ".git/hooks/pre-commit.sh"
+        }));
 
         let include_ignored = run_project_analysis(
             dir.path(),
@@ -6960,14 +7188,33 @@ rules:
             },
         )
         .expect("analysis succeeds");
-        assert_has_rule(&include_ignored, "sensitive-data.hardcoded-env-value");
+        assert!(include_ignored.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == "local/secret.env"
+        }));
+        assert!(include_ignored.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == "ignored/secret.env"
+        }));
+        assert!(include_ignored.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == "info-excluded.env"
+        }));
+        assert!(include_ignored.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == "target/secret.env"
+        }));
+        assert!(!include_ignored.findings.iter().any(|finding| {
+            finding.rule_id == "sensitive-data.hardcoded-env-value"
+                && finding.file_path == ".git/hooks/pre-commit.sh"
+        }));
 
         let text_scan = run_project_analysis(
             dir.path(),
             AnalysisOptions {
-                paths: vec![PathBuf::from("target/secret.env")],
+                paths: vec![PathBuf::from("local/secret.env")],
                 no_config: true,
-                include_ignored: true,
+                include_ignored: false,
                 no_baseline: true,
                 ..default_test_options()
             },
