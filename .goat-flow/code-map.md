@@ -32,6 +32,7 @@
 `scripts/` = Project shell entrypoints.
 `scripts/check.sh` = Formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, and self-scan gate.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
+`scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes `target/perf/last-run.json`, supports `--update-baseline` and `--check` with configurable time/RSS budgets.
 
 ## Documentation And Harness
 

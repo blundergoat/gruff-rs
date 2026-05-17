@@ -199,6 +199,28 @@ bash scripts/check.sh
 SARIF fixture scans, and self-scan diagnostics smoke checks. Self-scan findings
 are visible under `--fail-on none`; diagnostics are treated as gate failures.
 
+## Performance
+
+`scripts/test-performance.sh` runs the release binary against a fixed set of
+scenarios (small fixtures, the self-scan, baseline/history/diff feature
+toggles, `list-rules`) and reports median, min, max, and stddev wall-clock plus
+peak RSS per scenario. Results are written to `target/perf/last-run.json`
+(gitignored).
+
+```bash
+bash scripts/test-performance.sh                  # run and print a table
+bash scripts/test-performance.sh --update-baseline # snapshot the baseline
+bash scripts/test-performance.sh --check          # fail on regression vs baseline
+```
+
+`--check` compares the current median against `target/perf/baseline.json` and
+exits non-zero if any scenario exceeds the time or RSS budget (defaults: 15%
+on wall-clock, 25% on peak RSS; overridable via `GRUFF_PERF_TIME_BUDGET_PCT`
+and `GRUFF_PERF_RSS_BUDGET_PCT`). Iteration count is controlled by
+`GRUFF_PERF_ITERS` (default 5; first run is warm-up and discarded). Set
+`GRUFF_PERF_LARGE_CORPUS=/abs/path` to add an external corpus scenario, and
+`GRUFF_PERF_HOST_TAG=<name>` to tag the baseline with a machine identifier.
+
 ## Fixtures
 
 `fixtures/` and `tests/fixtures/` intentionally contain code and config snippets that
