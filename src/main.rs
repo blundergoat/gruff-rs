@@ -192,6 +192,7 @@ enum Commands {
     /// Render a gruff report to stdout or a file.
     Report(ReportArgs),
     /// List gruff rule metadata.
+    #[command(alias = "rules")]
     ListRules(ListRulesArgs),
     /// Serve the local gruff dashboard.
     Dashboard(DashboardArgs),
@@ -269,6 +270,9 @@ struct DashboardArgs {
 struct ListRulesArgs {
     #[arg(long, default_value = "text")]
     format: RuleListFormat,
+    /// Preview the rules matched by one exact id, dotted prefix, or pillar selector.
+    #[arg(long)]
+    selector: Option<String>,
 }
 
 #[derive(Args, Clone)]
@@ -424,7 +428,15 @@ struct Config {
     ignored_paths: Vec<String>,
     accepted_abbreviations: BTreeSet<String>,
     secret_previews: BTreeSet<String>,
+    selectors: SelectorSet,
     rule_settings: HashMap<String, RuleSetting>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SelectorSet {
+    positive: BTreeSet<String>,
+    negative: BTreeSet<String>,
+    has_positive: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -442,11 +454,18 @@ impl Config {
                 .map(String::from)
                 .collect(),
             secret_previews: BTreeSet::new(),
+            selectors: SelectorSet::default(),
             rule_settings: HashMap::new(),
         }
     }
 
     fn rule_enabled(&self, rule_id: &str) -> bool {
+        if self.selectors.negative.contains(rule_id) {
+            return false;
+        }
+        if self.selectors.has_positive && !self.selectors.positive.contains(rule_id) {
+            return false;
+        }
         self.rule_settings
             .get(rule_id)
             .and_then(|setting| setting.enabled)
@@ -934,8 +953,27 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
 }
 
 fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
+    let body = match render_rule_list(&args) {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    writer.emit_unconditional(&body);
+    ExitCode::SUCCESS
+}
+
+fn render_rule_list(args: &ListRulesArgs) -> Result<String, String> {
     let registry = rules::builtin_registry();
-    let body = match args.format {
+    if let Some(selector) = &args.selector {
+        let ids = expand_rule_selector(selector, &registry, "rules --selector")?;
+        return Ok(match args.format {
+            RuleListFormat::Json => serde_json::to_string_pretty(&ids).expect("rules serialize"),
+            RuleListFormat::Text => ids.into_iter().collect::<Vec<_>>().join("\n"),
+        });
+    }
+    Ok(match args.format {
         RuleListFormat::Json => {
             serde_json::to_string_pretty(registry.definitions()).expect("rules serialize")
         }
@@ -953,9 +991,7 @@ fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
             }
             out.trim_end_matches('\n').to_string()
         }
-    };
-    writer.emit_unconditional(&body);
-    ExitCode::SUCCESS
+    })
 }
 
 fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
@@ -1695,13 +1731,59 @@ fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), S
     let rules = rules_value
         .as_object()
         .ok_or_else(|| "config key `rules` must be an object".to_string())?;
-    for (rule_id, rule_value) in rules {
-        if !registry.contains(rule_id) {
-            return Err(format!("unknown rule id `{rule_id}` in config"));
-        }
-        let setting = parse_rule_setting(rule_id, rule_value, &registry)?;
-        config.rule_settings.insert(rule_id.clone(), setting);
+    if let Some(select_value) = rules.get("select") {
+        config.selectors.positive = expand_rule_selectors(select_value, &registry, "rules.select")?;
+        config.selectors.has_positive = !config.selectors.positive.is_empty();
     }
+    if let Some(ignore_value) = rules.get("ignore") {
+        config.selectors.negative = expand_rule_selectors(ignore_value, &registry, "rules.ignore")?;
+    }
+    if let Some(custom_value) = rules.get("custom") {
+        let custom = custom_value
+            .as_object()
+            .ok_or_else(|| "config key `rules.custom` must be an object".to_string())?;
+        for (rule_id, rule_value) in custom {
+            insert_rule_setting(
+                rule_id,
+                rule_value,
+                &registry,
+                &mut config.rule_settings,
+                "rules.custom",
+            )?;
+        }
+    }
+    for (key, rule_value) in rules {
+        if matches!(key.as_str(), "select" | "ignore" | "custom") {
+            continue;
+        }
+        insert_rule_setting(
+            key,
+            rule_value,
+            &registry,
+            &mut config.rule_settings,
+            "rules",
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_rule_setting(
+    rule_id: &str,
+    rule_value: &Value,
+    registry: &rules::RuleRegistry,
+    settings: &mut HashMap<String, RuleSetting>,
+    context: &str,
+) -> Result<(), String> {
+    if !registry.contains(rule_id) {
+        return Err(format!(
+            "unknown rule id `{rule_id}` in config key `{context}`"
+        ));
+    }
+    if settings.contains_key(rule_id) {
+        return Err(format!("duplicate rule config for `{rule_id}`"));
+    }
+    let setting = parse_rule_setting(rule_id, rule_value, registry)?;
+    settings.insert(rule_id.to_string(), setting);
     Ok(())
 }
 
@@ -1795,6 +1877,105 @@ fn validate_rule_options(
     }
     Ok(())
 }
+
+fn expand_rule_selectors(
+    selectors_value: &Value,
+    registry: &rules::RuleRegistry,
+    path: &str,
+) -> Result<BTreeSet<String>, String> {
+    let selectors = string_array(selectors_value, path)?;
+    let mut expanded = BTreeSet::new();
+    for (index, selector) in selectors.iter().enumerate() {
+        expanded.extend(expand_rule_selector(
+            selector,
+            registry,
+            &format!("{path}[{index}]"),
+        )?);
+    }
+    Ok(expanded)
+}
+
+fn expand_rule_selector(
+    selector: &str,
+    registry: &rules::RuleRegistry,
+    path: &str,
+) -> Result<BTreeSet<String>, String> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err(format!(
+            "empty selector in `{path}`; expected exact rule id, dotted prefix, or public pillar"
+        ));
+    }
+    if selector.contains(':') {
+        return Err(format!(
+            "unsupported selector `{selector}` in `{path}`; tier/profile selectors are reserved for future registry metadata"
+        ));
+    }
+    if selector.contains('*') && !selector.ends_with(".*") {
+        return Err(format!(
+            "unsupported selector `{selector}` in `{path}`; only dotted prefix selectors such as `security.*` are supported"
+        ));
+    }
+    if registry.contains(selector) {
+        return Ok(BTreeSet::from([selector.to_string()]));
+    }
+    if let Some(pillar) = parse_pillar_selector(selector) {
+        return Ok(registry
+            .definitions()
+            .iter()
+            .filter(|definition| definition.pillar == pillar)
+            .map(|definition| definition.id.to_string())
+            .collect());
+    }
+
+    let prefix = selector.strip_suffix(".*").unwrap_or(selector);
+    let prefix_with_dot = format!("{prefix}.");
+    let matches: BTreeSet<String> = registry
+        .definitions()
+        .iter()
+        .filter(|definition| definition.id.starts_with(&prefix_with_dot))
+        .map(|definition| definition.id.to_string())
+        .collect();
+    if !matches.is_empty() {
+        return Ok(matches);
+    }
+
+    Err(format!(
+        "unknown selector `{selector}` in `{path}`; expected exact rule id, dotted prefix, or public pillar such as Security"
+    ))
+}
+
+fn parse_pillar_selector(selector: &str) -> Option<Pillar> {
+    let normalized = normalize_selector_name(selector);
+    PILLAR_SELECTOR_NAMES
+        .iter()
+        .find_map(|(name, pillar)| (normalize_selector_name(name) == normalized).then_some(*pillar))
+}
+
+fn normalize_selector_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(|character| character.to_lowercase())
+        .collect()
+}
+
+const PILLAR_SELECTOR_NAMES: &[(&str, Pillar)] = &[
+    ("Size", Pillar::Size),
+    ("Complexity", Pillar::Complexity),
+    ("DeadCode", Pillar::DeadCode),
+    ("Dead code", Pillar::DeadCode),
+    ("Waste", Pillar::Waste),
+    ("Naming", Pillar::Naming),
+    ("Documentation", Pillar::Documentation),
+    ("Modernisation", Pillar::Modernisation),
+    ("Security", Pillar::Security),
+    ("SensitiveData", Pillar::SensitiveData),
+    ("Sensitive data", Pillar::SensitiveData),
+    ("TestQuality", Pillar::TestQuality),
+    ("Test quality", Pillar::TestQuality),
+    ("Design", Pillar::Design),
+];
 
 fn default_config_path(project_root: &Path) -> Option<PathBuf> {
     DEFAULT_CONFIG_FILES
@@ -7026,6 +7207,215 @@ rules:
             .collect();
         assert!(!rule_ids.contains("security.process-command"));
         assert!(!rule_ids.contains("size.parameter-count"));
+    }
+
+    #[test]
+    fn selector_set_matches_registry_with_negative_precedence() {
+        let registry = rules::builtin_registry();
+        let mut config = Config::default();
+        config.selectors.positive =
+            expand_rule_selector("Security", &registry, "test").expect("pillar selector");
+        config.selectors.has_positive = true;
+        config.selectors.negative =
+            expand_rule_selector("security.process-command", &registry, "test")
+                .expect("exact selector");
+
+        let enabled: Vec<&str> = registry
+            .definitions()
+            .iter()
+            .map(|definition| definition.id)
+            .filter(|rule_id| config.rule_enabled(rule_id))
+            .collect();
+        eprintln!("selector enabled ids: {enabled:?}");
+
+        assert!(config.rule_enabled("security.unsafe-block"));
+        assert!(!config.rule_enabled("security.process-command"));
+        assert!(!config.rule_enabled("docs.missing-readme"));
+    }
+
+    #[test]
+    fn selector_config_supports_empty_pillar_prefix_exact_negative_and_custom_blocks() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: []
+"#,
+        );
+        let config = load_config(dir.path(), &options).expect("empty selector accepted");
+        assert!(config.rule_enabled("security.process-command"));
+        assert!(config.rule_enabled("docs.missing-readme"));
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: ["Security"]
+"#,
+        );
+        let config = load_config(dir.path(), &options).expect("pillar selector accepted");
+        assert!(config.rule_enabled("security.process-command"));
+        assert!(config.rule_enabled("security.unsafe-block"));
+        assert!(!config.rule_enabled("docs.missing-readme"));
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: ["security"]
+  ignore: ["security.process-command"]
+"#,
+        );
+        let config =
+            load_config(dir.path(), &options).expect("prefix and exact selectors accepted");
+        assert!(!config.rule_enabled("security.process-command"));
+        assert!(config.rule_enabled("security.unsafe-block"));
+        assert!(!config.rule_enabled("docs.missing-readme"));
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: ["security.unsafe-block"]
+  custom:
+    security.unsafe-block:
+      enabled: false
+"#,
+        );
+        let config = load_config(dir.path(), &options).expect("custom exact block accepted");
+        assert!(!config.rule_enabled("security.unsafe-block"));
+        assert!(!config.rule_enabled("security.process-command"));
+    }
+
+    #[test]
+    fn selector_config_rejects_unknown_pillar_prefix_exact_and_shapes() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: ["Securtiy"]
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown pillar rejected");
+        assert!(error.contains("unknown selector `Securtiy`"), "{error}");
+        assert!(error.contains("rules.select[0]"), "{error}");
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: ["does-not-exist.*"]
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown prefix rejected");
+        assert!(
+            error.contains("unknown selector `does-not-exist.*`"),
+            "{error}"
+        );
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  select: ["security*"]
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unsupported glob rejected");
+        assert!(
+            error.contains("unsupported selector `security*`"),
+            "{error}"
+        );
+
+        write_yaml_config(
+            dir.path(),
+            r#"
+rules:
+  custom:
+    unknown.rule:
+      enabled: false
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown exact id rejected");
+        assert!(error.contains("unknown rule id `unknown.rule`"), "{error}");
+    }
+
+    #[test]
+    fn list_rules_selector_preview_is_deterministic() {
+        let text = render_rule_list(&ListRulesArgs {
+            format: RuleListFormat::Text,
+            selector: Some("Security".to_string()),
+        })
+        .expect("selector preview");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "dependency.duplicate-locked-version",
+                "dependency.git-source",
+                "dependency.path-source",
+                "dependency.wildcard-version",
+                "security.process-command",
+                "security.unsafe-block"
+            ]
+        );
+
+        let json_output = render_rule_list(&ListRulesArgs {
+            format: RuleListFormat::Json,
+            selector: Some("performance.*".to_string()),
+        })
+        .expect("selector json preview");
+        let ids: Vec<String> = serde_json::from_str(&json_output).expect("selector json");
+        assert_eq!(
+            ids,
+            vec![
+                "performance.clone-in-loop",
+                "performance.format-in-loop",
+                "performance.regex-in-loop"
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_config_byte_identical_rule_blocks_remain_selector_neutral() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("sample.rs"),
+            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+    if a {
+        std::process::Command::new("sh").arg("-c").arg(b).spawn().unwrap();
+    }
+    println!("{}{}{}{}", c, d, e, f);
+}
+"#,
+        )
+        .expect("fixture write");
+        write_default_config(
+            dir.path(),
+            r#"{
+  "rules": {
+    "security.process-command": { "enabled": false }
+  }
+}"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("sample.rs")],
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        assert_missing_rule(&report, "security.process-command");
+        assert_has_rule(&report, "size.parameter-count");
     }
 
     #[test]

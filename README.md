@@ -38,7 +38,7 @@ settings with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT`.
 ## Config
 
 `gruff-rs` reads `.gruff.yaml` by default. It also recognizes `.gruff.yml` and `.gruff.json`, and an explicit path passed with `--config`.
-Unknown keys and unknown rule ids are rejected.
+Unknown keys, unknown rule ids, and unknown selectors are rejected.
 
 ```yaml
 paths:
@@ -56,6 +56,8 @@ allowlists:
     - rx
   secretPreviews: []
 rules:
+  select: []              # optional; empty or missing means all built-in rules
+  ignore: []              # optional; negative selectors always win
   architecture.large-module:
     threshold: 25
   architecture.module-fan-out:
@@ -96,6 +98,27 @@ rules:
     threshold: 5
   test-quality.long-test:
     threshold: 30
+```
+
+Rule selectors can target an exact rule id, a dotted prefix, or a public pillar:
+
+```yaml
+rules:
+  select: ["Security", "complexity.*"]
+  ignore: ["security.process-command"]
+  custom:
+    complexity.cognitive:
+      threshold: 20
+```
+
+When `select` contains entries, unmatched rules are disabled. `ignore` wins over
+overlapping positive selectors. Exact rule blocks keep configuring thresholds and
+`enabled: false`; they do not rename rule ids or change fingerprints. Preview a
+selector with:
+
+```bash
+./bin/gruff-rs list-rules --selector Security
+./bin/gruff-rs rules --selector performance.* --format json
 ```
 
 Use `--no-config` to ignore project config.
@@ -214,6 +237,7 @@ bash scripts/check.sh
 ./bin/gruff-rs analyse fixtures --diff-patch /tmp/gruff.patch --format json --fail-on none
 ./bin/gruff-rs analyse src --format json --fail-on none
 ./bin/gruff-rs list-rules --format json
+./bin/gruff-rs list-rules --selector Security
 ```
 
 `scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, JSON and
