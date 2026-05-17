@@ -2347,35 +2347,57 @@ fn is_test_module(item_mod: &syn::ItemMod) -> bool {
 }
 
 fn collect_call_names(file: &SourceFile, source: &str, call_names: &mut Vec<CallNameSummary>) {
-    let regex = Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(").expect("static regex compiles");
-    for capture in regex.captures_iter(source) {
+    static CALL_NAME_REGEX: OnceLock<Regex> = OnceLock::new();
+    let call_name_regex = static_regex(&CALL_NAME_REGEX, r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(");
+    let line_starts = line_starts(source);
+    for capture in call_name_regex.captures_iter(source) {
         let Some(name) = capture.get(1) else {
             continue;
         };
-        if matches!(
-            name.as_str(),
-            "fn" | "if" | "match" | "while" | "for" | "loop" | "return"
-        ) {
+        if !is_call_name_candidate(name.as_str()) {
             continue;
         }
-        call_names.push(CallNameSummary {
-            file_path: file.display_path.clone(),
-            name: name.as_str().to_string(),
-            line: byte_line(source, name.start()),
-        });
+        push_call_name(file, source.len(), &line_starts, name, call_names);
     }
+}
+
+fn is_call_name_candidate(name: &str) -> bool {
+    !matches!(
+        name,
+        "fn" | "if" | "match" | "while" | "for" | "loop" | "return"
+    )
+}
+
+fn push_call_name(
+    file: &SourceFile,
+    source_len: usize,
+    line_starts: &[usize],
+    name: regex::Match<'_>,
+    call_names: &mut Vec<CallNameSummary>,
+) {
+    call_names.push(CallNameSummary {
+        file_path: file.display_path.clone(),
+        name: name.as_str().to_string(),
+        line: byte_line_from_starts(line_starts, name.start().min(source_len)),
+    });
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (index, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push(index + 1);
+        }
+    }
+    starts
+}
+
+fn byte_line_from_starts(line_starts: &[usize], byte_index: usize) -> usize {
+    line_starts.partition_point(|line_start| *line_start <= byte_index)
 }
 
 fn visibility_is_public(visibility: &Visibility) -> bool {
     !matches!(visibility, Visibility::Inherited)
-}
-
-fn byte_line(source: &str, byte_index: usize) -> usize {
-    source[..byte_index.min(source.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1
 }
 
 fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<Finding> {
@@ -2899,6 +2921,22 @@ mod built_in_rules {
     static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
     static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
     static VARIABLE_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+    static ENV_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
+    static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
+    static CYCLOMATIC_COMPLEXITY_REGEX: OnceLock<Regex> = OnceLock::new();
+    static NPATH_BRANCH_REGEX: OnceLock<Regex> = OnceLock::new();
+    static NPATH_BOOLEAN_REGEX: OnceLock<Regex> = OnceLock::new();
+    static METRIC_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
+    static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PERF_CLONE_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
+    static UNBOUNDED_CHANNEL_REGEX: OnceLock<Regex> = OnceLock::new();
+    static LOCK_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+    static UNREACHABLE_TERMINATOR_REGEX: OnceLock<Regex> = OnceLock::new();
+    static NON_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
+    static TRIVIAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
+    static SAME_LITERAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
 
     const TEST_CHECKS: &[RegexRule] = &[
         RegexRule {
@@ -3024,10 +3062,10 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let regex = Regex::new(
+        let regex = static_regex(
+            &ENV_LIKE_SECRET_REGEX,
             r#"\b[A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|DATABASE_URL)[A-Z0-9_]*\s*=\s*["']?([^"'\s]+)"#,
-        )
-        .expect("static regex compiles");
+        );
         let test_ranges = rust_ast.map(test_context_line_ranges).unwrap_or_default();
 
         for capture in regex.find_iter(source) {
@@ -3161,8 +3199,10 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let regex = Regex::new(r#""([A-Za-z0-9+/=_-]{32,})"|'([A-Za-z0-9+/=_-]{32,})'"#)
-            .expect("static regex compiles");
+        let regex = static_regex(
+            &HIGH_ENTROPY_STRING_REGEX,
+            r#""([A-Za-z0-9+/=_-]{32,})"|'([A-Za-z0-9+/=_-]{32,})'"#,
+        );
 
         for captures in regex.captures_iter(source) {
             let Some(secret) = captures.get(1).or_else(|| captures.get(2)) else {
@@ -3298,7 +3338,10 @@ mod built_in_rules {
     ) -> usize {
         let cyclomatic = count_regex(
             searchable_body,
-            r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
+            static_regex(
+                &CYCLOMATIC_COMPLEXITY_REGEX,
+                r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
+            ),
         ) + 1;
         analyse_cyclomatic_complexity(file, block, cyclomatic, config, findings);
         let nesting = max_nesting_depth(searchable_body);
@@ -3729,6 +3772,7 @@ mod built_in_rules {
         let checks = [
             PerformanceCheck {
                 rule_id: "performance.regex-in-loop",
+                regex: &PERF_REGEX_IN_LOOP_REGEX,
                 pattern: r"\bRegex::new\s*\(",
                 severity: Severity::Warning,
                 confidence: Confidence::High,
@@ -3737,6 +3781,7 @@ mod built_in_rules {
             },
             PerformanceCheck {
                 rule_id: "performance.format-in-loop",
+                regex: &PERF_FORMAT_IN_LOOP_REGEX,
                 pattern: r"\bformat!\s*\(",
                 severity: Severity::Advisory,
                 confidence: Confidence::Medium,
@@ -3746,6 +3791,7 @@ mod built_in_rules {
             },
             PerformanceCheck {
                 rule_id: "performance.clone-in-loop",
+                regex: &PERF_CLONE_IN_LOOP_REGEX,
                 pattern: r"\.clone\s*\(",
                 severity: Severity::Advisory,
                 confidence: Confidence::Medium,
@@ -3755,7 +3801,8 @@ mod built_in_rules {
         ];
 
         for check in checks {
-            let occurrences = loop_pattern_count(searchable_body, check.pattern);
+            let occurrences =
+                loop_pattern_count(searchable_body, static_regex(check.regex, check.pattern));
             if occurrences == 0 {
                 continue;
             }
@@ -3780,6 +3827,7 @@ mod built_in_rules {
 
     struct PerformanceCheck {
         rule_id: &'static str,
+        regex: &'static OnceLock<Regex>,
         pattern: &'static str,
         severity: Severity,
         confidence: Confidence,
@@ -3798,10 +3846,10 @@ mod built_in_rules {
             analyse_lock_across_await(file, block, searchable_body, findings);
         }
 
-        if Regex::new(
+        if static_regex(
+            &UNBOUNDED_CHANNEL_REGEX,
             r"\b(std::sync::mpsc::channel|mpsc::unbounded_channel|unbounded_channel)(?:\s*::\s*<[^>]+>)?\s*\(",
         )
-            .expect("static regex compiles")
             .is_match(searchable_body)
         {
             findings.push(block_finding_with_extras(
@@ -3871,10 +3919,10 @@ mod built_in_rules {
         searchable_body: &str,
         findings: &mut Vec<Finding>,
     ) {
-        let lock_binding = Regex::new(
+        let lock_binding = static_regex(
+            &LOCK_BINDING_REGEX,
             r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*\.(?:lock|read|write)\s*\([^;]*;",
-        )
-        .expect("static regex compiles");
+        );
         let lines: Vec<&str> = searchable_body.lines().collect();
         for (line_index, line) in lines.iter().enumerate() {
             let Some(captures) = lock_binding.captures(line) else {
@@ -4434,9 +4482,11 @@ mod built_in_rules {
     }
 
     fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
-        let terminator =
-            Regex::new(r"\b(return|panic!|todo!|unimplemented!)").expect("static regex compiles");
-        let useful = Regex::new(r"\S").expect("static regex compiles");
+        let terminator = static_regex(
+            &UNREACHABLE_TERMINATOR_REGEX,
+            r"\b(return|panic!|todo!|unimplemented!)",
+        );
+        let useful = static_regex(&NON_WHITESPACE_REGEX, r"\S");
         let mut previous_terminated = false;
         for (line_index, line) in source.lines().enumerate() {
             let trimmed = line.trim();
@@ -4754,8 +4804,12 @@ mod built_in_rules {
     }
 
     fn approximate_npath(source: &str) -> usize {
-        let branch_decisions = count_regex(source, r"\b(if|match|for|while|loop)\b");
-        let boolean_decisions = count_regex(source, r"&&|\|\||\?");
+        let branch_decisions = count_regex(
+            source,
+            static_regex(&NPATH_BRANCH_REGEX, r"\b(if|match|for|while|loop)\b"),
+        );
+        let boolean_decisions =
+            count_regex(source, static_regex(&NPATH_BOOLEAN_REGEX, r"&&|\|\||\?"));
         let mut paths = 1usize;
         for _ in 0..branch_decisions.min(20) {
             paths = paths.saturating_mul(2);
@@ -4786,10 +4840,10 @@ mod built_in_rules {
     }
 
     fn metric_tokens(source: &str) -> Vec<String> {
-        Regex::new(
+        static_regex(
+            &METRIC_TOKEN_REGEX,
             r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||::|->|=>|[{}()\[\];,.:+\-*/%&|^!<>?=]",
         )
-        .expect("static regex compiles")
         .find_iter(source)
         .map(|token| token.as_str().to_string())
         .collect()
@@ -4799,13 +4853,12 @@ mod built_in_rules {
         (value * 10.0).round() / 10.0
     }
 
-    fn loop_pattern_count(source: &str, pattern: &str) -> usize {
-        let pattern = Regex::new(pattern).expect("static regex compiles");
-        let loop_start = Regex::new(r"\b(for|while|loop)\b").expect("static regex compiles");
+    fn loop_pattern_count(source: &str, pattern: &Regex) -> usize {
+        let loop_start = static_regex(&LOOP_START_REGEX, r"\b(for|while|loop)\b");
         let mut state = LoopPatternState::default();
 
         for line in source.lines() {
-            state.process_line(line, &pattern, &loop_start);
+            state.process_line(line, pattern, loop_start);
         }
 
         state.occurrences
@@ -4897,15 +4950,15 @@ mod built_in_rules {
 
     fn has_trivial_assertion(source: &str) -> bool {
         let literal_assert =
-            Regex::new(r"\bassert!\s*\(\s*(true|false)\s*\)").expect("static regex compiles");
+            static_regex(&TRIVIAL_ASSERT_REGEX, r"\bassert!\s*\(\s*(true|false)\s*\)");
         if literal_assert.is_match(source) {
             return true;
         }
 
-        let same_literal = Regex::new(
+        let same_literal = static_regex(
+            &SAME_LITERAL_ASSERT_REGEX,
             r#"\bassert_eq!\s*\(\s*([0-9]+|"[^"]*"|'[^']*')\s*,\s*([0-9]+|"[^"]*"|'[^']*')\s*\)"#,
-        )
-        .expect("static regex compiles");
+        );
         let has_same_literal = same_literal.captures_iter(source).any(|captures| {
             captures.get(1).map(|left| left.as_str()) == captures.get(2).map(|right| right.as_str())
         });
@@ -4998,11 +5051,8 @@ mod built_in_rules {
         )
     }
 
-    fn count_regex(source: &str, pattern: &str) -> usize {
-        Regex::new(pattern)
-            .expect("static regex compiles")
-            .find_iter(source)
-            .count()
+    fn count_regex(source: &str, pattern: &Regex) -> usize {
+        pattern.find_iter(source).count()
     }
 
     fn first_matching_line(source: &str, needle: &str) -> Option<usize> {

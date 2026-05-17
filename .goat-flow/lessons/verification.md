@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-16
+last_reviewed: 2026-05-17
 ---
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
@@ -37,3 +37,16 @@ so later failures look unrelated.
 
 After fixing the first semantic mismatch, rerun the full suite before diagnosing
 the lock-poison follow-on failures.
+
+## Lesson: Negative Performance Experiments Must Be Reverted
+
+**Created:** 2026-05-17
+
+When optimizing analyzer hot paths, measure each candidate with
+`GRUFF_PERF_ITERS=3 bash scripts/test-performance.sh` before keeping it. A
+plausible allocation-sharing change can regress both wall time and RSS.
+
+If a candidate makes the `src.*` scenarios slower or noisier, revert only that
+candidate and keep the measured wins. Finish with `bash scripts/check.sh` plus a
+default `bash scripts/test-performance.sh` run so the final diff has both
+correctness and performance evidence.
