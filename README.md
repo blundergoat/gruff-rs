@@ -120,11 +120,12 @@ Findings have a severity (`advisory`, `warning`, or `error`) and confidence
 (`low`, `medium`, or `high`). Candidate wording means the scanner found a
 conservative static signal, not type-aware certainty.
 
-`--fail-on none` reports findings without failing for their severity. Diagnostics
-always fail analysis with exit code 2 because they mean the analyzer could not
-complete part of the requested scan. `--fail-on advisory` fails on any finding,
-`--fail-on warning` fails on warnings and errors, and `--fail-on error` fails on
-errors only.
+`--fail-on none` reports findings without failing for their severity. Fatal
+diagnostics fail analysis with exit code 2 because they mean the analyzer could
+not complete part of the requested scan. Informational diagnostics, such as
+patch-filter summaries, remain visible without changing the exit code.
+`--fail-on advisory` fails on any finding, `--fail-on warning` fails on warnings
+and errors, and `--fail-on error` fails on errors only.
 
 The security and sensitive-data rules are local static checks. They do not replace
 `cargo audit`, vulnerability feeds, license policy, code review, or runtime tests.
@@ -147,6 +148,24 @@ Apply the default `gruff-baseline.json` when present:
 
 Baseline suppression is exact on fingerprint, rule id, and file path. Message text,
 end line, and column are not baseline identity fields in `v0.1`.
+
+## Patch Diff Filtering
+
+Use `--diff-patch <path>` to treat a unified diff as data and report only
+findings whose file and line fall inside the patch's new-side hunk ranges:
+
+```bash
+git diff --no-ext-diff > /tmp/gruff.patch
+./bin/gruff-rs analyse . --diff-patch /tmp/gruff.patch --format json --fail-on none
+```
+
+Pass `--diff-patch -` to read the patch from stdin. This mode does not execute
+Git or external diff tools; it runs analysis normally, applies baselines first,
+then filters the report. The JSON/SARIF/text diagnostics include a
+`patch-filter` summary with kept and suppressed finding counts. The older
+Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe` and
+should be treated as an explicit trust-boundary opt-in. This follows
+[ADR-009](.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md).
 
 ## Report Contract
 
@@ -177,10 +196,11 @@ thresholds, and options. Results carry the native rule id, SARIF severity level,
 message, URI-safe artifact path, region data when available, and
 `partialFingerprints.gruffFingerprint`.
 
-Diagnostics still fail analysis with exit code 2. In SARIF output they are
-reported under `runs[0].invocations[0].toolExecutionNotifications`, with
-`executionSuccessful` set to `false`. Findings are still emitted when a file has
-both diagnostics and text-rule findings.
+Fatal diagnostics still fail analysis with exit code 2. In SARIF output all run
+diagnostics are reported under
+`runs[0].invocations[0].toolExecutionNotifications`; `executionSuccessful` is
+`false` only when a fatal diagnostic exists. Findings are still emitted when a
+file has both diagnostics and text-rule findings.
 
 Local validation uses focused Rust contract tests plus parseable CLI smokes; the
 default gate does not require a networked SARIF schema validator.
@@ -191,13 +211,15 @@ default gate does not require a networked SARIF schema validator.
 bash scripts/check.sh
 ./bin/gruff-rs analyse fixtures --format json --fail-on none
 ./bin/gruff-rs analyse fixtures --format sarif --fail-on none
+./bin/gruff-rs analyse fixtures --diff-patch /tmp/gruff.patch --format json --fail-on none
 ./bin/gruff-rs analyse src --format json --fail-on none
 ./bin/gruff-rs list-rules --format json
 ```
 
 `scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, JSON and
-SARIF fixture scans, and self-scan diagnostics smoke checks. Self-scan findings
-are visible under `--fail-on none`; diagnostics are treated as gate failures.
+SARIF fixture scans, a patch-input diff smoke, and self-scan diagnostics smoke
+checks. Self-scan findings are visible under `--fail-on none`; fatal diagnostics
+are treated as gate failures.
 
 ## Performance
 

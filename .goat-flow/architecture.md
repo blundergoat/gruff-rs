@@ -8,7 +8,7 @@ The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `s
 
 ## Request Flow
 
-For CLI analysis, `main` parses Clap commands, `run_analysis` loads config, `discover_sources` walks input paths, reads each file into a parsed source record, builds an internal `ProjectContext`, dispatches project rules, then dispatches text and Rust rules through `analyse_source`. `render_report_with_scope` selects text, JSON, SARIF, HTML, Markdown, GitHub annotation, or hotspot output, threading a renderer-only `RequestedScope` (requested paths plus diff label) into HTML rendering without serialising it onto `AnalysisReport`. `list-rules` renders sorted built-in registry definitions as text or JSON.
+For CLI analysis, `main` parses Clap commands, `run_analysis` loads config, `discover_sources` walks input paths, reads each file into a parsed source record, builds an internal `ProjectContext`, dispatches project rules, then dispatches text and Rust rules through `analyse_source`. Exact baselines apply before optional patch-input diff filtering, so accepted historical findings stay suppressed before the report is narrowed to changed new-side patch lines. `render_report_with_scope` selects text, JSON, SARIF, HTML, Markdown, GitHub annotation, or hotspot output, threading a renderer-only `RequestedScope` (requested paths plus diff label) into HTML rendering without serialising it onto `AnalysisReport`. `list-rules` renders sorted built-in registry definitions as text or JSON.
 
 The HTML inspection report lives in `src/html_report.rs`. It builds a renderer-internal `ReportView` view-model that derives pillar grade letters, per-pillar severity counts, top-offender grade pills, and a bucketed cyclomatic-complexity distribution from finding metadata. Visual identity (italic-serif `gruff.rs` wordmark, L-bracket "paper" container, rotated grade stamp, pillar grid, complexity histogram, severity-tagged finding rows, forge-orange accent) is shared by `analyse --format html` and the dashboard iframe body.
 
@@ -18,7 +18,7 @@ For dashboard scans, `run_dashboard` binds the requested host and port, `handle_
 
 There is no authentication layer. The dashboard defaults to loopback through `scripts/start-dev.sh`, so exposing it on a non-loopback host should be treated as a trust-boundary change.
 
-The analyzer reads user-selected files and does not execute analyzed source. Fixture files deliberately contain command execution, secret-looking strings, parser edge cases, and noisy rule examples so the scanner can prove those rules fire; those fixture strings are test inputs, not runtime credentials.
+The analyzer reads user-selected files and does not execute analyzed source. Patch-input diff mode reads unified diff text as data and does not run Git or external diff drivers, following `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md`. The older Git-backed `--diff` path is gated behind `--diff-git-unsafe` and emits a run diagnostic when used. Fixture files deliberately contain command execution, secret-looking strings, parser edge cases, and noisy rule examples so the scanner can prove those rules fire; those fixture strings are test inputs, not runtime credentials.
 
 ## Data Flow
 
@@ -36,20 +36,22 @@ carry conservative cfg/test context so project rules can avoid overclaiming
 type-aware certainty. The project context is internal analysis state and is not
 serialized into `gruff.analysis.v1`.
 
-Project rules run against `ProjectContext`. Text rules run for every supported file. Rust AST rules run only when parsing succeeds; parse failures emit a `parse-error` diagnostic while still allowing text-only checks such as sensitive-data detection. Rust function-scope rules include complexity, naming, test-quality, error-handling, async/concurrency, loop-scoped performance, and deterministic token metrics. Findings are sorted and deduplicated by fingerprint before rendering. Baseline generation and history recording write JSON side files whose names are ignored by `.gitignore`; absence of those files in a clean checkout is normal.
+Project rules run against `ProjectContext`. Text rules run for every supported file. Rust AST rules run only when parsing succeeds; parse failures emit a `parse-error` diagnostic while still allowing text-only checks such as sensitive-data detection. Rust function-scope rules include complexity, naming, test-quality, error-handling, async/concurrency, loop-scoped performance, and deterministic token metrics. Findings are sorted and deduplicated by fingerprint before rendering. Baseline generation and history recording write JSON side files whose names are ignored by `.gitignore`; absence of those files in a clean checkout is normal. `--diff-patch` filtering is report post-processing: it preserves analysed file counts and finding identity, recomputes report summary/score after filtering, and records an informational `patch-filter` diagnostic with kept and suppressed counts.
 
 SARIF output is a dedicated renderer over `AnalysisReport` and `RuleRegistry`, not
 a native schema variant. It emits SARIF 2.1.0 with sorted driver rules, URI-safe
 artifact paths, result-level `partialFingerprints.gruffFingerprint`, rule
-metadata from the registry, and run diagnostics as invocation notifications. It
-must not change `gruff.analysis.v1`, rule ids, fingerprints, baseline matching,
-scoring, or fail-on behavior.
+metadata from the registry, and run diagnostics as invocation notifications.
+Fatal diagnostics set SARIF `executionSuccessful` to `false`; informational
+diagnostics such as `patch-filter` stay visible without failing the invocation.
+SARIF rendering must not change `gruff.analysis.v1`, rule ids, fingerprints,
+baseline matching, scoring, or fail-on behavior.
 
 Rule tuning is loaded by `load_config` from an explicit config path or the first default project config found in this order: `.gruff.yaml`, `.gruff.yml`, `.gruff.json`. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes return command errors. The committed `.gruff.yaml` explicitly enumerates every built-in rule so the local rubric surface is visible while preserving the curated threshold overrides. Scoring includes all built-in static pillars even when a pillar has zero findings, so clean or narrow scans still communicate coverage.
 
 ## Deployment / Operations
 
-CI lives in `.github/workflows/ci.yml` and runs the same local preflight command as developers: `bash scripts/check.sh`. That script runs formatting, Clippy, unit tests, rule-listing smoke, JSON and SARIF fixture scans, and self-scan diagnostics smoke. The expanded rubric still keeps this as a single default gate; a May 2026 measured run completed in about six and a half seconds after dependencies were built. `cargo build` remains the build smoke test, and `bash scripts/start-dev.sh` starts the dashboard using environment-overridable host, port, and project root values.
+CI lives in `.github/workflows/ci.yml` and runs the same local preflight command as developers: `bash scripts/check.sh`. That script runs formatting, Clippy, unit tests, rule-listing smoke, JSON and SARIF fixture scans, a patch-input diff smoke, and self-scan diagnostics smoke. The expanded rubric still keeps this as a single default gate; a May 2026 measured run completed in about six and a half seconds after dependencies were built. `cargo build` remains the build smoke test, and `bash scripts/start-dev.sh` starts the dashboard using environment-overridable host, port, and project root values.
 
 ## Non-Obvious Constraints
 

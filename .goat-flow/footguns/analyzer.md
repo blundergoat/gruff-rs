@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-17
+last_reviewed: 2026-05-18
 ---
 
 ## Footgun: Fixture Findings Are Intentional
@@ -19,15 +19,6 @@ The non-obvious failure mode is losing analyzer coverage while making the reposi
 
 Without that split, self-scan can report rule examples embedded inside unit-test fixture strings as if they were real analyzer code. M03 caught this when test-quality checks flagged raw fixture snippets in `src/main.rs` tests.
 
-## Footgun: Diff Mode Currently Executes Git
-
-**Status:** active | **Created:** 2026-05-16 | **Evidence:** ACTUAL_MEASURED
-**hallucination-risk:** high
-**Symptoms:** Treating `--diff` as a pure report filter can accidentally preserve or expand a trust-boundary violation.
-**Why it happens:** `src/main.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument. M23 research in `.goat-flow/scratchpad/related-projects/semgrep/STUDY.md` (search: `Baseline setup executes Git`) and `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `New-code-only mode is a line-level diff filter`) showed that safer new-code filtering can be modeled from patch data after analysis instead of executing Git during ordinary scans.
-**Evidence:** `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md` (search: `Patch-input diff mode should be the first diff implementation`) records the accepted layering and trust-boundary route.
-**Prevention:** Implement patch-input line filtering before any ref-based Git mode. If direct Git/ref diff is still needed, add a separate trust-boundary ADR covering hooks, external diff drivers, path normalization, timeouts, and failure diagnostics.
-
 ## Footgun: Report Exclusions Are Not Discovery Ignores
 
 **Status:** active | **Created:** 2026-05-16 | **Evidence:** ACTUAL_MEASURED
@@ -38,6 +29,15 @@ Without that split, self-scan can report rule examples embedded inside unit-test
 **Prevention:** Keep `paths.ignore` for "do not read" policy. Put future rule/path/message/source suppressions in a post-analysis exclusion layer with reasons and suppression counts.
 
 ## Resolved Entries
+
+## Footgun: Diff Mode Currently Executes Git
+
+**Status:** resolved | **Created:** 2026-05-16 | **Resolved:** 2026-05-18 | **Evidence:** ACTUAL_MEASURED
+**hallucination-risk:** high
+**Symptoms:** Treating `--diff` as a pure report filter could accidentally preserve or expand a trust-boundary violation.
+**Why it happened:** `src/main.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument. M23 research in `.goat-flow/scratchpad/related-projects/semgrep/STUDY.md` (search: `Baseline setup executes Git`) and `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `New-code-only mode is a line-level diff filter`) showed that safer new-code filtering can be modeled from patch data after analysis instead of executing Git during ordinary scans.
+**Resolution:** `src/main.rs` (search: `DiffSelection::Patch`) adds `--diff-patch` as the safe no-execute path and gates the Git-backed mode behind explicit `--diff-git-unsafe`, with a `diff-git-unsafe` run diagnostic when that path is used.
+**Prevention:** Keep patch-input line filtering as the default diff route. If direct Git/ref diff needs more behavior, add a separate trust-boundary ADR covering hooks, external diff drivers, path normalization, timeouts, and failure diagnostics.
 
 ## Footgun: Dashboard Scans Change Process Cwd
 

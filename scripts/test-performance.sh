@@ -16,6 +16,7 @@ readonly DEFAULT_BASELINE="${PERF_DIR}/baseline.json"
 readonly LAST_RUN="${PERF_DIR}/last-run.json"
 readonly SCRATCH_BASELINE="${PERF_DIR}/scratch-baseline.json"
 readonly SCRATCH_HISTORY="${PERF_DIR}/scratch-history.json"
+readonly SCRATCH_PATCH="${PERF_DIR}/scratch-empty.patch"
 readonly TIME_LOG="${PERF_DIR}/time.log"
 readonly BIN="${REPO_ROOT}/target/release/gruff-rs"
 
@@ -74,7 +75,7 @@ Scenarios (each runs ITERS times; the first run is warmup and discarded):
   src.json              analyse src --format json (self-scan)
   src.with-baseline     analyse src --format json --baseline=<scratch>
   src.with-history      analyse src --format json --history-file=<scratch>
-  src.diff-empty        analyse src --format json --diff HEAD..HEAD
+  src.diff-empty        analyse src --format json --diff-patch <empty-patch>
   list-rules.json       list-rules --format json
   large-corpus.json     analyse "$GRUFF_PERF_LARGE_CORPUS" (only when env var is set)
 
@@ -182,7 +183,7 @@ add_scenario "fixtures.html"      "analyse fixtures --format html --fail-on none
 add_scenario "src.json"           "analyse src --format json --fail-on none --no-baseline"
 add_scenario "src.with-baseline"  "analyse src --format json --fail-on none --baseline ${SCRATCH_BASELINE}"
 add_scenario "src.with-history"   "analyse src --format json --fail-on none --no-baseline --history-file ${SCRATCH_HISTORY}"
-add_scenario "src.diff-empty"     "analyse src --format json --fail-on none --no-baseline --diff HEAD..HEAD"
+add_scenario "src.diff-empty"     "analyse src --format json --fail-on none --no-baseline --diff-patch ${SCRATCH_PATCH}"
 add_scenario "list-rules.json"    "list-rules --format json"
 if [[ -n "${LARGE_CORPUS}" ]]; then
     [[ -d "${LARGE_CORPUS}" ]] || die "GRUFF_PERF_LARGE_CORPUS does not exist: ${LARGE_CORPUS}"
@@ -198,6 +199,9 @@ setup_scenario() {
             ;;
         src.with-history)
             : > "${SCRATCH_HISTORY}"
+            ;;
+        src.diff-empty)
+            : > "${SCRATCH_PATCH}"
             ;;
         *) : ;;
     esac

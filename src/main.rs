@@ -159,7 +159,7 @@ enum RunOutcome {
 
 impl RunOutcome {
     fn classify(report: &AnalysisReport, fail_on: FailThreshold) -> Self {
-        if !report.diagnostics.is_empty() {
+        if report.diagnostics.iter().any(RunDiagnostic::is_failure) {
             return Self::DiagnosticsFailed;
         }
         if report
@@ -216,8 +216,12 @@ struct AnalyseArgs {
     fail_on: FailThreshold,
     #[arg(long)]
     include_ignored: bool,
-    #[arg(long, value_name = "MODE")]
+    #[arg(long, value_name = "MODE", requires = "diff_git_unsafe")]
     diff: Option<String>,
+    #[arg(long, value_name = "PATH", conflicts_with = "diff")]
+    diff_patch: Option<PathBuf>,
+    #[arg(long, requires = "diff")]
+    diff_git_unsafe: bool,
     #[arg(long)]
     history_file: Option<PathBuf>,
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_BASELINE)]
@@ -372,11 +376,17 @@ struct AnalysisOptions {
     format: OutputFormat,
     fail_on: FailThreshold,
     include_ignored: bool,
-    diff: Option<String>,
+    diff: Option<DiffSelection>,
     history_file: Option<PathBuf>,
     baseline: Option<PathBuf>,
     generate_baseline: Option<PathBuf>,
     no_baseline: bool,
+}
+
+#[derive(Clone, Debug)]
+enum DiffSelection {
+    Patch(PathBuf),
+    GitUnsafe(String),
 }
 
 /// Renderer-only view of which paths and diff mode the user asked for.
@@ -401,7 +411,10 @@ impl RequestedScope {
                 .map(|path| path.display().to_string())
                 .collect()
         };
-        let diff_label = options.diff.as_ref().map(|mode| format!("diff · {mode}"));
+        let diff_label = options.diff.as_ref().map(|selection| match selection {
+            DiffSelection::Patch(path) => format!("diff-patch · {}", path.display()),
+            DiffSelection::GitUnsafe(mode) => format!("diff-git-unsafe · {mode}"),
+        });
         Self { paths, diff_label }
     }
 }
@@ -688,6 +701,22 @@ struct RunDiagnostic {
     line: Option<usize>,
 }
 
+impl RunDiagnostic {
+    fn is_failure(&self) -> bool {
+        matches!(
+            self.diagnostic_type.as_str(),
+            "missing-path"
+                | "read-error"
+                | "parse-error"
+                | "manifest-read-error"
+                | "manifest-parse-error"
+                | "lockfile-read-error"
+                | "lockfile-parse-error"
+                | "history-error"
+        )
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AnalysisReport {
@@ -842,6 +871,12 @@ fn main() -> ExitCode {
 }
 
 fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
+    let diff = match (args.diff_patch, args.diff) {
+        (Some(path), None) => Some(DiffSelection::Patch(path)),
+        (None, Some(mode)) => Some(DiffSelection::GitUnsafe(mode)),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("clap prevents --diff and --diff-patch together"),
+    };
     AnalysisOptions {
         paths: args.paths,
         config: args.config,
@@ -849,7 +884,7 @@ fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
         format: args.format,
         fail_on: args.fail_on,
         include_ignored: args.include_ignored,
-        diff: args.diff,
+        diff,
         history_file: args.history_file,
         baseline: args.baseline,
         generate_baseline: args.generate_baseline,
@@ -1037,22 +1072,230 @@ fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DiffPatchLineMap {
+    lines_by_file: BTreeMap<String, BTreeSet<usize>>,
+}
+
+impl DiffPatchLineMap {
+    fn changed_files(&self) -> BTreeSet<String> {
+        self.lines_by_file.keys().cloned().collect()
+    }
+}
+
+fn read_diff_patch(project_root: &Path, path: &Path) -> Result<String, String> {
+    if path == Path::new("-") {
+        let mut patch = String::new();
+        std::io::stdin()
+            .read_to_string(&mut patch)
+            .map_err(|error| format!("unable to read --diff-patch from stdin: {error}"))?;
+        return Ok(patch);
+    }
+    let patch_path = absolutize(project_root, path);
+    fs::read_to_string(&patch_path)
+        .map_err(|error| format!("unable to read --diff-patch {}: {error}", path.display()))
+}
+
+fn parse_unified_diff(patch: &str) -> DiffPatchLineMap {
+    let mut line_map = DiffPatchLineMap::default();
+    let mut current_file: Option<String> = None;
+    let mut current_new_line: Option<usize> = None;
+
+    for raw_line in patch.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if let Some(path) = line.strip_prefix("+++ ") {
+            current_file = parse_diff_path(path);
+            current_new_line = None;
+            if let Some(file) = &current_file {
+                line_map.lines_by_file.entry(file.clone()).or_default();
+            }
+            continue;
+        }
+
+        if line.starts_with("diff --git ") {
+            current_new_line = None;
+            continue;
+        }
+
+        if line.starts_with("Binary files ") || line == "GIT binary patch" {
+            current_new_line = None;
+            continue;
+        }
+
+        if line.starts_with("@@") {
+            current_new_line = parse_hunk_new_start(line);
+            if let Some(file) = &current_file {
+                line_map.lines_by_file.entry(file.clone()).or_default();
+            }
+            continue;
+        }
+
+        let Some(new_line) = current_new_line.as_mut() else {
+            continue;
+        };
+        let Some(file) = &current_file else {
+            continue;
+        };
+
+        if line.starts_with('\\') {
+            continue;
+        }
+        if line.starts_with('-') {
+            continue;
+        }
+        if line.starts_with('+') || line.starts_with(' ') {
+            line_map
+                .lines_by_file
+                .entry(file.clone())
+                .or_default()
+                .insert(*new_line);
+            *new_line += 1;
+        } else {
+            current_new_line = None;
+        }
+    }
+
+    line_map
+}
+
+fn parse_diff_path(raw_path: &str) -> Option<String> {
+    let path = raw_path
+        .split_once('\t')
+        .map(|(path, _)| path)
+        .unwrap_or(raw_path)
+        .trim();
+    if path == "/dev/null" {
+        return None;
+    }
+    let unprefixed = path
+        .strip_prefix("b/")
+        .or_else(|| path.strip_prefix("a/"))
+        .unwrap_or(path);
+    let normalized = normalize_report_path(unprefixed);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn parse_hunk_new_start(line: &str) -> Option<usize> {
+    let plus = line.find('+')?;
+    let rest = &line[plus + 1..];
+    let digits: String = rest
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    let start = digits.parse::<usize>().ok()?;
+    Some(start.max(1))
+}
+
+fn normalize_report_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn apply_diff_patch_filter(
+    mut report: AnalysisReport,
+    patch: &DiffPatchLineMap,
+    analysed_files: &BTreeSet<String>,
+) -> AnalysisReport {
+    let total_findings = report.findings.len();
+    let changed_files = patch.changed_files();
+    let missing_files: Vec<String> = changed_files
+        .iter()
+        .filter(|file| !analysed_files.contains(*file))
+        .cloned()
+        .collect();
+    let mut kept = Vec::new();
+
+    for finding in std::mem::take(&mut report.findings) {
+        if diff_patch_keeps_finding(&finding, patch, &changed_files) {
+            kept.push(finding);
+        }
+    }
+
+    let kept_findings = kept.len();
+    let suppressed_findings = total_findings.saturating_sub(kept_findings);
+    report.findings = kept;
+    report.summary = summarize(&report.findings);
+    report.score = score_report(&report.findings);
+    report.diagnostics.push(RunDiagnostic {
+        diagnostic_type: "patch-filter".to_string(),
+        message: patch_filter_message(
+            total_findings,
+            kept_findings,
+            suppressed_findings,
+            &missing_files,
+        ),
+        file_path: None,
+        line: None,
+    });
+    report
+}
+
+fn diff_patch_keeps_finding(
+    finding: &Finding,
+    patch: &DiffPatchLineMap,
+    changed_files: &BTreeSet<String>,
+) -> bool {
+    let file_path = normalize_report_path(&finding.file_path);
+    if !changed_files.contains(&file_path) {
+        return false;
+    }
+    let Some(line) = finding.line else {
+        return true;
+    };
+    patch
+        .lines_by_file
+        .get(&file_path)
+        .is_some_and(|lines| lines.contains(&line))
+}
+
+fn patch_filter_message(
+    total_findings: usize,
+    kept_findings: usize,
+    suppressed_findings: usize,
+    missing_files: &[String],
+) -> String {
+    let mut message = format!(
+        "Patch filter kept {kept_findings} of {total_findings} findings; suppressed {suppressed_findings} outside changed new-side lines."
+    );
+    if missing_files.is_empty() {
+        message.push_str(" All patch files were analysed.");
+    } else {
+        message.push_str(&format!(
+            " Patch files not analysed: {}.",
+            missing_files.join(", ")
+        ));
+    }
+    message
+}
+
 fn run_analysis_in_project(
     project_root: &Path,
     options: &AnalysisOptions,
 ) -> Result<AnalysisReport, String> {
     let config = load_config(project_root, options)?;
     let mut discovery = discover_sources(project_root, options, &config);
+    let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
 
-    if let Some(mode) = &options.diff {
+    if let Some(DiffSelection::GitUnsafe(mode)) = &options.diff {
         let changed = changed_files(mode)?;
         discovery
             .files
             .retain(|file| changed.contains(&file.display_path));
+        diagnostics.push(RunDiagnostic {
+            diagnostic_type: "diff-git-unsafe".to_string(),
+            message: format!(
+                "Unsafe Git diff mode `{mode}` executed `git diff --name-only`; use --diff-patch for no-execute filtering."
+            ),
+            file_path: None,
+            line: None,
+        });
     }
 
+    let analysed_display_paths: BTreeSet<String> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.clone())
+        .collect();
     let mut findings = Vec::new();
-    let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
 
     let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
     diagnostics.extend(read_diagnostics);
@@ -1070,18 +1313,31 @@ fn run_analysis_in_project(
 
     sort_and_dedupe_findings(&mut findings);
 
-    if let Some(history_file) = &options.history_file {
-        record_history(project_root, history_file, &findings, &mut diagnostics);
-    }
-
-    Ok(build_report(
+    let mut report = build_report(
         project_root,
         options,
         discovery,
         diagnostics,
         findings,
         baseline_report,
-    ))
+    );
+
+    if let Some(DiffSelection::Patch(path)) = &options.diff {
+        let patch_text = read_diff_patch(project_root, path)?;
+        let patch = parse_unified_diff(&patch_text);
+        report = apply_diff_patch_filter(report, &patch, &analysed_display_paths);
+    }
+
+    if let Some(history_file) = &options.history_file {
+        record_history(
+            project_root,
+            history_file,
+            &report.findings,
+            &mut report.diagnostics,
+        );
+    }
+
+    Ok(report)
 }
 
 fn build_report(
@@ -5471,7 +5727,7 @@ fn sarif_invocation(report: &AnalysisReport) -> Value {
         notifications.push(sarif_notification(diagnostic));
     }
     json!({
-        "executionSuccessful": report.diagnostics.is_empty(),
+        "executionSuccessful": !report.diagnostics.iter().any(RunDiagnostic::is_failure),
         "toolExecutionNotifications": notifications,
     })
 }
@@ -5484,7 +5740,10 @@ fn sarif_notification(diagnostic: &RunDiagnostic) -> Value {
             "id": &diagnostic.diagnostic_type,
         }),
     );
-    notification.insert("level".to_string(), json!("error"));
+    notification.insert(
+        "level".to_string(),
+        json!(sarif_diagnostic_level(diagnostic)),
+    );
     notification.insert(
         "message".to_string(),
         json!({
@@ -5495,6 +5754,16 @@ fn sarif_notification(diagnostic: &RunDiagnostic) -> Value {
         notification.insert("locations".to_string(), locations);
     }
     Value::Object(notification)
+}
+
+fn sarif_diagnostic_level(diagnostic: &RunDiagnostic) -> &'static str {
+    if diagnostic.is_failure() {
+        "error"
+    } else if diagnostic.diagnostic_type == "diff-git-unsafe" {
+        "warning"
+    } else {
+        "note"
+    }
 }
 
 fn sarif_diagnostic_locations(diagnostic: &RunDiagnostic) -> Option<Value> {
@@ -6118,6 +6387,212 @@ mod tests {
 
     fn sample_sarif(report: &AnalysisReport) -> Value {
         serde_json::from_str(&render_report(report, OutputFormat::Sarif)).expect("sarif report")
+    }
+
+    #[test]
+    fn diff_patch_parser_maps_new_side_lines_for_renames_crlf_and_deletions() {
+        let patch = concat!(
+            "diff --git a/src/old.rs b/src/new.rs\r\n",
+            "similarity index 80%\r\n",
+            "rename from src/old.rs\r\n",
+            "rename to src/new.rs\r\n",
+            "--- a/src/old.rs\r\n",
+            "+++ b/src/new.rs\r\n",
+            "@@ -1,3 +10,4 @@\r\n",
+            " context\r\n",
+            "-old\r\n",
+            "+new\r\n",
+            " keep\r\n",
+            "+added\r\n",
+            "diff --git a/src/delete.rs b/src/delete.rs\r\n",
+            "--- a/src/delete.rs\r\n",
+            "+++ b/src/delete.rs\r\n",
+            "@@ -4,2 +4,0 @@\r\n",
+            "-old\r\n",
+            "-old\r\n",
+            "diff --git a/bin.dat b/bin.dat\r\n",
+            "Binary files a/bin.dat and b/bin.dat differ\r\n",
+        );
+
+        let parsed = parse_unified_diff(patch);
+
+        assert_eq!(
+            parsed.lines_by_file.get("src/new.rs"),
+            Some(&BTreeSet::from([10, 11, 12, 13]))
+        );
+        assert_eq!(
+            parsed.lines_by_file.get("src/delete.rs"),
+            Some(&BTreeSet::new())
+        );
+        assert!(!parsed.lines_by_file.contains_key("bin.dat"));
+        assert!(parse_unified_diff("").lines_by_file.is_empty());
+    }
+
+    #[test]
+    fn diff_patch_filter_keeps_only_changed_lines_and_line_less_findings() {
+        let mut line_less = test_finding(
+            "architecture.public-api-surface",
+            "src/lib.rs",
+            1,
+            Severity::Advisory,
+            Pillar::Design,
+        );
+        line_less.line = None;
+        let report = sample_report_with(
+            vec![
+                test_finding(
+                    "security.process-command",
+                    "src/lib.rs",
+                    11,
+                    Severity::Warning,
+                    Pillar::Security,
+                ),
+                test_finding(
+                    "waste.unwrap-expect",
+                    "src/lib.rs",
+                    12,
+                    Severity::Advisory,
+                    Pillar::Waste,
+                ),
+                test_finding(
+                    "docs.missing-public-doc",
+                    "src/other.rs",
+                    11,
+                    Severity::Advisory,
+                    Pillar::Documentation,
+                ),
+                line_less,
+            ],
+            Vec::new(),
+        );
+        let patch = parse_unified_diff(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs\n\
+--- a/src/lib.rs\n\
++++ b/src/lib.rs\n\
+@@ -10,2 +11,1 @@\n\
++changed\n\
+diff --git a/missing.rs b/missing.rs\n\
+--- a/missing.rs\n\
++++ b/missing.rs\n\
+@@ -1,1 +1,1 @@\n\
+-old\n\
++new\n",
+        );
+        let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
+
+        let filtered = apply_diff_patch_filter(report, &patch, &analysed);
+        eprintln!(
+            "diff_patch kept rule ids: {:?}; suppressed count: {}",
+            filtered
+                .findings
+                .iter()
+                .map(|finding| finding.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            2
+        );
+
+        assert_eq!(filtered.findings.len(), 2);
+        assert!(filtered
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "security.process-command"));
+        assert!(filtered
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "architecture.public-api-surface"));
+        assert_eq!(filtered.summary.total, 2);
+        assert_eq!(filtered.diagnostics.len(), 1);
+        assert_eq!(filtered.diagnostics[0].diagnostic_type, "patch-filter");
+        assert!(!filtered.diagnostics[0].is_failure());
+        assert!(filtered.diagnostics[0]
+            .message
+            .contains("Patch filter kept 2 of 4 findings; suppressed 2"));
+        assert!(filtered.diagnostics[0]
+            .message
+            .contains("Patch files not analysed: missing.rs"));
+    }
+
+    #[test]
+    fn diff_patch_analysis_filters_after_baseline_without_failing_on_summary_diagnostic() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        let patch_path = dir.path().join("fixture.patch");
+        fs::write(
+            &patch_path,
+            "\
+diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
+--- a/fixtures/sample.rs\n\
++++ b/fixtures/sample.rs\n\
+@@ -11,1 +11,1 @@\n\
++        std::process::Command::new(command).arg(url).spawn().unwrap();\n",
+        )
+        .expect("patch write");
+        let options = AnalysisOptions {
+            paths: vec![PathBuf::from("fixtures/sample.rs")],
+            no_config: true,
+            diff: Some(DiffSelection::Patch(patch_path)),
+            no_baseline: true,
+            ..default_test_options()
+        };
+
+        let report = run_project_analysis(Path::new("."), options).expect("analysis succeeds");
+
+        assert!(report.findings.len() < 12);
+        assert!(!report.findings.is_empty());
+        assert!(report
+            .findings
+            .iter()
+            .all(|finding| finding.file_path == "fixtures/sample.rs" && finding.line == Some(11)));
+        assert_eq!(
+            report
+                .diagnostics
+                .last()
+                .map(|diagnostic| diagnostic.diagnostic_type.as_str()),
+            Some("patch-filter")
+        );
+        assert_eq!(
+            RunOutcome::classify(&report, FailThreshold::None),
+            RunOutcome::Success
+        );
+    }
+
+    #[test]
+    fn diff_patch_diagnostics_are_sarif_notifications_without_failed_execution() {
+        let report = sample_report_with(
+            Vec::new(),
+            vec![RunDiagnostic {
+                diagnostic_type: "patch-filter".to_string(),
+                message: "Patch filter kept 0 of 0 findings; suppressed 0 outside changed new-side lines. All patch files were analysed.".to_string(),
+                file_path: None,
+                line: None,
+            }],
+        );
+
+        let sarif = sample_sarif(&report);
+
+        assert_eq!(
+            sarif["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+        let notification = &sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0];
+        assert_eq!(notification["descriptor"]["id"], "patch-filter");
+        assert_eq!(notification["level"], "note");
+    }
+
+    #[test]
+    fn diff_requires_explicit_unsafe_git_flag() {
+        let without_flag = Cli::try_parse_from(["gruff-rs", "analyse", "--diff", "working-tree"]);
+        assert!(without_flag.is_err());
+
+        let with_flag = Cli::try_parse_from([
+            "gruff-rs",
+            "analyse",
+            "--diff",
+            "working-tree",
+            "--diff-git-unsafe",
+        ]);
+        assert!(with_flag.is_ok());
     }
 
     fn rule_ids(report: &AnalysisReport) -> BTreeSet<&str> {

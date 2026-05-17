@@ -12,7 +12,7 @@
 ## Source
 
 `src/` = Rust source directory.
-`src/main.rs` = CLI orchestration, Git-ignore-aware source discovery, analyzer pipeline, parsed source/project context construction, config loading, text/markdown/github/hotspot/SARIF renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
+`src/main.rs` = CLI orchestration, Git-ignore-aware source discovery, analyzer pipeline, patch-input diff filtering, parsed source/project context construction, config loading, text/markdown/github/hotspot/SARIF renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
 `src/html_report.rs` = HTML inspection report renderer; builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/rules.rs` = Rule metadata contracts and the sorted built-in rule registry used by config validation and `list-rules`.
 
@@ -30,7 +30,7 @@
 ## Scripts
 
 `scripts/` = Project shell entrypoints.
-`scripts/check.sh` = Formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, and self-scan gate.
+`scripts/check.sh` = Formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff smoke, and self-scan gate.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
 `scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes `target/perf/last-run.json`, supports `--update-baseline` and `--check` with configurable time/RSS budgets.
 
