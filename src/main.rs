@@ -1127,10 +1127,10 @@ fn discover_sources(
         let mut builder = WalkBuilder::new(&absolute);
         builder
             .hidden(false)
-            .parents(!include_ignored)
+            .parents(false)
             .ignore(!include_ignored)
             .git_ignore(!include_ignored)
-            .git_global(!include_ignored)
+            .git_global(false)
             .git_exclude(!include_ignored)
             .filter_entry(move |entry| {
                 should_descend(
@@ -1251,25 +1251,24 @@ fn path_is_project_ignored(project_root: &Path, path: &Path, config: &Config) ->
 }
 
 fn is_default_ignored_dir(relative: &str) -> bool {
-    relative.split('/').any(|component| {
-        matches!(
-            component,
-            ".git"
-                | ".hg"
-                | ".svn"
-                | ".idea"
-                | ".vscode"
-                | "build"
-                | "cache"
-                | "coverage"
-                | "dist"
-                | "generated"
-                | "node_modules"
-                | "target"
-                | "tmp"
-                | "vendor"
-        )
-    })
+    let first = relative.split('/').next().unwrap_or(relative);
+    matches!(
+        first,
+        ".git"
+            | ".hg"
+            | ".svn"
+            | ".idea"
+            | ".vscode"
+            | "build"
+            | "cache"
+            | "coverage"
+            | "dist"
+            | "generated"
+            | "node_modules"
+            | "target"
+            | "tmp"
+            | "vendor"
+    )
 }
 
 fn is_vcs_internal_dir(relative: &str) -> bool {
@@ -2210,7 +2209,7 @@ fn has_cfg_attr(attrs: &[syn::Attribute]) -> bool {
 
 fn has_cfg_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        if !attr.path().is_ident("cfg") && !attr.path().is_ident("cfg_attr") {
+        if !attr.path().is_ident("cfg") {
             return false;
         }
 
@@ -3101,6 +3100,7 @@ mod built_in_rules {
     ) {
         let blocks = rust_function_blocks(ast, source);
         analyse_blocks(file, &blocks, config, findings);
+        analyse_process_commands(file, source, findings);
         analyse_line_rules(file, source, config, findings);
         analyse_item_rules(file, ast, findings);
         analyse_dead_code(file, ast, source, findings);
@@ -3124,7 +3124,6 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let searchable_body = strip_rust_string_literals(&block.body);
-        analyse_process_command_block(file, block, &searchable_body, findings);
         if block.is_test {
             analyse_test_block(file, block, config, findings);
         }
@@ -4066,23 +4065,19 @@ mod built_in_rules {
         }
     }
 
-    fn analyse_process_command_block(
-        file: &SourceFile,
-        block: &FunctionBlock,
-        searchable_body: &str,
-        findings: &mut Vec<Finding>,
-    ) {
+    fn analyse_process_commands(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
         let command_regex = static_regex(
             &PROCESS_COMMAND_REGEX,
             r"(std::process::Command|Command)::new\s*\(",
         );
-        for (line_offset, line) in searchable_body.lines().enumerate() {
+        let searchable = strip_rust_string_literals(source);
+        for (line_index, line) in searchable.lines().enumerate() {
             if command_regex.is_match(line) {
                 findings.push(finding(
                     "security.process-command",
                     "Process command execution is used; validate command arguments are not user-controlled.",
                     file,
-                    Some(block.start_line + line_offset),
+                    Some(line_index + 1),
                     Severity::Warning,
                     Pillar::Security,
                 ));
@@ -4314,11 +4309,22 @@ mod built_in_rules {
     }
 
     fn function_call_count(source: &str, name: &str) -> usize {
-        let escaped = regex::escape(name);
-        let call_regex = Regex::new(&format!(r"\b{escaped}\s*(?:::\s*<[^>]+>)?\s*\("))
-            .expect("generated function-call regex compiles");
-        let simple_definition_regex = Regex::new(&format!(r"\bfn\s+{escaped}\s*\("))
-            .expect("generated function-definition regex compiles");
+        static CACHE: OnceLock<Mutex<HashMap<String, (Regex, Regex)>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let (call_regex, simple_definition_regex) = {
+            let mut guard = cache.lock().expect("function call regex cache");
+            guard
+                .entry(name.to_string())
+                .or_insert_with(|| {
+                    let escaped = regex::escape(name);
+                    let call = Regex::new(&format!(r"\b{escaped}\s*(?:::\s*<[^>]+>)?\s*\("))
+                        .expect("generated function-call regex compiles");
+                    let definition = Regex::new(&format!(r"\bfn\s+{escaped}\s*\("))
+                        .expect("generated function-definition regex compiles");
+                    (call, definition)
+                })
+                .clone()
+        };
         let count = call_regex.find_iter(source).count();
         if simple_definition_regex.is_match(source) {
             count.saturating_sub(1)
