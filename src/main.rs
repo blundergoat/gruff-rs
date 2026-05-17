@@ -3763,68 +3763,6 @@ mod built_in_rules {
         }
     }
 
-    fn analyse_performance_block(
-        file: &SourceFile,
-        block: &FunctionBlock,
-        searchable_body: &str,
-        findings: &mut Vec<Finding>,
-    ) {
-        let checks = [
-            PerformanceCheck {
-                rule_id: "performance.regex-in-loop",
-                regex: &PERF_REGEX_IN_LOOP_REGEX,
-                pattern: r"\bRegex::new\s*\(",
-                severity: Severity::Warning,
-                confidence: Confidence::High,
-                label: "Regex::new",
-                remediation: "Move regex construction out of the loop or cache the compiled regex.",
-            },
-            PerformanceCheck {
-                rule_id: "performance.format-in-loop",
-                regex: &PERF_FORMAT_IN_LOOP_REGEX,
-                pattern: r"\bformat!\s*\(",
-                severity: Severity::Advisory,
-                confidence: Confidence::Medium,
-                label: "format!",
-                remediation:
-                    "Reuse buffers or move formatting out of the loop when allocation matters.",
-            },
-            PerformanceCheck {
-                rule_id: "performance.clone-in-loop",
-                regex: &PERF_CLONE_IN_LOOP_REGEX,
-                pattern: r"\.clone\s*\(",
-                severity: Severity::Advisory,
-                confidence: Confidence::Medium,
-                label: "clone()",
-                remediation: "Clone outside the loop or borrow values when ownership permits.",
-            },
-        ];
-
-        for check in checks {
-            let occurrences =
-                loop_pattern_count(searchable_body, static_regex(check.regex, check.pattern));
-            if occurrences == 0 {
-                continue;
-            }
-            findings.push(block_finding_with_extras(
-                check.rule_id,
-                format!(
-                    "Function `{}` calls {} inside a loop {} time(s).",
-                    block.name, check.label, occurrences
-                ),
-                file,
-                block,
-                check.severity,
-                Pillar::Waste,
-                BlockFindingExtras {
-                    confidence: check.confidence,
-                    remediation: Some(check.remediation.to_string()),
-                    metadata: json!({ "pattern": check.label, "occurrences": occurrences }),
-                },
-            ));
-        }
-    }
-
     struct PerformanceCheck {
         rule_id: &'static str,
         regex: &'static OnceLock<Regex>,
@@ -3833,6 +3771,77 @@ mod built_in_rules {
         confidence: Confidence,
         label: &'static str,
         remediation: &'static str,
+    }
+
+    const PERFORMANCE_CHECKS: &[PerformanceCheck] = &[
+        PerformanceCheck {
+            rule_id: "performance.regex-in-loop",
+            regex: &PERF_REGEX_IN_LOOP_REGEX,
+            pattern: r"\bRegex::new\s*\(",
+            severity: Severity::Warning,
+            confidence: Confidence::High,
+            label: "Regex::new",
+            remediation: "Move regex construction out of the loop or cache the compiled regex.",
+        },
+        PerformanceCheck {
+            rule_id: "performance.format-in-loop",
+            regex: &PERF_FORMAT_IN_LOOP_REGEX,
+            pattern: r"\bformat!\s*\(",
+            severity: Severity::Advisory,
+            confidence: Confidence::Medium,
+            label: "format!",
+            remediation:
+                "Reuse buffers or move formatting out of the loop when allocation matters.",
+        },
+        PerformanceCheck {
+            rule_id: "performance.clone-in-loop",
+            regex: &PERF_CLONE_IN_LOOP_REGEX,
+            pattern: r"\.clone\s*\(",
+            severity: Severity::Advisory,
+            confidence: Confidence::Medium,
+            label: "clone()",
+            remediation: "Clone outside the loop or borrow values when ownership permits.",
+        },
+    ];
+
+    fn analyse_performance_block(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        searchable_body: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        for check in PERFORMANCE_CHECKS {
+            let occurrences =
+                loop_pattern_count(searchable_body, static_regex(check.regex, check.pattern));
+            if occurrences > 0 {
+                push_performance_finding(file, block, check, occurrences, findings);
+            }
+        }
+    }
+
+    fn push_performance_finding(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        check: &PerformanceCheck,
+        occurrences: usize,
+        findings: &mut Vec<Finding>,
+    ) {
+        findings.push(block_finding_with_extras(
+            check.rule_id,
+            format!(
+                "Function `{}` calls {} inside a loop {} time(s).",
+                block.name, check.label, occurrences
+            ),
+            file,
+            block,
+            check.severity,
+            Pillar::Waste,
+            BlockFindingExtras {
+                confidence: check.confidence,
+                remediation: Some(check.remediation.to_string()),
+                metadata: json!({ "pattern": check.label, "occurrences": occurrences }),
+            },
+        ));
     }
 
     fn analyse_concurrency_block(
