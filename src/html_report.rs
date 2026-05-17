@@ -133,13 +133,7 @@ fn masthead(view: &ReportView<'_>) -> String {
     } else {
         view.scope.paths.join(", ")
     };
-    let scope_label = view
-        .scope
-        .diff_label
-        .clone()
-        .unwrap_or_else(|| "full project".to_string());
-    let format_label = view.report.run.format.clone();
-    let fail_label = view.report.run.fail_on.clone();
+    let scope_label = view.scope.diff_label.as_deref().unwrap_or("full project");
     let tool_version = format!("gruff {}", view.report.tool.version);
 
     format!(
@@ -150,17 +144,14 @@ fn masthead(view: &ReportView<'_>) -> String {
             "<div class=\"tagline\">rust code quality · inspection report</div>",
             "</div>",
             "<div class=\"meta\">",
-            "{paths_row}",
-            "{scope_row}",
-            "{format_row}",
-            "{fail_row}",
+            "{paths_row}{scope_row}{format_row}{fail_row}",
             "<div class=\"inspection-id\">{tool_version}</div>",
             "</div></header>"
         ),
         paths_row = meta_row("paths", &paths_label),
-        scope_row = meta_row("scope", &scope_label),
-        format_row = meta_row("format", &format_label),
-        fail_row = meta_row("fail", &fail_label),
+        scope_row = meta_row("scope", scope_label),
+        format_row = meta_row("format", &view.report.run.format),
+        fail_row = meta_row("fail", &view.report.run.fail_on),
         tool_version = html_escape(&tool_version),
     )
 }
@@ -433,9 +424,10 @@ fn finding_row(finding: &Finding) -> String {
         Severity::Warning => "warn",
         Severity::Advisory => "note",
     };
+    let escaped_path = html_escape(&finding.file_path);
     let location = match finding.line {
-        Some(line) => format!("{}:{}", finding.file_path, line),
-        None => finding.file_path.clone(),
+        Some(line) => format!("{escaped_path}:{line}"),
+        None => escaped_path,
     };
 
     format!(
@@ -454,7 +446,7 @@ fn finding_row(finding: &Finding) -> String {
         sev_label = html_escape(severity_text(finding.severity)),
         rule = html_escape(&finding.rule_id),
         msg = html_escape(&finding.message),
-        loc = html_escape(&location),
+        loc = location,
         pillar = html_escape(pillar_label(finding.pillar)),
     )
 }

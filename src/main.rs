@@ -968,76 +968,58 @@ fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
     run_analysis_in_project(&project_root, options)
 }
 
-fn run_analysis_in_project(
-    project_root: &Path,
-    options: &AnalysisOptions,
-) -> Result<AnalysisReport, String> {
-    let config = load_config(project_root, options)?;
-    let mut discovery = discover_sources(project_root, options, &config);
-
-    if let Some(mode) = &options.diff {
-        let changed = changed_files(mode)?;
-        discovery
-            .files
-            .retain(|file| changed.contains(&file.display_path));
-    }
-
-    let mut findings = Vec::new();
-    let mut diagnostics = Vec::new();
-
-    for missing_path in &discovery.missing_paths {
-        diagnostics.push(RunDiagnostic {
+fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagnostic> {
+    missing_paths
+        .iter()
+        .map(|missing_path| RunDiagnostic {
             diagnostic_type: "missing-path".to_string(),
             message: format!("Input path does not exist: {missing_path}"),
             file_path: Some(missing_path.clone()),
             line: None,
-        });
-    }
+        })
+        .collect()
+}
 
-    let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
-    diagnostics.extend(read_diagnostics);
-
-    let project_context = build_project_context(project_root, &parsed_sources);
-    diagnostics.extend(project_context.diagnostics.iter().cloned());
-    findings.extend(analyse_project(&project_context, &config));
-
-    for parsed_source in &parsed_sources {
-        findings.extend(analyse_source(&parsed_source.unit(), &config));
-        diagnostics.extend(parsed_source.diagnostics.iter().cloned());
-    }
-
-    let mut baseline_report = None;
+fn resolve_baseline(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<BaselineReport>, String> {
     if let Some(path) = &options.generate_baseline {
         let baseline_path = absolutize(project_root, path);
-        write_baseline(&baseline_path, &findings)?;
-        baseline_report = Some(BaselineReport {
+        write_baseline(&baseline_path, findings)?;
+        return Ok(Some(BaselineReport {
             path: display_path(project_root, &baseline_path),
             source: "generated".to_string(),
             suppressed: 0,
             generated: true,
-        });
-    } else if !options.no_baseline {
-        let selected = options
-            .baseline
-            .as_ref()
-            .map(|path| (absolutize(project_root, path), "explicit"))
-            .or_else(|| {
-                let default = project_root.join(DEFAULT_BASELINE);
-                default.exists().then_some((default, "default"))
-            });
-
-        if let Some((baseline_path, source)) = selected {
-            let before = findings.len();
-            apply_baseline(&baseline_path, &mut findings)?;
-            baseline_report = Some(BaselineReport {
-                path: display_path(project_root, &baseline_path),
-                source: source.to_string(),
-                suppressed: before.saturating_sub(findings.len()),
-                generated: false,
-            });
-        }
+        }));
     }
+    if options.no_baseline {
+        return Ok(None);
+    }
+    let selected = options
+        .baseline
+        .as_ref()
+        .map(|path| (absolutize(project_root, path), "explicit"))
+        .or_else(|| {
+            let default = project_root.join(DEFAULT_BASELINE);
+            default.exists().then_some((default, "default"))
+        });
+    let Some((baseline_path, source)) = selected else {
+        return Ok(None);
+    };
+    let before = findings.len();
+    apply_baseline(&baseline_path, findings)?;
+    Ok(Some(BaselineReport {
+        path: display_path(project_root, &baseline_path),
+        source: source.to_string(),
+        suppressed: before.saturating_sub(findings.len()),
+        generated: false,
+    }))
+}
 
+fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.sort_by(|left, right| {
         (
             left.file_path.as_str(),
@@ -1053,15 +1035,66 @@ fn run_analysis_in_project(
             ))
     });
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
+}
+
+fn run_analysis_in_project(
+    project_root: &Path,
+    options: &AnalysisOptions,
+) -> Result<AnalysisReport, String> {
+    let config = load_config(project_root, options)?;
+    let mut discovery = discover_sources(project_root, options, &config);
+
+    if let Some(mode) = &options.diff {
+        let changed = changed_files(mode)?;
+        discovery
+            .files
+            .retain(|file| changed.contains(&file.display_path));
+    }
+
+    let mut findings = Vec::new();
+    let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
+
+    let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
+    diagnostics.extend(read_diagnostics);
+
+    let project_context = build_project_context(project_root, &parsed_sources);
+    diagnostics.extend(project_context.diagnostics.iter().cloned());
+    findings.extend(analyse_project(&project_context, &config));
+
+    for parsed_source in &parsed_sources {
+        findings.extend(analyse_source(&parsed_source.unit(), &config));
+        diagnostics.extend(parsed_source.diagnostics.iter().cloned());
+    }
+
+    let baseline_report = resolve_baseline(project_root, options, &mut findings)?;
+
+    sort_and_dedupe_findings(&mut findings);
 
     if let Some(history_file) = &options.history_file {
         record_history(project_root, history_file, &findings, &mut diagnostics);
     }
 
+    Ok(build_report(
+        project_root,
+        options,
+        discovery,
+        diagnostics,
+        findings,
+        baseline_report,
+    ))
+}
+
+fn build_report(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    discovery: DiscoveryResult,
+    diagnostics: Vec<RunDiagnostic>,
+    findings: Vec<Finding>,
+    baseline_report: Option<BaselineReport>,
+) -> AnalysisReport {
     let summary = summarize(&findings);
     let score = score_report(&findings);
-
-    Ok(AnalysisReport {
+    AnalysisReport {
         schema_version: "gruff.analysis.v1".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
@@ -1083,7 +1116,7 @@ fn run_analysis_in_project(
         findings,
         score,
         baseline: baseline_report,
-    })
+    }
 }
 
 struct DiscoveryResult {
@@ -1112,54 +1145,18 @@ fn discover_sources(
             missing_paths.push(input.display().to_string());
             continue;
         }
-
         if absolute.is_file() {
             push_source_file(project_root, &absolute, &mut files);
             continue;
         }
-
-        let root_config_ignored = path_is_project_ignored(project_root, &absolute, config);
-        let apply_project_ignore = !root_config_ignored;
-        let filter_root = project_root.to_path_buf();
-        let filter_config = config.clone();
-        let filter_ignored_paths = Arc::clone(&ignored_paths);
-        let include_ignored = options.include_ignored;
-        let mut builder = WalkBuilder::new(&absolute);
-        builder
-            .hidden(false)
-            .parents(false)
-            .ignore(!include_ignored)
-            .git_ignore(!include_ignored)
-            .git_global(false)
-            .git_exclude(!include_ignored)
-            .filter_entry(move |entry| {
-                should_descend(
-                    entry,
-                    &filter_root,
-                    include_ignored,
-                    &filter_config,
-                    apply_project_ignore,
-                    &filter_ignored_paths,
-                )
-            });
-
-        for entry in builder.build().filter_map(Result::ok).filter(|entry| {
-            entry
-                .file_type()
-                .is_some_and(|file_type| file_type.is_file())
-        }) {
-            if !should_include_file(
-                &entry,
-                project_root,
-                options,
-                config,
-                apply_project_ignore,
-                &ignored_paths,
-            ) {
-                continue;
-            }
-            push_source_file(project_root, entry.path(), &mut files);
-        }
+        collect_directory_sources(
+            project_root,
+            &absolute,
+            options,
+            config,
+            &ignored_paths,
+            &mut files,
+        );
     }
 
     files.sort_by(|left, right| left.display_path.cmp(&right.display_path));
@@ -1176,6 +1173,57 @@ fn discover_sources(
         files,
         missing_paths,
         ignored_paths,
+    }
+}
+
+fn collect_directory_sources(
+    project_root: &Path,
+    absolute: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    ignored_paths: &Arc<Mutex<BTreeSet<String>>>,
+    files: &mut Vec<SourceFile>,
+) {
+    let apply_project_ignore = !path_is_project_ignored(project_root, absolute, config);
+    let include_ignored = options.include_ignored;
+    let filter_root = project_root.to_path_buf();
+    let filter_config = config.clone();
+    let filter_ignored_paths = Arc::clone(ignored_paths);
+    let mut builder = WalkBuilder::new(absolute);
+    builder
+        .hidden(false)
+        .parents(false)
+        .ignore(!include_ignored)
+        .git_ignore(!include_ignored)
+        .git_global(false)
+        .git_exclude(!include_ignored)
+        .filter_entry(move |entry| {
+            should_descend(
+                entry,
+                &filter_root,
+                include_ignored,
+                &filter_config,
+                apply_project_ignore,
+                &filter_ignored_paths,
+            )
+        });
+
+    for entry in builder.build().filter_map(Result::ok).filter(|entry| {
+        entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+    }) {
+        if !should_include_file(
+            &entry,
+            project_root,
+            options,
+            config,
+            apply_project_ignore,
+            ignored_paths,
+        ) {
+            continue;
+        }
+        push_source_file(project_root, entry.path(), files);
     }
 }
 
@@ -1339,105 +1387,157 @@ fn load_config(project_root: &Path, options: &AnalysisOptions) -> Result<Config,
     reject_unknown_keys(root, &["paths", "allowlists", "rules"], "config root")?;
 
     if let Some(paths_value) = root.get("paths") {
-        let paths = paths_value
-            .as_object()
-            .ok_or_else(|| "config key `paths` must be an object".to_string())?;
-        reject_unknown_keys(paths, &["ignore"], "config key `paths`")?;
-        if let Some(ignore) = paths.get("ignore") {
-            config.ignored_paths = string_array(ignore, "paths.ignore")?;
-        }
+        apply_paths_section(paths_value, &mut config)?;
     }
-
     if let Some(allowlists_value) = root.get("allowlists") {
-        let allowlists = allowlists_value
-            .as_object()
-            .ok_or_else(|| "config key `allowlists` must be an object".to_string())?;
-        reject_unknown_keys(
-            allowlists,
-            &["acceptedAbbreviations", "secretPreviews"],
-            "config key `allowlists`",
-        )?;
-        if let Some(abbreviations) = allowlists.get("acceptedAbbreviations") {
-            config.accepted_abbreviations =
-                string_array(abbreviations, "allowlists.acceptedAbbreviations")?
-                    .into_iter()
-                    .map(|value| value.to_ascii_lowercase())
-                    .collect();
-        }
-        if let Some(previews) = allowlists.get("secretPreviews") {
-            config.secret_previews = string_array(previews, "allowlists.secretPreviews")?
-                .into_iter()
-                .collect();
-        }
+        apply_allowlists_section(allowlists_value, &mut config)?;
     }
-
     if let Some(rules_value) = root.get("rules") {
-        let registry = rules::builtin_registry();
-        let rules = rules_value
-            .as_object()
-            .ok_or_else(|| "config key `rules` must be an object".to_string())?;
-        for (rule_id, rule_value) in rules {
-            if !registry.contains(rule_id) {
-                return Err(format!("unknown rule id `{rule_id}` in config"));
-            }
-            let rule_object = rule_value
-                .as_object()
-                .ok_or_else(|| format!("config for rule `{rule_id}` must be an object"))?;
-            reject_unknown_keys(
-                rule_object,
-                &["enabled", "threshold", "thresholds", "options"],
-                &format!("config for rule `{rule_id}`"),
-            )?;
-
-            let mut setting = RuleSetting::default();
-            if let Some(enabled) = rule_object.get("enabled") {
-                setting.enabled = Some(enabled.as_bool().ok_or_else(|| {
-                    format!("config key `rules.{rule_id}.enabled` must be a boolean")
-                })?);
-            }
-            if rule_object.contains_key("threshold") && rule_object.contains_key("thresholds") {
-                return Err(format!(
-                    "config for rule `{rule_id}` cannot use both `threshold` and `thresholds`"
-                ));
-            }
-            if let Some(threshold_value) = rule_object.get("threshold") {
-                let threshold_name = single_threshold_name(&registry, rule_id)?;
-                let number = threshold_value.as_f64().ok_or_else(|| {
-                    format!("threshold `rules.{rule_id}.threshold` must be a number")
-                })?;
-                setting
-                    .thresholds
-                    .insert(threshold_name.to_string(), number);
-            }
-            if let Some(thresholds_value) = rule_object.get("thresholds") {
-                let thresholds = thresholds_value.as_object().ok_or_else(|| {
-                    format!("config key `rules.{rule_id}.thresholds` must be an object")
-                })?;
-                for (name, threshold) in thresholds {
-                    if !registry.supports_threshold(rule_id, name) {
-                        return Err(format!("unknown threshold `{name}` for rule `{rule_id}`"));
-                    }
-                    let number = threshold.as_f64().ok_or_else(|| {
-                        format!("threshold `rules.{rule_id}.thresholds.{name}` must be a number")
-                    })?;
-                    setting.thresholds.insert(name.clone(), number);
-                }
-            }
-            if let Some(options_value) = rule_object.get("options") {
-                let options = options_value.as_object().ok_or_else(|| {
-                    format!("config key `rules.{rule_id}.options` must be an object")
-                })?;
-                for name in options.keys() {
-                    if !registry.supports_option(rule_id, name) {
-                        return Err(format!("unknown option `{name}` for rule `{rule_id}`"));
-                    }
-                }
-            }
-            config.rule_settings.insert(rule_id.clone(), setting);
-        }
+        apply_rules_section(rules_value, &mut config)?;
     }
 
     Ok(config)
+}
+
+fn apply_paths_section(paths_value: &Value, config: &mut Config) -> Result<(), String> {
+    let paths = paths_value
+        .as_object()
+        .ok_or_else(|| "config key `paths` must be an object".to_string())?;
+    reject_unknown_keys(paths, &["ignore"], "config key `paths`")?;
+    if let Some(ignore) = paths.get("ignore") {
+        config.ignored_paths = string_array(ignore, "paths.ignore")?;
+    }
+    Ok(())
+}
+
+fn apply_allowlists_section(allowlists_value: &Value, config: &mut Config) -> Result<(), String> {
+    let allowlists = allowlists_value
+        .as_object()
+        .ok_or_else(|| "config key `allowlists` must be an object".to_string())?;
+    reject_unknown_keys(
+        allowlists,
+        &["acceptedAbbreviations", "secretPreviews"],
+        "config key `allowlists`",
+    )?;
+    if let Some(abbreviations) = allowlists.get("acceptedAbbreviations") {
+        config.accepted_abbreviations =
+            string_array(abbreviations, "allowlists.acceptedAbbreviations")?
+                .into_iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect();
+    }
+    if let Some(previews) = allowlists.get("secretPreviews") {
+        config.secret_previews = string_array(previews, "allowlists.secretPreviews")?
+            .into_iter()
+            .collect();
+    }
+    Ok(())
+}
+
+fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), String> {
+    let registry = rules::builtin_registry();
+    let rules = rules_value
+        .as_object()
+        .ok_or_else(|| "config key `rules` must be an object".to_string())?;
+    for (rule_id, rule_value) in rules {
+        if !registry.contains(rule_id) {
+            return Err(format!("unknown rule id `{rule_id}` in config"));
+        }
+        let setting = parse_rule_setting(rule_id, rule_value, &registry)?;
+        config.rule_settings.insert(rule_id.clone(), setting);
+    }
+    Ok(())
+}
+
+fn parse_rule_setting(
+    rule_id: &str,
+    rule_value: &Value,
+    registry: &rules::RuleRegistry,
+) -> Result<RuleSetting, String> {
+    let rule_object = rule_value
+        .as_object()
+        .ok_or_else(|| format!("config for rule `{rule_id}` must be an object"))?;
+    reject_unknown_keys(
+        rule_object,
+        &["enabled", "threshold", "thresholds", "options"],
+        &format!("config for rule `{rule_id}`"),
+    )?;
+
+    let mut setting = RuleSetting::default();
+    if let Some(enabled) = rule_object.get("enabled") {
+        setting.enabled =
+            Some(enabled.as_bool().ok_or_else(|| {
+                format!("config key `rules.{rule_id}.enabled` must be a boolean")
+            })?);
+    }
+    if rule_object.contains_key("threshold") && rule_object.contains_key("thresholds") {
+        return Err(format!(
+            "config for rule `{rule_id}` cannot use both `threshold` and `thresholds`"
+        ));
+    }
+    if let Some(threshold_value) = rule_object.get("threshold") {
+        apply_single_threshold(rule_id, threshold_value, registry, &mut setting)?;
+    }
+    if let Some(thresholds_value) = rule_object.get("thresholds") {
+        apply_threshold_map(rule_id, thresholds_value, registry, &mut setting)?;
+    }
+    if let Some(options_value) = rule_object.get("options") {
+        validate_rule_options(rule_id, options_value, registry)?;
+    }
+    Ok(setting)
+}
+
+fn apply_single_threshold(
+    rule_id: &str,
+    threshold_value: &Value,
+    registry: &rules::RuleRegistry,
+    setting: &mut RuleSetting,
+) -> Result<(), String> {
+    let threshold_name = single_threshold_name(registry, rule_id)?;
+    let number = threshold_value
+        .as_f64()
+        .ok_or_else(|| format!("threshold `rules.{rule_id}.threshold` must be a number"))?;
+    setting
+        .thresholds
+        .insert(threshold_name.to_string(), number);
+    Ok(())
+}
+
+fn apply_threshold_map(
+    rule_id: &str,
+    thresholds_value: &Value,
+    registry: &rules::RuleRegistry,
+    setting: &mut RuleSetting,
+) -> Result<(), String> {
+    let thresholds = thresholds_value
+        .as_object()
+        .ok_or_else(|| format!("config key `rules.{rule_id}.thresholds` must be an object"))?;
+    for (name, threshold) in thresholds {
+        if !registry.supports_threshold(rule_id, name) {
+            return Err(format!("unknown threshold `{name}` for rule `{rule_id}`"));
+        }
+        let number = threshold.as_f64().ok_or_else(|| {
+            format!("threshold `rules.{rule_id}.thresholds.{name}` must be a number")
+        })?;
+        setting.thresholds.insert(name.clone(), number);
+    }
+    Ok(())
+}
+
+fn validate_rule_options(
+    rule_id: &str,
+    options_value: &Value,
+    registry: &rules::RuleRegistry,
+) -> Result<(), String> {
+    let options = options_value
+        .as_object()
+        .ok_or_else(|| format!("config key `rules.{rule_id}.options` must be an object"))?;
+    for name in options.keys() {
+        if !registry.supports_option(rule_id, name) {
+            return Err(format!("unknown option `{name}` for rule `{rule_id}`"));
+        }
+    }
+    Ok(())
 }
 
 fn default_config_path(project_root: &Path) -> Option<PathBuf> {
