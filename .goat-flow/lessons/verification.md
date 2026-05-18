@@ -60,3 +60,16 @@ allow just to finish the milestone. In M31, threading suppression state pushed
 `src/main.rs` (search: `fn build_report`) over the argument-count limit; bundling
 the summaries and SARIF-only suppressed findings into a small state struct kept
 the pipeline explicit and lint-clean.
+
+## Lesson: Regex Match Starts Can Hide Useful Source Lines
+
+**Created:** 2026-05-18
+
+When testing regex-driven findings, include patterns with leading whitespace
+such as `(?m)^\s*//`. Rust `regex` treats `\s` as newline-capable, so the match
+may start before the visible token and report the wrong line if the analyzer
+uses `match.start()` directly.
+
+For source diagnostics, compute the displayed line from the first
+non-whitespace byte inside the match when that exists, then rerun the focused
+scope test before continuing with broader gates.
