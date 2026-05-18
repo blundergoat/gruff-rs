@@ -5,7 +5,7 @@
 
 ## Decision
 
-The default project config is `.gruff-rs.yaml`. Other gruff config names and non-YAML config files are intentionally unsupported before public release. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes are command errors. A `threshold` shorthand is allowed only for rules with exactly one threshold.
+The default project config is `.gruff-rs.yaml`. Other gruff config names and non-YAML config files are intentionally unsupported before public release. Config validation is strict: unknown root keys, rule ids, option names, and unsupported value shapes are command errors. Thresholded rules use a single `threshold` plus one fixed `severity`; warning/error threshold maps are intentionally unsupported.
 
 Local and CI verification use `bash scripts/check.sh`. The script runs formatting, Clippy, unit tests, `list-rules`, fixture scan, and self-scan diagnostics smoke checks. Self-scan diagnostics fail the gate; self-scan findings are allowed under `--fail-on none` until a baseline or score threshold policy is chosen.
 

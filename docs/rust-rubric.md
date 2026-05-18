@@ -1,6 +1,6 @@
 # Rust Rubric
 
-`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings.
+`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
 
 ## Pillars
 
@@ -30,7 +30,7 @@ Error-handling and concurrency rules are deliberately syntactic. Production pani
 
 Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside loop bodies. They are reported as waste because the current report schema does not define a separate performance pillar.
 
-Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default `volume` threshold of `900`. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default `minimum` threshold of `45`. Config may use the `threshold` shorthand for these single-threshold rules; the canonical threshold names are `volume` and `minimum`. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default threshold of `900` with advisory severity. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default threshold of `45` with advisory severity. Config uses `threshold` plus `severity` for thresholded rules. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
 
 ## Deferred
 

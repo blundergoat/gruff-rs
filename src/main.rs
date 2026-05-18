@@ -448,7 +448,8 @@ struct SelectorSet {
 #[derive(Debug, Clone, Default)]
 struct RuleSetting {
     enabled: Option<bool>,
-    thresholds: HashMap<String, f64>,
+    threshold: Option<f64>,
+    severity: Option<Severity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,7 +486,8 @@ struct ListedRule {
     kind: String,
     default_severity: Severity,
     confidence: Confidence,
-    thresholds: Vec<rules::ThresholdDefinition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    threshold: Option<f64>,
     options: Vec<rules::OptionDefinition>,
     default_enabled: bool,
     description: String,
@@ -541,12 +543,18 @@ impl Config {
             .unwrap_or(true)
     }
 
-    fn threshold(&self, rule_id: &str, name: &str, default_value: f64) -> f64 {
+    fn threshold(&self, rule_id: &str, default_value: f64) -> f64 {
         self.rule_settings
             .get(rule_id)
-            .and_then(|setting| setting.thresholds.get(name))
-            .copied()
+            .and_then(|setting| setting.threshold)
             .unwrap_or(default_value)
+    }
+
+    fn severity(&self, rule_id: &str, default_severity: Severity) -> Severity {
+        self.rule_settings
+            .get(rule_id)
+            .and_then(|setting| setting.severity)
+            .unwrap_or(default_severity)
     }
 }
 
@@ -1135,7 +1143,7 @@ fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedRule {
         kind: rule_kind_name(definition.kind).to_string(),
         default_severity: definition.default_severity,
         confidence: definition.confidence,
-        thresholds: definition.thresholds.to_vec(),
+        threshold: definition.threshold.map(|threshold| threshold.default),
         options: definition.options.to_vec(),
         default_enabled: definition.default_enabled,
         description: definition.description.to_string(),
@@ -1153,7 +1161,7 @@ fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
         kind: "custom".to_string(),
         default_severity: rule.severity,
         confidence: rule.confidence,
-        thresholds: Vec::new(),
+        threshold: None,
         options: Vec::new(),
         default_enabled: true,
         description: rule.message.clone(),
@@ -2539,7 +2547,7 @@ fn parse_rule_setting(
         .ok_or_else(|| format!("config for rule `{rule_id}` must be an object"))?;
     reject_unknown_keys(
         rule_object,
-        &["enabled", "threshold", "thresholds", "options"],
+        &["enabled", "threshold", "severity", "options"],
         &format!("config for rule `{rule_id}`"),
     )?;
 
@@ -2583,16 +2591,21 @@ fn apply_rule_thresholds(
     registry: &rules::RuleRegistry,
     setting: &mut RuleSetting,
 ) -> Result<(), String> {
-    if rule_object.contains_key("threshold") && rule_object.contains_key("thresholds") {
-        return Err(format!(
-            "config for rule `{rule_id}` cannot use both `threshold` and `thresholds`"
-        ));
-    }
-    if let Some(threshold_value) = rule_object.get("threshold") {
-        apply_single_threshold(rule_id, threshold_value, registry, setting)?;
-    }
-    if let Some(thresholds_value) = rule_object.get("thresholds") {
-        apply_threshold_map(rule_id, thresholds_value, registry, setting)?;
+    match (rule_object.get("threshold"), rule_object.get("severity")) {
+        (Some(threshold_value), Some(severity_value)) => {
+            apply_threshold(rule_id, threshold_value, severity_value, registry, setting)?;
+        }
+        (Some(_), None) => {
+            return Err(format!(
+                "config key `rules.{rule_id}.severity` is required when `threshold` is configured"
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "config key `rules.{rule_id}.severity` requires `threshold`"
+            ));
+        }
+        (None, None) => {}
     }
     Ok(())
 }
@@ -2608,40 +2621,25 @@ fn validate_optional_rule_options(
     Ok(())
 }
 
-fn apply_single_threshold(
+fn apply_threshold(
     rule_id: &str,
     threshold_value: &Value,
+    severity_value: &Value,
     registry: &rules::RuleRegistry,
     setting: &mut RuleSetting,
 ) -> Result<(), String> {
-    let threshold_name = single_threshold_name(registry, rule_id)?;
+    ensure_rule_supports_threshold(registry, rule_id)?;
     let number = threshold_value
         .as_f64()
         .ok_or_else(|| format!("threshold `rules.{rule_id}.threshold` must be a number"))?;
-    setting
-        .thresholds
-        .insert(threshold_name.to_string(), number);
-    Ok(())
-}
-
-fn apply_threshold_map(
-    rule_id: &str,
-    thresholds_value: &Value,
-    registry: &rules::RuleRegistry,
-    setting: &mut RuleSetting,
-) -> Result<(), String> {
-    let thresholds = thresholds_value
-        .as_object()
-        .ok_or_else(|| format!("config key `rules.{rule_id}.thresholds` must be an object"))?;
-    for (name, threshold) in thresholds {
-        if !registry.supports_threshold(rule_id, name) {
-            return Err(format!("unknown threshold `{name}` for rule `{rule_id}`"));
-        }
-        let number = threshold.as_f64().ok_or_else(|| {
-            format!("threshold `rules.{rule_id}.thresholds.{name}` must be a number")
+    let severity = severity_value
+        .as_str()
+        .and_then(parse_severity_name)
+        .ok_or_else(|| {
+            format!("config key `rules.{rule_id}.severity` must be advisory, warning, or error")
         })?;
-        setting.thresholds.insert(name.clone(), number);
-    }
+    setting.threshold = Some(number);
+    setting.severity = Some(severity);
     Ok(())
 }
 
@@ -2847,18 +2845,18 @@ fn parse_config_value(path: &Path, raw: &str) -> Result<Value, String> {
     }
 }
 
-fn single_threshold_name<'a>(
-    registry: &'a rules::RuleRegistry,
+fn ensure_rule_supports_threshold(
+    registry: &rules::RuleRegistry,
     rule_id: &str,
-) -> Result<&'a str, String> {
+) -> Result<(), String> {
     let definition = registry
         .get(rule_id)
         .ok_or_else(|| format!("unknown rule id `{rule_id}` in config"))?;
-    if definition.thresholds.len() == 1 {
-        Ok(definition.thresholds[0].name)
+    if definition.threshold.is_some() {
+        Ok(())
     } else {
         Err(format!(
-            "config key `rules.{rule_id}.threshold` is only supported for rules with exactly one threshold"
+            "config key `rules.{rule_id}.threshold` is only supported for rules with one numeric threshold"
         ))
     }
 }
@@ -3725,7 +3723,7 @@ fn analyse_module_fan_out(context: &ProjectContext, config: &Config, findings: &
     if !config.rule_enabled(rule_id) {
         return;
     }
-    let threshold = config.threshold(rule_id, "modules", 8.0) as usize;
+    let threshold = config.threshold(rule_id, 8.0) as usize;
     let mut by_file: BTreeMap<&str, Vec<&ModuleSummary>> = BTreeMap::new();
     for module in context.modules.iter().filter(|module| !module.cfg_gated) {
         by_file
@@ -3747,7 +3745,7 @@ fn analyse_module_fan_out(context: &ProjectContext, config: &Config, findings: &
             ),
             file_path.to_string(),
             Some(first_line),
-            Severity::Advisory,
+            config.severity(rule_id, Severity::Advisory),
             Pillar::Design,
             Confidence::High,
             Some(file_path.to_string()),
@@ -3769,7 +3767,7 @@ fn analyse_public_api_surface(
     if !config.rule_enabled(rule_id) {
         return;
     }
-    let threshold = config.threshold(rule_id, "items", 12.0) as usize;
+    let threshold = config.threshold(rule_id, 12.0) as usize;
     let mut by_module: BTreeMap<(String, String), Vec<&ItemSummary>> = BTreeMap::new();
     for item in context.items.iter().filter(|item| {
         item.public && !item.cfg_gated && !item.test_context && item.kind != "method"
@@ -3794,7 +3792,7 @@ fn analyse_public_api_surface(
             ),
             file_path,
             Some(first_line),
-            Severity::Advisory,
+            config.severity(rule_id, Severity::Advisory),
             Pillar::Design,
             Confidence::High,
             Some(module.clone()),
@@ -3812,7 +3810,7 @@ fn analyse_large_modules(context: &ProjectContext, config: &Config, findings: &m
     if !config.rule_enabled(rule_id) {
         return;
     }
-    let threshold = config.threshold(rule_id, "items", 25.0) as usize;
+    let threshold = config.threshold(rule_id, 25.0) as usize;
     let mut by_module: BTreeMap<(String, String), Vec<&ItemSummary>> = BTreeMap::new();
     for item in context
         .items
@@ -3839,7 +3837,7 @@ fn analyse_large_modules(context: &ProjectContext, config: &Config, findings: &m
             ),
             file_path,
             Some(first_line),
-            Severity::Advisory,
+            config.severity(rule_id, Severity::Advisory),
             Pillar::Design,
             Confidence::High,
             Some(module.clone()),
@@ -4091,7 +4089,7 @@ fn analyse_lockfile_duplicates(
     if !config.rule_enabled(rule_id) {
         return;
     }
-    let allowed_versions = config.threshold(rule_id, "versions", 1.0) as usize;
+    let allowed_versions = config.threshold(rule_id, 1.0) as usize;
     let mut by_name: BTreeMap<&str, Vec<&LockedPackageSummary>> = BTreeMap::new();
     for package in &lockfile.packages {
         by_name.entry(&package.name).or_default().push(package);
@@ -4119,7 +4117,7 @@ fn analyse_lockfile_duplicates(
             ),
             lockfile.file_path.clone(),
             Some(first_line),
-            Severity::Advisory,
+            config.severity(rule_id, Severity::Advisory),
             Pillar::Security,
             Confidence::High,
             Some(name.to_string()),
@@ -4271,36 +4269,28 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let line_count = source.lines().count();
-        let file_warn = config.threshold("size.file-length", "warn", 400.0) as usize;
-        let file_error = config.threshold("size.file-length", "error", 800.0) as usize;
-        if line_count > file_error {
+        let rule_id = "size.file-length";
+        let threshold = config.threshold(rule_id, 400.0) as usize;
+        if line_count > threshold {
             findings.push(finding(
-                "size.file-length",
-                format!("File has {line_count} lines, above the error threshold of {file_error}."),
+                rule_id,
+                format!("File has {line_count} lines, above the threshold of {threshold}."),
                 file,
                 Some(1),
-                Severity::Error,
-                Pillar::Size,
-            ));
-        } else if line_count > file_warn {
-            findings.push(finding(
-                "size.file-length",
-                format!("File has {line_count} lines, above the warning threshold of {file_warn}."),
-                file,
-                Some(1),
-                Severity::Warning,
+                config.severity(rule_id, Severity::Warning),
                 Pillar::Size,
             ));
         }
 
         let todo_count = source.matches("TODO").count() + source.matches("FIXME").count();
-        if todo_count >= config.threshold("docs.todo-density", "markers", 4.0) as usize {
+        let rule_id = "docs.todo-density";
+        if todo_count >= config.threshold(rule_id, 4.0) as usize {
             findings.push(finding(
-                "docs.todo-density",
+                rule_id,
                 format!("File contains {todo_count} TODO/FIXME markers."),
                 file,
                 Some(first_matching_line(source, "TODO").unwrap_or(1)),
-                Severity::Advisory,
+                config.severity(rule_id, Severity::Advisory),
                 Pillar::Documentation,
             ));
         }
@@ -4573,42 +4563,31 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let method_warn = config.threshold("size.function-length", "warn", 30.0) as usize;
-        let method_error = config.threshold("size.function-length", "error", 60.0) as usize;
-        if block.line_count > method_error {
+        let rule_id = "size.function-length";
+        let threshold = config.threshold(rule_id, 30.0) as usize;
+        if block.line_count > threshold {
             findings.push(block_finding(
-                "size.function-length",
+                rule_id,
                 format!(
-                    "Function `{}` has {} lines, above the error threshold of {method_error}.",
+                    "Function `{}` has {} lines, above the threshold of {threshold}.",
                     block.name, block.line_count
                 ),
                 file,
                 block,
-                Severity::Error,
-                Pillar::Size,
-            ));
-        } else if block.line_count > method_warn {
-            findings.push(block_finding(
-                "size.function-length",
-                format!(
-                    "Function `{}` has {} lines, above the warning threshold of {method_warn}.",
-                    block.name, block.line_count
-                ),
-                file,
-                block,
-                Severity::Warning,
+                config.severity(rule_id, Severity::Warning),
                 Pillar::Size,
             ));
         }
 
         let params = block.param_count;
-        if params > config.threshold("size.parameter-count", "warn", 5.0) as usize {
+        let rule_id = "size.parameter-count";
+        if params > config.threshold(rule_id, 5.0) as usize {
             findings.push(block_finding(
-                "size.parameter-count",
+                rule_id,
                 format!("Function `{}` declares {params} parameters.", block.name),
                 file,
                 block,
-                Severity::Warning,
+                config.severity(rule_id, Severity::Warning),
                 Pillar::Size,
             ));
         }
@@ -4649,24 +4628,19 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let severity = if cyclomatic
-            > config.threshold("complexity.cyclomatic", "error", 20.0) as usize
-        {
-            Severity::Error
-        } else if cyclomatic > config.threshold("complexity.cyclomatic", "warn", 10.0) as usize {
-            Severity::Warning
-        } else {
+        let rule_id = "complexity.cyclomatic";
+        if cyclomatic <= config.threshold(rule_id, 10.0) as usize {
             return;
-        };
+        }
         findings.push(block_finding_with_metadata(
-            "complexity.cyclomatic",
+            rule_id,
             format!(
                 "Function `{}` has cyclomatic complexity {cyclomatic}.",
                 block.name
             ),
             file,
             block,
-            severity,
+            config.severity(rule_id, Severity::Warning),
             Pillar::Complexity,
             json!({ "complexity": cyclomatic }),
         ));
@@ -4679,20 +4653,16 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let severity =
-            if nesting > config.threshold("complexity.nesting-depth", "error", 6.0) as usize {
-                Severity::Error
-            } else if nesting > config.threshold("complexity.nesting-depth", "warn", 4.0) as usize {
-                Severity::Warning
-            } else {
-                return;
-            };
+        let rule_id = "complexity.nesting-depth";
+        if nesting <= config.threshold(rule_id, 4.0) as usize {
+            return;
+        }
         findings.push(block_finding_with_metadata(
-            "complexity.nesting-depth",
+            rule_id,
             format!("Function `{}` has nesting depth {nesting}.", block.name),
             file,
             block,
-            severity,
+            config.severity(rule_id, Severity::Warning),
             Pillar::Complexity,
             json!({ "nestingDepth": nesting }),
         ));
@@ -4705,22 +4675,19 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let severity = if npath > config.threshold("complexity.npath", "error", 128.0) as usize {
-            Severity::Error
-        } else if npath > config.threshold("complexity.npath", "warn", 32.0) as usize {
-            Severity::Warning
-        } else {
+        let rule_id = "complexity.npath";
+        if npath <= config.threshold(rule_id, 32.0) as usize {
             return;
-        };
+        }
         findings.push(block_finding_with_extras(
-            "complexity.npath",
+            rule_id,
             format!(
                 "Function `{}` has approximate NPath complexity {npath}.",
                 block.name
             ),
             file,
             block,
-            severity,
+            config.severity(rule_id, Severity::Warning),
             Pillar::Complexity,
             BlockFindingExtras {
                 confidence: Confidence::Medium,
@@ -4739,18 +4706,19 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let cognitive = cyclomatic + nesting.saturating_mul(2);
-        if cognitive <= config.threshold("complexity.cognitive", "warn", 15.0) as usize {
+        let rule_id = "complexity.cognitive";
+        if cognitive <= config.threshold(rule_id, 15.0) as usize {
             return;
         }
         findings.push(block_finding_with_metadata(
-            "complexity.cognitive",
+            rule_id,
             format!(
                 "Function `{}` has cognitive complexity {cognitive}.",
                 block.name
             ),
             file,
             block,
-            Severity::Warning,
+            config.severity(rule_id, Severity::Warning),
             Pillar::Complexity,
             json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
         ));
@@ -4981,17 +4949,18 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let volume_threshold = config.threshold("metrics.halstead-volume", "volume", 900.0);
+        let volume_threshold = config.threshold("metrics.halstead-volume", 900.0);
         if metrics.halstead_volume > volume_threshold {
+            let rule_id = "metrics.halstead-volume";
             findings.push(block_finding_with_extras(
-                "metrics.halstead-volume",
+                rule_id,
                 format!(
                     "Function `{}` has Halstead-style volume {:.1}, above the threshold of {:.1}.",
                     block.name, metrics.halstead_volume, volume_threshold
                 ),
                 file,
                 block,
-                Severity::Advisory,
+                config.severity(rule_id, Severity::Advisory),
                 Pillar::Complexity,
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
@@ -5018,17 +4987,18 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let minimum_score = config.threshold("metrics.maintainability-pressure", "minimum", 45.0);
+        let minimum_score = config.threshold("metrics.maintainability-pressure", 45.0);
         if metrics.maintainability_score < minimum_score {
+            let rule_id = "metrics.maintainability-pressure";
             findings.push(block_finding_with_extras(
-                "metrics.maintainability-pressure",
+                rule_id,
                 format!(
                     "Function `{}` has maintainability pressure score {:.1}, below the minimum of {:.1}.",
                     block.name, metrics.maintainability_score, minimum_score
                 ),
                 file,
                 block,
-                Severity::Advisory,
+                config.severity(rule_id, Severity::Advisory),
                 Pillar::Complexity,
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
@@ -5295,17 +5265,18 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let long_test_warn = config.threshold("test-quality.long-test", "warn", 30.0) as usize;
-        if block.line_count > long_test_warn {
+        let rule_id = "test-quality.long-test";
+        let threshold = config.threshold(rule_id, 30.0) as usize;
+        if block.line_count > threshold {
             findings.push(block_finding_with_metadata(
-                "test-quality.long-test",
+                rule_id,
                 format!(
-                    "Test `{}` has {} lines, above the warning threshold of {long_test_warn}.",
+                    "Test `{}` has {} lines, above the threshold of {threshold}.",
                     block.name, block.line_count
                 ),
                 file,
                 block,
-                Severity::Advisory,
+                config.severity(rule_id, Severity::Advisory),
                 Pillar::TestQuality,
                 json!({ "lines": block.line_count }),
             ));
@@ -7020,8 +6991,8 @@ fn sarif_rule_properties(definition: &rules::RuleDefinition) -> Value {
         "defaultEnabled".to_string(),
         json!(definition.default_enabled),
     );
-    if !definition.thresholds.is_empty() {
-        properties.insert("thresholds".to_string(), json!(definition.thresholds));
+    if let Some(threshold) = definition.threshold {
+        properties.insert("threshold".to_string(), json!(threshold.default));
     }
     if !definition.options.is_empty() {
         properties.insert("options".to_string(), json!(definition.options));
@@ -8508,7 +8479,7 @@ fn test_no_assert() {
     }
 
     #[test]
-    fn config_rejects_unknown_thresholds_and_options() {
+    fn config_rejects_threshold_maps_and_unknown_options() {
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
@@ -8516,8 +8487,11 @@ fn test_no_assert() {
             dir.path(),
             r#"{ "rules": { "size.parameter-count": { "thresholds": { "bogus": 1 } } } }"#,
         );
-        let error = load_config(dir.path(), &options).expect_err("unknown threshold rejected");
-        assert!(error.contains("unknown threshold `bogus`"), "{error}");
+        let error = load_config(dir.path(), &options).expect_err("threshold map rejected");
+        assert!(
+            error.contains("unknown key `thresholds` in config for rule `size.parameter-count`"),
+            "{error}"
+        );
 
         write_config(
             dir.path(),
@@ -8549,6 +8523,7 @@ fn test_no_assert() {
 rules:
   size.parameter-count:
     threshold: 10
+    severity: warning
 "#,
         );
 
@@ -8584,7 +8559,7 @@ rules:
     }
 
     #[test]
-    fn yaml_threshold_shorthand_is_strict() {
+    fn threshold_overrides_require_one_value_and_one_severity() {
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
@@ -8594,30 +8569,49 @@ rules:
 rules:
   complexity.cognitive:
     threshold: 20
+    severity: error
 "#,
         );
-        let config =
-            load_config(dir.path(), &options).expect("single threshold shorthand accepted");
-        assert_eq!(config.threshold("complexity.cognitive", "warn", 15.0), 20.0);
+        let config = load_config(dir.path(), &options).expect("threshold and severity accepted");
+        assert_eq!(config.threshold("complexity.cognitive", 15.0), 20.0);
+        assert_eq!(
+            config.severity("complexity.cognitive", Severity::Warning),
+            Severity::Error
+        );
 
         write_config(
             dir.path(),
             r#"
 rules:
-  complexity.cyclomatic:
+  complexity.cognitive:
     threshold: 20
 "#,
         );
-        let error =
-            load_config(dir.path(), &options).expect_err("multi-threshold shorthand rejected");
+        let error = load_config(dir.path(), &options).expect_err("severity required");
         assert!(
-            error.contains("threshold` is only supported for rules with exactly one threshold"),
+            error.contains(
+                "config key `rules.complexity.cognitive.severity` is required when `threshold` is configured"
+            ),
+            "{error}"
+        );
+
+        write_config(
+            dir.path(),
+            r#"
+rules:
+  complexity.cognitive:
+    severity: warning
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("threshold required");
+        assert!(
+            error.contains("config key `rules.complexity.cognitive.severity` requires `threshold`"),
             "{error}"
         );
     }
 
     #[test]
-    fn config_disables_rules_and_overrides_thresholds() {
+    fn config_disables_rules_and_overrides_threshold() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         fs::write(
@@ -8641,7 +8635,7 @@ rules:
             r#"{
   "rules": {
     "security.process-command": { "enabled": false },
-    "size.parameter-count": { "thresholds": { "warn": 10 } }
+    "size.parameter-count": { "threshold": 10, "severity": "warning" }
   }
 }"#,
         );
@@ -9373,7 +9367,7 @@ custom_rules:
             kind: rules::RuleKind::Text,
             default_severity: Severity::Advisory,
             confidence: Confidence::High,
-            thresholds: &[],
+            threshold: None,
             options: &[],
             default_enabled: true,
             description: "Reserved namespace probe.",
@@ -9924,6 +9918,7 @@ version = "3.0.0"
 rules:
   dependency.duplicate-locked-version:
     threshold: 3
+    severity: advisory
 "#,
         );
         let thresholded = run_project_analysis(
@@ -9943,15 +9938,15 @@ rules:
             r#"
 rules:
   dependency.duplicate-locked-version:
-    thresholds:
-      bogus: 2
+    threshold: 2
+    severity: severe
 "#,
         );
         let error =
             load_config(threshold_dir.path(), &default_test_options()).expect_err("bad threshold");
         assert!(
             error.contains(
-                "unknown threshold `bogus` for rule `dependency.duplicate-locked-version`"
+                "config key `rules.dependency.duplicate-locked-version.severity` must be advisory, warning, or error"
             ),
             "{error}"
         );
@@ -9996,10 +9991,13 @@ mod gamma;
 rules:
   architecture.module-fan-out:
     threshold: 2
+    severity: advisory
   architecture.public-api-surface:
     threshold: 2
+    severity: advisory
   architecture.large-module:
     threshold: 3
+    severity: advisory
 "#,
         );
 
@@ -10048,7 +10046,7 @@ rules:
     }
 
     #[test]
-    fn architecture_rules_accept_small_modules_and_validate_thresholds() {
+    fn architecture_rules_accept_small_modules_and_validate_threshold() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src dir");
@@ -10093,14 +10091,16 @@ mod alpha;
             r#"
 rules:
   architecture.large-module:
-    thresholds:
-      bogus: 2
+    threshold: 2
+    severity: severe
 "#,
         );
         let error =
             load_config(dir.path(), &default_test_options()).expect_err("bad threshold rejected");
         assert!(
-            error.contains("unknown threshold `bogus` for rule `architecture.large-module`"),
+            error.contains(
+                "config key `rules.architecture.large-module.severity` must be advisory, warning, or error"
+            ),
             "{error}"
         );
     }
@@ -10598,7 +10598,7 @@ license = "MIT"
     }
 
     #[test]
-    fn metrics_rules_calibrate_thresholds_and_formatting_stability() {
+    fn metrics_rules_calibrate_threshold_and_formatting_stability() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src dir");
@@ -10660,8 +10660,10 @@ pub fn complex_metric(values: &[i32]) -> i32 {
 rules:
   metrics.halstead-volume:
     threshold: 1
+    severity: advisory
   metrics.maintainability-pressure:
     threshold: 100
+    severity: advisory
 "#,
         );
 
@@ -10737,14 +10739,16 @@ rules:
             r#"
 rules:
   metrics.halstead-volume:
-    thresholds:
-      bogus: 1
+    threshold: 1
+    severity: severe
 "#,
         );
         let error =
             load_config(dir.path(), &default_test_options()).expect_err("bad metric threshold");
         assert!(
-            error.contains("unknown threshold `bogus` for rule `metrics.halstead-volume`"),
+            error.contains(
+                "config key `rules.metrics.halstead-volume.severity` must be advisory, warning, or error"
+            ),
             "{error}"
         );
     }
@@ -11345,7 +11349,7 @@ rules:
             .find(|rule| rule["id"] == "complexity.cyclomatic")
             .expect("cyclomatic rule");
         assert_eq!(cyclomatic_rule["defaultConfiguration"]["level"], "warning");
-        assert!(cyclomatic_rule["properties"]["thresholds"].is_array());
+        assert_eq!(cyclomatic_rule["properties"]["threshold"], json!(10.0));
         assert!(cyclomatic_rule["properties"]["options"].is_null());
 
         let results = sarif["runs"][0]["results"].as_array().expect("results");

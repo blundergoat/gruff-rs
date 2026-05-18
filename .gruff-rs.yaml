@@ -35,36 +35,37 @@ rules:
   architecture.large-module:
     enabled: true
     threshold: 25
+    severity: advisory
   # Flags files that declare many child modules.
   architecture.module-fan-out:
     enabled: true
     threshold: 8
+    severity: advisory
   # Flags modules with many public exports.
   architecture.public-api-surface:
     enabled: true
     threshold: 12
+    severity: advisory
   # Flags functions with high cognitive complexity.
   complexity.cognitive:
     enabled: true
     threshold: 15
+    severity: warning
   # Flags functions with high branch and decision complexity.
   complexity.cyclomatic:
     enabled: true
-    thresholds:
-      warn: 10
-      error: 20
+    threshold: 10
+    severity: warning
   # Flags functions with deeply nested control flow.
   complexity.nesting-depth:
     enabled: true
-    thresholds:
-      warn: 4
-      error: 6
+    threshold: 4
+    severity: warning
   # Flags functions with many approximate execution paths.
   complexity.npath:
     enabled: true
-    thresholds:
-      warn: 32
-      error: 128
+    threshold: 32
+    severity: warning
   # Flags narrow blocking call patterns inside async functions.
   concurrency.blocking-call-in-async:
     enabled: true
@@ -84,6 +85,7 @@ rules:
   dependency.duplicate-locked-version:
     enabled: true
     threshold: 2
+    severity: advisory
   # Flags dependencies sourced directly from git repositories.
   dependency.git-source:
     enabled: true
@@ -109,6 +111,7 @@ rules:
   docs.todo-density:
     enabled: true
     threshold: 4
+    severity: advisory
   # Flags panic! calls in non-test functions without a local invariant comment.
   error-handling.production-panic:
     enabled: true
@@ -122,10 +125,12 @@ rules:
   metrics.halstead-volume:
     enabled: true
     threshold: 900
+    severity: advisory
   # Flags functions whose maintainability pressure score falls below the configured minimum.
   metrics.maintainability-pressure:
     enabled: true
     threshold: 45
+    severity: advisory
   # Flags public struct fields that expose representation.
   modernisation.public-field:
     enabled: true
@@ -177,22 +182,21 @@ rules:
   # Flags private key block markers.
   sensitive-data.private-key:
     enabled: true
-  # Flags files over configured line-count thresholds.
+  # Flags files over the configured line-count threshold.
   size.file-length:
     enabled: true
-    thresholds:
-      warn: 400
-      error: 800
-  # Flags functions over configured line-count thresholds.
+    threshold: 400
+    severity: warning
+  # Flags functions over the configured line-count threshold.
   size.function-length:
     enabled: true
-    thresholds:
-      warn: 30
-      error: 60
+    threshold: 30
+    severity: warning
   # Flags functions with too many parameters.
   size.parameter-count:
     enabled: true
     threshold: 5
+    severity: warning
   # Flags tests that contain conditional logic.
   test-quality.conditional-logic:
     enabled: true
@@ -203,6 +207,7 @@ rules:
   test-quality.long-test:
     enabled: true
     threshold: 30
+    severity: advisory
   # Flags tests that contain loop logic.
   test-quality.loop-in-test:
     enabled: true

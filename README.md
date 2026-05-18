@@ -60,44 +60,49 @@ rules:
   ignore: []              # optional; negative selectors always win
   architecture.large-module:
     threshold: 25
+    severity: advisory
   architecture.module-fan-out:
     threshold: 8
+    severity: advisory
   architecture.public-api-surface:
     threshold: 12
+    severity: advisory
   complexity.cognitive:
     threshold: 15
+    severity: warning
   complexity.cyclomatic:
-    thresholds:
-      warn: 10
-      error: 20
+    threshold: 10
+    severity: warning
   complexity.nesting-depth:
-    thresholds:
-      warn: 4
-      error: 6
+    threshold: 4
+    severity: warning
   complexity.npath:
-    thresholds:
-      warn: 32
-      error: 128
+    threshold: 32
+    severity: warning
   docs.todo-density:
     threshold: 4
+    severity: advisory
   dependency.duplicate-locked-version:
     threshold: 2
+    severity: advisory
   metrics.halstead-volume:
     threshold: 900
+    severity: advisory
   metrics.maintainability-pressure:
     threshold: 45
+    severity: advisory
   size.file-length:
-    thresholds:
-      warn: 400
-      error: 800
+    threshold: 400
+    severity: warning
   size.function-length:
-    thresholds:
-      warn: 30
-      error: 60
+    threshold: 30
+    severity: warning
   size.parameter-count:
     threshold: 5
+    severity: warning
   test-quality.long-test:
     threshold: 30
+    severity: advisory
 exclude:
   - rule: security.process-command
     paths: ["tests/**"]
@@ -114,12 +119,14 @@ rules:
   custom:
     complexity.cognitive:
       threshold: 20
+      severity: warning
 ```
 
 When `select` contains entries, unmatched rules are disabled. `ignore` wins over
-overlapping positive selectors. Exact rule blocks keep configuring thresholds and
-`enabled: false`; they do not rename rule ids or change fingerprints. Preview a
-selector with:
+overlapping positive selectors. Exact rule blocks keep configuring `enabled:
+false`; thresholded rules use a single `threshold` plus one fixed `severity`,
+not warning/error ranges. They do not rename rule ids or change fingerprints.
+Preview a selector with:
 
 ```bash
 ./bin/gruff-rs list-rules --selector Security
@@ -282,12 +289,12 @@ fingerprints, baselines, scoring, or fail-on behavior.
 ```
 
 SARIF driver rules come from the sorted built-in rule registry and include
-native metadata such as pillar, tier, kind, default severity, confidence,
-thresholds, and options. Results carry the native rule id, SARIF severity level,
-message, URI-safe artifact path, region data when available, and
-`partialFingerprints.gruffFingerprint`. Results hidden by report-level
-exclusions are emitted with `suppressions[].kind = "inSource"` and the
-configured reason as `justification`.
+native metadata such as pillar, tier, kind, default severity, confidence, a
+single threshold when the rule is thresholded, and options. Results carry the
+native rule id, SARIF severity level, message, URI-safe artifact path, region
+data when available, and `partialFingerprints.gruffFingerprint`. Results hidden
+by report-level exclusions are emitted with `suppressions[].kind = "inSource"`
+and the configured reason as `justification`.
 
 Fatal diagnostics still fail analysis with exit code 2. In SARIF output all run
 diagnostics are reported under
@@ -349,6 +356,6 @@ Run an explicit fixture command when verifying fixture coverage.
 ## Troubleshooting
 
 - Parse diagnostics: run `./bin/gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`, or use SARIF invocation notifications from `./bin/gruff-rs analyse <path> --format sarif --fail-on none`; Rust AST rules are skipped for parse-failed files while text rules still run.
-- Config errors: check unknown root keys, unknown rule ids, unsupported threshold names, and invalid value shapes in `.gruff-rs.yaml`.
+- Config errors: check unknown root keys, unknown rule ids, unsupported threshold shapes, and invalid value shapes in `.gruff-rs.yaml`.
 - Baselines: regenerate only after confirming the current findings are intentionally accepted.
 - Intentional fixture findings: use `fixtures/README.md` and `tests/fixtures/README.md` to confirm whether a noisy file is a test input.

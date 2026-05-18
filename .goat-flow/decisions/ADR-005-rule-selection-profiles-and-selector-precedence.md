@@ -16,9 +16,11 @@ Negative selectors win for matching rules. A later design may add layered
 `extend-select` or exact re-enable semantics, but that requires its own
 compatibility review before users depend on it.
 
-Rule-specific options and thresholds remain keyed by exact rule id. Strict
-config validation from ADR-003 continues to reject unknown selectors, unknown
-rule ids, unknown threshold names, and unsupported value shapes.
+Rule-specific options and threshold settings remain keyed by exact rule id.
+Strict config validation from ADR-003 continues to reject unknown selectors,
+unknown rule ids, unsupported threshold shapes, and unsupported value shapes.
+ADR-011 requires thresholded rubrics to use one `threshold` plus one `severity`
+instead of named threshold bands.
 
 ## Context
 

@@ -15,7 +15,6 @@ pub(crate) enum RuleKind {
 #[serde(rename_all = "camelCase")]
 /// Numeric threshold exposed by a configurable rule.
 pub(crate) struct ThresholdDefinition {
-    pub(crate) name: &'static str,
     pub(crate) default: f64,
 }
 
@@ -38,7 +37,7 @@ pub(crate) struct RuleDefinition {
     pub(crate) kind: RuleKind,
     pub(crate) default_severity: Severity,
     pub(crate) confidence: Confidence,
-    pub(crate) thresholds: &'static [ThresholdDefinition],
+    pub(crate) threshold: Option<ThresholdDefinition>,
     pub(crate) options: &'static [OptionDefinition],
     pub(crate) default_enabled: bool,
     pub(crate) description: &'static str,
@@ -87,16 +86,6 @@ impl RuleRegistry {
         self.get(rule_id).is_some()
     }
 
-    /// Return whether a rule exposes a named threshold.
-    pub(crate) fn supports_threshold(&self, rule_id: &str, threshold: &str) -> bool {
-        self.get(rule_id).is_some_and(|definition| {
-            definition
-                .thresholds
-                .iter()
-                .any(|item| item.name == threshold)
-        })
-    }
-
     /// Return whether a rule exposes a named option.
     pub(crate) fn supports_option(&self, rule_id: &str, option: &str) -> bool {
         self.get(rule_id)
@@ -115,29 +104,24 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
     }
 }
 
-const COMPLEXITY_COGNITIVE_THRESHOLDS: &[ThresholdDefinition] = &[threshold("warn", 15.0)];
-const COMPLEXITY_CYCLOMATIC_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("warn", 10.0), threshold("error", 20.0)];
-const COMPLEXITY_NESTING_DEPTH_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("warn", 4.0), threshold("error", 6.0)];
-const COMPLEXITY_NPATH_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("warn", 32.0), threshold("error", 128.0)];
-const ARCHITECTURE_LARGE_MODULE_THRESHOLDS: &[ThresholdDefinition] = &[threshold("items", 25.0)];
-const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLDS: &[ThresholdDefinition] = &[threshold("modules", 8.0)];
-const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("items", 12.0)];
-const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("versions", 1.0)];
-const METRICS_HALSTEAD_VOLUME_THRESHOLDS: &[ThresholdDefinition] = &[threshold("volume", 900.0)];
-const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("minimum", 45.0)];
-const TODO_DENSITY_THRESHOLDS: &[ThresholdDefinition] = &[threshold("markers", 4.0)];
-const FILE_LENGTH_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("warn", 400.0), threshold("error", 800.0)];
-const FUNCTION_LENGTH_THRESHOLDS: &[ThresholdDefinition] =
-    &[threshold("warn", 30.0), threshold("error", 60.0)];
-const PARAMETER_COUNT_THRESHOLDS: &[ThresholdDefinition] = &[threshold("warn", 5.0)];
-const TEST_LONG_THRESHOLDS: &[ThresholdDefinition] = &[threshold("warn", 30.0)];
+const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));
+const COMPLEXITY_CYCLOMATIC_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(10.0));
+const COMPLEXITY_NESTING_DEPTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
+const COMPLEXITY_NPATH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(32.0));
+const ARCHITECTURE_LARGE_MODULE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(25.0));
+const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(8.0));
+const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =
+    Some(threshold(12.0));
+const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition> =
+    Some(threshold(1.0));
+const METRICS_HALSTEAD_VOLUME_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(900.0));
+const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD: Option<ThresholdDefinition> =
+    Some(threshold(45.0));
+const TODO_DENSITY_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
+const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(400.0));
+const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(30.0));
+const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(5.0));
+const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(30.0));
 
 macro_rules! rule_definition {
     (
@@ -147,7 +131,7 @@ macro_rules! rule_definition {
         $kind:expr,
         $default_severity:expr,
         $confidence:expr,
-        $thresholds:expr,
+        $threshold:expr,
         $description:literal $(,)?
     ) => {
         RuleDefinition {
@@ -158,7 +142,7 @@ macro_rules! rule_definition {
             kind: $kind,
             default_severity: $default_severity,
             confidence: $confidence,
-            thresholds: $thresholds,
+            threshold: $threshold,
             options: &[],
             default_enabled: true,
             description: $description,
@@ -174,7 +158,7 @@ const ARCHITECTURE_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        ARCHITECTURE_LARGE_MODULE_THRESHOLDS,
+        ARCHITECTURE_LARGE_MODULE_THRESHOLD,
         "Flags modules with more indexed items than the configured threshold.",
     ),
     rule_definition!(
@@ -184,7 +168,7 @@ const ARCHITECTURE_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        ARCHITECTURE_MODULE_FAN_OUT_THRESHOLDS,
+        ARCHITECTURE_MODULE_FAN_OUT_THRESHOLD,
         "Flags files that declare many child modules.",
     ),
     rule_definition!(
@@ -194,7 +178,7 @@ const ARCHITECTURE_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLDS,
+        ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD,
         "Flags modules with many public exports.",
     ),
 ];
@@ -207,7 +191,7 @@ const COMPLEXITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        COMPLEXITY_COGNITIVE_THRESHOLDS,
+        COMPLEXITY_COGNITIVE_THRESHOLD,
         "Flags functions with high cognitive complexity.",
     ),
     rule_definition!(
@@ -217,7 +201,7 @@ const COMPLEXITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        COMPLEXITY_CYCLOMATIC_THRESHOLDS,
+        COMPLEXITY_CYCLOMATIC_THRESHOLD,
         "Flags functions with high branch and decision complexity.",
     ),
     rule_definition!(
@@ -227,7 +211,7 @@ const COMPLEXITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        COMPLEXITY_NESTING_DEPTH_THRESHOLDS,
+        COMPLEXITY_NESTING_DEPTH_THRESHOLD,
         "Flags functions with deeply nested control flow.",
     ),
     rule_definition!(
@@ -237,7 +221,7 @@ const COMPLEXITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::Medium,
-        COMPLEXITY_NPATH_THRESHOLDS,
+        COMPLEXITY_NPATH_THRESHOLD,
         "Flags functions with many approximate execution paths.",
     ),
 ];
@@ -250,7 +234,7 @@ const DEAD_CODE_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Low,
-        &[],
+        None,
         "Flags private functions with no same-file call sites.",
     ),
     rule_definition!(
@@ -260,7 +244,7 @@ const DEAD_CODE_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags private items whose names are not referenced elsewhere in discovered Rust sources.",
     ),
 ];
@@ -273,7 +257,7 @@ const DEPENDENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLDS,
+        DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD,
         "Flags packages locked at more versions than the configured threshold.",
     ),
     rule_definition!(
@@ -283,7 +267,7 @@ const DEPENDENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags dependencies sourced directly from git repositories.",
     ),
     rule_definition!(
@@ -293,7 +277,7 @@ const DEPENDENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags packages missing description or license metadata.",
     ),
     rule_definition!(
@@ -303,7 +287,7 @@ const DEPENDENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags dependencies sourced from local filesystem paths.",
     ),
     rule_definition!(
@@ -313,7 +297,7 @@ const DEPENDENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags dependency requirements that use wildcard versions.",
     ),
 ];
@@ -326,7 +310,7 @@ const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags functions that are both long and complex.",
     ),
     rule_definition!(
@@ -336,7 +320,7 @@ const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags public Rust API items without doc comments.",
     ),
     rule_definition!(
@@ -346,7 +330,7 @@ const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         RuleKind::Project,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags projects without a root README file.",
     ),
     rule_definition!(
@@ -356,7 +340,7 @@ const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Advisory,
         Confidence::High,
-        TODO_DENSITY_THRESHOLDS,
+        TODO_DENSITY_THRESHOLD,
         "Flags files with dense TODO or FIXME markers.",
     ),
 ];
@@ -369,7 +353,7 @@ const CONCURRENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::Medium,
-        &[],
+        None,
         "Flags narrow blocking call patterns inside async functions.",
     ),
     rule_definition!(
@@ -379,7 +363,7 @@ const CONCURRENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::Medium,
-        &[],
+        None,
         "Flags lock guard bindings that appear to live across an await point.",
     ),
     rule_definition!(
@@ -389,7 +373,7 @@ const CONCURRENCY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags unbounded channel constructors in production code.",
     ),
 ];
@@ -402,7 +386,7 @@ const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags panic! calls in non-test functions without a local invariant comment.",
     ),
     rule_definition!(
@@ -412,7 +396,7 @@ const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags unwrap or expect calls in public non-test functions.",
     ),
     rule_definition!(
@@ -422,7 +406,7 @@ const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags todo! and unimplemented! placeholders in non-test functions.",
     ),
 ];
@@ -435,7 +419,7 @@ const METADATA_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags public struct fields that expose representation.",
     ),
     rule_definition!(
@@ -445,7 +429,7 @@ const METADATA_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        METRICS_HALSTEAD_VOLUME_THRESHOLDS,
+        METRICS_HALSTEAD_VOLUME_THRESHOLD,
         "Flags functions whose deterministic token volume exceeds the configured threshold.",
     ),
     rule_definition!(
@@ -455,7 +439,7 @@ const METADATA_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        METRICS_MAINTAINABILITY_PRESSURE_THRESHOLDS,
+        METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD,
         "Flags functions whose maintainability pressure score falls below the configured minimum.",
     ),
 ];
@@ -468,7 +452,7 @@ const NAMING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags function names that are too generic to explain intent.",
     ),
     rule_definition!(
@@ -478,7 +462,7 @@ const NAMING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags bool-returning functions whose names do not read like predicates.",
     ),
     rule_definition!(
@@ -488,7 +472,7 @@ const NAMING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags placeholder identifiers such as foo, bar, baz, and qux.",
     ),
     rule_definition!(
@@ -498,7 +482,7 @@ const NAMING_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags very short local variable names outside accepted abbreviations.",
     ),
 ];
@@ -511,7 +495,7 @@ const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags clone calls inside loop bodies as allocation hot spot candidates.",
     ),
     rule_definition!(
@@ -521,7 +505,7 @@ const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
-        &[],
+        None,
         "Flags format! calls inside loop bodies as allocation hot spot candidates.",
     ),
     rule_definition!(
@@ -531,7 +515,7 @@ const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags Regex::new calls inside loop bodies.",
     ),
     rule_definition!(
@@ -541,7 +525,7 @@ const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags process command construction for manual argument validation.",
     ),
     rule_definition!(
@@ -551,7 +535,7 @@ const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags unsafe blocks without a nearby SAFETY rationale.",
     ),
 ];
@@ -564,7 +548,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::High,
-        &[],
+        None,
         "Flags common API key patterns.",
     ),
     rule_definition!(
@@ -574,7 +558,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::High,
-        &[],
+        None,
         "Flags AWS access key patterns.",
     ),
     rule_definition!(
@@ -584,7 +568,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::High,
-        &[],
+        None,
         "Flags database URLs that appear to include passwords.",
     ),
     rule_definition!(
@@ -594,7 +578,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::High,
-        &[],
+        None,
         "Flags secret-like KEY=value literals committed in source or config.",
     ),
     rule_definition!(
@@ -604,7 +588,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::Medium,
-        &[],
+        None,
         "Flags long string literals that look like generated secrets.",
     ),
     rule_definition!(
@@ -614,7 +598,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::High,
-        &[],
+        None,
         "Flags JWT-looking token strings.",
     ),
     rule_definition!(
@@ -624,7 +608,7 @@ const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Error,
         Confidence::High,
-        &[],
+        None,
         "Flags private key block markers.",
     ),
 ];
@@ -637,8 +621,8 @@ const SIZE_RULES: &[RuleDefinition] = &[
         RuleKind::Text,
         Severity::Warning,
         Confidence::High,
-        FILE_LENGTH_THRESHOLDS,
-        "Flags files over configured line-count thresholds.",
+        FILE_LENGTH_THRESHOLD,
+        "Flags files over the configured line-count threshold.",
     ),
     rule_definition!(
         "size.function-length",
@@ -647,8 +631,8 @@ const SIZE_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        FUNCTION_LENGTH_THRESHOLDS,
-        "Flags functions over configured line-count thresholds.",
+        FUNCTION_LENGTH_THRESHOLD,
+        "Flags functions over the configured line-count threshold.",
     ),
     rule_definition!(
         "size.parameter-count",
@@ -657,7 +641,7 @@ const SIZE_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        PARAMETER_COUNT_THRESHOLDS,
+        PARAMETER_COUNT_THRESHOLD,
         "Flags functions with too many parameters.",
     ),
 ];
@@ -670,7 +654,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags tests that contain conditional logic.",
     ),
     rule_definition!(
@@ -680,7 +664,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags ignored tests that do not explain why they are skipped.",
     ),
     rule_definition!(
@@ -690,7 +674,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        TEST_LONG_THRESHOLDS,
+        TEST_LONG_THRESHOLD,
         "Flags long test functions that are harder to scan and maintain.",
     ),
     rule_definition!(
@@ -700,7 +684,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags tests that contain loop logic.",
     ),
     rule_definition!(
@@ -710,7 +694,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags tests that do not appear to assert behavior.",
     ),
     rule_definition!(
@@ -720,7 +704,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags tests that sleep instead of synchronizing on behavior.",
     ),
     rule_definition!(
@@ -730,7 +714,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags assertions that prove literals or constants instead of behavior.",
     ),
     rule_definition!(
@@ -740,7 +724,7 @@ const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags unwrap calls in tests.",
     ),
 ];
@@ -753,7 +737,7 @@ const WASTE_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags clone calls that may be avoidable.",
     ),
     rule_definition!(
@@ -763,7 +747,7 @@ const WASTE_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
-        &[],
+        None,
         "Flags statements after terminating statements.",
     ),
     rule_definition!(
@@ -773,7 +757,7 @@ const WASTE_RULES: &[RuleDefinition] = &[
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
-        &[],
+        None,
         "Flags unwrap and expect calls outside test attributes.",
     ),
 ];
@@ -800,6 +784,6 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
     .collect()
 }
 
-const fn threshold(name: &'static str, default: f64) -> ThresholdDefinition {
-    ThresholdDefinition { name, default }
+const fn threshold(default: f64) -> ThresholdDefinition {
+    ThresholdDefinition { default }
 }
