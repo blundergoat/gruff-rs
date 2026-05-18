@@ -74,7 +74,7 @@ impl<'a> ReportView<'a> {
         let grade_letter = grade(composite);
         let grade_class = grade_class_letter(&grade_letter);
         let composite_text = format!("{:.2} / 100", composite);
-        let verdict_summary = verdict_summary(&report.findings, &report.summary);
+        let summary_line = verdict_summary(&report.findings, &report.summary);
 
         let pillar_rows = build_pillar_rows(&report.score.pillars, &report.findings);
         let offender_rows = build_offender_rows(&report.score.top_offenders);
@@ -86,7 +86,7 @@ impl<'a> ReportView<'a> {
             grade_letter,
             grade_class,
             composite_text,
-            verdict_summary,
+            verdict_summary: summary_line,
             pillar_rows,
             offender_rows,
             distribution,

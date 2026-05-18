@@ -17,7 +17,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 toml = "0.8"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
 walkdir = "2"
 
 [dev-dependencies]

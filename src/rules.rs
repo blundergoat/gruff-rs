@@ -18,12 +18,24 @@ pub(crate) struct ThresholdDefinition {
     pub(crate) default: f64,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+/// Value shape for a configurable rule option. Recorded so config parsing can
+/// validate the JSON shape before the rule reads it. `boolean` is reserved for
+/// future use; the current built-in surface only exposes `stringArray`.
+#[allow(dead_code)]
+pub(crate) enum OptionValueKind {
+    Boolean,
+    StringArray,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 /// Boolean or string option exposed by a configurable rule.
 pub(crate) struct OptionDefinition {
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
+    pub(crate) value_kind: OptionValueKind,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -86,10 +98,15 @@ impl RuleRegistry {
         self.get(rule_id).is_some()
     }
 
-    /// Return whether a rule exposes a named option.
-    pub(crate) fn supports_option(&self, rule_id: &str, option: &str) -> bool {
-        self.get(rule_id)
-            .is_some_and(|definition| definition.options.iter().any(|item| item.name == option))
+    /// Look up the declared value kind for a rule's option, if any.
+    pub(crate) fn option_value_kind(&self, rule_id: &str, option: &str) -> Option<OptionValueKind> {
+        self.get(rule_id).and_then(|definition| {
+            definition
+                .options
+                .iter()
+                .find(|item| item.name == option)
+                .map(|item| item.value_kind)
+        })
     }
 }
 
@@ -484,37 +501,64 @@ const METADATA_RULES: &[RuleDefinition] = &[
     ),
 ];
 
+const NAMING_GENERIC_FUNCTION_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
+    name: "extraGenericNames",
+    description: "Additional generic function names rejected by naming.generic-function.",
+    value_kind: OptionValueKind::StringArray,
+}];
+
+const NAMING_BOOLEAN_PREFIX_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
+    name: "predicatePrefixes",
+    description: "Additional predicate prefixes accepted by naming.boolean-prefix.",
+    value_kind: OptionValueKind::StringArray,
+}];
+
+const NAMING_PLACEHOLDER_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
+    name: "extraPlaceholders",
+    description: "Additional placeholder identifiers rejected by naming.placeholder-identifier.",
+    value_kind: OptionValueKind::StringArray,
+}];
+
 const NAMING_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "naming.generic-function",
-        "Generic function name",
-        Pillar::Naming,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags function names that are too generic to explain intent.",
-    ),
-    rule_definition!(
-        "naming.boolean-prefix",
-        "Boolean predicate prefix",
-        Pillar::Naming,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags bool-returning functions whose names do not read like predicates.",
-    ),
-    rule_definition!(
-        "naming.placeholder-identifier",
-        "Placeholder identifier",
-        Pillar::Naming,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        None,
-        "Flags placeholder identifiers such as foo, bar, baz, and qux.",
-    ),
+    RuleDefinition {
+        id: "naming.generic-function",
+        name: "Generic function name",
+        pillar: Pillar::Naming,
+        tier: "v0.1",
+        kind: RuleKind::Rust,
+        default_severity: Severity::Advisory,
+        confidence: Confidence::High,
+        threshold: None,
+        options: NAMING_GENERIC_FUNCTION_OPTIONS,
+        default_enabled: true,
+        description: "Flags function names that are too generic to explain intent.",
+    },
+    RuleDefinition {
+        id: "naming.boolean-prefix",
+        name: "Boolean predicate prefix",
+        pillar: Pillar::Naming,
+        tier: "v0.1",
+        kind: RuleKind::Rust,
+        default_severity: Severity::Advisory,
+        confidence: Confidence::High,
+        threshold: None,
+        options: NAMING_BOOLEAN_PREFIX_OPTIONS,
+        default_enabled: true,
+        description: "Flags bool-returning functions whose names do not read like predicates.",
+    },
+    RuleDefinition {
+        id: "naming.placeholder-identifier",
+        name: "Placeholder identifier",
+        pillar: Pillar::Naming,
+        tier: "v0.1",
+        kind: RuleKind::Rust,
+        default_severity: Severity::Advisory,
+        confidence: Confidence::Medium,
+        threshold: None,
+        options: NAMING_PLACEHOLDER_OPTIONS,
+        default_enabled: true,
+        description: "Flags placeholder identifiers such as foo, bar, baz, and qux.",
+    },
     rule_definition!(
         "naming.short-variable",
         "Short variable name",
@@ -524,6 +568,16 @@ const NAMING_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags very short local variable names outside accepted abbreviations.",
+    ),
+    rule_definition!(
+        "naming.identifier-shadow",
+        "Identifier shadow",
+        Pillar::Naming,
+        RuleKind::Rust,
+        Severity::Advisory,
+        Confidence::High,
+        None,
+        "Flags `let X = X(...)` bindings that shadow a same-file free function.",
     ),
 ];
 

@@ -112,6 +112,18 @@ rules:
     enabled: true
     threshold: 4
     severity: advisory
+  # Flags TODO/FIXME/HACK/XXX comments without an owner, issue, or reason.
+  docs.stale-todo:
+    enabled: true
+  # Flags comments whose payload looks like disabled Rust code.
+  docs.commented-out-code:
+    enabled: true
+  # Flags unsafe blocks whose nearby SAFETY rationale is too short or vague.
+  docs.weak-safety-rationale:
+    enabled: true
+  # Flags externally public functions returning Result without a # Errors rustdoc section.
+  docs.missing-errors-section:
+    enabled: true
   # Flags panic! calls in non-test functions without a local invariant comment.
   error-handling.production-panic:
     enabled: true
@@ -145,6 +157,9 @@ rules:
     enabled: true
   # Flags very short local variable names outside accepted abbreviations.
   naming.short-variable:
+    enabled: true
+  # Flags `let X = X(...)` bindings that shadow a same-file free function.
+  naming.identifier-shadow:
     enabled: true
   # Flags clone calls inside loop bodies as allocation hot spot candidates.
   performance.clone-in-loop:

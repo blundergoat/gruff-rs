@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 
 mod html_report;
@@ -450,6 +451,7 @@ struct RuleSetting {
     enabled: Option<bool>,
     threshold: Option<f64>,
     severity: Option<Severity>,
+    string_array_options: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -556,6 +558,17 @@ impl Config {
             .and_then(|setting| setting.severity)
             .unwrap_or(default_severity)
     }
+
+    /// Returns the configured string-array option value for a rule, or `&[]`
+    /// when no option is set. Used by naming dispatchers to union built-in
+    /// allowlists with user-provided extras (M37 typed options).
+    fn string_array_option(&self, rule_id: &str, option: &str) -> &[String] {
+        self.rule_settings
+            .get(rule_id)
+            .and_then(|setting| setting.string_array_options.get(option))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }
 
 #[derive(Clone)]
@@ -579,7 +592,7 @@ struct ParsedSource {
 }
 
 impl ParsedSource {
-    fn unit(&self) -> SourceUnit<'_> {
+    fn as_source_unit(&self) -> SourceUnit<'_> {
         SourceUnit {
             file: &self.file,
             source: &self.source,
@@ -949,6 +962,7 @@ struct FunctionBlock {
     test_context: bool,
     is_async: bool,
     returns_bool: bool,
+    returns_result: bool,
     ignore_without_reason: bool,
     body_is_declarative_literal: bool,
 }
@@ -1705,7 +1719,7 @@ fn analyse_discovered_sources(
 
     let mut findings = analyse_project(&project_context, config);
     for parsed_source in &parsed_sources {
-        findings.extend(analyse_source(&parsed_source.unit(), config));
+        findings.extend(analyse_source(&parsed_source.as_source_unit(), config));
         diagnostics.extend(parsed_source.diagnostics.iter().cloned());
     }
     findings
@@ -2570,7 +2584,7 @@ fn parse_rule_setting(
         return Ok(setting);
     }
     apply_rule_thresholds(rule_id, rule_object, registry, &mut setting)?;
-    validate_optional_rule_options(rule_id, rule_object, registry)?;
+    validate_optional_rule_options(rule_id, rule_object, registry, &mut setting)?;
     Ok(setting)
 }
 
@@ -2617,9 +2631,11 @@ fn validate_optional_rule_options(
     rule_id: &str,
     rule_object: &serde_json::Map<String, Value>,
     registry: &rules::RuleRegistry,
+    setting: &mut RuleSetting,
 ) -> Result<(), String> {
     if let Some(options_value) = rule_object.get("options") {
-        validate_rule_options(rule_id, options_value, registry)?;
+        let parsed = validate_rule_options(rule_id, options_value, registry)?;
+        setting.string_array_options = parsed;
     }
     Ok(())
 }
@@ -2650,16 +2666,28 @@ fn validate_rule_options(
     rule_id: &str,
     options_value: &Value,
     registry: &rules::RuleRegistry,
-) -> Result<(), String> {
+) -> Result<HashMap<String, Vec<String>>, String> {
     let options = options_value
         .as_object()
         .ok_or_else(|| format!("config key `rules.{rule_id}.options` must be an object"))?;
-    for name in options.keys() {
-        if !registry.supports_option(rule_id, name) {
-            return Err(format!("unknown option `{name}` for rule `{rule_id}`"));
+    let mut string_arrays = HashMap::new();
+    for (name, value) in options {
+        let kind = registry
+            .option_value_kind(rule_id, name)
+            .ok_or_else(|| format!("unknown option `{name}` for rule `{rule_id}`"))?;
+        match kind {
+            rules::OptionValueKind::StringArray => {
+                let parsed = string_array(value, &format!("rules.{rule_id}.options.{name}"))?;
+                string_arrays.insert(name.clone(), parsed);
+            }
+            rules::OptionValueKind::Boolean => {
+                value.as_bool().ok_or_else(|| {
+                    format!("config key `rules.{rule_id}.options.{name}` must be a boolean")
+                })?;
+            }
         }
     }
-    Ok(())
+    Ok(string_arrays)
 }
 
 fn expand_rule_selectors(
@@ -3639,7 +3667,7 @@ fn is_test_module(item_mod: &syn::ItemMod) -> bool {
 fn collect_call_names(file: &SourceFile, source: &str, call_names: &mut Vec<CallNameSummary>) {
     static CALL_NAME_REGEX: OnceLock<Regex> = OnceLock::new();
     let call_name_regex = static_regex(&CALL_NAME_REGEX, r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(");
-    let line_starts = line_starts(source);
+    let line_offsets = line_starts(source);
     for capture in call_name_regex.captures_iter(source) {
         let Some(name) = capture.get(1) else {
             continue;
@@ -3647,7 +3675,7 @@ fn collect_call_names(file: &SourceFile, source: &str, call_names: &mut Vec<Call
         if !is_call_name_candidate(name.as_str()) {
             continue;
         }
-        push_call_name(file, source.len(), &line_starts, name, call_names);
+        push_call_name(file, source.len(), &line_offsets, name, call_names);
     }
 }
 
@@ -4223,7 +4251,6 @@ mod built_in_rules {
     static UNWRAP_EXPECT_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
     static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
     static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
-    static VARIABLE_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     static ENV_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
     static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
     static CYCLOMATIC_COMPLEXITY_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -4536,10 +4563,228 @@ mod built_in_rules {
         let blocks = rust_function_blocks(ast, source);
         analyse_blocks(file, &blocks, config, findings);
         analyse_process_commands(file, source, findings);
-        analyse_line_rules(file, source, &blocks, config, findings);
+        analyse_line_rules(file, source, &blocks, findings);
         analyse_item_rules(file, ast, findings);
         analyse_dead_code(file, ast, source, findings);
         analyse_comment_rules(file, source, findings);
+        analyse_naming_patterns(file, ast, config, findings);
+    }
+
+    /// AST-aware migration of `naming.short-variable` and
+    /// `naming.placeholder-identifier`. Visits every binding `Pat::Ident` in
+    /// `let`/`for` patterns, function parameters, closure parameters, and
+    /// destructured patterns (tuple, tuple-struct, struct, slice). The
+    /// previous regex-based dispatch only saw `let`/`for` simple bindings.
+    /// Also emits `naming.identifier-shadow` when a same-file free function
+    /// `X` is shadowed by `let X = X(...)`.
+    fn analyse_naming_patterns(
+        file: &SourceFile,
+        ast: &syn::File,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let same_file_free_fns = collect_same_file_free_fns(ast);
+        let mut visitor = NamingPatternVisitor {
+            file,
+            config,
+            findings,
+            same_file_free_fns: &same_file_free_fns,
+        };
+        visitor.visit_file(ast);
+    }
+
+    /// Returns the names of every `fn` declared as a free item in the file
+    /// (top-level functions and functions nested inside `mod` items). Methods
+    /// inside `impl` blocks and `use`-imported functions are intentionally
+    /// excluded so the v0.1 `naming.identifier-shadow` rule stays narrow.
+    fn collect_same_file_free_fns(ast: &syn::File) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        collect_free_fns_in_items(&ast.items, &mut names);
+        names
+    }
+
+    fn collect_free_fns_in_items(items: &[syn::Item], names: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                syn::Item::Fn(item_fn) => {
+                    names.insert(item_fn.sig.ident.to_string());
+                }
+                syn::Item::Mod(item_mod) => {
+                    if let Some((_, nested)) = &item_mod.content {
+                        collect_free_fns_in_items(nested, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    struct NamingPatternVisitor<'a> {
+        file: &'a SourceFile,
+        config: &'a Config,
+        findings: &'a mut Vec<Finding>,
+        same_file_free_fns: &'a BTreeSet<String>,
+    }
+
+    impl NamingPatternVisitor<'_> {
+        fn visit_pat_idents(&mut self, pat: &syn::Pat) {
+            walk_pat_idents(pat, &mut |ident| {
+                let name = ident.to_string();
+                let line = line_from_span(ident.span().start());
+                self.check_name(&name, line);
+            });
+        }
+
+        fn check_identifier_shadow(&mut self, local: &syn::Local) {
+            let syn::Pat::Ident(pat_ident) = &local.pat else {
+                return;
+            };
+            let Some(init) = &local.init else {
+                return;
+            };
+            let syn::Expr::Call(call) = init.expr.as_ref() else {
+                return;
+            };
+            let syn::Expr::Path(path_expr) = call.func.as_ref() else {
+                return;
+            };
+            let Some(last) = path_expr.path.segments.last() else {
+                return;
+            };
+            let binding = pat_ident.ident.to_string();
+            let callee = last.ident.to_string();
+            if binding != callee {
+                return;
+            }
+            if !self.same_file_free_fns.contains(&callee) {
+                return;
+            }
+            let line = line_from_span(pat_ident.ident.span().start());
+            self.findings.push(Finding::new(
+                "naming.identifier-shadow",
+                format!("Local binding `{binding}` shadows same-file function `{callee}`."),
+                self.file.display_path.clone(),
+                Some(line),
+                Severity::Advisory,
+                Pillar::Naming,
+                Confidence::High,
+                Some(binding.clone()),
+                Some(
+                    "Rename the local so it does not collide with the function it calls."
+                        .to_string(),
+                ),
+                json!({ "shadows": callee }),
+            ));
+        }
+
+        fn check_name(&mut self, name: &str, line: usize) {
+            let extra_placeholders = self
+                .config
+                .string_array_option("naming.placeholder-identifier", "extraPlaceholders");
+            let extra_match = extra_placeholders.iter().any(|extra| extra == name);
+            if is_placeholder_identifier(name) || extra_match {
+                self.findings.push(Finding::new(
+                    "naming.placeholder-identifier",
+                    format!(
+                        "Variable `{name}` uses a placeholder name instead of domain language."
+                    ),
+                    self.file.display_path.clone(),
+                    Some(line),
+                    Severity::Advisory,
+                    Pillar::Naming,
+                    Confidence::Medium,
+                    Some(name.to_string()),
+                    Some("Use a name that describes the domain role.".to_string()),
+                    json!({}),
+                ));
+            }
+            if name.len() <= 2
+                && !matches!(name, "i" | "j" | "k")
+                && !name.starts_with('_')
+                && !self
+                    .config
+                    .accepted_abbreviations
+                    .contains(&name.to_ascii_lowercase())
+            {
+                self.findings.push(Finding::new(
+                    "naming.short-variable",
+                    format!("Variable `{name}` is too short to explain intent."),
+                    self.file.display_path.clone(),
+                    Some(line),
+                    Severity::Advisory,
+                    Pillar::Naming,
+                    Confidence::Medium,
+                    Some(name.to_string()),
+                    Some("Use a name that describes the domain role.".to_string()),
+                    json!({}),
+                ));
+            }
+        }
+    }
+
+    impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            self.visit_pat_idents(&local.pat);
+            self.check_identifier_shadow(local);
+            syn::visit::visit_local(self, local);
+        }
+
+        fn visit_expr_for_loop(&mut self, for_loop: &'ast syn::ExprForLoop) {
+            self.visit_pat_idents(&for_loop.pat);
+            syn::visit::visit_expr_for_loop(self, for_loop);
+        }
+
+        fn visit_fn_arg(&mut self, arg: &'ast syn::FnArg) {
+            if let syn::FnArg::Typed(pat_type) = arg {
+                self.visit_pat_idents(&pat_type.pat);
+            }
+            syn::visit::visit_fn_arg(self, arg);
+        }
+
+        fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+            for input in &closure.inputs {
+                self.visit_pat_idents(input);
+            }
+            syn::visit::visit_expr_closure(self, closure);
+        }
+    }
+
+    /// Recursively walks a `syn::Pat`, invoking `callback` for every leaf
+    /// `Pat::Ident`. Handles tuples, tuple-structs, struct fields, slices,
+    /// references, or-patterns, and typed patterns. Unhandled variants
+    /// (`Pat::Lit`, `Pat::Wild`, etc.) carry no bindings to inspect.
+    fn walk_pat_idents<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
+        match pat {
+            syn::Pat::Ident(pat_ident) => callback(&pat_ident.ident),
+            syn::Pat::Type(pat_type) => walk_pat_idents(&pat_type.pat, callback),
+            syn::Pat::Tuple(pat_tuple) => {
+                for elem in &pat_tuple.elems {
+                    walk_pat_idents(elem, callback);
+                }
+            }
+            syn::Pat::TupleStruct(pat_ts) => {
+                for elem in &pat_ts.elems {
+                    walk_pat_idents(elem, callback);
+                }
+            }
+            syn::Pat::Struct(pat_struct) => {
+                for field in &pat_struct.fields {
+                    walk_pat_idents(&field.pat, callback);
+                }
+            }
+            syn::Pat::Slice(pat_slice) => {
+                for elem in &pat_slice.elems {
+                    walk_pat_idents(elem, callback);
+                }
+            }
+            syn::Pat::Reference(pat_ref) => walk_pat_idents(&pat_ref.pat, callback),
+            syn::Pat::Or(pat_or) => {
+                for case in &pat_or.cases {
+                    walk_pat_idents(case, callback);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn analyse_blocks(
@@ -4572,8 +4817,9 @@ mod built_in_rules {
         analyse_metric_block(file, block, &searchable_body, cyclomatic, config, findings);
         analyse_performance_block(file, block, &searchable_body, findings);
         analyse_design_block(file, block, cyclomatic, findings);
-        analyse_block_naming(file, block, findings);
+        analyse_block_naming(file, block, config, findings);
         analyse_public_function_doc(file, block, findings);
+        analyse_missing_errors_section(file, block, findings);
         analyse_error_handling_block(file, block, &searchable_body, findings);
         analyse_concurrency_block(file, block, &searchable_body, findings);
     }
@@ -4763,8 +5009,15 @@ mod built_in_rules {
         }
     }
 
-    fn analyse_block_naming(file: &SourceFile, block: &FunctionBlock, findings: &mut Vec<Finding>) {
-        if is_generic_name(&block.name) {
+    fn analyse_block_naming(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        config: &Config,
+        findings: &mut Vec<Finding>,
+    ) {
+        let extra_generic =
+            config.string_array_option("naming.generic-function", "extraGenericNames");
+        if is_generic_name(&block.name) || extra_generic.iter().any(|name| name == &block.name) {
             findings.push(block_finding(
                 "naming.generic-function",
                 format!(
@@ -4777,16 +5030,22 @@ mod built_in_rules {
                 Pillar::Naming,
             ));
         }
-        analyse_boolean_block_name(file, block, findings);
-        analyse_placeholder_block_name(file, block, findings);
+        analyse_boolean_block_name(file, block, config, findings);
+        analyse_placeholder_block_name(file, block, config, findings);
     }
 
     fn analyse_boolean_block_name(
         file: &SourceFile,
         block: &FunctionBlock,
+        config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        if block.returns_bool && !is_boolean_predicate_name(&block.name) {
+        let extra_prefixes =
+            config.string_array_option("naming.boolean-prefix", "predicatePrefixes");
+        let accepts_extra = extra_prefixes
+            .iter()
+            .any(|prefix| block.name.starts_with(prefix.as_str()));
+        if block.returns_bool && !is_boolean_predicate_name(&block.name) && !accepts_extra {
             findings.push(block_finding(
                 "naming.boolean-prefix",
                 format!(
@@ -4804,9 +5063,13 @@ mod built_in_rules {
     fn analyse_placeholder_block_name(
         file: &SourceFile,
         block: &FunctionBlock,
+        config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        if is_placeholder_identifier(&block.name) {
+        let extras =
+            config.string_array_option("naming.placeholder-identifier", "extraPlaceholders");
+        let extra_match = extras.iter().any(|name| name == &block.name);
+        if is_placeholder_identifier(&block.name) || extra_match {
             findings.push(block_finding_with_extras(
                 "naming.placeholder-identifier",
                 format!(
@@ -4843,6 +5106,75 @@ mod built_in_rules {
                 Severity::Advisory,
                 Pillar::Documentation,
             ));
+        }
+    }
+
+    /// Externally-public functions returning syntactic `Result<...>` should
+    /// document the error contract. The rule fires when the preceding rustdoc
+    /// (if any) does not contain `# Errors` or `## Errors`. Type-alias `Result`
+    /// shapes are intentionally not detected — see `fn returns_result`.
+    fn analyse_missing_errors_section(
+        file: &SourceFile,
+        block: &FunctionBlock,
+        findings: &mut Vec<Finding>,
+    ) {
+        if !block.is_externally_public || !block.returns_result {
+            return;
+        }
+        if doc_comment_text(&block.body).contains_errors_section() {
+            return;
+        }
+        findings.push(block_finding_with_extras(
+            "docs.missing-errors-section",
+            format!(
+                "Public function `{}` returns Result but its rustdoc lacks a `# Errors` section.",
+                block.name
+            ),
+            file,
+            block,
+            Severity::Advisory,
+            Pillar::Documentation,
+            BlockFindingExtras {
+                confidence: Confidence::High,
+                remediation: Some(
+                    "Add a `# Errors` rustdoc section describing when this function returns Err."
+                        .to_string(),
+                ),
+                metadata: json!({}),
+            },
+        ));
+    }
+
+    /// Returns the concatenated text of `///` and `//!` doc-comment lines that
+    /// appear before the `fn ` keyword in `block_body`, with the marker bytes
+    /// stripped. Used to look for rustdoc sections like `# Errors`.
+    fn doc_comment_text(block_body: &str) -> DocCommentText {
+        let mut text = String::new();
+        for line in block_body.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") {
+                text.push_str(trimmed.trim_start_matches("///").trim());
+                text.push('\n');
+            } else if trimmed.starts_with("//!") {
+                text.push_str(trimmed.trim_start_matches("//!").trim());
+                text.push('\n');
+            } else if trimmed.contains("fn ") {
+                break;
+            }
+        }
+        DocCommentText(text)
+    }
+
+    struct DocCommentText(String);
+
+    impl DocCommentText {
+        fn contains_errors_section(&self) -> bool {
+            self.0.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("# Errors")
+                    || trimmed.starts_with("## Errors")
+                    || trimmed.starts_with("### Errors")
+            })
         }
     }
 
@@ -4992,7 +5324,7 @@ mod built_in_rules {
                     metadata: json!({
                         "totalTokens": metrics.total_tokens,
                         "uniqueTokens": metrics.unique_tokens,
-                        "halsteadVolume": round1(metrics.halstead_volume),
+                        "halsteadVolume": round_one_decimal(metrics.halstead_volume),
                         "threshold": volume_threshold
                     }),
                 },
@@ -5028,11 +5360,11 @@ mod built_in_rules {
                             .to_string(),
                     ),
                     metadata: json!({
-                        "score": round1(metrics.maintainability_score),
+                        "score": round_one_decimal(metrics.maintainability_score),
                         "minimum": minimum_score,
                         "totalTokens": metrics.total_tokens,
                         "cyclomatic": cyclomatic,
-                        "halsteadVolume": round1(metrics.halstead_volume)
+                        "halsteadVolume": round_one_decimal(metrics.halstead_volume)
                     }),
                 },
             ));
@@ -5365,7 +5697,6 @@ mod built_in_rules {
         file: &SourceFile,
         source: &str,
         blocks: &[FunctionBlock],
-        config: &Config,
         findings: &mut Vec<Finding>,
     ) {
         let searchable_source = strip_rust_string_literals(source);
@@ -5382,7 +5713,6 @@ mod built_in_rules {
             raw_lines: &raw_lines,
             code_only_lines: &code_only_lines,
             test_context_ranges: &test_context_ranges,
-            config,
         };
 
         for line_index in 0..raw_lines.len() {
@@ -5397,7 +5727,6 @@ mod built_in_rules {
         raw_lines: &'a [&'a str],
         code_only_lines: &'a [&'a str],
         test_context_ranges: &'a [(usize, usize)],
-        config: &'a Config,
     }
 
     impl LineRuleContext<'_> {
@@ -5407,7 +5736,6 @@ mod built_in_rules {
             let code_only_line = self.code_only_lines[line_index];
             self.analyse_safety_line(raw_line, line_index, line_number, findings);
             self.analyse_waste_line(code_only_line, line_number, findings);
-            self.analyse_variable_names(code_only_line, line_number, findings);
         }
 
         fn line_is_in_test_context(&self, line_number: usize) -> bool {
@@ -5460,15 +5788,39 @@ mod built_in_rules {
             findings: &mut Vec<Finding>,
         ) {
             let has_unsafe = static_regex(&UNSAFE_BLOCK_REGEX, r"\bunsafe\s*\{").is_match(line);
-            if has_unsafe && !has_nearby_safety_comment(self.raw_lines, line_index) {
-                findings.push(finding(
+            if !has_unsafe {
+                return;
+            }
+            match find_nearby_safety_rationale(self.raw_lines, line_index) {
+                None => findings.push(finding(
                     "security.unsafe-block",
                     "Unsafe block lacks a nearby SAFETY rationale.",
                     self.file,
                     Some(line_number),
                     Severity::Warning,
                     Pillar::Security,
-                ));
+                )),
+                Some(rationale) if is_weak_safety_rationale(&rationale) => {
+                    findings.push(Finding::new(
+                        "docs.weak-safety-rationale",
+                        format!(
+                            "Unsafe block's SAFETY rationale is too short or vague: `{}`.",
+                            rationale.trim()
+                        ),
+                        self.file.display_path.clone(),
+                        Some(line_number),
+                        Severity::Advisory,
+                        Pillar::Documentation,
+                        Confidence::Medium,
+                        None,
+                        Some(
+                            "Explain the invariants the caller must uphold or why the operation is sound."
+                                .to_string(),
+                        ),
+                        json!({ "rationale": rationale.trim() }),
+                    ));
+                }
+                Some(_) => {}
             }
         }
 
@@ -5498,62 +5850,6 @@ mod built_in_rules {
                     Severity::Advisory,
                     Pillar::Waste,
                 ));
-            }
-        }
-
-        fn analyse_variable_names(
-            &self,
-            line: &str,
-            line_number: usize,
-            findings: &mut Vec<Finding>,
-        ) {
-            let variable_regex = static_regex(
-                &VARIABLE_BINDING_REGEX,
-                r"\b(?:let|for)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)",
-            );
-            for variable in variable_regex
-                .captures_iter(line)
-                .filter_map(|captures| captures.get(1))
-            {
-                let name = variable.as_str();
-                if is_placeholder_identifier(name) {
-                    findings.push(Finding::new(
-                        "naming.placeholder-identifier",
-                        format!(
-                            "Variable `{name}` uses a placeholder name instead of domain language."
-                        ),
-                        self.file.display_path.clone(),
-                        Some(line_number),
-                        Severity::Advisory,
-                        Pillar::Naming,
-                        Confidence::Medium,
-                        Some(name.to_string()),
-                        Some("Use a name that describes the domain role.".to_string()),
-                        json!({}),
-                    ));
-                }
-
-                if name.len() <= 2
-                    && !matches!(name, "i" | "j" | "k")
-                    && !name.starts_with('_')
-                    && !self
-                        .config
-                        .accepted_abbreviations
-                        .contains(&name.to_ascii_lowercase())
-                {
-                    findings.push(Finding::new(
-                        "naming.short-variable",
-                        format!("Variable `{name}` is too short to explain intent."),
-                        self.file.display_path.clone(),
-                        Some(line_number),
-                        Severity::Advisory,
-                        Pillar::Naming,
-                        Confidence::Medium,
-                        Some(name.to_string()),
-                        Some("Use a name that describes the domain role.".to_string()),
-                        json!({}),
-                    ));
-                }
             }
         }
     }
@@ -5701,14 +5997,10 @@ mod built_in_rules {
         let mut search_from = 0usize;
         while let Some(rel) = text[search_from..].find(marker) {
             let pos = search_from + rel;
-            let before_ok = pos == 0
-                || text.as_bytes()[pos - 1]
-                    .is_ascii_whitespace()
-                    .then_some(true)
-                    .unwrap_or_else(|| {
-                        let byte = text.as_bytes()[pos - 1];
-                        !byte.is_ascii_alphanumeric() && byte != b'_'
-                    });
+            let before_ok = pos == 0 || {
+                let byte = text.as_bytes()[pos - 1];
+                !byte.is_ascii_alphanumeric() && byte != b'_'
+            };
             let after_pos = pos + marker.len();
             let after_ok = match text.as_bytes().get(after_pos) {
                 None => true,
@@ -6174,6 +6466,7 @@ mod built_in_rules {
             test_context,
             is_async: item_fn.sig.asyncness.is_some(),
             returns_bool: returns_bool(&item_fn.sig.output),
+            returns_result: returns_result(&item_fn.sig.output),
             name_start: item_fn.sig.ident.span().start(),
             block_end: item_fn.block.span().end(),
             block: &item_fn.block,
@@ -6208,6 +6501,7 @@ mod built_in_rules {
             test_context,
             is_async: method.sig.asyncness.is_some(),
             returns_bool: returns_bool(&method.sig.output),
+            returns_result: returns_result(&method.sig.output),
             name_start: method.sig.ident.span().start(),
             block_end: method.block.span().end(),
             block: &method.block,
@@ -6238,6 +6532,7 @@ mod built_in_rules {
         test_context: bool,
         is_async: bool,
         returns_bool: bool,
+        returns_result: bool,
         name_start: LineColumn,
         block_end: LineColumn,
         block: &'a syn::Block,
@@ -6264,6 +6559,7 @@ mod built_in_rules {
             test_context: parts.test_context,
             is_async: parts.is_async,
             returns_bool: parts.returns_bool,
+            returns_result: parts.returns_result,
             ignore_without_reason: has_ignore_without_reason(parts.attrs),
             body_is_declarative_literal: is_declarative_literal_body(parts.block),
         }
@@ -6342,6 +6638,25 @@ mod built_in_rules {
             return false;
         };
         path.path.is_ident("bool")
+    }
+
+    /// True iff the function signature returns a syntactic `Result<...>` or
+    /// `std::result::Result<...>`. Type aliases (`Result<T>` defined as
+    /// `type Result<T> = std::result::Result<T, MyError>`) cannot be detected
+    /// without type resolution, so they are intentionally NOT covered by this
+    /// rule per ADR-008.
+    fn returns_result(output: &ReturnType) -> bool {
+        let ReturnType::Type(_, ty) = output else {
+            return false;
+        };
+        let Type::Path(path) = ty.as_ref() else {
+            return false;
+        };
+        path.path
+            .segments
+            .last()
+            .map(|segment| segment.ident == "Result")
+            .unwrap_or(false)
     }
 
     fn is_public(visibility: &Visibility) -> bool {
@@ -6668,7 +6983,7 @@ mod built_in_rules {
         .collect()
     }
 
-    fn round1(value: f64) -> f64 {
+    fn round_one_decimal(value: f64) -> f64 {
         (value * 10.0).round() / 10.0
     }
 
@@ -6754,11 +7069,51 @@ mod built_in_rules {
         }
     }
 
-    fn has_nearby_safety_comment(lines: &[&str], line_index: usize) -> bool {
+    /// Returns the text after `SAFETY:` on the nearest comment line above (and
+    /// including) `line_index`. Searches a 3-line lookback window matching the
+    /// existing `security.unsafe-block` behaviour.
+    fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
         let start = line_index.saturating_sub(3);
-        lines[start..=line_index]
-            .iter()
-            .any(|line| line.contains("SAFETY:"))
+        for line in lines[start..=line_index].iter() {
+            if let Some(pos) = line.find("SAFETY:") {
+                let after = &line[pos + "SAFETY:".len()..];
+                return Some(after.to_string());
+            }
+        }
+        None
+    }
+
+    /// `SAFETY:` rationale counts as weak when it is too short to convey an
+    /// invariant or matches a known low-content phrase. Keep the deny list
+    /// small and exact so private comments with brief but meaningful text
+    /// (`SAFETY: same-thread access` etc.) still pass.
+    fn is_weak_safety_rationale(rationale: &str) -> bool {
+        let trimmed = rationale.trim().trim_end_matches('.').to_ascii_lowercase();
+        if trimmed.is_empty() {
+            return true;
+        }
+        const WEAK_PHRASES: &[&str] = &[
+            "safe",
+            "required",
+            "needed",
+            "ok",
+            "okay",
+            "yes",
+            "trivial",
+            "obvious",
+            "n/a",
+            "none",
+            "see above",
+            "see below",
+        ];
+        if WEAK_PHRASES.contains(&trimmed.as_str()) {
+            return true;
+        }
+        let word_count = trimmed
+            .split_whitespace()
+            .filter(|word| word.len() >= 2)
+            .count();
+        word_count < 3 || trimmed.len() < 12
     }
 
     fn has_nearby_invariant_comment(source: &str) -> bool {
@@ -6942,7 +7297,7 @@ mod custom_rules {
 
     pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let line_starts = line_starts(unit.source);
+        let line_offsets = line_starts(unit.source);
         for rule in &config.custom_rules {
             if !config.rule_enabled(&rule.id) || !custom_rule_applies_to_path(rule, unit.file) {
                 continue;
@@ -6954,7 +7309,7 @@ mod custom_rules {
                 unit,
                 rule,
                 scope_source.as_ref(),
-                &line_starts,
+                &line_offsets,
             ));
         }
         findings
@@ -8759,7 +9114,7 @@ exclude:
                 .iter()
                 .filter(|finding| finding.file_path == "fixtures/sample.rs")
                 .count(),
-            12
+            18
         );
 
         let expected = [
@@ -8810,6 +9165,54 @@ exclude:
                 Some(7),
                 Some("process"),
                 "ec04a7b3fcf15f6d",
+            ),
+            (
+                "naming.short-variable",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("a"),
+                "774487e8965bb4e2",
+            ),
+            (
+                "naming.short-variable",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("b"),
+                "450fd3ea76dd5ea3",
+            ),
+            (
+                "naming.short-variable",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("c"),
+                "5ac981000ba83401",
+            ),
+            (
+                "naming.short-variable",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("d"),
+                "e52f3842e9612076",
+            ),
+            (
+                "naming.short-variable",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("e"),
+                "8f6d56dc5dbd2e25",
+            ),
+            (
+                "naming.short-variable",
+                Severity::Advisory,
+                "fixtures/sample.rs",
+                Some(7),
+                Some("f"),
+                "2febe2864706223f",
             ),
             (
                 "security.process-command",
@@ -12670,6 +13073,36 @@ serde = "*"
                     )
                 }),
             ),
+            case(
+                "docs.weak-safety-rationale",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {\n    // SAFETY: safe\n    unsafe { std::ptr::null::<i32>(); }\n}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {\n    // SAFETY: caller guarantees pointer is non-null and aligned for u8.\n    unsafe { std::ptr::null::<i32>(); }\n}\n",
+                    )
+                }),
+            ),
+            case(
+                "docs.missing-errors-section",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Loads the value.\npub fn load() -> Result<i32, String> { Ok(0) }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Loads the value.\n///\n/// # Errors\n///\n/// Returns Err when input is missing.\npub fn load() -> Result<i32, String> { Ok(0) }\n",
+                    )
+                }),
+            ),
             // ----- error handling -----
             case(
                 "error-handling.production-panic",
@@ -12804,6 +13237,21 @@ serde = "*"
                     baseline_with_lib(
                         root,
                         "/// Probe.\npub fn entry() -> i32 { let count = 1; count + 1 }\n",
+                    )
+                }),
+            ),
+            case(
+                "naming.identifier-shadow",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn payload(input: &str) -> String { input.to_string() }\n/// Probe.\npub fn entry(input: &str) -> String { let payload = payload(input); payload }\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\nfn payload(input: &str) -> String { input.to_string() }\n/// Probe.\npub fn entry(input: &str) -> String { let body = payload(input); body }\n",
                     )
                 }),
             ),
@@ -13427,6 +13875,129 @@ pub fn fixture_text() {
         );
         assert_eq!(command_findings[0].symbol.as_deref(), None);
         assert_eq!(command_findings[0].line, Some(3));
+    }
+
+    /// M37 calibration: the three new naming options
+    /// (`predicatePrefixes`, `extraPlaceholders`, `extraGenericNames`) plumb
+    /// through the typed-option config and influence rule dispatch. Wrong
+    /// shapes (a non-array value) are rejected with the expected error
+    /// format.
+    #[test]
+    fn m37_naming_options_round_trip_through_config() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            "/// Probe.\npub fn requires_init() -> bool { true }\n\
+             /// Probe.\npub fn entry() { let tmp = 1; let _ = tmp; }\n\
+             /// Probe.\npub fn do_stuff() {}\n",
+        );
+        write_config(
+            dir.path(),
+            r##"
+rules:
+  naming.boolean-prefix:
+    enabled: true
+    options:
+      predicatePrefixes: ["requires_"]
+  naming.placeholder-identifier:
+    enabled: true
+    options:
+      extraPlaceholders: ["tmp"]
+  naming.generic-function:
+    enabled: true
+    options:
+      extraGenericNames: ["do_stuff"]
+"##,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        // predicatePrefixes accepts `requires_init` → no boolean-prefix finding for that fn
+        assert!(
+            !report.findings.iter().any(|finding| {
+                finding.rule_id == "naming.boolean-prefix"
+                    && finding.symbol.as_deref() == Some("requires_init")
+            }),
+            "predicatePrefixes must silence requires_init; findings={:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| (&f.rule_id, &f.symbol))
+                .collect::<Vec<_>>()
+        );
+
+        // extraPlaceholders catches `tmp`
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.rule_id == "naming.placeholder-identifier"
+                    && finding.symbol.as_deref() == Some("tmp")
+            }),
+            "extraPlaceholders must flag `tmp`; findings={:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| (&f.rule_id, &f.symbol))
+                .collect::<Vec<_>>()
+        );
+
+        // extraGenericNames catches `do_stuff`
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.rule_id == "naming.generic-function"
+                    && finding.symbol.as_deref() == Some("do_stuff")
+            }),
+            "extraGenericNames must flag `do_stuff`; findings={:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| (&f.rule_id, &f.symbol))
+                .collect::<Vec<_>>()
+        );
+
+        // Wrong shape: predicatePrefixes is a number, not an array
+        write_config(
+            dir.path(),
+            r##"
+rules:
+  naming.boolean-prefix:
+    options:
+      predicatePrefixes: 7
+"##,
+        );
+        let error = load_config(dir.path(), &default_test_options())
+            .expect_err("non-array option value must be rejected");
+        assert!(
+            error.contains("`rules.naming.boolean-prefix.options.predicatePrefixes`")
+                && error.to_lowercase().contains("array"),
+            "unexpected error: {error}"
+        );
+
+        // Wrong rule: predicatePrefixes on naming.placeholder-identifier
+        write_config(
+            dir.path(),
+            r##"
+rules:
+  naming.placeholder-identifier:
+    options:
+      predicatePrefixes: ["foo"]
+"##,
+        );
+        let error = load_config(dir.path(), &default_test_options())
+            .expect_err("unknown option must be rejected");
+        assert!(
+            error.contains("predicatePrefixes") && error.contains("naming.placeholder-identifier"),
+            "unexpected error: {error}"
+        );
     }
 
     /// M35 calibration: `naming.boolean-prefix` accepts idiomatic Rust

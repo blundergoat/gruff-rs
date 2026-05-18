@@ -10,8 +10,8 @@
 | Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, conservative NPath approximation, Halstead-style token volume, and maintainability pressure. |
 | Dead code | Private functions with no same-file call sites, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
 | Waste | Unwrap/expect, clone candidates, unreachable statements, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
-| Naming | Generic function names, short variables, bool predicate prefixes, and placeholder identifiers. |
-| Documentation | Public Rust API documentation, TODO/FIXME density, root README presence, and package metadata presence. |
+| Naming | Generic function names, short variables (including fn parameters, closure parameters, and destructured bindings), bool predicate prefixes, placeholder identifiers, and `let X = X(...)` shadows of same-file free functions. The boolean-prefix, placeholder-identifier, and generic-function rules accept user-supplied allowlists via the `predicatePrefixes`, `extraPlaceholders`, and `extraGenericNames` string-array options. |
+| Documentation | Public Rust API documentation, TODO/FIXME density, root README presence, package metadata presence, stale TODO markers without an owner/issue/reason, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, and externally public `Result`-returning functions missing a `# Errors` rustdoc section. |
 | Modernisation | Public struct fields that expose representation. |
 | Security | Process command construction, unsafe blocks without a nearby `SAFETY:` rationale, and local-only dependency posture checks for git/path sources, wildcard requirements, and duplicate lockfile versions. |
 | Sensitive data | Common API keys, AWS keys, JWT-looking tokens, database URLs with passwords, private-key markers, environment-style secret assignments, and high-entropy string literals. |
