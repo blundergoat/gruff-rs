@@ -658,6 +658,7 @@ struct ItemSummary {
     kind: String,
     line: usize,
     public: bool,
+    externally_public: bool,
     cfg_gated: bool,
     test_context: bool,
 }
@@ -665,6 +666,7 @@ struct ItemSummary {
 #[derive(Debug, Clone, Copy)]
 struct ProjectItemContext {
     public: bool,
+    externally_public: bool,
     cfg_gated: bool,
     test_context: bool,
 }
@@ -942,12 +944,13 @@ struct FunctionBlock {
     start_line: usize,
     line_count: usize,
     body: String,
-    is_public: bool,
+    is_externally_public: bool,
     is_test: bool,
     test_context: bool,
     is_async: bool,
     returns_bool: bool,
     ignore_without_reason: bool,
+    body_is_declarative_literal: bool,
 }
 
 struct FunctionMetrics {
@@ -3412,6 +3415,7 @@ fn collect_project_function(
         line_from_span(item_fn.sig.ident.span().start()),
         ProjectItemContext {
             public: visibility_is_public(&item_fn.vis),
+            externally_public: visibility_is_externally_public(&item_fn.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_fn.attrs),
             test_context: scope.test_context || has_test_attr(&item_fn.attrs),
         },
@@ -3431,6 +3435,7 @@ fn collect_project_struct(
         line_from_span(item_struct.ident.span().start()),
         ProjectItemContext {
             public: visibility_is_public(&item_struct.vis),
+            externally_public: visibility_is_externally_public(&item_struct.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_struct.attrs),
             test_context: scope.test_context,
         },
@@ -3450,6 +3455,7 @@ fn collect_project_enum(
         line_from_span(item_enum.ident.span().start()),
         ProjectItemContext {
             public: visibility_is_public(&item_enum.vis),
+            externally_public: visibility_is_externally_public(&item_enum.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_enum.attrs),
             test_context: scope.test_context,
         },
@@ -3469,6 +3475,7 @@ fn collect_project_trait(
         line_from_span(item_trait.ident.span().start()),
         ProjectItemContext {
             public: visibility_is_public(&item_trait.vis),
+            externally_public: visibility_is_externally_public(&item_trait.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_trait.attrs),
             test_context: scope.test_context,
         },
@@ -3501,6 +3508,7 @@ fn collect_project_method(
         line_from_span(method.sig.ident.span().start()),
         ProjectItemContext {
             public: visibility_is_public(&method.vis),
+            externally_public: visibility_is_externally_public(&method.vis),
             cfg_gated: scope.cfg_context
                 || has_cfg_attr(&item_impl.attrs)
                 || has_cfg_attr(&method.attrs),
@@ -3554,6 +3562,7 @@ fn project_item(
         kind: kind.to_string(),
         line,
         public: context.public,
+        externally_public: context.externally_public,
         cfg_gated: context.cfg_gated,
         test_context: context.test_context,
     }
@@ -3681,6 +3690,17 @@ fn visibility_is_public(visibility: &Visibility) -> bool {
     !matches!(visibility, Visibility::Inherited)
 }
 
+/// Returns true only for unrestricted `pub` items. `pub(crate)`, `pub(super)`,
+/// and `pub(in path)` are reachable inside the crate but not part of the
+/// external API surface, so the reportable public-API rules
+/// (`modernisation.public-field`, `docs.missing-public-doc`,
+/// `error-handling.public-unwrap`, `architecture.public-api-surface`) use this
+/// stricter helper. Dead-code reachability and project-model indexing keep
+/// using the lenient `visibility_is_public` above.
+fn visibility_is_externally_public(visibility: &Visibility) -> bool {
+    matches!(visibility, Visibility::Public(_))
+}
+
 fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -3770,7 +3790,7 @@ fn analyse_public_api_surface(
     let threshold = config.threshold(rule_id, 12.0) as usize;
     let mut by_module: BTreeMap<(String, String), Vec<&ItemSummary>> = BTreeMap::new();
     for item in context.items.iter().filter(|item| {
-        item.public && !item.cfg_gated && !item.test_context && item.kind != "method"
+        item.externally_public && !item.cfg_gated && !item.test_context && item.kind != "method"
     }) {
         by_module
             .entry((item.file_path.clone(), item.module_path.clone()))
@@ -4516,9 +4536,10 @@ mod built_in_rules {
         let blocks = rust_function_blocks(ast, source);
         analyse_blocks(file, &blocks, config, findings);
         analyse_process_commands(file, source, findings);
-        analyse_line_rules(file, source, config, findings);
+        analyse_line_rules(file, source, &blocks, config, findings);
         analyse_item_rules(file, ast, findings);
         analyse_dead_code(file, ast, source, findings);
+        analyse_comment_rules(file, source, findings);
     }
 
     fn analyse_blocks(
@@ -4565,7 +4586,7 @@ mod built_in_rules {
     ) {
         let rule_id = "size.function-length";
         let threshold = config.threshold(rule_id, 50.0) as usize;
-        if block.line_count > threshold {
+        if block.line_count > threshold && !block.body_is_declarative_literal {
             findings.push(block_finding(
                 rule_id,
                 format!(
@@ -4810,7 +4831,7 @@ mod built_in_rules {
         block: &FunctionBlock,
         findings: &mut Vec<Finding>,
     ) {
-        if block.is_public && !has_doc_comment_before(&block.body) {
+        if block.is_externally_public && !has_doc_comment_before(&block.body) {
             findings.push(block_finding(
                 "docs.missing-public-doc",
                 format!(
@@ -4906,7 +4927,7 @@ mod built_in_rules {
     ) {
         let has_unwrap = static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(")
             .is_match(searchable_body);
-        if block.is_public && has_unwrap {
+        if block.is_externally_public && has_unwrap {
             findings.push(block_finding_with_extras(
                 "error-handling.public-unwrap",
                 format!(
@@ -5343,19 +5364,29 @@ mod built_in_rules {
     fn analyse_line_rules(
         file: &SourceFile,
         source: &str,
+        blocks: &[FunctionBlock],
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
         let searchable_source = strip_rust_string_literals(source);
-        let lines: Vec<&str> = searchable_source.lines().collect();
+        let raw_lines: Vec<&str> = searchable_source.lines().collect();
+        let code_only_source = strip_rust_comments_after_string_mask(&searchable_source);
+        let code_only_lines: Vec<&str> = code_only_source.lines().collect();
+        let test_context_ranges: Vec<(usize, usize)> = blocks
+            .iter()
+            .filter(|block| block.is_test_context())
+            .map(|block| (block.start_line, block.start_line + block.line_count))
+            .collect();
         let context = LineRuleContext {
             file,
-            lines: &lines,
+            raw_lines: &raw_lines,
+            code_only_lines: &code_only_lines,
+            test_context_ranges: &test_context_ranges,
             config,
         };
 
-        for (line_index, line) in lines.iter().enumerate() {
-            context.analyse_line(line_index, line, findings);
+        for line_index in 0..raw_lines.len() {
+            context.analyse_line(line_index, findings);
         }
 
         analyse_unreachable(file, &searchable_source, findings);
@@ -5363,18 +5394,64 @@ mod built_in_rules {
 
     struct LineRuleContext<'a> {
         file: &'a SourceFile,
-        lines: &'a [&'a str],
+        raw_lines: &'a [&'a str],
+        code_only_lines: &'a [&'a str],
+        test_context_ranges: &'a [(usize, usize)],
         config: &'a Config,
     }
 
     impl LineRuleContext<'_> {
-        fn analyse_line(&self, line_index: usize, line: &str, findings: &mut Vec<Finding>) {
+        fn analyse_line(&self, line_index: usize, findings: &mut Vec<Finding>) {
             let line_number = line_index + 1;
-            self.analyse_safety_line(line, line_index, line_number, findings);
-            self.analyse_waste_line(line, line_number, findings);
-            self.analyse_variable_names(line, line_number, findings);
+            let raw_line = self.raw_lines[line_index];
+            let code_only_line = self.code_only_lines[line_index];
+            self.analyse_safety_line(raw_line, line_index, line_number, findings);
+            self.analyse_waste_line(code_only_line, line_number, findings);
+            self.analyse_variable_names(code_only_line, line_number, findings);
         }
 
+        fn line_is_in_test_context(&self, line_number: usize) -> bool {
+            self.test_context_ranges
+                .iter()
+                .any(|(start, end)| line_number >= *start && line_number < *end)
+        }
+    }
+
+    /// Returns true when the line contains a `.clone()` whose result is
+    /// immediately consumed by an ownership-taking method (M33 exemptions:
+    /// `unwrap_or*`, `into*`, `collect*`, `?` propagation) or is being used
+    /// in a position where the surrounding code requires owned data (struct
+    /// field initialisation, `Entry::*` insertion). In those cases the clone
+    /// is not avoidable, so the candidate rule should stay silent.
+    fn clone_is_consumed_or_owned(line: &str) -> bool {
+        static CONSUMER_REGEX: OnceLock<Regex> = OnceLock::new();
+        let regex = static_regex(
+            &CONSUMER_REGEX,
+            r"\.clone\(\)\s*(?:\?|\.(?:unwrap_or_else|unwrap_or_default|unwrap_or|into_iter|into|collect)\b)",
+        );
+        if regex.is_match(line) {
+            return true;
+        }
+        static STRUCT_FIELD_REGEX: OnceLock<Regex> = OnceLock::new();
+        let field_regex = static_regex(
+            &STRUCT_FIELD_REGEX,
+            r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s+[^=]*\.clone\(\)\s*,?\s*$",
+        );
+        if field_regex.is_match(line) {
+            return true;
+        }
+        static ENTRY_REGEX: OnceLock<Regex> = OnceLock::new();
+        let entry_regex = static_regex(
+            &ENTRY_REGEX,
+            r"\.entry\([^)]*\.clone\(\)\s*\)|\.insert\([^,]*\.clone\(\)",
+        );
+        if entry_regex.is_match(line) {
+            return true;
+        }
+        false
+    }
+
+    impl LineRuleContext<'_> {
         fn analyse_safety_line(
             &self,
             line: &str,
@@ -5383,7 +5460,7 @@ mod built_in_rules {
             findings: &mut Vec<Finding>,
         ) {
             let has_unsafe = static_regex(&UNSAFE_BLOCK_REGEX, r"\bunsafe\s*\{").is_match(line);
-            if has_unsafe && !has_nearby_safety_comment(self.lines, line_index) {
+            if has_unsafe && !has_nearby_safety_comment(self.raw_lines, line_index) {
                 findings.push(finding(
                     "security.unsafe-block",
                     "Unsafe block lacks a nearby SAFETY rationale.",
@@ -5398,6 +5475,7 @@ mod built_in_rules {
         fn analyse_waste_line(&self, line: &str, line_number: usize, findings: &mut Vec<Finding>) {
             if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
                 && !line.contains("#[test]")
+                && !self.line_is_in_test_context(line_number)
             {
                 findings.push(finding(
                     "waste.unwrap-expect",
@@ -5409,7 +5487,9 @@ mod built_in_rules {
                 ));
             }
 
-            if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line) {
+            if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
+                && !clone_is_consumed_or_owned(line)
+            {
                 findings.push(finding(
                     "waste.unnecessary-clone-candidate",
                     "clone() call may be avoidable; confirm ownership requires it.",
@@ -5498,6 +5578,246 @@ mod built_in_rules {
         }
     }
 
+    /// Lightweight comment record: line of the comment opener, the trimmed
+    /// payload text (with marker bytes stripped), and whether the comment is a
+    /// rustdoc form (`///` or `//!` for line, `/**` for block). Block comments
+    /// keep their first-line index so findings point to the opening byte.
+    struct RustComment {
+        line: usize,
+        text: String,
+        is_doc: bool,
+    }
+
+    /// Walks the string-masked Rust source and returns every comment span.
+    /// String contents are already spaces in `masked_source`, so any `//` or
+    /// `/*` we see is a real Rust comment. Newlines are preserved by the
+    /// upstream `strip_rust_string_literals`, so line counts match the source.
+    fn extract_rust_comments(masked_source: &str) -> Vec<RustComment> {
+        let bytes = masked_source.as_bytes();
+        let mut comments = Vec::new();
+        let mut line = 1usize;
+        let mut index = 0usize;
+        while index < bytes.len() {
+            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                let comment_line = line;
+                let is_doc = bytes
+                    .get(index + 2)
+                    .copied()
+                    .map(|byte| byte == b'/' || byte == b'!')
+                    .unwrap_or(false);
+                let text_start = if is_doc { index + 3 } else { index + 2 };
+                let mut end = text_start;
+                while end < bytes.len() && bytes[end] != b'\n' {
+                    end += 1;
+                }
+                let text = std::str::from_utf8(&bytes[text_start..end])
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                comments.push(RustComment {
+                    line: comment_line,
+                    text,
+                    is_doc,
+                });
+                index = end;
+                continue;
+            }
+            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                let comment_line = line;
+                let is_doc = bytes.get(index + 2).copied() == Some(b'*');
+                let text_start = if is_doc { index + 3 } else { index + 2 };
+                let mut end = text_start;
+                while end + 1 < bytes.len() {
+                    if bytes[end] == b'*' && bytes[end + 1] == b'/' {
+                        break;
+                    }
+                    if bytes[end] == b'\n' {
+                        line += 1;
+                    }
+                    end += 1;
+                }
+                let text = std::str::from_utf8(&bytes[text_start..end])
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                comments.push(RustComment {
+                    line: comment_line,
+                    text,
+                    is_doc,
+                });
+                index = (end + 2).min(bytes.len());
+                continue;
+            }
+            if bytes[index] == b'\n' {
+                line += 1;
+            }
+            index += 1;
+        }
+        comments
+    }
+
+    fn analyse_comment_rules(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
+        let masked = strip_rust_string_literals(source);
+        let comments = extract_rust_comments(&masked);
+        for comment in &comments {
+            analyse_stale_todo_comment(file, comment, findings);
+            analyse_commented_out_code_comment(file, comment, findings);
+        }
+    }
+
+    fn analyse_stale_todo_comment(
+        file: &SourceFile,
+        comment: &RustComment,
+        findings: &mut Vec<Finding>,
+    ) {
+        const MARKERS: &[&str] = &["TODO", "FIXME", "HACK", "XXX"];
+        for marker in MARKERS {
+            if let Some((after, found_marker)) = find_marker(&comment.text, marker) {
+                if !has_durable_reference(after) {
+                    findings.push(Finding::new(
+                        "docs.stale-todo",
+                        format!(
+                            "{found_marker} comment lacks an owner, issue reference, or reason."
+                        ),
+                        file.display_path.clone(),
+                        Some(comment.line),
+                        Severity::Advisory,
+                        Pillar::Documentation,
+                        Confidence::High,
+                        None,
+                        Some(
+                            "Add an owner (@name), issue (#123 or URL), or a colon-prefixed reason."
+                                .to_string(),
+                        ),
+                        json!({ "marker": found_marker, "missingReference": true }),
+                    ));
+                }
+                return;
+            }
+        }
+    }
+
+    fn find_marker<'a>(text: &'a str, marker: &str) -> Option<(&'a str, String)> {
+        let mut search_from = 0usize;
+        while let Some(rel) = text[search_from..].find(marker) {
+            let pos = search_from + rel;
+            let before_ok = pos == 0
+                || text.as_bytes()[pos - 1]
+                    .is_ascii_whitespace()
+                    .then_some(true)
+                    .unwrap_or_else(|| {
+                        let byte = text.as_bytes()[pos - 1];
+                        !byte.is_ascii_alphanumeric() && byte != b'_'
+                    });
+            let after_pos = pos + marker.len();
+            let after_ok = match text.as_bytes().get(after_pos) {
+                None => true,
+                Some(byte) => !byte.is_ascii_alphanumeric() && *byte != b'_',
+            };
+            if before_ok && after_ok {
+                return Some((&text[after_pos..], marker.to_string()));
+            }
+            search_from = pos + marker.len();
+        }
+        None
+    }
+
+    fn has_durable_reference(after_marker: &str) -> bool {
+        let trimmed = after_marker.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('(') {
+            if let Some(end) = rest.find(')') {
+                let inner = &rest[..end];
+                return inner.contains('#')
+                    || inner.contains('@')
+                    || inner.starts_with("GH-")
+                    || inner.contains("://")
+                    || (inner.contains(':') && inner.trim().len() >= 3);
+            }
+            return false;
+        }
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            if let Some(end) = rest.find(']') {
+                let inner = &rest[..end];
+                return inner.contains('#')
+                    || inner.contains('@')
+                    || inner.starts_with("GH-")
+                    || inner.contains("://");
+            }
+            return false;
+        }
+        if let Some(rest) = trimmed.strip_prefix(':') {
+            return rest.trim().len() >= 5;
+        }
+        false
+    }
+
+    fn analyse_commented_out_code_comment(
+        file: &SourceFile,
+        comment: &RustComment,
+        findings: &mut Vec<Finding>,
+    ) {
+        if comment.is_doc {
+            return;
+        }
+        if looks_like_disabled_rust_code(&comment.text) {
+            findings.push(Finding::new(
+                "docs.commented-out-code",
+                "Comment payload looks like disabled Rust code; remove or document intent.",
+                file.display_path.clone(),
+                Some(comment.line),
+                Severity::Advisory,
+                Pillar::Documentation,
+                Confidence::Medium,
+                None,
+                Some(
+                    "Delete the commented-out code or convert it to a comment explaining why it is intentionally kept."
+                        .to_string(),
+                ),
+                json!({}),
+            ));
+        }
+    }
+
+    fn looks_like_disabled_rust_code(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || trimmed.len() < 5 {
+            return false;
+        }
+        const STARTERS: &[&str] = &[
+            "let ",
+            "let mut ",
+            "fn ",
+            "pub fn ",
+            "pub(",
+            "use ",
+            "if ",
+            "match ",
+            "for ",
+            "while ",
+            "loop {",
+            "return ",
+            "return;",
+            "struct ",
+            "enum ",
+            "trait ",
+            "impl ",
+            "type ",
+            "const ",
+            "static ",
+            "async fn ",
+            "unsafe ",
+            "mod ",
+            "mut ",
+            "self.",
+        ];
+        let starter_ok = STARTERS.iter().any(|prefix| trimmed.starts_with(prefix));
+        if !starter_ok {
+            return false;
+        }
+        let last = trimmed.as_bytes().last().copied().unwrap_or(0);
+        matches!(last, b';' | b'}' | b'{')
+    }
+
     fn analyse_item_rules(file: &SourceFile, ast: &syn::File, findings: &mut Vec<Finding>) {
         for item in &ast.items {
             analyse_public_item(file, item, findings);
@@ -5566,7 +5886,7 @@ mod built_in_rules {
             findings,
         );
         for field in &item_struct.fields {
-            if is_public(&field.vis) {
+            if is_externally_public(&field.vis) {
                 push_public_field_finding(file, field.span(), findings);
             }
         }
@@ -5580,7 +5900,7 @@ mod built_in_rules {
         span: proc_macro2::Span,
         findings: &mut Vec<Finding>,
     ) {
-        if is_public(visibility) && !has_doc_attr(attrs) {
+        if is_externally_public(visibility) && !has_doc_attr(attrs) {
             push_missing_public_item_doc(file, name, span, findings);
         }
     }
@@ -5856,6 +6176,7 @@ mod built_in_rules {
             returns_bool: returns_bool(&item_fn.sig.output),
             name_start: item_fn.sig.ident.span().start(),
             block_end: item_fn.block.span().end(),
+            block: &item_fn.block,
         }));
     }
 
@@ -5889,6 +6210,7 @@ mod built_in_rules {
             returns_bool: returns_bool(&method.sig.output),
             name_start: method.sig.ident.span().start(),
             block_end: method.block.span().end(),
+            block: &method.block,
         }));
     }
 
@@ -5918,6 +6240,7 @@ mod built_in_rules {
         returns_bool: bool,
         name_start: LineColumn,
         block_end: LineColumn,
+        block: &'a syn::Block,
     }
 
     fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> FunctionBlock {
@@ -5936,12 +6259,51 @@ mod built_in_rules {
             start_line: start + 1,
             line_count: end.saturating_sub(start) + 1,
             body,
-            is_public: is_public(parts.visibility),
+            is_externally_public: is_externally_public(parts.visibility),
             is_test,
             test_context: parts.test_context,
             is_async: parts.is_async,
             returns_bool: parts.returns_bool,
             ignore_without_reason: has_ignore_without_reason(parts.attrs),
+            body_is_declarative_literal: is_declarative_literal_body(parts.block),
+        }
+    }
+
+    /// True iff the block is exactly one trailing expression whose shape is a
+    /// "data declaration": array literal, `vec!` macro, struct/enum literal,
+    /// or a `match` whose every arm body is a pure expression (no statements
+    /// inside any arm block). Used by `size.function-length` to avoid flagging
+    /// functions whose length is entirely table data, not logic. Anything with
+    /// preceding statements, control flow outside the trailing expression, or
+    /// match arms with embedded statement blocks is NOT declarative.
+    fn is_declarative_literal_body(block: &syn::Block) -> bool {
+        if block.stmts.len() != 1 {
+            return false;
+        }
+        match &block.stmts[0] {
+            syn::Stmt::Expr(expr, None) => is_declarative_literal_expr(expr),
+            _ => false,
+        }
+    }
+
+    fn is_declarative_literal_expr(expr: &syn::Expr) -> bool {
+        match expr {
+            syn::Expr::Array(_) | syn::Expr::Struct(_) => true,
+            syn::Expr::Macro(mac) => mac
+                .mac
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident == "vec")
+                .unwrap_or(false),
+            syn::Expr::Match(match_expr) => match_expr.arms.iter().all(|arm| {
+                if let syn::Expr::Block(block_expr) = arm.body.as_ref() {
+                    block_expr.block.stmts.is_empty()
+                } else {
+                    true
+                }
+            }),
+            _ => false,
         }
     }
 
@@ -5986,6 +6348,11 @@ mod built_in_rules {
         !matches!(visibility, Visibility::Inherited)
     }
 
+    /// Strict counterpart to `is_public` — see `visibility_is_externally_public`.
+    fn is_externally_public(visibility: &Visibility) -> bool {
+        matches!(visibility, Visibility::Public(_))
+    }
+
     fn has_doc_attr(attrs: &[syn::Attribute]) -> bool {
         attrs.iter().any(|attr| attr.path().is_ident("doc"))
     }
@@ -6026,18 +6393,36 @@ mod built_in_rules {
     }
 
     fn is_boolean_predicate_name(name: &str) -> bool {
-        matches!(
-            name.to_ascii_lowercase().as_str(),
-            lower if lower.starts_with("is_")
-                || lower.starts_with("has_")
-                || lower.starts_with("can_")
-                || lower.starts_with("should_")
-                || lower.starts_with("allows_")
-                || lower.starts_with("supports_")
-                || lower.starts_with("contains_")
-                || lower.starts_with("needs_")
-                || lower.starts_with("uses_")
-        )
+        let lower = name.to_ascii_lowercase();
+        let words: Vec<&str> = lower.split('_').collect();
+        // Passive-voice shape (`X_was_Y`, `X_by_Y`, `X_by`) is not a predicate.
+        if words.last() == Some(&"by") {
+            return false;
+        }
+        // Predicate verbs that read as a boolean test when used anywhere in
+        // the name. Subject-predicate forms (`visibility_is_public`,
+        // `line_in_ranges`, `path_matches`) ride on these.
+        const PREDICATE_WORDS: &[&str] = &[
+            "is",
+            "has",
+            "can",
+            "should",
+            "allows",
+            "supports",
+            "contains",
+            "needs",
+            "uses",
+            "matches",
+            "in",
+            "intersects",
+            "overlaps",
+        ];
+        if words.iter().any(|word| PREDICATE_WORDS.contains(word)) {
+            return true;
+        }
+        // Compound predicates that combine two words (no separator on the
+        // first half).
+        lower.starts_with("starts_with") || lower.starts_with("ends_with")
     }
 
     fn is_placeholder_identifier(name: &str) -> bool {
@@ -6053,6 +6438,12 @@ mod built_in_rules {
             if let Some(raw_end) = raw_string_end(bytes, index) {
                 mask_bytes(bytes, index, raw_end, &mut output);
                 index = raw_end;
+                continue;
+            }
+
+            if let Some(char_end) = char_literal_end(bytes, index) {
+                mask_bytes(bytes, index, char_end, &mut output);
+                index = char_end;
                 continue;
             }
 
@@ -6079,6 +6470,88 @@ mod built_in_rules {
             index += 1;
         }
 
+        output
+    }
+
+    /// Returns the byte index just past a Rust character literal that starts at
+    /// `start`. Recognises `'X'`, escape sequences (`'\n'`, `'\''`), byte escapes
+    /// (`'\x41'`), and unicode escapes (`'\u{0041}'`). Returns `None` for
+    /// lifetimes (`'a`, `'static`) and any other shape, so the masker leaves
+    /// them alone.
+    fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+        if bytes.get(start).copied()? != b'\'' {
+            return None;
+        }
+        let mut cursor = start + 1;
+        if bytes.get(cursor).copied()? == b'\\' {
+            cursor += 1;
+            let escape = bytes.get(cursor).copied()?;
+            cursor += 1;
+            match escape {
+                b'x' => cursor = cursor.checked_add(2)?,
+                b'u' => {
+                    if bytes.get(cursor).copied()? == b'{' {
+                        cursor += 1;
+                        while bytes.get(cursor).copied()? != b'}' {
+                            cursor += 1;
+                            if cursor.saturating_sub(start) > 12 {
+                                return None;
+                            }
+                        }
+                        cursor += 1;
+                    } else {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            cursor += 1;
+        }
+        (bytes.get(cursor).copied()? == b'\'').then_some(cursor + 1)
+    }
+
+    /// Masks Rust comments (`//`, `///`, `//!`, `/* */`, `/** */`) into spaces
+    /// while preserving newlines, so line indices stay aligned. Intended to be
+    /// run AFTER `strip_rust_string_literals`, so comment-shaped sequences
+    /// inside string literals are already spaces and do not false-trigger the
+    /// comment detector.
+    pub(super) fn strip_rust_comments_after_string_mask(input: &str) -> String {
+        let bytes = input.as_bytes();
+        let mut output = String::with_capacity(input.len());
+        let mut index = 0usize;
+        while index < bytes.len() {
+            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    output.push(' ');
+                    index += 1;
+                }
+                continue;
+            }
+            if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                output.push(' ');
+                output.push(' ');
+                index += 2;
+                while index < bytes.len() {
+                    if index + 1 < bytes.len() && bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                        output.push(' ');
+                        output.push(' ');
+                        index += 2;
+                        break;
+                    }
+                    let byte = bytes[index];
+                    if byte == b'\n' {
+                        output.push('\n');
+                    } else {
+                        output.push(' ');
+                    }
+                    index += 1;
+                }
+                continue;
+            }
+            output.push(bytes[index] as char);
+            index += 1;
+        }
         output
     }
 
@@ -12167,6 +12640,36 @@ serde = "*"
                 }),
                 Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
             ),
+            case(
+                "docs.stale-todo",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\n// TODO fix this later\npub fn entry() {}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\n// TODO(#123): remove after parser migration\npub fn entry() {}\n",
+                    )
+                }),
+            ),
+            case(
+                "docs.commented-out-code",
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\n// let value = compute();\npub fn entry() {}\n",
+                    )
+                }),
+                Box::new(|root| {
+                    baseline_with_lib(
+                        root,
+                        "/// Probe.\n// reminder: the next refactor should remove the cache\npub fn entry() {}\n",
+                    )
+                }),
+            ),
             // ----- error handling -----
             case(
                 "error-handling.production-panic",
@@ -12924,6 +13427,503 @@ pub fn fixture_text() {
         );
         assert_eq!(command_findings[0].symbol.as_deref(), None);
         assert_eq!(command_findings[0].line, Some(3));
+    }
+
+    /// M35 calibration: `naming.boolean-prefix` accepts idiomatic Rust
+    /// predicate names (subject-predicate form, common predicate verbs) while
+    /// keeping passive shapes like `triggered_by` flagged.
+    #[test]
+    fn m35_boolean_prefix_accepts_idioms_and_flags_passive() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+pub fn visibility_is_public() -> bool { true }
+/// Probe.
+pub fn path_is_project_ignored() -> bool { true }
+/// Probe.
+pub fn line_in_ranges() -> bool { true }
+/// Probe.
+pub fn path_matches() -> bool { true }
+/// Probe.
+pub fn starts_with_prefix() -> bool { true }
+/// Probe.
+pub fn ends_with_suffix() -> bool { true }
+/// Probe.
+pub fn matches() -> bool { true }
+/// Probe.
+pub fn contains() -> bool { true }
+/// Probe.
+pub fn triggered_by() -> bool { true }
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let predicate_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "naming.boolean-prefix")
+            .collect();
+        let triggered_by_count = predicate_findings
+            .iter()
+            .filter(|f| f.symbol.as_deref() == Some("triggered_by"))
+            .count();
+        assert_eq!(
+            triggered_by_count, 1,
+            "triggered_by must still be flagged; findings={predicate_findings:?}"
+        );
+        for accepted in [
+            "visibility_is_public",
+            "path_is_project_ignored",
+            "line_in_ranges",
+            "path_matches",
+            "starts_with_prefix",
+            "ends_with_suffix",
+            "matches",
+            "contains",
+        ] {
+            let still_flagged = predicate_findings
+                .iter()
+                .any(|f| f.symbol.as_deref() == Some(accepted));
+            assert!(
+                !still_flagged,
+                "{accepted} must be accepted by the idiom-aware predicate rule; findings={predicate_findings:?}"
+            );
+        }
+    }
+
+    /// M35 negative: prose inside Rust comments must not trigger code-pattern
+    /// line rules. `naming.short-variable`, `naming.placeholder-identifier`,
+    /// `waste.unwrap-expect`, and `waste.unnecessary-clone-candidate` all run
+    /// off the code-only line view that masks comments to spaces. The
+    /// `security.unsafe-block` rule remains comment-aware so it can still
+    /// find nearby `SAFETY:` rationale comments.
+    #[test]
+    fn m35_line_rules_skip_prose_in_comments() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"//! Probe.
+//
+// Documentation prose with code-shaped fragments that must stay silent:
+//   - "for a built-in rule" (naming.short-variable false-positive bait)
+//   - `let foo = ...` (naming.placeholder-identifier bait)
+//   - `.unwrap()` mentioned in prose (waste.unwrap-expect bait)
+//   - `.clone()` mentioned in prose (waste.unnecessary-clone-candidate bait)
+
+/// for a, this is a documentation paragraph that mentions `.unwrap()` and `.clone()`
+/// and even shows `let foo = bar;` as an example. None of these should fire.
+pub fn well_documented(name: String) -> String {
+    /* a block comment also mentioning .unwrap() and .clone() and let foo = ... */
+    name
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        for rule in [
+            "naming.short-variable",
+            "naming.placeholder-identifier",
+            "waste.unwrap-expect",
+            "waste.unnecessary-clone-candidate",
+        ] {
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == rule),
+                "{rule} must not fire on prose in comments; findings={:?}",
+                report
+                    .findings
+                    .iter()
+                    .filter(|f| f.rule_id == rule)
+                    .map(|f| f.line)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// M35 negative: `security.unsafe-block` must STILL find nearby `SAFETY:`
+    /// rationale comments after the M35 raw/code-only split. The unsafe-block
+    /// rule uses the raw (comment-preserved) line view so it can read the
+    /// `SAFETY:` marker.
+    #[test]
+    fn m35_unsafe_block_still_sees_safety_rationale_comment() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+pub fn explained() {
+    // SAFETY: this is a synthetic fixture, no actual unsafety.
+    unsafe {
+        std::ptr::null::<i32>();
+    }
+}
+
+/// Probe.
+pub fn unexplained() {
+    unsafe {
+        std::ptr::null::<i32>();
+    }
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let unsafe_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "security.unsafe-block")
+            .collect();
+        assert_eq!(
+            unsafe_findings.len(),
+            1,
+            "expected exactly one unsafe-block finding (the unexplained one); findings={unsafe_findings:?}"
+        );
+    }
+
+    /// M35 negative: external-public-API rules must not fire on `pub(crate)`,
+    /// `pub(super)`, or `pub(in path)` items. Those are crate-visible (so
+    /// dead-code / reachability rules still see them as reachable) but they
+    /// are NOT part of the external API surface, so reportable rules stay
+    /// silent. The corresponding `pub` bare positives are covered by the
+    /// existing fixture-based proofs.
+    #[test]
+    fn m35_external_public_rules_skip_crate_visible_items() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"//! Probe.
+pub(crate) struct Buckets {
+    pub(crate) primary: Vec<u32>,
+    pub(super) seen: u32,
+}
+
+pub(crate) fn maybe_one(value: Option<u32>) -> u32 {
+    value.unwrap()
+}
+
+pub(crate) fn entry_a() {}
+pub(crate) fn entry_b() {}
+pub(crate) fn entry_c() {}
+pub(crate) fn entry_d() {}
+pub(crate) fn entry_e() {}
+pub(crate) fn entry_f() {}
+pub(crate) fn entry_g() {}
+pub(crate) fn entry_h() {}
+pub(crate) fn entry_i() {}
+pub(crate) fn entry_j() {}
+pub(crate) fn entry_k() {}
+pub(crate) fn entry_l() {}
+pub(crate) fn entry_m() {}
+pub(crate) fn entry_n() {}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        for rule in [
+            "modernisation.public-field",
+            "docs.missing-public-doc",
+            "error-handling.public-unwrap",
+            "architecture.public-api-surface",
+        ] {
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule_id == rule),
+                "{rule} must not fire on crate-visible items; findings={:?}",
+                report
+                    .findings
+                    .iter()
+                    .map(|f| (&f.rule_id, f.line))
+                    .collect::<Vec<_>>()
+            );
+        }
+        // The broader (non-public-API) unwrap rule SHOULD still fire on the
+        // production unwrap inside `maybe_one`, even though the public-API
+        // rule does not.
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == "waste.unwrap-expect"),
+            "waste.unwrap-expect must still fire on production unwraps regardless of visibility"
+        );
+    }
+
+    /// M33 negative: `waste.unnecessary-clone-candidate` must skip clones
+    /// whose result is immediately consumed by ownership-taking calls
+    /// (`unwrap_or_else`, `unwrap_or`, `unwrap_or_default`, `into`, `into_iter`,
+    /// `collect`, `?` propagation), struct-field initialisation, or
+    /// `HashMap::entry/insert` keys. These are not avoidable clones.
+    #[test]
+    fn m33_unnecessary_clone_candidate_skips_consumed_or_owned_uses() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+use std::collections::HashMap;
+
+pub struct Row {
+    pub name: String,
+    pub tags: Vec<String>,
+}
+
+pub fn build(input: &Row, fallback: Option<String>) -> Row {
+    let _consumed_unwrap = fallback.clone().unwrap_or_else(String::new);
+    let _consumed_into: Vec<String> = input.tags.clone().into_iter().collect();
+    let mut by_name: HashMap<String, usize> = HashMap::new();
+    by_name.entry(input.name.clone()).or_insert(0);
+    Row {
+        name: input.name.clone(),
+        tags: input.tags.clone(),
+    }
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let clones: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "waste.unnecessary-clone-candidate")
+            .collect();
+        assert!(
+            clones.is_empty(),
+            "consumed/owned clones must stay silent; findings={clones:?}"
+        );
+    }
+
+    /// M33 negative: `metrics.halstead-volume` must not count string-literal
+    /// content as tokens. A long `format!(concat!(...))` HTML template with
+    /// dense string fragments inside should still stay below the threshold —
+    /// only the wrapping `format`, `concat`, punctuation, and `{}` placeholder
+    /// tokens count.
+    #[test]
+    fn m33_halstead_volume_skips_string_literal_tokens() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        let mut body = String::from(
+            "/// Probe.\npub fn render(name: &str) -> String {\n    format!(concat!(\n",
+        );
+        for _ in 0..120 {
+            body.push_str(
+                "        \"<div class=\\\"row\\\"><span>some literal text inside that should not count toward tokens at all</span></div>\\n\",\n",
+            );
+        }
+        body.push_str("        \"{}\"\n    ), name)\n}\n");
+        baseline_with_lib(dir.path(), &body);
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let hv: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "metrics.halstead-volume")
+            .collect();
+        assert!(
+            hv.is_empty(),
+            "long format!(concat!(...)) template must stay below halstead threshold; findings={hv:?}"
+        );
+    }
+
+    /// M33 negative: `size.function-length` must skip a function whose body is
+    /// a single declarative literal (here, a 70-entry `vec![...]`). Function
+    /// length is intended to flag logic, not table-data registries.
+    #[test]
+    fn m33_function_length_skips_declarative_vec_body() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        let mut body = String::from("/// Probe.\npub fn registry() -> Vec<i32> {\n    vec![\n");
+        for index in 0..70 {
+            body.push_str(&format!("        {index},\n"));
+        }
+        body.push_str("    ]\n}\n");
+        baseline_with_lib(dir.path(), &body);
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let size_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "size.function-length")
+            .collect();
+        assert!(
+            size_findings.is_empty(),
+            "70-entry vec![...] body must not trigger size.function-length; findings={size_findings:?}"
+        );
+    }
+
+    /// M33 negative: `waste.unwrap-expect` must skip test code (functions
+    /// annotated with `#[test]` and any function inside a `#[cfg(test)]`
+    /// module). The dedicated `test-quality.unwrap-in-test` rule covers the
+    /// test-side concern.
+    #[test]
+    fn m33_unwrap_expect_skips_cfg_test_module() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+pub fn entry() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared_setup() -> i32 {
+        let value: Option<i32> = Some(1);
+        value.unwrap()
+    }
+
+    #[test]
+    fn check() {
+        let v: Option<i32> = Some(2);
+        assert_eq!(v.unwrap(), 2);
+        let _ = shared_setup();
+    }
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let waste: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "waste.unwrap-expect")
+            .collect();
+        assert!(
+            waste.is_empty(),
+            "unwrap-expect must skip #[cfg(test)] module functions; findings={waste:?}"
+        );
+        let in_test: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "test-quality.unwrap-in-test")
+            .collect();
+        assert!(
+            !in_test.is_empty(),
+            "test-quality.unwrap-in-test must still fire on test-mode unwraps; findings={:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| &f.rule_id)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// M33 negative: prove the literal mask handles Rust character literals
+    /// such as `trim_matches('"')`. Without char-literal awareness, the `"`
+    /// inside `'"'` flips the masker into string mode and every later string
+    /// in the file is masked one off, leaking later `Command::new` text inside
+    /// `concat!()` fixtures into the regex search. This test embeds the exact
+    /// shape (a char-literal `'"'` followed by a `concat!(...)` fixture
+    /// containing a fake `Command::new`) and expects zero findings.
+    #[test]
+    fn m33_process_command_silent_after_char_literal_quote() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+pub fn fixture(name: &str) -> String {
+    let trimmed = name.trim().trim_matches('"').trim_matches('\'');
+    let body = concat!(
+        "pub fn run_src() {\n",
+        "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+        "}\n"
+    );
+    format!("{trimmed} {body}")
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let command_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "security.process-command")
+            .collect();
+        assert!(
+            command_findings.is_empty(),
+            "char-literal `'\"'` must not flip the string mask; findings={command_findings:?}"
+        );
     }
 
     /// Proves that test-context functions keep dedicated test-quality checks

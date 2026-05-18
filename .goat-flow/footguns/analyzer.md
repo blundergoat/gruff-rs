@@ -19,6 +19,8 @@ The non-obvious failure mode is losing analyzer coverage while making the reposi
 
 Without that split, self-scan can report rule examples embedded inside unit-test fixture strings as if they were real analyzer code. M03 caught this when test-quality checks flagged raw fixture snippets in `src/main.rs` tests.
 
+**Char-literal subtlety (M33, 2026-05-18):** Earlier versions of the masker handled `"..."` and `r#"..."#` but did NOT recognise Rust character literals such as `'"'`. The first occurrence of `trim_matches('"')` in `src/main.rs` flipped the masker into string mode at the `"` inside the char literal, then every later `"` toggled the wrong state, leaving downstream string contents (notably `concat!("std::process::Command::new(\"sh\")...")` test fixtures) partially unmasked and triggering `security.process-command` on fixture text. The fix added `fn char_literal_end` and a char-literal pass in `strip_rust_string_literals`. Regression coverage: `src/main.rs` (search: `m33_process_command_silent_after_char_literal_quote`).
+
 ## Resolved Entries
 
 ## Footgun: Report Exclusions Are Not Discovery Ignores
