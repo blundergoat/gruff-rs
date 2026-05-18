@@ -1,5 +1,10 @@
 paths:
   ignore:
+    - .agents/**
+    - .claude/**
+    - .codex/**
+    - .github/**
+    - .goat-flow/**
     - target/**
     - fixtures/**
     - tests/fixtures/**

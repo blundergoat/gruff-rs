@@ -24,7 +24,7 @@ mod summary;
 
 const VERSION: &str = "0.1.0-dev";
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
-const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff.yaml", ".gruff.yml", ".gruff.json"];
+const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff-rs.yaml"];
 
 fn static_regex(lock: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     lock.get_or_init(|| Regex::new(pattern).expect("static regex compiles"))
@@ -1727,35 +1727,47 @@ fn load_config(project_root: &Path, options: &AnalysisOptions) -> Result<Config,
         return Ok(config);
     }
 
+    let Some((path, value)) = read_config_value(project_root, options)? else {
+        return Ok(config);
+    };
+    apply_config_value(&path, &value, &mut config)?;
+    Ok(config)
+}
+
+fn read_config_value(
+    project_root: &Path,
+    options: &AnalysisOptions,
+) -> Result<Option<(PathBuf, Value)>, String> {
     let config_path = options
         .config
         .as_ref()
         .map(|path| absolutize(project_root, path))
         .or_else(|| default_config_path(project_root));
-
     let Some(path) = config_path else {
-        return Ok(config);
+        return Ok(None);
     };
 
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("unable to read config {}: {error}", path.display()))?;
-    let value = parse_config_value(&path, &raw)?;
+    Ok(Some((path.clone(), parse_config_value(&path, &raw)?)))
+}
+
+fn apply_config_value(path: &Path, value: &Value, config: &mut Config) -> Result<(), String> {
     let root = value
         .as_object()
         .ok_or_else(|| format!("config {} must be a JSON object", path.display()))?;
     reject_unknown_keys(root, &["paths", "allowlists", "rules"], "config root")?;
 
     if let Some(paths_value) = root.get("paths") {
-        apply_paths_section(paths_value, &mut config)?;
+        apply_paths_section(paths_value, config)?;
     }
     if let Some(allowlists_value) = root.get("allowlists") {
-        apply_allowlists_section(allowlists_value, &mut config)?;
+        apply_allowlists_section(allowlists_value, config)?;
     }
     if let Some(rules_value) = root.get("rules") {
-        apply_rules_section(rules_value, &mut config)?;
+        apply_rules_section(rules_value, config)?;
     }
-
-    Ok(config)
+    Ok(())
 }
 
 fn apply_paths_section(paths_value: &Value, config: &mut Config) -> Result<(), String> {
@@ -1798,27 +1810,9 @@ fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), S
     let rules = rules_value
         .as_object()
         .ok_or_else(|| "config key `rules` must be an object".to_string())?;
-    if let Some(select_value) = rules.get("select") {
-        config.selectors.positive = expand_rule_selectors(select_value, &registry, "rules.select")?;
-        config.selectors.has_positive = !config.selectors.positive.is_empty();
-    }
-    if let Some(ignore_value) = rules.get("ignore") {
-        config.selectors.negative = expand_rule_selectors(ignore_value, &registry, "rules.ignore")?;
-    }
-    if let Some(custom_value) = rules.get("custom") {
-        let custom = custom_value
-            .as_object()
-            .ok_or_else(|| "config key `rules.custom` must be an object".to_string())?;
-        for (rule_id, rule_value) in custom {
-            insert_rule_setting(
-                rule_id,
-                rule_value,
-                &registry,
-                &mut config.rule_settings,
-                "rules.custom",
-            )?;
-        }
-    }
+
+    apply_selector_settings(rules, &registry, &mut config.selectors)?;
+    apply_custom_rule_settings(rules, &registry, &mut config.rule_settings)?;
     for (key, rule_value) in rules {
         if matches!(key.as_str(), "select" | "ignore" | "custom") {
             continue;
@@ -1830,6 +1824,38 @@ fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), S
             &mut config.rule_settings,
             "rules",
         )?;
+    }
+    Ok(())
+}
+
+fn apply_selector_settings(
+    rules: &serde_json::Map<String, Value>,
+    registry: &rules::RuleRegistry,
+    selectors: &mut SelectorSet,
+) -> Result<(), String> {
+    if let Some(select_value) = rules.get("select") {
+        selectors.positive = expand_rule_selectors(select_value, registry, "rules.select")?;
+        selectors.has_positive = !selectors.positive.is_empty();
+    }
+    if let Some(ignore_value) = rules.get("ignore") {
+        selectors.negative = expand_rule_selectors(ignore_value, registry, "rules.ignore")?;
+    }
+    Ok(())
+}
+
+fn apply_custom_rule_settings(
+    rules: &serde_json::Map<String, Value>,
+    registry: &rules::RuleRegistry,
+    settings: &mut HashMap<String, RuleSetting>,
+) -> Result<(), String> {
+    let Some(custom_value) = rules.get("custom") else {
+        return Ok(());
+    };
+    let custom = custom_value
+        .as_object()
+        .ok_or_else(|| "config key `rules.custom` must be an object".to_string())?;
+    for (rule_id, rule_value) in custom {
+        insert_rule_setting(rule_id, rule_value, registry, settings, "rules.custom")?;
     }
     Ok(())
 }
@@ -1868,28 +1894,58 @@ fn parse_rule_setting(
         &format!("config for rule `{rule_id}`"),
     )?;
 
-    let mut setting = RuleSetting::default();
-    if let Some(enabled) = rule_object.get("enabled") {
-        setting.enabled =
-            Some(enabled.as_bool().ok_or_else(|| {
-                format!("config key `rules.{rule_id}.enabled` must be a boolean")
-            })?);
-    }
+    let mut setting = RuleSetting {
+        enabled: parse_rule_enabled(rule_id, rule_object)?,
+        ..RuleSetting::default()
+    };
+    apply_rule_thresholds(rule_id, rule_object, registry, &mut setting)?;
+    validate_optional_rule_options(rule_id, rule_object, registry)?;
+    Ok(setting)
+}
+
+fn parse_rule_enabled(
+    rule_id: &str,
+    rule_object: &serde_json::Map<String, Value>,
+) -> Result<Option<bool>, String> {
+    rule_object
+        .get("enabled")
+        .map(|enabled| {
+            enabled
+                .as_bool()
+                .ok_or_else(|| format!("config key `rules.{rule_id}.enabled` must be a boolean"))
+        })
+        .transpose()
+}
+
+fn apply_rule_thresholds(
+    rule_id: &str,
+    rule_object: &serde_json::Map<String, Value>,
+    registry: &rules::RuleRegistry,
+    setting: &mut RuleSetting,
+) -> Result<(), String> {
     if rule_object.contains_key("threshold") && rule_object.contains_key("thresholds") {
         return Err(format!(
             "config for rule `{rule_id}` cannot use both `threshold` and `thresholds`"
         ));
     }
     if let Some(threshold_value) = rule_object.get("threshold") {
-        apply_single_threshold(rule_id, threshold_value, registry, &mut setting)?;
+        apply_single_threshold(rule_id, threshold_value, registry, setting)?;
     }
     if let Some(thresholds_value) = rule_object.get("thresholds") {
-        apply_threshold_map(rule_id, thresholds_value, registry, &mut setting)?;
+        apply_threshold_map(rule_id, thresholds_value, registry, setting)?;
     }
+    Ok(())
+}
+
+fn validate_optional_rule_options(
+    rule_id: &str,
+    rule_object: &serde_json::Map<String, Value>,
+    registry: &rules::RuleRegistry,
+) -> Result<(), String> {
     if let Some(options_value) = rule_object.get("options") {
         validate_rule_options(rule_id, options_value, registry)?;
     }
-    Ok(setting)
+    Ok(())
 }
 
 fn apply_single_threshold(
@@ -1953,13 +2009,14 @@ fn expand_rule_selectors(
     let selectors = string_array(selectors_value, path)?;
     let mut expanded = BTreeSet::new();
     for (index, selector) in selectors.iter().enumerate() {
-        expanded.extend(expand_rule_selector(
-            selector,
-            registry,
-            &format!("{path}[{index}]"),
-        )?);
+        let selector_path = selector_config_path(path, index);
+        expanded.extend(expand_rule_selector(selector, registry, &selector_path)?);
     }
     Ok(expanded)
+}
+
+fn selector_config_path(path: &str, index: usize) -> String {
+    format!("{path}[{index}]")
 }
 
 fn expand_rule_selector(
@@ -1973,6 +2030,18 @@ fn expand_rule_selector(
             "empty selector in `{path}`; expected exact rule id, dotted prefix, or public pillar"
         ));
     }
+    reject_unsupported_selector_syntax(selector, path)?;
+    exact_rule_selector(selector, registry)
+        .or_else(|| pillar_rule_selector(selector, registry))
+        .or_else(|| prefix_rule_selector(selector, registry))
+        .ok_or_else(|| {
+            format!(
+                "unknown selector `{selector}` in `{path}`; expected exact rule id, dotted prefix, or public pillar such as Security"
+            )
+        })
+}
+
+fn reject_unsupported_selector_syntax(selector: &str, path: &str) -> Result<(), String> {
     if selector.contains(':') {
         return Err(format!(
             "unsupported selector `{selector}` in `{path}`; tier/profile selectors are reserved for future registry metadata"
@@ -1983,18 +2052,35 @@ fn expand_rule_selector(
             "unsupported selector `{selector}` in `{path}`; only dotted prefix selectors such as `security.*` are supported"
         ));
     }
+    Ok(())
+}
+
+fn exact_rule_selector(selector: &str, registry: &rules::RuleRegistry) -> Option<BTreeSet<String>> {
     if registry.contains(selector) {
-        return Ok(BTreeSet::from([selector.to_string()]));
+        return Some(BTreeSet::from([selector.to_string()]));
     }
-    if let Some(pillar) = parse_pillar_selector(selector) {
-        return Ok(registry
+    None
+}
+
+fn pillar_rule_selector(
+    selector: &str,
+    registry: &rules::RuleRegistry,
+) -> Option<BTreeSet<String>> {
+    let pillar = parse_pillar_selector(selector)?;
+    Some(
+        registry
             .definitions()
             .iter()
             .filter(|definition| definition.pillar == pillar)
             .map(|definition| definition.id.to_string())
-            .collect());
-    }
+            .collect(),
+    )
+}
 
+fn prefix_rule_selector(
+    selector: &str,
+    registry: &rules::RuleRegistry,
+) -> Option<BTreeSet<String>> {
     let prefix = selector.strip_suffix(".*").unwrap_or(selector);
     let prefix_with_dot = format!("{prefix}.");
     let matches: BTreeSet<String> = registry
@@ -2004,12 +2090,9 @@ fn expand_rule_selector(
         .map(|definition| definition.id.to_string())
         .collect();
     if !matches.is_empty() {
-        return Ok(matches);
+        return Some(matches);
     }
-
-    Err(format!(
-        "unknown selector `{selector}` in `{path}`; expected exact rule id, dotted prefix, or public pillar such as Security"
-    ))
+    None
 }
 
 fn parse_pillar_selector(selector: &str) -> Option<Pillar> {
@@ -2061,8 +2144,10 @@ fn parse_config_value(path: &Path, raw: &str) -> Result<Value, String> {
     {
         "yaml" | "yml" => serde_yaml::from_str(raw)
             .map_err(|error| format!("invalid config YAML {}: {error}", path.display())),
-        "json" => serde_json::from_str(raw)
-            .map_err(|error| format!("invalid config JSON {}: {error}", path.display())),
+        "json" => Err(format!(
+            "unsupported config extension `json`; use .gruff-rs.yaml or another YAML config path instead: {}",
+            path.display()
+        )),
         _ => serde_yaml::from_str(raw)
             .map_err(|error| format!("invalid config YAML {}: {error}", path.display())),
     }
@@ -4887,45 +4972,86 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         match item {
-            Item::Fn(item_fn) => analyse_dead_function(
-                file,
-                source,
-                DeadFunctionCandidate {
-                    visibility: &item_fn.vis,
-                    attrs: &item_fn.attrs,
-                    name: item_fn.sig.ident.to_string(),
-                    span: item_fn.sig.ident.span(),
-                    test_context,
-                },
-                findings,
-            ),
+            Item::Fn(item_fn) => {
+                analyse_dead_item_fn(file, item_fn, source, test_context, findings)
+            }
             Item::Impl(item_impl) => {
-                for impl_item in &item_impl.items {
-                    if let ImplItem::Fn(method) = impl_item {
-                        analyse_dead_function(
-                            file,
-                            source,
-                            DeadFunctionCandidate {
-                                visibility: &method.vis,
-                                attrs: &method.attrs,
-                                name: method.sig.ident.to_string(),
-                                span: method.sig.ident.span(),
-                                test_context,
-                            },
-                            findings,
-                        );
-                    }
-                }
+                analyse_dead_impl(file, item_impl, source, test_context, findings)
             }
-            Item::Mod(item_mod) => {
-                if let Some((_, items)) = &item_mod.content {
-                    let nested_test_context = test_context || is_test_module(item_mod);
-                    for nested in items {
-                        analyse_dead_code_item(file, nested, source, nested_test_context, findings);
-                    }
-                }
-            }
+            Item::Mod(item_mod) => analyse_dead_mod(file, item_mod, source, test_context, findings),
             _ => {}
+        }
+    }
+
+    fn analyse_dead_item_fn(
+        file: &SourceFile,
+        item_fn: &syn::ItemFn,
+        source: &str,
+        test_context: bool,
+        findings: &mut Vec<Finding>,
+    ) {
+        analyse_dead_function(
+            file,
+            source,
+            DeadFunctionCandidate {
+                visibility: &item_fn.vis,
+                attrs: &item_fn.attrs,
+                name: item_fn.sig.ident.to_string(),
+                span: item_fn.sig.ident.span(),
+                test_context,
+            },
+            findings,
+        );
+    }
+
+    fn analyse_dead_impl(
+        file: &SourceFile,
+        item_impl: &syn::ItemImpl,
+        source: &str,
+        test_context: bool,
+        findings: &mut Vec<Finding>,
+    ) {
+        for impl_item in &item_impl.items {
+            if let ImplItem::Fn(method) = impl_item {
+                analyse_dead_impl_method(file, method, source, test_context, findings);
+            }
+        }
+    }
+
+    fn analyse_dead_impl_method(
+        file: &SourceFile,
+        method: &syn::ImplItemFn,
+        source: &str,
+        test_context: bool,
+        findings: &mut Vec<Finding>,
+    ) {
+        analyse_dead_function(
+            file,
+            source,
+            DeadFunctionCandidate {
+                visibility: &method.vis,
+                attrs: &method.attrs,
+                name: method.sig.ident.to_string(),
+                span: method.sig.ident.span(),
+                test_context,
+            },
+            findings,
+        );
+    }
+
+    fn analyse_dead_mod(
+        file: &SourceFile,
+        item_mod: &syn::ItemMod,
+        source: &str,
+        test_context: bool,
+        findings: &mut Vec<Finding>,
+    ) {
+        let Some((_, items)) = &item_mod.content else {
+            return;
+        };
+        let nested_test_context = test_context || is_test_module(item_mod);
+        for nested in items {
+            analyse_dead_code_item(file, nested, source, nested_test_context, findings);
         }
     }
 
@@ -5035,45 +5161,82 @@ mod built_in_rules {
         blocks: &mut Vec<FunctionBlock>,
     ) {
         match item {
-            Item::Fn(item_fn) => blocks.push(function_block_from_parts(FunctionBlockParts {
-                lines,
-                name: item_fn.sig.ident.to_string(),
-                param_count: count_params(&item_fn.sig.inputs),
-                visibility: &item_fn.vis,
-                attrs: &item_fn.attrs,
-                test_context,
-                is_async: item_fn.sig.asyncness.is_some(),
-                returns_bool: returns_bool(&item_fn.sig.output),
-                name_start: item_fn.sig.ident.span().start(),
-                block_end: item_fn.block.span().end(),
-            })),
+            Item::Fn(item_fn) => push_item_function_block(item_fn, lines, test_context, blocks),
             Item::Impl(item_impl) => {
-                for impl_item in &item_impl.items {
-                    if let ImplItem::Fn(method) = impl_item {
-                        blocks.push(function_block_from_parts(FunctionBlockParts {
-                            lines,
-                            name: method.sig.ident.to_string(),
-                            param_count: count_params(&method.sig.inputs),
-                            visibility: &method.vis,
-                            attrs: &method.attrs,
-                            test_context,
-                            is_async: method.sig.asyncness.is_some(),
-                            returns_bool: returns_bool(&method.sig.output),
-                            name_start: method.sig.ident.span().start(),
-                            block_end: method.block.span().end(),
-                        }));
-                    }
-                }
+                push_impl_function_blocks(item_impl, lines, test_context, blocks)
             }
             Item::Mod(item_mod) => {
-                if let Some((_, items)) = &item_mod.content {
-                    let nested_test_context = test_context || is_test_module(item_mod);
-                    for nested in items {
-                        collect_function_blocks(nested, lines, nested_test_context, blocks);
-                    }
-                }
+                collect_module_function_blocks(item_mod, lines, test_context, blocks)
             }
             _ => {}
+        }
+    }
+
+    fn push_item_function_block(
+        item_fn: &syn::ItemFn,
+        lines: &[&str],
+        test_context: bool,
+        blocks: &mut Vec<FunctionBlock>,
+    ) {
+        blocks.push(function_block_from_parts(FunctionBlockParts {
+            lines,
+            name: item_fn.sig.ident.to_string(),
+            param_count: count_params(&item_fn.sig.inputs),
+            visibility: &item_fn.vis,
+            attrs: &item_fn.attrs,
+            test_context,
+            is_async: item_fn.sig.asyncness.is_some(),
+            returns_bool: returns_bool(&item_fn.sig.output),
+            name_start: item_fn.sig.ident.span().start(),
+            block_end: item_fn.block.span().end(),
+        }));
+    }
+
+    fn push_impl_function_blocks(
+        item_impl: &syn::ItemImpl,
+        lines: &[&str],
+        test_context: bool,
+        blocks: &mut Vec<FunctionBlock>,
+    ) {
+        for impl_item in &item_impl.items {
+            if let ImplItem::Fn(method) = impl_item {
+                push_impl_method_function_block(method, lines, test_context, blocks);
+            }
+        }
+    }
+
+    fn push_impl_method_function_block(
+        method: &syn::ImplItemFn,
+        lines: &[&str],
+        test_context: bool,
+        blocks: &mut Vec<FunctionBlock>,
+    ) {
+        blocks.push(function_block_from_parts(FunctionBlockParts {
+            lines,
+            name: method.sig.ident.to_string(),
+            param_count: count_params(&method.sig.inputs),
+            visibility: &method.vis,
+            attrs: &method.attrs,
+            test_context,
+            is_async: method.sig.asyncness.is_some(),
+            returns_bool: returns_bool(&method.sig.output),
+            name_start: method.sig.ident.span().start(),
+            block_end: method.block.span().end(),
+        }));
+    }
+
+    fn collect_module_function_blocks(
+        item_mod: &syn::ItemMod,
+        lines: &[&str],
+        test_context: bool,
+        blocks: &mut Vec<FunctionBlock>,
+    ) {
+        let Some((_, items)) = &item_mod.content else {
+            return;
+        };
+        let nested_test_context = test_context || is_test_module(item_mod);
+        for nested in items {
+            collect_function_blocks(nested, lines, nested_test_context, blocks);
         }
     }
 
@@ -5253,37 +5416,40 @@ mod built_in_rules {
     }
 
     fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
-        if bytes.get(start).copied()? != b'r' {
-            return None;
-        }
+        let (hashes, cursor) = raw_string_opening(bytes, start)?;
+        find_raw_string_end(bytes, hashes, cursor).or(Some(bytes.len()))
+    }
 
+    fn raw_string_opening(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+        (bytes.get(start).copied()? == b'r').then_some(())?;
         let mut cursor = start + 1;
-        let mut hashes = 0usize;
-        while bytes.get(cursor) == Some(&b'#') {
-            hashes += 1;
-            cursor += 1;
-        }
-        if bytes.get(cursor) != Some(&b'"') {
-            return None;
-        }
-        cursor += 1;
+        let hashes = count_raw_string_hashes(bytes, &mut cursor);
+        (bytes.get(cursor) == Some(&b'"')).then_some((hashes, cursor + 1))
+    }
 
+    fn count_raw_string_hashes(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut hashes = 0usize;
+        while bytes.get(*cursor) == Some(&b'#') {
+            hashes += 1;
+            *cursor += 1;
+        }
+        hashes
+    }
+
+    fn find_raw_string_end(bytes: &[u8], hashes: usize, mut cursor: usize) -> Option<usize> {
         while cursor < bytes.len() {
-            if bytes[cursor] == b'"' {
-                let mut hash_cursor = cursor + 1;
-                let mut matched = 0usize;
-                while matched < hashes && bytes.get(hash_cursor) == Some(&b'#') {
-                    matched += 1;
-                    hash_cursor += 1;
-                }
-                if matched == hashes {
-                    return Some(hash_cursor);
-                }
+            if bytes[cursor] == b'"' && raw_string_hashes_match(bytes, cursor + 1, hashes) {
+                return Some(cursor + 1 + hashes);
             }
             cursor += 1;
         }
+        None
+    }
 
-        Some(bytes.len())
+    fn raw_string_hashes_match(bytes: &[u8], start: usize, hashes: usize) -> bool {
+        bytes
+            .get(start..start + hashes)
+            .is_some_and(|slice| slice.iter().all(|byte| *byte == b'#'))
     }
 
     fn mask_bytes(bytes: &[u8], start: usize, end: usize, output: &mut String) {
@@ -6911,12 +7077,8 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
         }
     }
 
-    fn write_default_config(dir: &Path, body: &str) {
-        fs::write(dir.join(".gruff.json"), body).expect("config write");
-    }
-
-    fn write_yaml_config(dir: &Path, body: &str) {
-        fs::write(dir.join(".gruff.yaml"), body).expect("yaml config write");
+    fn write_config(dir: &Path, body: &str) {
+        fs::write(dir.join(".gruff-rs.yaml"), body).expect("yaml config write");
     }
 
     fn project_context_for_test(project_root: &Path) -> ProjectContext {
@@ -7125,11 +7287,11 @@ fn test_no_assert() {
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
-        write_default_config(dir.path(), r#"{ "unknown": true }"#);
+        write_config(dir.path(), r#"{ "unknown": true }"#);
         let error = load_config(dir.path(), &options).expect_err("unknown root key rejected");
         assert!(error.contains("unknown key `unknown`"), "{error}");
 
-        write_default_config(
+        write_config(
             dir.path(),
             r#"{ "rules": { "unknown.rule": { "enabled": false } } }"#,
         );
@@ -7142,14 +7304,14 @@ fn test_no_assert() {
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
-        write_default_config(
+        write_config(
             dir.path(),
             r#"{ "rules": { "size.parameter-count": { "thresholds": { "bogus": 1 } } } }"#,
         );
         let error = load_config(dir.path(), &options).expect_err("unknown threshold rejected");
         assert!(error.contains("unknown threshold `bogus`"), "{error}");
 
-        write_default_config(
+        write_config(
             dir.path(),
             r#"{ "rules": { "size.parameter-count": { "options": { "bogus": true } } } }"#,
         );
@@ -7158,7 +7320,7 @@ fn test_no_assert() {
     }
 
     #[test]
-    fn yaml_config_is_default_and_json_config_still_works_explicitly() {
+    fn rust_yaml_config_is_the_only_default_config_name() {
         let _guard = analysis_lock();
         let dir = tempdir().expect("tempdir");
         fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
@@ -7173,8 +7335,7 @@ fn test_no_assert() {
 "#,
         )
         .expect("fixture write");
-        write_default_config(dir.path(), r#"{ "unknown": true }"#);
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7192,23 +7353,25 @@ rules:
                 ..default_test_options()
             },
         )
-        .expect("yaml config is the preferred default");
+        .expect("gruff-rs yaml config is the preferred default");
         assert_missing_rule(&yaml_default, "size.parameter-count");
+    }
 
-        let json_explicit = run_project_analysis(
+    #[test]
+    fn unsupported_config_extensions_are_rejected() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("config.json"), "{}").expect("unsupported config write");
+        let error = load_config(
             dir.path(),
-            AnalysisOptions {
-                paths: vec![PathBuf::from("sample.rs")],
-                config: Some(PathBuf::from(".gruff.json")),
-                no_config: false,
-                no_baseline: true,
+            &AnalysisOptions {
+                config: Some(PathBuf::from("config.json")),
                 ..default_test_options()
             },
         )
-        .expect_err("explicit json config is still parsed and validated");
+        .expect_err("unsupported config extension rejected");
         assert!(
-            json_explicit.contains("unknown key `unknown`"),
-            "{json_explicit}"
+            error.contains("unsupported config extension `json`"),
+            "{error}"
         );
     }
 
@@ -7217,7 +7380,7 @@ rules:
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7229,7 +7392,7 @@ rules:
             load_config(dir.path(), &options).expect("single threshold shorthand accepted");
         assert_eq!(config.threshold("complexity.cognitive", "warn", 15.0), 20.0);
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7265,7 +7428,7 @@ rules:
             .concat(),
         )
         .expect("fixture write");
-        write_default_config(
+        write_config(
             dir.path(),
             r#"{
   "rules": {
@@ -7322,7 +7485,7 @@ rules:
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7333,7 +7496,7 @@ rules:
         assert!(config.rule_enabled("security.process-command"));
         assert!(config.rule_enabled("docs.missing-readme"));
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7345,7 +7508,7 @@ rules:
         assert!(config.rule_enabled("security.unsafe-block"));
         assert!(!config.rule_enabled("docs.missing-readme"));
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7359,7 +7522,7 @@ rules:
         assert!(config.rule_enabled("security.unsafe-block"));
         assert!(!config.rule_enabled("docs.missing-readme"));
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7379,7 +7542,7 @@ rules:
         let dir = tempdir().expect("tempdir");
         let options = default_test_options();
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7390,7 +7553,7 @@ rules:
         assert!(error.contains("unknown selector `Securtiy`"), "{error}");
         assert!(error.contains("rules.select[0]"), "{error}");
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7403,7 +7566,7 @@ rules:
             "{error}"
         );
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7416,7 +7579,7 @@ rules:
             "{error}"
         );
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -7485,7 +7648,7 @@ rules:
             .concat(),
         )
         .expect("fixture write");
-        write_default_config(
+        write_config(
             dir.path(),
             r#"{
   "rules": {
@@ -7523,7 +7686,7 @@ rules:
 "#
         );
         fs::write(dir.path().join("sample.rs"), sample).expect("fixture write");
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 allowlists:
@@ -7979,7 +8142,7 @@ version = "3.0.0"
 "#,
         )
         .expect("lockfile write");
-        write_yaml_config(
+        write_config(
             threshold_dir.path(),
             r#"
 rules:
@@ -7999,7 +8162,7 @@ rules:
         .expect("thresholded analysis succeeds");
         assert_missing_rule(&thresholded, "dependency.duplicate-locked-version");
 
-        write_yaml_config(
+        write_config(
             threshold_dir.path(),
             r#"
 rules:
@@ -8051,7 +8214,7 @@ mod gamma;
 "#,
         )
         .expect("lib write");
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -8149,7 +8312,7 @@ mod alpha;
         assert_missing_rule(&report, "architecture.public-api-surface");
         assert_missing_rule(&report, "architecture.large-module");
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -8715,7 +8878,7 @@ pub fn complex_metric(values: &[i32]) -> i32 {
 "#,
         )
         .expect("metrics lib write");
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -8793,7 +8956,7 @@ rules:
             "expected metric findings in complexity: {complexity:?}"
         );
 
-        write_yaml_config(
+        write_config(
             dir.path(),
             r#"
 rules:
@@ -9144,7 +9307,7 @@ rules:
             concat!("DATABASE_", "PASSWORD=ignored-secret-123\n"),
         )
         .expect("ignored secret write");
-        write_default_config(dir.path(), r#"{ "paths": { "ignore": ["ignored/**"] } }"#);
+        write_config(dir.path(), r#"{ "paths": { "ignore": ["ignored/**"] } }"#);
 
         let discovery = discover_sources(
             dir.path(),

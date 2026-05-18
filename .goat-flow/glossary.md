@@ -1,6 +1,6 @@
 # Glossary
 
-Last reviewed 2026-05-14.
+Last reviewed 2026-05-18.
 
 ## Analyzer Terms
 
@@ -34,4 +34,4 @@ Fixture = Intentionally flawed sample input under `fixtures/` used to exercise a
 
 History file = Optional JSON side file updated by `record_history` to capture score/finding counts over time.
 
-Config = Optional settings input parsed by `load_config` from `.gruff.yaml`, `.gruff.yml`, `.gruff.json`, or an explicit `--config` path. Shared keys are `paths.ignore`, `allowlists.acceptedAbbreviations`, `allowlists.secretPreviews`, and `rules`; Rust currently does not implement `selection`.
+Config = Optional YAML settings input parsed by `load_config` from `.gruff-rs.yaml` or an explicit `--config` path. Shared keys are `paths.ignore`, `allowlists.acceptedAbbreviations`, `allowlists.secretPreviews`, and `rules`; Rust currently does not implement `selection`.

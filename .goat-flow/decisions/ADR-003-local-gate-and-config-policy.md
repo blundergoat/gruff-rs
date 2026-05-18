@@ -5,7 +5,7 @@
 
 ## Decision
 
-The default project config is `.gruff.yaml`, with `.gruff.yml` and explicit `.gruff.json` support retained. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes are command errors. A `threshold` shorthand is allowed only for rules with exactly one threshold.
+The default project config is `.gruff-rs.yaml`. Other gruff config names and non-YAML config files are intentionally unsupported before public release. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes are command errors. A `threshold` shorthand is allowed only for rules with exactly one threshold.
 
 Local and CI verification use `bash scripts/check.sh`. The script runs formatting, Clippy, unit tests, `list-rules`, fixture scan, and self-scan diagnostics smoke checks. Self-scan diagnostics fail the gate; self-scan findings are allowed under `--fail-on none` until a baseline or score threshold policy is chosen.
 
@@ -24,4 +24,4 @@ The project needs a checked-in analyzer config shape that humans can copy and mo
 
 ## Reversibility
 
-The fast gate can be split into a deep mode if `bash scripts/check.sh` becomes slow enough to discourage use. Config compatibility changes must keep `.gruff.yaml` documented or provide a migration path.
+The fast gate can be split into a deep mode if `bash scripts/check.sh` becomes slow enough to discourage use. Config compatibility changes can still add migration paths after a public release creates external users.

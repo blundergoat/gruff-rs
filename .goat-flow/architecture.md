@@ -23,7 +23,7 @@ The analyzer reads user-selected files and does not execute analyzed source. Pat
 ## Data Flow
 
 Input paths are discovered with Git-ignore-aware traversal that reads ignore
-files as data, includes non-ignored dot-directories, and layers `.gruff.yaml`
+files as data, includes non-ignored dot-directories, and layers `.gruff-rs.yaml`
 `paths.ignore` on top of repository ignore policy. Explicit file paths are still
 accepted as focused scan targets, and `--include-ignored` opts into local ignored
 paths for deliberate inspection while VCS internals stay traversal-blocked.
@@ -47,7 +47,7 @@ diagnostics such as `patch-filter` stay visible without failing the invocation.
 SARIF rendering must not change `gruff.analysis.v1`, rule ids, fingerprints,
 baseline matching, scoring, or fail-on behavior.
 
-Rule tuning is loaded by `load_config` from an explicit config path or the first default project config found in this order: `.gruff.yaml`, `.gruff.yml`, `.gruff.json`. Config validation is strict: unknown root keys, rule ids, selectors, threshold names, option names, and unsupported value shapes return command errors. Rule selection follows `.goat-flow/decisions/ADR-005-rule-selection-profiles-and-selector-precedence.md`: `rules.select` is an optional allow-list over exact rule ids, dotted prefixes, and public pillars; `rules.ignore` subtracts matches and wins on overlap; exact per-rule blocks remain keyed by canonical rule id for `enabled` and threshold settings. The committed `.gruff.yaml` explicitly enumerates every built-in rule so the local rubric surface is visible while preserving the curated threshold overrides. Scoring includes all built-in static pillars even when a pillar has zero findings, so clean or narrow scans still communicate coverage.
+Rule tuning is loaded by `load_config` from an explicit YAML config path or the default `.gruff-rs.yaml`. Config validation is strict: unknown root keys, rule ids, selectors, threshold names, option names, and unsupported value shapes return command errors. Rule selection follows `.goat-flow/decisions/ADR-005-rule-selection-profiles-and-selector-precedence.md`: `rules.select` is an optional allow-list over exact rule ids, dotted prefixes, and public pillars; `rules.ignore` subtracts matches and wins on overlap; exact per-rule blocks remain keyed by canonical rule id for `enabled` and threshold settings. The committed `.gruff-rs.yaml` explicitly enumerates every built-in rule so the local rubric surface is visible while preserving the curated threshold overrides. Scoring includes all built-in static pillars even when a pillar has zero findings, so clean or narrow scans still communicate coverage.
 
 ## Deployment / Operations
 
@@ -62,4 +62,4 @@ CI lives in `.github/workflows/ci.yml` and runs the same local preflight command
 - Project-aware dead-code and architecture rules are candidate/structural checks. They must not claim type-aware certainty, module-cycle certainty, or cfg-matrix certainty without a new analysis model.
 - Advanced metric rules use deterministic token counts and calibrated thresholds for advisory findings. They complement, but do not replace, the existing `score` object in `gruff.analysis.v1`.
 - `fixtures/` and `tests/fixtures/` intentionally contain noisy or invalid inputs and should not be cleaned up without replacing the analyzer coverage they provide.
-- `.gruff.yaml` is the default project config contract. Keep `.gruff.yml` and explicit `.gruff.json` compatibility unless a config compatibility decision replaces them.
+- `.gruff-rs.yaml` is the default project config contract. Other gruff config names and non-YAML config files are intentionally unsupported before public release.

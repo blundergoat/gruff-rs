@@ -10,7 +10,7 @@ rules are skipped during ordinary analysis unless the operator explicitly opts
 into ignored-path scanning.
 
 This policy is layered with gruff's own config: Git ignore rules describe local
-workspace exclusion, while `.gruff.yaml` `paths.ignore` remains the analyzer's
+workspace exclusion, while `.gruff-rs.yaml` `paths.ignore` remains the analyzer's
 project-specific exclusion policy. Explicit input paths and `--include-ignored`
 must have documented precedence so operators can intentionally inspect excluded
 content when needed.

@@ -37,7 +37,7 @@ settings with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT`.
 
 ## Config
 
-`gruff-rs` reads `.gruff.yaml` by default. It also recognizes `.gruff.yml` and `.gruff.json`, and an explicit path passed with `--config`.
+`gruff-rs` reads `.gruff-rs.yaml` by default. Use `--config` to pass another YAML config path.
 Unknown keys, unknown rule ids, and unknown selectors are rejected.
 
 ```yaml
@@ -123,7 +123,7 @@ selector with:
 
 Use `--no-config` to ignore project config.
 
-Default directory scans honour Git ignore rules and `.gruff.yaml` `paths.ignore`.
+Default directory scans honour Git ignore rules and `.gruff-rs.yaml` `paths.ignore`.
 Committed dot-directories remain eligible for text/security checks when they are
 not ignored by Git. Pass `--include-ignored` for deliberate local inspection of
 ignored paths, or pass an explicit file/directory path to scan a focused target.
@@ -279,6 +279,6 @@ Run an explicit fixture command when verifying fixture coverage.
 ## Troubleshooting
 
 - Parse diagnostics: run `./bin/gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`, or use SARIF invocation notifications from `./bin/gruff-rs analyse <path> --format sarif --fail-on none`; Rust AST rules are skipped for parse-failed files while text rules still run.
-- Config errors: check unknown root keys, unknown rule ids, unsupported threshold names, and invalid value shapes in `.gruff.yaml`.
+- Config errors: check unknown root keys, unknown rule ids, unsupported threshold names, and invalid value shapes in `.gruff-rs.yaml`.
 - Baselines: regenerate only after confirming the current findings are intentionally accepted.
 - Intentional fixture findings: use `fixtures/README.md` and `tests/fixtures/README.md` to confirm whether a noisy file is a test input.

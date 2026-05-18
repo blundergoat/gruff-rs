@@ -7,7 +7,7 @@
 `README.md` = Project overview, CLI examples, and config shape.
 `AGENTS.md` = Codex/goat-flow operating instructions.
 `.gitignore` = Ignores Cargo output plus analyzer baseline/history side files.
-`.gruff.yaml` = Project-level analyzer config; default config file discovered by `gruff-rs`.
+`.gruff-rs.yaml` = Project-level analyzer config; default config file discovered by `gruff-rs`.
 
 ## Source
 
