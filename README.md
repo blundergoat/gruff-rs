@@ -98,6 +98,11 @@ rules:
     threshold: 5
   test-quality.long-test:
     threshold: 30
+exclude:
+  - rule: security.process-command
+    paths: ["tests/**"]
+    message_contains: "Command::new"
+    reason: "test-only synthetic command"
 ```
 
 Rule selectors can target an exact rule id, a dotted prefix, or a public pillar:
@@ -128,6 +133,25 @@ Committed dot-directories remain eligible for text/security checks when they are
 not ignored by Git. Pass `--include-ignored` for deliberate local inspection of
 ignored paths, or pass an explicit file/directory path to scan a focused target.
 VCS internals such as `.git/` remain blocked during directory traversal.
+
+Report-level exclusions live under top-level `exclude` and run after analysis
+and exact baseline filtering. They hide reviewed findings from rendered output;
+they do not stop files from being read or scanned. Each entry requires a
+`reason`, accepts `rule` as an exact id, dotted prefix, or public pillar
+selector, and can narrow by `paths` plus `message_contains`:
+
+```yaml
+exclude:
+  - rule: sensitive-data.aws-access-key
+    paths: ["tests/**"]
+    message_contains: "EXAMPLE"
+    reason: "test fixture uses a synthetic key shape"
+```
+
+Native JSON includes a top-level `suppressions` summary with each entry's
+reason and count. Text output prints a suppression summary when an entry hides
+findings. Use `paths.ignore` only for discovery-time "do not read" policy; use
+`exclude` for audited report suppression.
 
 Cargo dependency checks are local-only. They read `Cargo.toml` and `Cargo.lock`
 as data and do not query registries, run Cargo, or consume vulnerability feeds.
@@ -184,7 +208,7 @@ git diff --no-ext-diff > /tmp/gruff.patch
 
 Pass `--diff-patch -` to read the patch from stdin. This mode does not execute
 Git or external diff tools; it runs analysis normally, applies baselines first,
-then filters the report. The JSON/SARIF/text diagnostics include a
+applies report-level exclusions, then filters the report. The JSON/SARIF/text diagnostics include a
 `patch-filter` summary with kept and suppressed finding counts. The older
 Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe` and
 should be treated as an explicit trust-boundary opt-in. This follows
@@ -194,7 +218,7 @@ should be treated as an explicit trust-boundary opt-in. This follows
 
 JSON analysis output uses `schemaVersion: "gruff.analysis.v1"`. The top-level
 contract includes `schemaVersion`, `tool`, `run`, `paths`, `summary`, `score`,
-`findings`, `diagnostics`, and `baseline`. Finding objects include stable
+`findings`, `diagnostics`, `suppressions`, and `baseline`. Finding objects include stable
 integration fields such as `ruleId`, `severity`, `confidence`, `pillar`,
 `filePath`, `line`, `column`, `endLine`, `symbol`, `message`, `remediation`,
 `fingerprint`, `tier`, `secondaryPillars`, and `metadata`.
@@ -217,7 +241,9 @@ SARIF driver rules come from the sorted built-in rule registry and include
 native metadata such as pillar, tier, kind, default severity, confidence,
 thresholds, and options. Results carry the native rule id, SARIF severity level,
 message, URI-safe artifact path, region data when available, and
-`partialFingerprints.gruffFingerprint`.
+`partialFingerprints.gruffFingerprint`. Results hidden by report-level
+exclusions are emitted with `suppressions[].kind = "inSource"` and the
+configured reason as `justification`.
 
 Fatal diagnostics still fail analysis with exit code 2. In SARIF output all run
 diagnostics are reported under

@@ -19,16 +19,16 @@ The non-obvious failure mode is losing analyzer coverage while making the reposi
 
 Without that split, self-scan can report rule examples embedded inside unit-test fixture strings as if they were real analyzer code. M03 caught this when test-quality checks flagged raw fixture snippets in `src/main.rs` tests.
 
+## Resolved Entries
+
 ## Footgun: Report Exclusions Are Not Discovery Ignores
 
-**Status:** active | **Created:** 2026-05-16 | **Evidence:** ACTUAL_MEASURED
+**Status:** resolved | **Created:** 2026-05-16 | **Resolved:** 2026-05-18 | **Evidence:** ACTUAL_MEASURED
 **hallucination-risk:** high
 **Symptoms:** Adding a richer exclusion DSL by widening `paths.ignore` can hide committed files from security and sensitive-data rules instead of only suppressing reviewed findings.
-**Why it happens:** `src/main.rs` (search: `config.ignored_paths = string_array(ignore, "paths.ignore")`) treats `paths.ignore` as discovery-time policy. ADR-004 also separates Git ignore rules from gruff config ignores, while M23 research in `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `Exclusions hide reported issues but do not skip analysis`) identified report-level exclusions as a different layer.
-**Evidence:** `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md` (search: `Report-level`) records the distinction.
-**Prevention:** Keep `paths.ignore` for "do not read" policy. Put future rule/path/message/source suppressions in a post-analysis exclusion layer with reasons and suppression counts.
-
-## Resolved Entries
+**Why it happened:** `src/main.rs` (search: `config.ignored_paths = string_array(ignore, "paths.ignore")`) treats `paths.ignore` as discovery-time policy. ADR-004 also separates Git ignore rules from gruff config ignores, while M23 research in `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `Exclusions hide reported issues but do not skip analysis`) identified report-level exclusions as a different layer.
+**Resolution:** `src/main.rs` (search: `apply_report_exclusions`) adds top-level `exclude` entries that run after exact baselines and before patch filtering. They require reasons, record suppression counts, and filter `AnalysisReport.findings` without changing source discovery.
+**Prevention:** Keep `paths.ignore` for "do not read" policy. Use top-level `exclude` for reviewed report suppressions with reasons and counts.
 
 ## Footgun: Diff Mode Currently Executes Git
 

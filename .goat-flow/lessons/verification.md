@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-17
+last_reviewed: 2026-05-18
 ---
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
@@ -50,3 +50,13 @@ If a candidate makes the `src.*` scenarios slower or noisier, revert only that
 candidate and keep the measured wins. Finish with `bash scripts/check.sh` plus a
 default `bash scripts/test-performance.sh` run so the final diff has both
 correctness and performance evidence.
+
+## Lesson: Clippy Shape Failures Deserve Design Fixes
+
+**Created:** 2026-05-18
+
+When a late verification pass catches a structural Clippy failure, do not add an
+allow just to finish the milestone. In M31, threading suppression state pushed
+`src/main.rs` (search: `fn build_report`) over the argument-count limit; bundling
+the summaries and SARIF-only suppressed findings into a small state struct kept
+the pipeline explicit and lint-clean.

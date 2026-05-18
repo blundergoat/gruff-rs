@@ -429,6 +429,7 @@ struct Config {
     accepted_abbreviations: BTreeSet<String>,
     secret_previews: BTreeSet<String>,
     selectors: SelectorSet,
+    exclusions: Vec<ExclusionRule>,
     rule_settings: HashMap<String, RuleSetting>,
 }
 
@@ -445,6 +446,15 @@ struct RuleSetting {
     thresholds: HashMap<String, f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExclusionRule {
+    selector: String,
+    rule_ids: BTreeSet<String>,
+    paths: Vec<String>,
+    message_contains: Option<String>,
+    reason: String,
+}
+
 impl Config {
     fn default() -> Self {
         Self {
@@ -455,6 +465,7 @@ impl Config {
                 .collect(),
             secret_previews: BTreeSet::new(),
             selectors: SelectorSet::default(),
+            exclusions: Vec::new(),
             rule_settings: HashMap::new(),
         }
     }
@@ -745,9 +756,12 @@ struct AnalysisReport {
     summary: Summary,
     paths: PathSummary,
     diagnostics: Vec<RunDiagnostic>,
+    suppressions: Vec<SuppressionSummary>,
     findings: Vec<Finding>,
     score: ScoreReport,
     baseline: Option<BaselineReport>,
+    #[serde(skip)]
+    suppressed_findings: Vec<SuppressedFinding>,
 }
 
 #[derive(Debug, Serialize)]
@@ -788,6 +802,29 @@ struct BaselineReport {
     source: String,
     suppressed: usize,
     generated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SuppressionSummary {
+    index: usize,
+    rule: String,
+    paths: Vec<String>,
+    message_contains: Option<String>,
+    reason: String,
+    suppressed: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SuppressedFinding {
+    finding: Finding,
+    suppression: SuppressionSummary,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReportSuppressions {
+    summaries: Vec<SuppressionSummary>,
+    suppressed_findings: Vec<SuppressedFinding>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1108,6 +1145,71 @@ fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
 }
 
+fn apply_report_exclusions(
+    findings: Vec<Finding>,
+    exclusions: &[ExclusionRule],
+) -> (
+    Vec<Finding>,
+    Vec<SuppressionSummary>,
+    Vec<SuppressedFinding>,
+) {
+    if exclusions.is_empty() {
+        return (findings, Vec::new(), Vec::new());
+    }
+
+    let mut summaries: Vec<SuppressionSummary> = exclusions
+        .iter()
+        .enumerate()
+        .map(|(index, exclusion)| SuppressionSummary {
+            index,
+            rule: exclusion.selector.clone(),
+            paths: exclusion.paths.clone(),
+            message_contains: exclusion.message_contains.clone(),
+            reason: exclusion.reason.clone(),
+            suppressed: 0,
+        })
+        .collect();
+    let mut kept = Vec::new();
+    let mut suppressed = Vec::new();
+
+    for finding in findings {
+        if let Some(index) = exclusions
+            .iter()
+            .position(|exclusion| exclusion_matches_finding(exclusion, &finding))
+        {
+            summaries[index].suppressed += 1;
+            suppressed.push(SuppressedFinding {
+                finding,
+                suppression: summaries[index].clone(),
+            });
+        } else {
+            kept.push(finding);
+        }
+    }
+
+    (kept, summaries, suppressed)
+}
+
+fn exclusion_matches_finding(exclusion: &ExclusionRule, finding: &Finding) -> bool {
+    if !exclusion.rule_ids.contains(&finding.rule_id) {
+        return false;
+    }
+    if !exclusion.paths.is_empty() {
+        let file_path = normalize_report_path(&finding.file_path);
+        if !exclusion
+            .paths
+            .iter()
+            .any(|pattern| path_matches(pattern, &file_path))
+        {
+            return false;
+        }
+    }
+    exclusion
+        .message_contains
+        .as_ref()
+        .is_none_or(|message| finding.message.contains(message))
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct DiffPatchLineMap {
     lines_by_file: BTreeMap<String, BTreeSet<usize>>,
@@ -1280,6 +1382,10 @@ fn apply_diff_patch_filter(
             kept.push(finding);
         }
     }
+    report
+        .suppressed_findings
+        .retain(|suppressed| diff_patch_keeps_finding(&suppressed.finding, patch, &changed_files));
+    recount_suppressions(&mut report.suppressions, &report.suppressed_findings);
 
     let kept_findings = kept.len();
     let suppressed_findings = total_findings.saturating_sub(kept_findings);
@@ -1298,6 +1404,20 @@ fn apply_diff_patch_filter(
         line: None,
     });
     report
+}
+
+fn recount_suppressions(
+    summaries: &mut [SuppressionSummary],
+    suppressed_findings: &[SuppressedFinding],
+) {
+    for summary in summaries.iter_mut() {
+        summary.suppressed = 0;
+    }
+    for suppressed in suppressed_findings {
+        if let Some(summary) = summaries.get_mut(suppressed.suppression.index) {
+            summary.suppressed += 1;
+        }
+    }
 }
 
 fn diff_patch_keeps_finding(
@@ -1351,6 +1471,12 @@ fn run_analysis_in_project(
         analyse_discovered_sources(project_root, &discovery.files, &config, &mut diagnostics);
     let baseline_report = resolve_baseline(project_root, options, &mut findings)?;
     sort_and_dedupe_findings(&mut findings);
+    let (findings, summaries, suppressed_findings) =
+        apply_report_exclusions(findings, &config.exclusions);
+    let suppressions = ReportSuppressions {
+        summaries,
+        suppressed_findings,
+    };
     let report = build_report(
         project_root,
         options,
@@ -1358,6 +1484,7 @@ fn run_analysis_in_project(
         diagnostics,
         findings,
         baseline_report,
+        suppressions,
     );
     let mut report = apply_diff_selection(project_root, options, report, &analysed_paths)?;
     record_history_if_requested(project_root, options, &mut report);
@@ -1450,6 +1577,7 @@ fn build_report(
     diagnostics: Vec<RunDiagnostic>,
     findings: Vec<Finding>,
     baseline_report: Option<BaselineReport>,
+    suppressions: ReportSuppressions,
 ) -> AnalysisReport {
     let summary = summarize(&findings);
     let score = score_report(&findings);
@@ -1472,9 +1600,11 @@ fn build_report(
             missing_paths: discovery.missing_paths,
         },
         diagnostics,
+        suppressions: suppressions.summaries,
         findings,
         score,
         baseline: baseline_report,
+        suppressed_findings: suppressions.suppressed_findings,
     }
 }
 
@@ -1756,7 +1886,11 @@ fn apply_config_value(path: &Path, value: &Value, config: &mut Config) -> Result
     let root = value
         .as_object()
         .ok_or_else(|| format!("config {} must be a JSON object", path.display()))?;
-    reject_unknown_keys(root, &["paths", "allowlists", "rules"], "config root")?;
+    reject_unknown_keys(
+        root,
+        &["paths", "allowlists", "rules", "exclude"],
+        "config root",
+    )?;
 
     if let Some(paths_value) = root.get("paths") {
         apply_paths_section(paths_value, config)?;
@@ -1766,6 +1900,9 @@ fn apply_config_value(path: &Path, value: &Value, config: &mut Config) -> Result
     }
     if let Some(rules_value) = root.get("rules") {
         apply_rules_section(rules_value, config)?;
+    }
+    if let Some(exclude_value) = root.get("exclude") {
+        apply_exclusions_section(exclude_value, config)?;
     }
     Ok(())
 }
@@ -1826,6 +1963,93 @@ fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), S
         )?;
     }
     Ok(())
+}
+
+fn apply_exclusions_section(exclude_value: &Value, config: &mut Config) -> Result<(), String> {
+    let registry = rules::builtin_registry();
+    let entries = exclude_value
+        .as_array()
+        .ok_or_else(|| "config key `exclude` must be an array".to_string())?;
+    let mut exclusions = Vec::new();
+    for (index, entry_value) in entries.iter().enumerate() {
+        exclusions.push(parse_exclusion_rule(index, entry_value, &registry)?);
+    }
+    config.exclusions = exclusions;
+    Ok(())
+}
+
+fn parse_exclusion_rule(
+    index: usize,
+    entry_value: &Value,
+    registry: &rules::RuleRegistry,
+) -> Result<ExclusionRule, String> {
+    let entry_path = format!("exclude[{index}]");
+    let entry = entry_value
+        .as_object()
+        .ok_or_else(|| format!("config key `{entry_path}` must be an object"))?;
+    reject_unknown_keys(
+        entry,
+        &["rule", "paths", "message_contains", "reason"],
+        &format!("config key `{entry_path}`"),
+    )?;
+
+    let selector = required_config_string(entry, "rule", &format!("{entry_path}.rule"))?;
+    let rule_ids = expand_rule_selector(&selector, registry, &format!("{entry_path}.rule"))?;
+    let paths = entry
+        .get("paths")
+        .map(|value| {
+            string_array(value, &format!("{entry_path}.paths")).map(|paths| {
+                paths
+                    .into_iter()
+                    .map(|path| normalize_report_path(&path))
+                    .collect()
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let message_contains = entry
+        .get("message_contains")
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                format!("config key `{entry_path}.message_contains` must be a string")
+            })
+        })
+        .transpose()?;
+    let reason = required_config_string(entry, "reason", &format!("{entry_path}.reason"))?;
+    if reason.trim().is_empty() {
+        return Err(format!(
+            "config key `{entry_path}.reason` must be a non-empty string"
+        ));
+    }
+    if message_contains
+        .as_deref()
+        .is_some_and(|message| message.is_empty())
+    {
+        return Err(format!(
+            "config key `{entry_path}.message_contains` must be a non-empty string"
+        ));
+    }
+
+    Ok(ExclusionRule {
+        selector,
+        rule_ids,
+        paths,
+        message_contains,
+        reason,
+    })
+}
+
+fn required_config_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<String, String> {
+    object
+        .get(key)
+        .ok_or_else(|| format!("missing required config key `{path}`"))?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("config key `{path}` must be a string"))
 }
 
 fn apply_selector_settings(
@@ -5994,7 +6218,30 @@ fn render_text(report: &AnalysisReport) -> String {
         }
     }
 
+    let suppressed = total_suppressed_findings(&report.suppressions);
+    if suppressed > 0 {
+        let details = report
+            .suppressions
+            .iter()
+            .filter(|summary| summary.suppressed > 0)
+            .map(|summary| {
+                format!(
+                    "exclude[{}] {}: {} ({})",
+                    summary.index, summary.rule, summary.suppressed, summary.reason
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        output.push_str(&format!(
+            "\nSuppressed findings: {suppressed} via {details}\n"
+        ));
+    }
+
     output
+}
+
+fn total_suppressed_findings(suppressions: &[SuppressionSummary]) -> usize {
+    suppressions.iter().map(|summary| summary.suppressed).sum()
 }
 
 fn render_markdown(report: &AnalysisReport) -> String {
@@ -6058,11 +6305,17 @@ fn render_sarif(report: &AnalysisReport) -> String {
     for definition in registry.definitions() {
         rules.push(sarif_rule(definition));
     }
-    let results: Vec<Value> = report
+    let mut results: Vec<Value> = report
         .findings
         .iter()
         .map(|finding| sarif_result(finding, &rule_indices))
         .collect();
+    results.extend(
+        report
+            .suppressed_findings
+            .iter()
+            .map(|suppressed| sarif_suppressed_result(suppressed, &rule_indices)),
+    );
 
     serde_json::to_string_pretty(&json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -6210,6 +6463,25 @@ fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value
     });
     if let Some(rule_index) = rule_indices.get(finding.rule_id.as_str()) {
         result["ruleIndex"] = json!(rule_index);
+    }
+    result
+}
+
+fn sarif_suppressed_result(
+    suppressed: &SuppressedFinding,
+    rule_indices: &HashMap<&str, usize>,
+) -> Value {
+    let mut result = sarif_result(&suppressed.finding, rule_indices);
+    if let Value::Object(result_object) = &mut result {
+        result_object.insert(
+            "suppressions".to_string(),
+            json!([
+                {
+                    "kind": "inSource",
+                    "justification": &suppressed.suppression.reason,
+                },
+            ]),
+        );
     }
     result
 }
@@ -6795,9 +7067,11 @@ mod tests {
                 missing_paths: Vec::new(),
             },
             diagnostics,
+            suppressions: Vec::new(),
             findings,
             score,
             baseline: None,
+            suppressed_findings: Vec::new(),
         }
     }
 
@@ -7014,6 +7288,299 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
             "--diff-git-unsafe",
         ]);
         assert!(with_flag.is_ok());
+    }
+
+    #[test]
+    fn exclusion_filter_counts_rule_path_message_and_unmatched_entries() {
+        let registry = rules::builtin_registry();
+        let findings = vec![
+            test_finding(
+                "docs.missing-public-doc",
+                "src/lib.rs",
+                1,
+                Severity::Advisory,
+                Pillar::Documentation,
+            ),
+            test_finding(
+                "security.process-command",
+                "tests/fixture.rs",
+                4,
+                Severity::Warning,
+                Pillar::Security,
+            ),
+            test_finding(
+                "waste.unwrap-expect",
+                "src/lib.rs",
+                5,
+                Severity::Advisory,
+                Pillar::Waste,
+            ),
+            Finding::new(
+                "size.parameter-count",
+                "too many params",
+                "src/lib.rs",
+                Some(9),
+                Severity::Warning,
+                Pillar::Size,
+                Confidence::High,
+                Some("process".to_string()),
+                None,
+                json!({}),
+            ),
+            test_finding(
+                "security.process-command",
+                "src/lib.rs",
+                6,
+                Severity::Warning,
+                Pillar::Security,
+            ),
+        ];
+        let exclusions = vec![
+            ExclusionRule {
+                selector: "docs.missing-public-doc".to_string(),
+                rule_ids: expand_rule_selector("docs.missing-public-doc", &registry, "test.rule")
+                    .expect("exact selector"),
+                paths: Vec::new(),
+                message_contains: None,
+                reason: "legacy docs debt".to_string(),
+            },
+            ExclusionRule {
+                selector: "security.process-command".to_string(),
+                rule_ids: expand_rule_selector("security.process-command", &registry, "test.rule")
+                    .expect("exact selector"),
+                paths: vec!["tests/**".to_string()],
+                message_contains: None,
+                reason: "test fixture command".to_string(),
+            },
+            ExclusionRule {
+                selector: "waste.unwrap-expect".to_string(),
+                rule_ids: expand_rule_selector("waste.unwrap-expect", &registry, "test.rule")
+                    .expect("exact selector"),
+                paths: Vec::new(),
+                message_contains: Some("unwrap".to_string()),
+                reason: "accepted unwrap".to_string(),
+            },
+            ExclusionRule {
+                selector: "size.parameter-count".to_string(),
+                rule_ids: expand_rule_selector("size.parameter-count", &registry, "test.rule")
+                    .expect("exact selector"),
+                paths: vec!["src/**".to_string()],
+                message_contains: Some("params".to_string()),
+                reason: "generated adapter".to_string(),
+            },
+            ExclusionRule {
+                selector: "sensitive-data.aws-access-key".to_string(),
+                rule_ids: expand_rule_selector(
+                    "sensitive-data.aws-access-key",
+                    &registry,
+                    "test.rule",
+                )
+                .expect("exact selector"),
+                paths: Vec::new(),
+                message_contains: None,
+                reason: "unused exclusion stays auditable".to_string(),
+            },
+        ];
+
+        let (kept, summaries, suppressed) = apply_report_exclusions(findings, &exclusions);
+        eprintln!(
+            "exclusion kept rule ids: {:?}; suppression counts: {:?}",
+            kept.iter()
+                .map(|finding| finding.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            summaries
+                .iter()
+                .map(|summary| summary.suppressed)
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].file_path, "src/lib.rs");
+        assert_eq!(kept[0].rule_id, "security.process-command");
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.suppressed)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 1, 0]
+        );
+        assert_eq!(suppressed.len(), 4);
+    }
+
+    #[test]
+    fn exclusion_config_rejects_missing_reason_unknown_rule_and_bad_shapes() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_config(
+            dir.path(),
+            r#"
+exclude:
+  - rule: security.process-command
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("missing reason rejected");
+        assert!(error.contains("missing required config key `exclude[0].reason`"));
+
+        write_config(
+            dir.path(),
+            r#"
+exclude:
+  - rule: unknown.rule
+    reason: "unknown rule"
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("unknown rule rejected");
+        assert!(error.contains("unknown selector `unknown.rule`"), "{error}");
+        assert!(error.contains("exclude[0].rule"), "{error}");
+
+        write_config(
+            dir.path(),
+            r#"
+exclude:
+  - rule: security.process-command
+    paths: "tests/**"
+    reason: "bad paths"
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("bad paths rejected");
+        assert!(error.contains("config key `exclude[0].paths` must be an array"));
+    }
+
+    #[test]
+    fn exclusion_config_reuses_rule_selector_parsing() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+exclude:
+  - rule: security.*
+    reason: "all security findings are reviewed separately"
+"#,
+        );
+
+        let config = load_config(dir.path(), &default_test_options())
+            .expect("exclusion selector config loads");
+
+        assert_eq!(config.exclusions.len(), 1);
+        assert!(config.exclusions[0]
+            .rule_ids
+            .contains("security.process-command"));
+        assert!(config.exclusions[0]
+            .rule_ids
+            .contains("security.unsafe-block"));
+    }
+
+    #[test]
+    fn report_level_exclusions_hide_findings_without_skipping_discovery() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::create_dir_all(dir.path().join("tests")).expect("tests dir");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            concat!(
+                "pub fn run_src() {\n",
+                "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+                "}\n"
+            ),
+        )
+        .expect("src write");
+        fs::write(
+            dir.path().join("tests/process.rs"),
+            concat!(
+                "pub fn run_test() {\n",
+                "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+                "}\n"
+            ),
+        )
+        .expect("tests write");
+        write_config(
+            dir.path(),
+            r#"
+exclude:
+  - rule: security.process-command
+    paths: ["tests/**"]
+    reason: "test-only synthetic command"
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![
+                    PathBuf::from("src/lib.rs"),
+                    PathBuf::from("tests/process.rs"),
+                ],
+                no_config: false,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        assert_eq!(report.paths.analysed_files, 2);
+        assert!(report.findings.iter().any(|finding| {
+            finding.rule_id == "security.process-command" && finding.file_path == "src/lib.rs"
+        }));
+        assert!(!report.findings.iter().any(|finding| {
+            finding.rule_id == "security.process-command" && finding.file_path == "tests/process.rs"
+        }));
+        assert_eq!(total_suppressed_findings(&report.suppressions), 1);
+        assert_eq!(report.suppressions[0].reason, "test-only synthetic command");
+
+        let json_output = render_report(&report, OutputFormat::Json);
+        let json: Value = serde_json::from_str(&json_output).expect("json report");
+        assert_eq!(json["suppressions"][0]["suppressed"], 1);
+        assert_eq!(
+            json["suppressions"][0]["reason"],
+            "test-only synthetic command"
+        );
+        assert!(json["findings"]
+            .as_array()
+            .expect("findings")
+            .iter()
+            .all(|finding| {
+                finding["ruleId"] != "security.process-command"
+                    || finding["filePath"] != "tests/process.rs"
+            }));
+    }
+
+    #[test]
+    fn sarif_suppression_results_carry_in_source_justification() {
+        let registry = rules::builtin_registry();
+        let finding = test_finding(
+            "security.process-command",
+            "tests/fixture.rs",
+            4,
+            Severity::Warning,
+            Pillar::Security,
+        );
+        let exclusions = vec![ExclusionRule {
+            selector: "security.process-command".to_string(),
+            rule_ids: expand_rule_selector("security.process-command", &registry, "test.rule")
+                .expect("exact selector"),
+            paths: vec!["tests/**".to_string()],
+            message_contains: None,
+            reason: "test-only synthetic command".to_string(),
+        }];
+        let (findings, suppressions, suppressed_findings) =
+            apply_report_exclusions(vec![finding], &exclusions);
+        let mut report = sample_report_with(findings, Vec::new());
+        report.summary = summarize(&report.findings);
+        report.score = score_report(&report.findings);
+        report.suppressions = suppressions;
+        report.suppressed_findings = suppressed_findings;
+
+        assert!(report.findings.is_empty());
+        let sarif = sample_sarif(&report);
+        let result = &sarif["runs"][0]["results"][0];
+        assert_eq!(result["ruleId"], "security.process-command");
+        assert_eq!(result["suppressions"][0]["kind"], "inSource");
+        assert_eq!(
+            result["suppressions"][0]["justification"],
+            "test-only synthetic command"
+        );
     }
 
     fn rule_ids(report: &AnalysisReport) -> BTreeSet<&str> {
@@ -9852,6 +10419,7 @@ rules:
                 missing_paths: Vec::new(),
             },
             diagnostics: Vec::new(),
+            suppressions: Vec::new(),
             findings: Vec::new(),
             score: ScoreReport {
                 composite: 100.0,
@@ -9860,6 +10428,7 @@ rules:
                 top_offenders: Vec::new(),
             },
             baseline: None,
+            suppressed_findings: Vec::new(),
         };
 
         let rendered = render_report(&report, OutputFormat::Json);

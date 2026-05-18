@@ -34,4 +34,18 @@ if grep -q 'sensitive-data.aws-access-key' /tmp/gruff-rs-selector.txt; then
     printf 'selector smoke reported a rule outside the explicit allow-list\n' >&2
     exit 1
 fi
+cat >/tmp/gruff-rs-exclude.yaml <<'YAML'
+exclude:
+  - rule: security.process-command
+    reason: fixture command accepted for smoke testing
+YAML
+cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --no-config >/tmp/gruff-rs-exclude-full.txt
+cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --config /tmp/gruff-rs-exclude.yaml >/tmp/gruff-rs-exclude-filtered.txt
+exclude_full_findings="$(grep -c '^- \[' /tmp/gruff-rs-exclude-full.txt || true)"
+exclude_filtered_findings="$(grep -c '^- \[' /tmp/gruff-rs-exclude-filtered.txt || true)"
+if (( exclude_filtered_findings >= exclude_full_findings )); then
+    printf 'exclusion smoke did not reduce findings: full=%s filtered=%s\n' "$exclude_full_findings" "$exclude_filtered_findings" >&2
+    exit 1
+fi
+grep -q 'Suppressed findings:' /tmp/gruff-rs-exclude-filtered.txt
 cargo run --quiet -- analyse src --format json --fail-on none >/tmp/gruff-rs-src.json
