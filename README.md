@@ -134,6 +134,50 @@ not ignored by Git. Pass `--include-ignored` for deliberate local inspection of
 ignored paths, or pass an explicit file/directory path to scan a focused target.
 VCS internals such as `.git/` remain blocked during directory traversal.
 
+## Custom Rules
+
+Top-level `custom_rules` entries register config-only regex rules under the
+reserved `custom.<slug>` namespace. Custom ids are first-class rule ids: they can
+be selected with exact ids, `custom.*`, or their public pillar, are listed by
+`list-rules`, and keep the normal fingerprint formula with the full custom id.
+
+```yaml
+custom_rules:
+  - id: custom.no-hack-comment
+    pillar: Documentation
+    severity: warning
+    confidence: 0.8
+    message: HACK comment marker
+    scope: comments
+    pattern: '(?m)^[ \t]*//[ \t]*HACK\b'
+    include_paths: ["src/**"]
+    exclude_paths: ["src/generated/**"]
+    remediation: "Convert the marker to a tracked issue."
+rules:
+  select: ["custom.*"]
+```
+
+Schema:
+
+- `id` is required and must be `custom.<slug>`; slugs use lowercase ASCII
+  letters, digits, and hyphens without leading or trailing hyphens.
+- `pillar` is required and must be one of the public pillars used by selectors,
+  such as `Documentation`, `Security`, or `Test quality`.
+- `severity` is required and must be `advisory`, `warning`, or `error`.
+- `confidence` is optional, numeric `0.0..1.0`, and maps to low, medium, or
+  high confidence; omitted confidence defaults to medium.
+- `message`, `scope`, and `pattern` are required non-empty strings.
+- `scope` is `text`, `rust-code`, or `comments`. `text` scans raw file text.
+  `rust-code` scans Rust files after masking string literals. `comments` scans
+  Rust comments while masking non-comment text.
+- `include_paths`, `exclude_paths`, and `remediation` are optional.
+
+Regexes compile during config loading. Bad patterns, duplicate custom ids,
+unknown fields, and ids without `custom.` fail closed with config errors that
+point at the offending key. Custom rules are intentionally regex-only; ADR-010
+defers AST patterns, Semgrep-style metavariables, XPath, scripts, plugins, and
+external runtimes.
+
 Report-level exclusions live under top-level `exclude` and run after analysis
 and exact baseline filtering. They hide reviewed findings from rendered output;
 they do not stop files from being read or scanned. Each entry requires a

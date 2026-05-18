@@ -273,6 +273,10 @@ struct ListRulesArgs {
     /// Preview the rules matched by one exact id, dotted prefix, or pillar selector.
     #[arg(long)]
     selector: Option<String>,
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[arg(long)]
+    no_config: bool,
 }
 
 #[derive(Args, Clone)]
@@ -430,6 +434,7 @@ struct Config {
     secret_previews: BTreeSet<String>,
     selectors: SelectorSet,
     exclusions: Vec<ExclusionRule>,
+    custom_rules: Vec<CustomRule>,
     rule_settings: HashMap<String, RuleSetting>,
 }
 
@@ -455,6 +460,58 @@ struct ExclusionRule {
     reason: String,
 }
 
+#[derive(Debug, Clone)]
+struct CustomRule {
+    id: String,
+    pillar: Pillar,
+    severity: Severity,
+    confidence: Confidence,
+    message: String,
+    scope: CustomRuleScope,
+    pattern: String,
+    compiled_pattern: Regex,
+    include_paths: Vec<String>,
+    exclude_paths: Vec<String>,
+    remediation: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListedRule {
+    id: String,
+    name: String,
+    pillar: Pillar,
+    tier: String,
+    kind: String,
+    default_severity: Severity,
+    confidence: Confidence,
+    thresholds: Vec<rules::ThresholdDefinition>,
+    options: Vec<rules::OptionDefinition>,
+    default_enabled: bool,
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    custom_scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomRuleScope {
+    Text,
+    RustCode,
+    Comments,
+}
+
+impl CustomRuleScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::RustCode => "rust-code",
+            Self::Comments => "comments",
+        }
+    }
+}
+
 impl Config {
     fn default() -> Self {
         Self {
@@ -466,6 +523,7 @@ impl Config {
             secret_previews: BTreeSet::new(),
             selectors: SelectorSet::default(),
             exclusions: Vec::new(),
+            custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
         }
     }
@@ -990,7 +1048,14 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
 }
 
 fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
-    let body = match render_rule_list(&args) {
+    let project_root = match std::env::current_dir() {
+        Ok(project_root) => project_root,
+        Err(error) => {
+            eprintln!("gruff-rs: unable to resolve current directory: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let body = match render_rule_list(&project_root, &args) {
         Ok(body) => body,
         Err(error) => {
             eprintln!("gruff-rs: {error}");
@@ -1001,34 +1066,129 @@ fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn render_rule_list(args: &ListRulesArgs) -> Result<String, String> {
+fn render_rule_list(project_root: &Path, args: &ListRulesArgs) -> Result<String, String> {
     let registry = rules::builtin_registry();
+    let config = list_rules_config(project_root, args)?;
     if let Some(selector) = &args.selector {
-        let ids = expand_rule_selector(selector, &registry, "rules --selector")?;
+        let ids = expand_rule_selector_with_custom(
+            selector,
+            &registry,
+            &config.custom_rules,
+            "rules --selector",
+        )?;
         return Ok(match args.format {
             RuleListFormat::Json => serde_json::to_string_pretty(&ids).expect("rules serialize"),
             RuleListFormat::Text => ids.into_iter().collect::<Vec<_>>().join("\n"),
         });
     }
+    let rules = listed_rules(&registry, &config.custom_rules);
     Ok(match args.format {
-        RuleListFormat::Json => {
-            serde_json::to_string_pretty(registry.definitions()).expect("rules serialize")
-        }
+        RuleListFormat::Json => serde_json::to_string_pretty(&rules).expect("rules serialize"),
         RuleListFormat::Text => {
             let mut out = String::new();
-            for definition in registry.definitions() {
+            for rule in rules {
                 out.push_str(&format!(
                     "{} [{}] {:?} {:?} - {}\n",
-                    definition.id,
-                    definition.tier,
-                    definition.pillar,
-                    definition.default_severity,
-                    definition.description
+                    rule.id, rule.tier, rule.pillar, rule.default_severity, rule.description
                 ));
             }
             out.trim_end_matches('\n').to_string()
         }
     })
+}
+
+fn list_rules_config(project_root: &Path, args: &ListRulesArgs) -> Result<Config, String> {
+    load_config(
+        project_root,
+        &AnalysisOptions {
+            paths: Vec::new(),
+            config: args.config.clone(),
+            no_config: args.no_config,
+            format: OutputFormat::Json,
+            fail_on: FailThreshold::None,
+            include_ignored: false,
+            diff: None,
+            history_file: None,
+            baseline: None,
+            generate_baseline: None,
+            no_baseline: true,
+        },
+    )
+}
+
+fn listed_rules(registry: &rules::RuleRegistry, custom_rules: &[CustomRule]) -> Vec<ListedRule> {
+    let mut listed: Vec<ListedRule> = registry
+        .definitions()
+        .iter()
+        .map(listed_builtin_rule)
+        .collect();
+    listed.extend(custom_rules.iter().map(listed_custom_rule));
+    listed
+}
+
+fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedRule {
+    ListedRule {
+        id: definition.id.to_string(),
+        name: definition.name.to_string(),
+        pillar: definition.pillar,
+        tier: definition.tier.to_string(),
+        kind: rule_kind_name(definition.kind).to_string(),
+        default_severity: definition.default_severity,
+        confidence: definition.confidence,
+        thresholds: definition.thresholds.to_vec(),
+        options: definition.options.to_vec(),
+        default_enabled: definition.default_enabled,
+        description: definition.description.to_string(),
+        custom_scope: None,
+        pattern: None,
+    }
+}
+
+fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
+    ListedRule {
+        id: rule.id.clone(),
+        name: custom_rule_name(&rule.id),
+        pillar: rule.pillar,
+        tier: "v0.1".to_string(),
+        kind: "custom".to_string(),
+        default_severity: rule.severity,
+        confidence: rule.confidence,
+        thresholds: Vec::new(),
+        options: Vec::new(),
+        default_enabled: true,
+        description: rule.message.clone(),
+        custom_scope: Some(rule.scope.as_str().to_string()),
+        pattern: Some(rule.pattern.clone()),
+    }
+}
+
+fn rule_kind_name(kind: rules::RuleKind) -> &'static str {
+    match kind {
+        rules::RuleKind::Project => "project",
+        rules::RuleKind::Text => "text",
+        rules::RuleKind::Rust => "rust",
+    }
+}
+
+fn custom_rule_name(rule_id: &str) -> String {
+    rule_id
+        .strip_prefix("custom.")
+        .unwrap_or(rule_id)
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut word = first.to_ascii_uppercase().to_string();
+                    word.push_str(chars.as_str());
+                    word
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
@@ -1888,7 +2048,7 @@ fn apply_config_value(path: &Path, value: &Value, config: &mut Config) -> Result
         .ok_or_else(|| format!("config {} must be a JSON object", path.display()))?;
     reject_unknown_keys(
         root,
-        &["paths", "allowlists", "rules", "exclude"],
+        &["paths", "allowlists", "rules", "exclude", "custom_rules"],
         "config root",
     )?;
 
@@ -1897,6 +2057,9 @@ fn apply_config_value(path: &Path, value: &Value, config: &mut Config) -> Result
     }
     if let Some(allowlists_value) = root.get("allowlists") {
         apply_allowlists_section(allowlists_value, config)?;
+    }
+    if let Some(custom_rules_value) = root.get("custom_rules") {
+        apply_custom_rules_section(custom_rules_value, config)?;
     }
     if let Some(rules_value) = root.get("rules") {
         apply_rules_section(rules_value, config)?;
@@ -1948,8 +2111,18 @@ fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), S
         .as_object()
         .ok_or_else(|| "config key `rules` must be an object".to_string())?;
 
-    apply_selector_settings(rules, &registry, &mut config.selectors)?;
-    apply_custom_rule_settings(rules, &registry, &mut config.rule_settings)?;
+    apply_selector_settings(
+        rules,
+        &registry,
+        &config.custom_rules,
+        &mut config.selectors,
+    )?;
+    apply_custom_rule_settings(
+        rules,
+        &registry,
+        &config.custom_rules,
+        &mut config.rule_settings,
+    )?;
     for (key, rule_value) in rules {
         if matches!(key.as_str(), "select" | "ignore" | "custom") {
             continue;
@@ -1958,11 +2131,224 @@ fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), S
             key,
             rule_value,
             &registry,
+            &config.custom_rules,
             &mut config.rule_settings,
             "rules",
         )?;
     }
     Ok(())
+}
+
+fn apply_custom_rules_section(
+    custom_rules_value: &Value,
+    config: &mut Config,
+) -> Result<(), String> {
+    let registry = rules::builtin_registry();
+    let entries = custom_rules_value
+        .as_array()
+        .ok_or_else(|| "config key `custom_rules` must be an array".to_string())?;
+    let mut custom_rules = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, entry_value) in entries.iter().enumerate() {
+        let custom_rule = parse_custom_rule(index, entry_value, &registry)?;
+        if !seen.insert(custom_rule.id.clone()) {
+            return Err(format!(
+                "duplicate custom rule id `{}` in config key `custom_rules[{index}].id`",
+                custom_rule.id
+            ));
+        }
+        custom_rules.push(custom_rule);
+    }
+    custom_rules.sort_by(|left, right| left.id.cmp(&right.id));
+    config.custom_rules = custom_rules;
+    Ok(())
+}
+
+fn parse_custom_rule(
+    index: usize,
+    entry_value: &Value,
+    registry: &rules::RuleRegistry,
+) -> Result<CustomRule, String> {
+    let entry_path = format!("custom_rules[{index}]");
+    let entry = entry_value
+        .as_object()
+        .ok_or_else(|| format!("config key `{entry_path}` must be an object"))?;
+    reject_unknown_keys(
+        entry,
+        &[
+            "id",
+            "pillar",
+            "severity",
+            "confidence",
+            "message",
+            "scope",
+            "pattern",
+            "include_paths",
+            "exclude_paths",
+            "remediation",
+        ],
+        &format!("config key `{entry_path}`"),
+    )?;
+
+    let id = required_config_string(entry, "id", &format!("{entry_path}.id"))?;
+    validate_custom_rule_id(&id, &format!("{entry_path}.id"), registry)?;
+    let pillar = parse_required_pillar(entry, "pillar", &format!("{entry_path}.pillar"))?;
+    let severity = parse_required_severity(entry, "severity", &format!("{entry_path}.severity"))?;
+    let confidence = entry
+        .get("confidence")
+        .map(|value| parse_custom_confidence(value, &format!("{entry_path}.confidence")))
+        .transpose()?
+        .unwrap_or(Confidence::Medium);
+    let message = required_non_empty_config_string(entry, "message", &entry_path)?;
+    let scope = parse_custom_rule_scope(
+        &required_config_string(entry, "scope", &format!("{entry_path}.scope"))?,
+        &format!("{entry_path}.scope"),
+    )?;
+    let pattern = required_non_empty_config_string(entry, "pattern", &entry_path)?;
+    let compiled_pattern = Regex::new(&pattern).map_err(|error| {
+        format!("config key `{entry_path}.pattern` failed to compile regex: {error}")
+    })?;
+    let include_paths = optional_normalized_string_array(
+        entry,
+        "include_paths",
+        &format!("{entry_path}.include_paths"),
+    )?;
+    let exclude_paths = optional_normalized_string_array(
+        entry,
+        "exclude_paths",
+        &format!("{entry_path}.exclude_paths"),
+    )?;
+    let remediation = entry
+        .get("remediation")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("config key `{entry_path}.remediation` must be a string"))
+        })
+        .transpose()?;
+
+    Ok(CustomRule {
+        id,
+        pillar,
+        severity,
+        confidence,
+        message,
+        scope,
+        pattern,
+        compiled_pattern,
+        include_paths,
+        exclude_paths,
+        remediation,
+    })
+}
+
+fn validate_custom_rule_id(
+    id: &str,
+    path: &str,
+    registry: &rules::RuleRegistry,
+) -> Result<(), String> {
+    let Some(slug) = id.strip_prefix("custom.") else {
+        return Err(format!(
+            "config key `{path}` must start with the reserved `custom.` namespace"
+        ));
+    };
+    if slug.is_empty()
+        || slug.starts_with('-')
+        || slug.ends_with('-')
+        || !slug.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        return Err(format!(
+            "config key `{path}` must use `custom.<slug>` with lowercase ASCII letters, digits, and hyphens"
+        ));
+    }
+    if registry.contains(id) {
+        return Err(format!(
+            "config key `{path}` collides with built-in rule id `{id}`"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_required_pillar(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<Pillar, String> {
+    let pillar = required_config_string(object, key, path)?;
+    parse_pillar_selector(&pillar).ok_or_else(|| {
+        format!(
+            "unknown pillar `{pillar}` in `{path}`; expected a public pillar such as Documentation"
+        )
+    })
+}
+
+fn parse_required_severity(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<Severity, String> {
+    let severity = required_config_string(object, key, path)?;
+    parse_severity_name(&severity).ok_or_else(|| {
+        format!("unknown severity `{severity}` in `{path}`; expected advisory, warning, or error")
+    })
+}
+
+fn parse_severity_name(value: &str) -> Option<Severity> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "advisory" => Some(Severity::Advisory),
+        "warning" => Some(Severity::Warning),
+        "error" => Some(Severity::Error),
+        _ => None,
+    }
+}
+
+fn parse_custom_confidence(value: &Value, path: &str) -> Result<Confidence, String> {
+    let number = value
+        .as_f64()
+        .ok_or_else(|| format!("config key `{path}` must be a number from 0.0 to 1.0"))?;
+    if !(0.0..=1.0).contains(&number) {
+        return Err(format!("config key `{path}` must be between 0.0 and 1.0"));
+    }
+    if number >= 0.85 {
+        Ok(Confidence::High)
+    } else if number >= 0.5 {
+        Ok(Confidence::Medium)
+    } else {
+        Ok(Confidence::Low)
+    }
+}
+
+fn parse_custom_rule_scope(value: &str, path: &str) -> Result<CustomRuleScope, String> {
+    match value.trim() {
+        "text" => Ok(CustomRuleScope::Text),
+        "rust-code" => Ok(CustomRuleScope::RustCode),
+        "comments" => Ok(CustomRuleScope::Comments),
+        other => Err(format!(
+            "unknown custom rule scope `{other}` in `{path}`; expected text, rust-code, or comments"
+        )),
+    }
+}
+
+fn optional_normalized_string_array(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    object
+        .get(key)
+        .map(|value| {
+            string_array(value, path).map(|paths| {
+                paths
+                    .into_iter()
+                    .map(|path| normalize_report_path(&path))
+                    .collect()
+            })
+        })
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 fn apply_exclusions_section(exclude_value: &Value, config: &mut Config) -> Result<(), String> {
@@ -1972,7 +2358,12 @@ fn apply_exclusions_section(exclude_value: &Value, config: &mut Config) -> Resul
         .ok_or_else(|| "config key `exclude` must be an array".to_string())?;
     let mut exclusions = Vec::new();
     for (index, entry_value) in entries.iter().enumerate() {
-        exclusions.push(parse_exclusion_rule(index, entry_value, &registry)?);
+        exclusions.push(parse_exclusion_rule(
+            index,
+            entry_value,
+            &registry,
+            &config.custom_rules,
+        )?);
     }
     config.exclusions = exclusions;
     Ok(())
@@ -1982,6 +2373,7 @@ fn parse_exclusion_rule(
     index: usize,
     entry_value: &Value,
     registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
 ) -> Result<ExclusionRule, String> {
     let entry_path = format!("exclude[{index}]");
     let entry = entry_value
@@ -1994,7 +2386,12 @@ fn parse_exclusion_rule(
     )?;
 
     let selector = required_config_string(entry, "rule", &format!("{entry_path}.rule"))?;
-    let rule_ids = expand_rule_selector(&selector, registry, &format!("{entry_path}.rule"))?;
+    let rule_ids = expand_rule_selector_with_custom(
+        &selector,
+        registry,
+        custom_rules,
+        &format!("{entry_path}.rule"),
+    )?;
     let paths = entry
         .get("paths")
         .map(|value| {
@@ -2039,6 +2436,19 @@ fn parse_exclusion_rule(
     })
 }
 
+fn required_non_empty_config_string(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    entry_path: &str,
+) -> Result<String, String> {
+    let path = format!("{entry_path}.{key}");
+    let value = required_config_string(object, key, &path)?;
+    if value.trim().is_empty() {
+        return Err(format!("config key `{path}` must be a non-empty string"));
+    }
+    Ok(value)
+}
+
 fn required_config_string(
     object: &serde_json::Map<String, Value>,
     key: &str,
@@ -2055,14 +2465,17 @@ fn required_config_string(
 fn apply_selector_settings(
     rules: &serde_json::Map<String, Value>,
     registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
     selectors: &mut SelectorSet,
 ) -> Result<(), String> {
     if let Some(select_value) = rules.get("select") {
-        selectors.positive = expand_rule_selectors(select_value, registry, "rules.select")?;
+        selectors.positive =
+            expand_rule_selectors(select_value, registry, custom_rules, "rules.select")?;
         selectors.has_positive = !selectors.positive.is_empty();
     }
     if let Some(ignore_value) = rules.get("ignore") {
-        selectors.negative = expand_rule_selectors(ignore_value, registry, "rules.ignore")?;
+        selectors.negative =
+            expand_rule_selectors(ignore_value, registry, custom_rules, "rules.ignore")?;
     }
     Ok(())
 }
@@ -2070,6 +2483,7 @@ fn apply_selector_settings(
 fn apply_custom_rule_settings(
     rules: &serde_json::Map<String, Value>,
     registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
     settings: &mut HashMap<String, RuleSetting>,
 ) -> Result<(), String> {
     let Some(custom_value) = rules.get("custom") else {
@@ -2079,7 +2493,14 @@ fn apply_custom_rule_settings(
         .as_object()
         .ok_or_else(|| "config key `rules.custom` must be an object".to_string())?;
     for (rule_id, rule_value) in custom {
-        insert_rule_setting(rule_id, rule_value, registry, settings, "rules.custom")?;
+        insert_rule_setting(
+            rule_id,
+            rule_value,
+            registry,
+            custom_rules,
+            settings,
+            "rules.custom",
+        )?;
     }
     Ok(())
 }
@@ -2088,10 +2509,13 @@ fn insert_rule_setting(
     rule_id: &str,
     rule_value: &Value,
     registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
     settings: &mut HashMap<String, RuleSetting>,
     context: &str,
 ) -> Result<(), String> {
-    if !registry.contains(rule_id) {
+    let is_builtin = registry.contains(rule_id);
+    let is_custom = custom_rules.iter().any(|rule| rule.id == rule_id);
+    if !is_builtin && !is_custom {
         return Err(format!(
             "unknown rule id `{rule_id}` in config key `{context}`"
         ));
@@ -2099,7 +2523,7 @@ fn insert_rule_setting(
     if settings.contains_key(rule_id) {
         return Err(format!("duplicate rule config for `{rule_id}`"));
     }
-    let setting = parse_rule_setting(rule_id, rule_value, registry)?;
+    let setting = parse_rule_setting(rule_id, rule_value, registry, is_custom)?;
     settings.insert(rule_id.to_string(), setting);
     Ok(())
 }
@@ -2108,6 +2532,7 @@ fn parse_rule_setting(
     rule_id: &str,
     rule_value: &Value,
     registry: &rules::RuleRegistry,
+    is_custom: bool,
 ) -> Result<RuleSetting, String> {
     let rule_object = rule_value
         .as_object()
@@ -2122,6 +2547,17 @@ fn parse_rule_setting(
         enabled: parse_rule_enabled(rule_id, rule_object)?,
         ..RuleSetting::default()
     };
+    if is_custom {
+        if rule_object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "enabled"))
+        {
+            return Err(format!(
+                "custom rule `{rule_id}` only supports `enabled` under `rules`"
+            ));
+        }
+        return Ok(setting);
+    }
     apply_rule_thresholds(rule_id, rule_object, registry, &mut setting)?;
     validate_optional_rule_options(rule_id, rule_object, registry)?;
     Ok(setting)
@@ -2228,13 +2664,19 @@ fn validate_rule_options(
 fn expand_rule_selectors(
     selectors_value: &Value,
     registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
     path: &str,
 ) -> Result<BTreeSet<String>, String> {
     let selectors = string_array(selectors_value, path)?;
     let mut expanded = BTreeSet::new();
     for (index, selector) in selectors.iter().enumerate() {
         let selector_path = selector_config_path(path, index);
-        expanded.extend(expand_rule_selector(selector, registry, &selector_path)?);
+        expanded.extend(expand_rule_selector_with_custom(
+            selector,
+            registry,
+            custom_rules,
+            &selector_path,
+        )?);
     }
     Ok(expanded)
 }
@@ -2243,9 +2685,19 @@ fn selector_config_path(path: &str, index: usize) -> String {
     format!("{path}[{index}]")
 }
 
+#[cfg(test)]
 fn expand_rule_selector(
     selector: &str,
     registry: &rules::RuleRegistry,
+    path: &str,
+) -> Result<BTreeSet<String>, String> {
+    expand_rule_selector_with_custom(selector, registry, &[], path)
+}
+
+fn expand_rule_selector_with_custom(
+    selector: &str,
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
     path: &str,
 ) -> Result<BTreeSet<String>, String> {
     let selector = selector.trim();
@@ -2255,9 +2707,10 @@ fn expand_rule_selector(
         ));
     }
     reject_unsupported_selector_syntax(selector, path)?;
-    exact_rule_selector(selector, registry)
-        .or_else(|| pillar_rule_selector(selector, registry))
-        .or_else(|| prefix_rule_selector(selector, registry))
+    let catalog = rule_selector_catalog(registry, custom_rules);
+    exact_rule_selector(selector, &catalog)
+        .or_else(|| pillar_rule_selector(selector, &catalog))
+        .or_else(|| prefix_rule_selector(selector, &catalog))
         .ok_or_else(|| {
             format!(
                 "unknown selector `{selector}` in `{path}`; expected exact rule id, dotted prefix, or public pillar such as Security"
@@ -2279,39 +2732,56 @@ fn reject_unsupported_selector_syntax(selector: &str, path: &str) -> Result<(), 
     Ok(())
 }
 
-fn exact_rule_selector(selector: &str, registry: &rules::RuleRegistry) -> Option<BTreeSet<String>> {
-    if registry.contains(selector) {
+#[derive(Debug, Clone)]
+struct RuleSelectorEntry {
+    id: String,
+    pillar: Pillar,
+}
+
+fn rule_selector_catalog(
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
+) -> Vec<RuleSelectorEntry> {
+    let mut entries: Vec<RuleSelectorEntry> = registry
+        .definitions()
+        .iter()
+        .map(|definition| RuleSelectorEntry {
+            id: definition.id.to_string(),
+            pillar: definition.pillar,
+        })
+        .collect();
+    entries.extend(custom_rules.iter().map(|rule| RuleSelectorEntry {
+        id: rule.id.clone(),
+        pillar: rule.pillar,
+    }));
+    entries
+}
+
+fn exact_rule_selector(selector: &str, entries: &[RuleSelectorEntry]) -> Option<BTreeSet<String>> {
+    if entries.iter().any(|entry| entry.id == selector) {
         return Some(BTreeSet::from([selector.to_string()]));
     }
     None
 }
 
-fn pillar_rule_selector(
-    selector: &str,
-    registry: &rules::RuleRegistry,
-) -> Option<BTreeSet<String>> {
+fn pillar_rule_selector(selector: &str, entries: &[RuleSelectorEntry]) -> Option<BTreeSet<String>> {
     let pillar = parse_pillar_selector(selector)?;
     Some(
-        registry
-            .definitions()
+        entries
             .iter()
-            .filter(|definition| definition.pillar == pillar)
-            .map(|definition| definition.id.to_string())
+            .filter(|entry| entry.pillar == pillar)
+            .map(|entry| entry.id.clone())
             .collect(),
     )
 }
 
-fn prefix_rule_selector(
-    selector: &str,
-    registry: &rules::RuleRegistry,
-) -> Option<BTreeSet<String>> {
+fn prefix_rule_selector(selector: &str, entries: &[RuleSelectorEntry]) -> Option<BTreeSet<String>> {
     let prefix = selector.strip_suffix(".*").unwrap_or(selector);
     let prefix_with_dot = format!("{prefix}.");
-    let matches: BTreeSet<String> = registry
-        .definitions()
+    let matches: BTreeSet<String> = entries
         .iter()
-        .filter(|definition| definition.id.starts_with(&prefix_with_dot))
-        .map(|definition| definition.id.to_string())
+        .filter(|entry| entry.id.starts_with(&prefix_with_dot))
+        .map(|entry| entry.id.clone())
         .collect();
     if !matches.is_empty() {
         return Some(matches);
@@ -3670,7 +4140,9 @@ fn is_wildcard_requirement(requirement: &str) -> bool {
 }
 
 fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
-    built_in_rules::analyse(unit, config)
+    let mut findings = built_in_rules::analyse(unit, config);
+    findings.extend(custom_rules::analyse(unit, config));
+    findings
 }
 
 mod built_in_rules {
@@ -5601,7 +6073,7 @@ mod built_in_rules {
         matches!(name, "foo" | "bar" | "baz" | "qux")
     }
 
-    fn strip_rust_string_literals(source: &str) -> String {
+    pub(super) fn strip_rust_string_literals(source: &str) -> String {
         let bytes = source.as_bytes();
         let mut output = String::with_capacity(source.len());
         let mut index = 0usize;
@@ -5639,7 +6111,7 @@ mod built_in_rules {
         output
     }
 
-    fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    pub(super) fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
         let (hashes, cursor) = raw_string_opening(bytes, start)?;
         find_raw_string_end(bytes, hashes, cursor).or(Some(bytes.len()))
     }
@@ -6017,6 +6489,175 @@ mod built_in_rules {
                 -probability * probability.log2()
             })
             .sum()
+    }
+}
+
+mod custom_rules {
+    use super::*;
+    use std::borrow::Cow;
+
+    pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        let line_starts = line_starts(unit.source);
+        for rule in &config.custom_rules {
+            if !config.rule_enabled(&rule.id) || !custom_rule_applies_to_path(rule, unit.file) {
+                continue;
+            }
+            let Some(scope_source) = scoped_source(rule.scope, unit) else {
+                continue;
+            };
+            findings.extend(evaluate_rule(
+                unit,
+                rule,
+                scope_source.as_ref(),
+                &line_starts,
+            ));
+        }
+        findings
+    }
+
+    fn evaluate_rule(
+        unit: &SourceUnit<'_>,
+        rule: &CustomRule,
+        source: &str,
+        line_starts: &[usize],
+    ) -> Vec<Finding> {
+        rule.compiled_pattern
+            .find_iter(source)
+            .map(|matched| {
+                Finding::new(
+                    &rule.id,
+                    rule.message.clone(),
+                    unit.file.display_path.clone(),
+                    Some(finding_line_for_match(
+                        source,
+                        line_starts,
+                        matched.start(),
+                        matched.end(),
+                    )),
+                    rule.severity,
+                    rule.pillar,
+                    rule.confidence,
+                    Some(format!("byte:{}", matched.start())),
+                    rule.remediation.clone(),
+                    json!({ "scope": rule.scope.as_str() }),
+                )
+            })
+            .collect()
+    }
+
+    fn finding_line_for_match(
+        source: &str,
+        line_starts: &[usize],
+        start: usize,
+        end: usize,
+    ) -> usize {
+        let line_byte = source
+            .as_bytes()
+            .get(start..end)
+            .and_then(|matched| {
+                matched
+                    .iter()
+                    .position(|byte| !byte.is_ascii_whitespace())
+                    .map(|offset| start + offset)
+            })
+            .unwrap_or(start)
+            .min(source.len());
+        byte_line_from_starts(line_starts, line_byte)
+    }
+
+    fn custom_rule_applies_to_path(rule: &CustomRule, file: &SourceFile) -> bool {
+        let path = normalize_report_path(&file.display_path);
+        (rule.include_paths.is_empty()
+            || rule
+                .include_paths
+                .iter()
+                .any(|pattern| path_matches(pattern, &path)))
+            && !rule
+                .exclude_paths
+                .iter()
+                .any(|pattern| path_matches(pattern, &path))
+    }
+
+    fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option<Cow<'a, str>> {
+        match scope {
+            CustomRuleScope::Text => Some(Cow::Borrowed(unit.source)),
+            CustomRuleScope::RustCode => unit
+                .file
+                .is_rust
+                .then(|| Cow::Owned(built_in_rules::strip_rust_string_literals(unit.source))),
+            CustomRuleScope::Comments => unit
+                .file
+                .is_rust
+                .then(|| Cow::Owned(rust_comment_scope_source(unit.source))),
+        }
+    }
+
+    fn rust_comment_scope_source(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut output = bytes
+            .iter()
+            .map(|byte| if *byte == b'\n' { b'\n' } else { b' ' })
+            .collect::<Vec<u8>>();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            if let Some(raw_end) = built_in_rules::raw_string_end(bytes, index) {
+                index = raw_end;
+                continue;
+            }
+            if bytes[index] == b'"' {
+                index = skip_quoted_string(bytes, index);
+                continue;
+            }
+            if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                index = copy_line_comment(bytes, &mut output, index);
+                continue;
+            }
+            if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+                index = copy_block_comment(bytes, &mut output, index);
+                continue;
+            }
+            index += 1;
+        }
+        String::from_utf8(output).expect("comment scope source stays utf-8")
+    }
+
+    fn skip_quoted_string(bytes: &[u8], start: usize) -> usize {
+        let mut index = start + 1;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            index += 1;
+            if byte == b'\\' && index < bytes.len() {
+                index += 1;
+                continue;
+            }
+            if byte == b'"' {
+                break;
+            }
+        }
+        index
+    }
+
+    fn copy_line_comment(bytes: &[u8], output: &mut [u8], start: usize) -> usize {
+        let mut index = start;
+        while index < bytes.len() && bytes[index] != b'\n' {
+            output[index] = bytes[index];
+            index += 1;
+        }
+        index
+    }
+
+    fn copy_block_comment(bytes: &[u8], output: &mut [u8], start: usize) -> usize {
+        let mut index = start;
+        while index < bytes.len() {
+            output[index] = bytes[index];
+            if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                output[index + 1] = bytes[index + 1];
+                return index + 2;
+            }
+            index += 1;
+        }
+        index
     }
 }
 
@@ -8161,10 +8802,15 @@ rules:
 
     #[test]
     fn list_rules_selector_preview_is_deterministic() {
-        let text = render_rule_list(&ListRulesArgs {
-            format: RuleListFormat::Text,
-            selector: Some("Security".to_string()),
-        })
+        let text = render_rule_list(
+            Path::new("."),
+            &ListRulesArgs {
+                format: RuleListFormat::Text,
+                selector: Some("Security".to_string()),
+                config: None,
+                no_config: true,
+            },
+        )
         .expect("selector preview");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
@@ -8179,10 +8825,15 @@ rules:
             ]
         );
 
-        let json_output = render_rule_list(&ListRulesArgs {
-            format: RuleListFormat::Json,
-            selector: Some("performance.*".to_string()),
-        })
+        let json_output = render_rule_list(
+            Path::new("."),
+            &ListRulesArgs {
+                format: RuleListFormat::Json,
+                selector: Some("performance.*".to_string()),
+                config: None,
+                no_config: true,
+            },
+        )
         .expect("selector json preview");
         let ids: Vec<String> = serde_json::from_str(&json_output).expect("selector json");
         assert_eq!(
@@ -8193,6 +8844,564 @@ rules:
                 "performance.regex-in-loop"
             ]
         );
+    }
+
+    #[test]
+    fn custom_rule_text_scope_emits_deterministic_findings_with_builtins() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            concat!(
+                "pub fn undocumented() {\n",
+                "    let marker = \"ALPHA\";\n",
+                "}\n",
+                "// BETA\n"
+            ),
+        )
+        .expect("fixture write");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.beta
+    pillar: Documentation
+    severity: advisory
+    message: Beta marker
+    scope: text
+    pattern: BETA
+  - id: custom.alpha
+    pillar: Documentation
+    severity: advisory
+    message: Alpha marker
+    scope: text
+    pattern: ALPHA
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src/lib.rs")],
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let ids: Vec<&str> = report
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect();
+        eprintln!("custom rule deterministic ids: {ids:?}");
+
+        assert_eq!(
+            ids,
+            vec!["docs.missing-public-doc", "custom.alpha", "custom.beta"]
+        );
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .map(|finding| finding.line)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2), Some(4)]
+        );
+    }
+
+    #[test]
+    fn custom_rule_rust_code_scope_masks_string_literals_and_text_scope_does_not() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn string_only() {\n    let marker = \"HACK\";\n}\n",
+        )
+        .expect("fixture write");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.hack-code
+    pillar: Documentation
+    severity: warning
+    message: Code marker
+    scope: rust-code
+    pattern: HACK
+  - id: custom.hack-text
+    pillar: Documentation
+    severity: warning
+    message: Text marker
+    scope: text
+    pattern: HACK
+rules:
+  select: ["custom.*"]
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src/lib.rs")],
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        assert_has_rule(&report, "custom.hack-text");
+        assert_missing_rule(&report, "custom.hack-code");
+    }
+
+    #[test]
+    fn custom_rule_comments_scope_matches_comments_not_strings() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            concat!(
+                "fn comments() {\n",
+                "    let marker = \"// HACK\";\n",
+                "}\n",
+                "// HACK\n"
+            ),
+        )
+        .expect("fixture write");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.comment-hack
+    pillar: Documentation
+    severity: warning
+    message: Comment marker
+    scope: comments
+    pattern: '(?m)^\s*//\s*HACK\b'
+rules:
+  select: ["custom.*"]
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src/lib.rs")],
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let comment_findings: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "custom.comment-hack")
+            .collect();
+
+        assert_eq!(comment_findings.len(), 1);
+        assert_eq!(comment_findings[0].line, Some(4));
+    }
+
+    #[test]
+    fn custom_rule_include_exclude_paths_are_honored() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src/generated")).expect("generated dir");
+        fs::create_dir_all(dir.path().join("tests")).expect("tests dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(dir.path().join("src/lib.rs"), "ALLOW_MARKER\n").expect("src write");
+        fs::write(dir.path().join("src/generated/lib.rs"), "ALLOW_MARKER\n")
+            .expect("generated write");
+        fs::write(dir.path().join("tests/fixture.rs"), "ALLOW_MARKER\n").expect("tests write");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.path-marker
+    pillar: Documentation
+    severity: advisory
+    message: Path marker
+    scope: text
+    pattern: ALLOW_MARKER
+    include_paths: ["src/**"]
+    exclude_paths: ["src/generated/**"]
+rules:
+  select: ["custom.*"]
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src"), PathBuf::from("tests")],
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let paths: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "custom.path-marker")
+            .map(|finding| finding.file_path.as_str())
+            .collect();
+
+        assert_eq!(paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn custom_rule_config_rejects_duplicate_id_missing_prefix_bad_regex_and_bad_settings() {
+        let dir = tempdir().expect("tempdir");
+        let options = default_test_options();
+
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.dup
+    pillar: Documentation
+    severity: advisory
+    message: First
+    scope: text
+    pattern: FIRST
+  - id: custom.dup
+    pillar: Documentation
+    severity: advisory
+    message: Second
+    scope: text
+    pattern: SECOND
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("duplicate rejected");
+        assert!(
+            error.contains("duplicate custom rule id `custom.dup`"),
+            "{error}"
+        );
+
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: no-prefix
+    pillar: Documentation
+    severity: advisory
+    message: Missing prefix
+    scope: text
+    pattern: MARKER
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("prefix rejected");
+        assert!(
+            error.contains("must start with the reserved `custom.` namespace"),
+            "{error}"
+        );
+        assert!(error.contains("custom_rules[0].id"), "{error}");
+
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.bad-regex
+    pillar: Documentation
+    severity: advisory
+    message: Bad regex
+    scope: text
+    pattern: '['
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("bad regex rejected");
+        assert!(
+            error.contains("config key `custom_rules[0].pattern` failed to compile regex"),
+            "{error}"
+        );
+
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.threshold
+    pillar: Documentation
+    severity: advisory
+    message: Threshold
+    scope: text
+    pattern: MARKER
+rules:
+  custom.threshold:
+    threshold: 1
+"#,
+        );
+        let error = load_config(dir.path(), &options).expect_err("bad setting rejected");
+        assert!(
+            error.contains("custom rule `custom.threshold` only supports `enabled`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn custom_rule_no_match_is_ok() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(dir.path().join("src/lib.rs"), "fn clean() {}\n").expect("fixture write");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.no-match
+    pillar: Documentation
+    severity: advisory
+    message: No match
+    scope: text
+    pattern: ABSENT_MARKER
+rules:
+  select: ["custom.*"]
+"#,
+        );
+
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src/lib.rs")],
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn custom_rule_findings_pass_selection_exclusion_baseline_and_diff() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src dir");
+        fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn selected() {}\nCUSTOM_MARKER\n",
+        )
+        .expect("selected write");
+        fs::write(dir.path().join("src/excluded.rs"), "CUSTOM_MARKER\n").expect("excluded write");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.marker
+    pillar: Documentation
+    severity: warning
+    message: Custom marker
+    scope: text
+    pattern: CUSTOM_MARKER
+rules:
+  select: ["custom.marker"]
+exclude:
+  - rule: custom.marker
+    paths: ["src/excluded.rs"]
+    reason: generated custom marker
+"#,
+        );
+
+        let selected = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src")],
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("selection and exclusion analysis succeeds");
+        assert_eq!(selected.findings.len(), 1);
+        assert_eq!(selected.findings[0].rule_id, "custom.marker");
+        assert_eq!(selected.findings[0].file_path, "src/lib.rs");
+        assert_missing_rule(&selected, "docs.missing-public-doc");
+        assert_eq!(total_suppressed_findings(&selected.suppressions), 1);
+
+        let baseline_path = dir.path().join("baseline.json");
+        write_baseline(&baseline_path, &[selected.findings[0].clone()]).expect("baseline write");
+        let baseline_filtered = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src")],
+                baseline: Some(PathBuf::from("baseline.json")),
+                no_baseline: false,
+                ..default_test_options()
+            },
+        )
+        .expect("baseline analysis succeeds");
+        assert!(baseline_filtered.findings.is_empty());
+        assert_eq!(
+            baseline_filtered
+                .baseline
+                .as_ref()
+                .map(|baseline| baseline.suppressed),
+            Some(1)
+        );
+
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "CUSTOM_MARKER\nfn gap() {}\nCUSTOM_MARKER\n",
+        )
+        .expect("diff fixture rewrite");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.marker
+    pillar: Documentation
+    severity: warning
+    message: Custom marker
+    scope: text
+    pattern: CUSTOM_MARKER
+rules:
+  select: ["custom.marker"]
+"#,
+        );
+        fs::write(
+            dir.path().join("custom.patch"),
+            concat!(
+                "diff --git a/src/lib.rs b/src/lib.rs\n",
+                "--- a/src/lib.rs\n",
+                "+++ b/src/lib.rs\n",
+                "@@ -3,1 +3,1 @@\n",
+                "+CUSTOM_MARKER\n"
+            ),
+        )
+        .expect("patch write");
+        let diff_filtered = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src/lib.rs")],
+                diff: Some(DiffSelection::Patch(PathBuf::from("custom.patch"))),
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("diff analysis succeeds");
+        assert_eq!(diff_filtered.findings.len(), 1);
+        assert_eq!(diff_filtered.findings[0].line, Some(3));
+        assert!(diff_filtered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.diagnostic_type == "patch-filter"));
+    }
+
+    #[test]
+    fn custom_rule_list_rules_includes_configured_rules_and_selectors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+custom_rules:
+  - id: custom.second
+    pillar: Documentation
+    severity: advisory
+    message: Second custom rule
+    scope: text
+    pattern: SECOND
+  - id: custom.first
+    pillar: Security
+    severity: warning
+    message: First custom rule
+    scope: text
+    pattern: FIRST
+"#,
+        );
+
+        let json_output = render_rule_list(
+            dir.path(),
+            &ListRulesArgs {
+                format: RuleListFormat::Json,
+                selector: None,
+                config: None,
+                no_config: false,
+            },
+        )
+        .expect("rule list json");
+        let rules: Vec<Value> = serde_json::from_str(&json_output).expect("rule list json");
+        let ids: Vec<&str> = rules
+            .iter()
+            .map(|rule| rule["id"].as_str().expect("id"))
+            .collect();
+        let first_custom = ids
+            .iter()
+            .position(|id| id.starts_with("custom."))
+            .expect("custom rule listed");
+        assert!(ids[..first_custom]
+            .iter()
+            .all(|id| !id.starts_with("custom.")));
+        assert_eq!(&ids[first_custom..], ["custom.first", "custom.second"]);
+        assert!(rules.iter().any(|rule| {
+            rule["id"] == "custom.first"
+                && rule["kind"] == "custom"
+                && rule["customScope"] == "text"
+                && rule["pattern"] == "FIRST"
+        }));
+
+        let selector_output = render_rule_list(
+            dir.path(),
+            &ListRulesArgs {
+                format: RuleListFormat::Json,
+                selector: Some("custom.*".to_string()),
+                config: None,
+                no_config: false,
+            },
+        )
+        .expect("custom selector");
+        let selected: Vec<String> = serde_json::from_str(&selector_output).expect("selector json");
+        assert_eq!(selected, vec!["custom.first", "custom.second"]);
+    }
+
+    #[test]
+    fn registry_reserves_custom_namespace() {
+        assert!(rules::builtin_registry()
+            .definitions()
+            .iter()
+            .all(|definition| !definition.id.starts_with("custom.")));
+
+        let definition = rules::RuleDefinition {
+            id: "custom.builtin",
+            name: "Reserved",
+            pillar: Pillar::Documentation,
+            tier: "v0.1",
+            kind: rules::RuleKind::Text,
+            default_severity: Severity::Advisory,
+            confidence: Confidence::High,
+            thresholds: &[],
+            options: &[],
+            default_enabled: true,
+            description: "Reserved namespace probe.",
+        };
+        let error = rules::RuleRegistry::new(vec![definition])
+            .expect_err("custom namespace reserved for config rules");
+        assert!(
+            error.contains("built-in rule id `custom.builtin` uses reserved custom namespace"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn fingerprint_stable_for_custom_rule() {
+        let finding = Finding::new(
+            "custom.no-hack",
+            "HACK marker",
+            "src/lib.rs",
+            Some(2),
+            Severity::Warning,
+            Pillar::Documentation,
+            Confidence::Medium,
+            Some("byte:12".to_string()),
+            None,
+            json!({ "scope": "comments" }),
+        );
+
+        assert_eq!(finding.fingerprint, "223b4b2c56b0f0e1");
     }
 
     #[test]

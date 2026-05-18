@@ -48,4 +48,17 @@ if (( exclude_filtered_findings >= exclude_full_findings )); then
     exit 1
 fi
 grep -q 'Suppressed findings:' /tmp/gruff-rs-exclude-filtered.txt
+cat >/tmp/gruff-rs-custom.yaml <<'YAML'
+custom_rules:
+  - id: custom.fixture-marker
+    pillar: Documentation
+    severity: advisory
+    message: Fixture marker
+    scope: text
+    pattern: SampleAnalyzer
+YAML
+cargo run --quiet -- list-rules --format json --config /tmp/gruff-rs-custom.yaml >/tmp/gruff-rs-custom-rules.json
+grep -q '"id": "custom.fixture-marker"' /tmp/gruff-rs-custom-rules.json
+cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --config /tmp/gruff-rs-custom.yaml >/tmp/gruff-rs-custom-analysis.txt
+grep -q 'custom.fixture-marker' /tmp/gruff-rs-custom-analysis.txt
 cargo run --quiet -- analyse src --format json --fail-on none >/tmp/gruff-rs-src.json

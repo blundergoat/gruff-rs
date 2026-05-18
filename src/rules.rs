@@ -56,6 +56,12 @@ impl RuleRegistry {
         definitions.sort_by(|left, right| left.id.cmp(right.id));
         let mut seen = BTreeSet::new();
         for definition in &definitions {
+            if definition.id.starts_with("custom.") {
+                return Err(format!(
+                    "built-in rule id `{}` uses reserved custom namespace",
+                    definition.id
+                ));
+            }
             if !seen.insert(definition.id) {
                 return Err(format!("duplicate rule id `{}`", definition.id));
             }
