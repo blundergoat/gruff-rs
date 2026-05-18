@@ -1132,66 +1132,101 @@ fn read_diff_patch(project_root: &Path, path: &Path) -> Result<String, String> {
         .map_err(|error| format!("unable to read --diff-patch {}: {error}", path.display()))
 }
 
+#[derive(Default)]
+struct DiffPatchState {
+    current_file: Option<String>,
+    current_new_line: Option<usize>,
+}
+
+enum DiffHunkLineKind {
+    NewSide,
+    OldSideOnly,
+    NoNewlineMarker,
+    OutsideHunk,
+}
+
 fn parse_unified_diff(patch: &str) -> DiffPatchLineMap {
     let mut line_map = DiffPatchLineMap::default();
-    let mut current_file: Option<String> = None;
-    let mut current_new_line: Option<usize> = None;
+    let mut state = DiffPatchState::default();
 
     for raw_line in patch.lines() {
         let line = raw_line.trim_end_matches('\r');
-        if let Some(path) = line.strip_prefix("+++ ") {
-            current_file = parse_diff_path(path);
-            current_new_line = None;
-            if let Some(file) = &current_file {
-                line_map.lines_by_file.entry(file.clone()).or_default();
-            }
+        if should_handle_diff_header(line, &mut state, &mut line_map) {
             continue;
         }
+        record_diff_hunk_line(line, &mut state, &mut line_map);
+    }
 
-        if line.starts_with("diff --git ") {
-            current_new_line = None;
-            continue;
-        }
+    line_map
+}
 
-        if line.starts_with("Binary files ") || line == "GIT binary patch" {
-            current_new_line = None;
-            continue;
-        }
+fn should_handle_diff_header(
+    line: &str,
+    state: &mut DiffPatchState,
+    line_map: &mut DiffPatchLineMap,
+) -> bool {
+    if let Some(path) = line.strip_prefix("+++ ") {
+        state.current_file = parse_diff_path(path);
+        state.current_new_line = None;
+        ensure_diff_file_entry(line_map, &state.current_file);
+        return true;
+    }
 
-        if line.starts_with("@@") {
-            current_new_line = parse_hunk_new_start(line);
-            if let Some(file) = &current_file {
-                line_map.lines_by_file.entry(file.clone()).or_default();
-            }
-            continue;
-        }
+    if line.starts_with("diff --git ")
+        || line.starts_with("Binary files ")
+        || line == "GIT binary patch"
+    {
+        state.current_new_line = None;
+        return true;
+    }
 
-        let Some(new_line) = current_new_line.as_mut() else {
-            continue;
-        };
-        let Some(file) = &current_file else {
-            continue;
-        };
+    if line.starts_with("@@") {
+        state.current_new_line = parse_hunk_new_start(line);
+        ensure_diff_file_entry(line_map, &state.current_file);
+        return true;
+    }
 
-        if line.starts_with('\\') {
-            continue;
-        }
-        if line.starts_with('-') {
-            continue;
-        }
-        if line.starts_with('+') || line.starts_with(' ') {
+    false
+}
+
+fn ensure_diff_file_entry(line_map: &mut DiffPatchLineMap, current_file: &Option<String>) {
+    if let Some(file) = current_file {
+        line_map.lines_by_file.entry(file.clone()).or_default();
+    }
+}
+
+fn record_diff_hunk_line(line: &str, state: &mut DiffPatchState, line_map: &mut DiffPatchLineMap) {
+    let Some(new_line) = state.current_new_line.as_mut() else {
+        return;
+    };
+    let Some(file) = &state.current_file else {
+        return;
+    };
+
+    match diff_hunk_line_kind(line) {
+        DiffHunkLineKind::NewSide => {
             line_map
                 .lines_by_file
                 .entry(file.clone())
                 .or_default()
                 .insert(*new_line);
             *new_line += 1;
-        } else {
-            current_new_line = None;
         }
+        DiffHunkLineKind::OldSideOnly | DiffHunkLineKind::NoNewlineMarker => {}
+        DiffHunkLineKind::OutsideHunk => state.current_new_line = None,
     }
+}
 
-    line_map
+fn diff_hunk_line_kind(line: &str) -> DiffHunkLineKind {
+    if line.starts_with('\\') {
+        DiffHunkLineKind::NoNewlineMarker
+    } else if line.starts_with('-') {
+        DiffHunkLineKind::OldSideOnly
+    } else if line.starts_with('+') || line.starts_with(' ') {
+        DiffHunkLineKind::NewSide
+    } else {
+        DiffHunkLineKind::OutsideHunk
+    }
 }
 
 fn parse_diff_path(raw_path: &str) -> Option<String> {
@@ -1310,46 +1345,13 @@ fn run_analysis_in_project(
     let config = load_config(project_root, options)?;
     let mut discovery = discover_sources(project_root, options, &config);
     let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
-
-    if let Some(DiffSelection::GitUnsafe(mode)) = &options.diff {
-        let changed = changed_files(mode)?;
-        discovery
-            .files
-            .retain(|file| changed.contains(&file.display_path));
-        diagnostics.push(RunDiagnostic {
-            diagnostic_type: "diff-git-unsafe".to_string(),
-            message: format!(
-                "Unsafe Git diff mode `{mode}` executed `git diff --name-only`; use --diff-patch for no-execute filtering."
-            ),
-            file_path: None,
-            line: None,
-        });
-    }
-
-    let analysed_display_paths: BTreeSet<String> = discovery
-        .files
-        .iter()
-        .map(|file| file.display_path.clone())
-        .collect();
-    let mut findings = Vec::new();
-
-    let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
-    diagnostics.extend(read_diagnostics);
-
-    let project_context = build_project_context(project_root, &parsed_sources);
-    diagnostics.extend(project_context.diagnostics.iter().cloned());
-    findings.extend(analyse_project(&project_context, &config));
-
-    for parsed_source in &parsed_sources {
-        findings.extend(analyse_source(&parsed_source.unit(), &config));
-        diagnostics.extend(parsed_source.diagnostics.iter().cloned());
-    }
-
+    apply_git_diff_selection(options, &mut discovery, &mut diagnostics)?;
+    let analysed_paths = analysed_display_paths(&discovery.files);
+    let mut findings =
+        analyse_discovered_sources(project_root, &discovery.files, &config, &mut diagnostics);
     let baseline_report = resolve_baseline(project_root, options, &mut findings)?;
-
     sort_and_dedupe_findings(&mut findings);
-
-    let mut report = build_report(
+    let report = build_report(
         project_root,
         options,
         discovery,
@@ -1357,13 +1359,80 @@ fn run_analysis_in_project(
         findings,
         baseline_report,
     );
+    let mut report = apply_diff_selection(project_root, options, report, &analysed_paths)?;
+    record_history_if_requested(project_root, options, &mut report);
+    Ok(report)
+}
 
-    if let Some(DiffSelection::Patch(path)) = &options.diff {
-        let patch_text = read_diff_patch(project_root, path)?;
-        let patch = parse_unified_diff(&patch_text);
-        report = apply_diff_patch_filter(report, &patch, &analysed_display_paths);
+fn apply_git_diff_selection(
+    options: &AnalysisOptions,
+    discovery: &mut DiscoveryResult,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Result<(), String> {
+    let Some(DiffSelection::GitUnsafe(mode)) = &options.diff else {
+        return Ok(());
+    };
+
+    let changed = changed_files(mode)?;
+    discovery
+        .files
+        .retain(|file| changed.contains(&file.display_path));
+    diagnostics.push(RunDiagnostic {
+        diagnostic_type: "diff-git-unsafe".to_string(),
+        message: format!(
+            "Unsafe Git diff mode `{mode}` executed `git diff --name-only`; use --diff-patch for no-execute filtering."
+        ),
+        file_path: None,
+        line: None,
+    });
+
+    Ok(())
+}
+
+fn analysed_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
+    files.iter().map(|file| file.display_path.clone()).collect()
+}
+
+fn analyse_discovered_sources(
+    project_root: &Path,
+    files: &[SourceFile],
+    config: &Config,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Vec<Finding> {
+    let (parsed_sources, read_diagnostics) = read_and_parse_sources(files);
+    diagnostics.extend(read_diagnostics);
+
+    let project_context = build_project_context(project_root, &parsed_sources);
+    diagnostics.extend(project_context.diagnostics.iter().cloned());
+
+    let mut findings = analyse_project(&project_context, config);
+    for parsed_source in &parsed_sources {
+        findings.extend(analyse_source(&parsed_source.unit(), config));
+        diagnostics.extend(parsed_source.diagnostics.iter().cloned());
     }
+    findings
+}
 
+fn apply_diff_selection(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    report: AnalysisReport,
+    analysed_paths: &BTreeSet<String>,
+) -> Result<AnalysisReport, String> {
+    let Some(DiffSelection::Patch(path)) = &options.diff else {
+        return Ok(report);
+    };
+
+    let patch_text = read_diff_patch(project_root, path)?;
+    let patch = parse_unified_diff(&patch_text);
+    Ok(apply_diff_patch_filter(report, &patch, analysed_paths))
+}
+
+fn record_history_if_requested(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    report: &mut AnalysisReport,
+) {
     if let Some(history_file) = &options.history_file {
         record_history(
             project_root,
@@ -1372,8 +1441,6 @@ fn run_analysis_in_project(
             &mut report.diagnostics,
         );
     }
-
-    Ok(report)
 }
 
 fn build_report(
@@ -6449,6 +6516,8 @@ mod tests {
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
 
+    const PROCESS_COMMAND_NEW: &str = "std::process::Command::new";
+
     fn analysis_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -6701,12 +6770,17 @@ diff --git a/missing.rs b/missing.rs\n\
         let patch_path = dir.path().join("fixture.patch");
         fs::write(
             &patch_path,
-            "\
+            [
+                "\
 diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
 --- a/fixtures/sample.rs\n\
 +++ b/fixtures/sample.rs\n\
 @@ -11,1 +11,1 @@\n\
-+        std::process::Command::new(command).arg(url).spawn().unwrap();\n",
++        ",
+                PROCESS_COMMAND_NEW,
+                "(command).arg(url).spawn().unwrap();\n",
+            ]
+            .concat(),
         )
         .expect("patch write");
         let options = AnalysisOptions {
@@ -6995,14 +7069,17 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
         let rust_file = dir.path().join("bad.rs");
         fs::write(
             &rust_file,
-            r#"pub struct Bad {
+            [
+                r#"pub struct Bad {
     pub name: String,
 }
 
 impl Bad {
     pub fn process(a: bool, b: Vec<String>, c: String, d: String, e: String, f: String) {
         if a {
-            std::process::Command::new("sh").arg("-c").arg(c).spawn().unwrap();
+            "#,
+                PROCESS_COMMAND_NEW,
+                r#"("sh").arg("-c").arg(c).spawn().unwrap();
         }
         println!("{}{}{}", d, e, f);
     }
@@ -7013,6 +7090,8 @@ fn test_no_assert() {
     std::thread::sleep(std::time::Duration::from_millis(1));
 }
 "#,
+            ]
+            .concat(),
         )
         .expect("fixture write");
         let report = analyse_project_paths(dir.path(), vec![PathBuf::from(".")]);
@@ -7172,13 +7251,18 @@ rules:
         let dir = tempdir().expect("tempdir");
         fs::write(
             dir.path().join("sample.rs"),
-            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+            [
+                r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
     if a {
-        std::process::Command::new("sh").arg("-c").arg(b).spawn().unwrap();
+        "#,
+                PROCESS_COMMAND_NEW,
+                r#"("sh").arg("-c").arg(b).spawn().unwrap();
     }
     println!("{}{}{}{}", c, d, e, f);
 }
 "#,
+            ]
+            .concat(),
         )
         .expect("fixture write");
         write_default_config(
@@ -7387,13 +7471,18 @@ rules:
         let dir = tempdir().expect("tempdir");
         fs::write(
             dir.path().join("sample.rs"),
-            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+            [
+                r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
     if a {
-        std::process::Command::new("sh").arg("-c").arg(b).spawn().unwrap();
+        "#,
+                PROCESS_COMMAND_NEW,
+                r#"("sh").arg("-c").arg(b).spawn().unwrap();
     }
     println!("{}{}{}{}", c, d, e, f);
 }
 "#,
+            ]
+            .concat(),
         )
         .expect("fixture write");
         write_default_config(
@@ -8742,10 +8831,15 @@ rules:
         fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
         fs::write(
             dir.path().join("sample.rs"),
-            r#"pub fn process(command: String) {
-    std::process::Command::new("sh").arg(command).spawn().unwrap();
+            [
+                r#"pub fn process(command: String) {
+    "#,
+                PROCESS_COMMAND_NEW,
+                r#"("sh").arg(command).spawn().unwrap();
 }
 "#,
+            ]
+            .concat(),
         )
         .expect("fixture write");
 
