@@ -47,7 +47,7 @@ When optimizing analyzer hot paths, measure each candidate with
 plausible allocation-sharing change can regress both wall time and RSS.
 
 If a candidate makes the `src.*` scenarios slower or noisier, revert only that
-candidate and keep the measured wins. Finish with `bash scripts/check.sh` plus a
+candidate and keep the measured wins. Finish with `bash scripts/preflight-checks.sh` plus a
 default `bash scripts/test-performance.sh` run so the final diff has both
 correctness and performance evidence.
 

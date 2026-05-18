@@ -308,19 +308,21 @@ default gate does not require a networked SARIF schema validator.
 ## Local Checks
 
 ```bash
-bash scripts/check.sh
+bash scripts/preflight-checks.sh
 ./bin/gruff-rs analyse fixtures --format json --fail-on none
 ./bin/gruff-rs analyse fixtures --format sarif --fail-on none
 ./bin/gruff-rs analyse fixtures --diff-patch /tmp/gruff.patch --format json --fail-on none
-./bin/gruff-rs analyse src --format json --fail-on none
+./bin/gruff-rs analyse src --format json --fail-on warning --no-baseline
 ./bin/gruff-rs list-rules --format json
 ./bin/gruff-rs list-rules --selector Security
 ```
 
-`scripts/check.sh` runs formatting, Clippy, unit tests, rule listing, JSON and
-SARIF fixture scans, a patch-input diff smoke, and self-scan diagnostics smoke
-checks. Self-scan findings are visible under `--fail-on none`; fatal diagnostics
-are treated as gate failures.
+`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and
+SARIF fixture scans, a patch-input diff smoke, selector/exclusion/custom-rule
+smokes, and a dogfood scan of `src/`. The dogfood scan defaults to
+`--fail-on warning` so warning-level analyzer debt fails preflight; set
+`GRUFF_RS_FAIL_ON=error` or pass `--fail-on error` only for an explicit
+transitional run.
 
 ## Performance
 

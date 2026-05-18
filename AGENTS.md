@@ -39,10 +39,10 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 ## Essential Commands
 
 ```bash
-bash scripts/check.sh
+bash scripts/preflight-checks.sh
 cargo build
 cargo run -- analyse fixtures --format json --fail-on none
-shellcheck scripts/check.sh scripts/start-dev.sh .codex/hooks/deny-dangerous.sh .codex/hooks/deny-dangerous.self-test.sh
+shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .codex/hooks/deny-dangerous.sh .codex/hooks/deny-dangerous.self-test.sh
 ```
 
 Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.

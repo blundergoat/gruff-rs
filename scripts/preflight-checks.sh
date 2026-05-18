@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+# scripts/preflight-checks.sh - run the local verification gates for gruff-rs.
+
+set -u
+set -o pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+GRUFF_RS_FAIL_ON="${GRUFF_RS_FAIL_ON:-warning}"
+WORK_DIR=""
+
+TOTAL=0
+PASSED=0
+FAILED=0
+FAILURES=()
+SKIPPED=()
+START_TIME=$(date +%s%N)
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  BOLD=$'\033[1m'
+  DIM=$'\033[2m'
+  GREEN=$'\033[32m'
+  RED=$'\033[31m'
+  YELLOW=$'\033[33m'
+  BLUE=$'\033[34m'
+  RESET=$'\033[0m'
+else
+  BOLD=""
+  DIM=""
+  GREEN=""
+  RED=""
+  YELLOW=""
+  BLUE=""
+  RESET=""
+fi
+
+PASS="${GREEN}PASS${RESET}"
+FAIL="${RED}FAIL${RESET}"
+SKIP="${YELLOW}SKIP${RESET}"
+ARROW="${BLUE}>${RESET}"
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/preflight-checks.sh [options]
+
+Runs the local gruff-rs preflight suite:
+  - bash syntax check for tracked and untracked shell scripts
+  - shellcheck for shell scripts when shellcheck is installed
+  - cargo fmt, clippy, and tests
+  - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
+  - gruff-rs dogfood scan of src/
+
+Options:
+  --fail-on LEVEL  Fail dogfood analysis at none, advisory, warning, or error.
+                   Defaults to GRUFF_RS_FAIL_ON, or warning when unset.
+  -h, --help       Show this help.
+
+Environment:
+  GRUFF_RS_FAIL_ON  Dogfood scan threshold (default: warning).
+USAGE
+}
+
+die() {
+  printf 'preflight-checks: %s\n' "$*" >&2
+  exit 2
+}
+
+cleanup() {
+  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+    rm -rf "$WORK_DIR"
+  fi
+}
+
+rule() {
+  printf '  %s\n' "${DIM}--------------------------------------------${RESET}"
+}
+
+elapsed_since() {
+  local started_at=$1
+  local finished_at
+  local elapsed_ms
+  local seconds
+  local minutes
+  local remainder
+  local frac
+
+  finished_at=$(date +%s%N)
+  elapsed_ms=$(((finished_at - started_at) / 1000000))
+
+  if ((elapsed_ms < 1000)); then
+    printf '%dms' "$elapsed_ms"
+    return
+  fi
+
+  seconds=$((elapsed_ms / 1000))
+  frac=$(((elapsed_ms % 1000) / 100))
+
+  if ((seconds < 60)); then
+    printf '%d.%ds' "$seconds" "$frac"
+    return
+  fi
+
+  minutes=$((seconds / 60))
+  remainder=$((seconds % 60))
+  printf '%dm %02d.%ds' "$minutes" "$remainder" "$frac"
+}
+
+header() {
+  printf '\n'
+  printf '  %sPreflight Check%s\n' "$BOLD" "$RESET"
+  printf '  %s%s%s\n' "$DIM" "$(date '+%Y-%m-%d %H:%M:%S')" "$RESET"
+  printf '  %sroot:%s %s\n' "$DIM" "$RESET" "$REPO_ROOT"
+  printf '  %sdogfood fail threshold:%s %s\n' "$DIM" "$RESET" "$GRUFF_RS_FAIL_ON"
+  rule
+  printf '\n'
+}
+
+step() {
+  local label=$1
+
+  TOTAL=$((TOTAL + 1))
+  printf '  %s %-38s' "$ARROW" "$label"
+}
+
+pass_step() {
+  local detail=${1:-}
+
+  PASSED=$((PASSED + 1))
+  if [[ -n "$detail" ]]; then
+    printf '%s  %s%s%s\n' "$PASS" "$DIM" "$detail" "$RESET"
+  else
+    printf '%s\n' "$PASS"
+  fi
+}
+
+fail_step() {
+  local label=$1
+
+  FAILED=$((FAILED + 1))
+  FAILURES+=("$label")
+  printf '%s\n' "$FAIL"
+}
+
+skip_line() {
+  local reason=${1:-skipped}
+
+  SKIPPED+=("$reason")
+  printf '%s  %s%s%s\n' "$SKIP" "$DIM" "$reason" "$RESET"
+}
+
+indent_output() {
+  while IFS= read -r line; do
+    printf '    %s%s%s\n' "$DIM" "$line" "$RESET"
+  done
+}
+
+trim_line() {
+  printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+compact_output() {
+  local output=$1
+  local summary_line
+
+  [[ -n "$output" ]] || return 0
+
+  summary_line=$(printf '%s\n' "$output" | grep 'test result:' | tail -1 || true)
+  if [[ -n "$summary_line" ]]; then
+    trim_line "$summary_line"
+    return 0
+  fi
+
+  summary_line=$(printf '%s\n' "$output" | grep -E '^Score:' | tail -1 || true)
+  if [[ -n "$summary_line" ]]; then
+    trim_line "$summary_line"
+    return 0
+  fi
+
+  summary_line=$(printf '%s\n' "$output" | grep -E "Finished \`[^\`]+\` profile" | tail -1 || true)
+  if [[ -n "$summary_line" ]]; then
+    trim_line "$summary_line"
+    return 0
+  fi
+
+  trim_line "$(printf '%s\n' "$output" | sed '/^[[:space:]]*$/d' | tail -1)"
+}
+
+summary() {
+  local elapsed
+
+  elapsed=$(elapsed_since "$START_TIME")
+  printf '\n'
+  rule
+  printf '\n'
+
+  if ((${#SKIPPED[@]} > 0)); then
+    printf '  %sSkipped:%s\n' "$YELLOW" "$RESET"
+    printf '    - %s\n' "${SKIPPED[@]}"
+    printf '\n'
+  fi
+
+  if ((FAILED == 0)); then
+    printf '  %sAll %d/%d checks passed%s  %s(%s)%s\n' "$GREEN$BOLD" "$PASSED" "$TOTAL" "$RESET" "$DIM" "$elapsed" "$RESET"
+    printf '\n'
+    return 0
+  fi
+
+  printf '  %s%d/%d checks failed%s  %s(%s)%s\n' "$RED$BOLD" "$FAILED" "$TOTAL" "$RESET" "$DIM" "$elapsed" "$RESET"
+  printf '\n'
+  for failure in "${FAILURES[@]}"; do
+    printf '    %s  %s\n' "$FAIL" "$failure"
+  done
+  printf '\n'
+
+  return 1
+}
+
+repo_files() {
+  local pattern="$1"
+
+  if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    {
+      git -C "$REPO_ROOT" ls-files -- "$pattern"
+      git -C "$REPO_ROOT" ls-files --others --exclude-standard -- "$pattern"
+    } | sort -u
+  else
+    (cd "$REPO_ROOT" && find . -type f -name "$pattern" -print | sed 's#^\./##')
+  fi
+}
+
+skip_step() {
+  skip_line "$1"
+}
+
+run_step() {
+  local name="$1"
+  shift
+  local output
+  local detail
+  local status
+  local started_at
+  local elapsed
+
+  step "$name"
+  started_at=$(date +%s%N)
+  output=$("$@" 2>&1)
+  status=$?
+  elapsed=$(elapsed_since "$started_at")
+
+  if ((status == 0)); then
+    detail="$(compact_output "$output")"
+    pass_step "${detail:+$detail | }$elapsed"
+  else
+    fail_step "$name"
+    if [[ -n "$output" ]]; then
+      printf '%s\n' "$output" | tail -20 | indent_output
+    fi
+    printf '    %sexit %d after %s%s\n' "$DIM" "$status" "$elapsed" "$RESET"
+  fi
+
+  return "$status"
+}
+
+validate_fail_on() {
+  case "$GRUFF_RS_FAIL_ON" in
+    none|advisory|warning|error) ;;
+    *) die "invalid --fail-on value: $GRUFF_RS_FAIL_ON" ;;
+  esac
+}
+
+check_shell_syntax() {
+  local files=()
+  local existing_files=()
+  local file
+  mapfile -t files < <(repo_files '*.sh')
+
+  for file in "${files[@]}"; do
+    [[ -f "$file" ]] && existing_files+=("$file")
+  done
+  files=("${existing_files[@]}")
+
+  if ((${#files[@]} == 0)); then
+    skip_step "shell syntax (no shell scripts)"
+    return 0
+  fi
+
+  bash -n "${files[@]}"
+}
+
+check_shellcheck() {
+  local files=()
+  local existing_files=()
+  local file
+  mapfile -t files < <(repo_files '*.sh')
+
+  for file in "${files[@]}"; do
+    [[ -f "$file" ]] && existing_files+=("$file")
+  done
+  files=("${existing_files[@]}")
+
+  if ((${#files[@]} == 0)); then
+    skip_step "shellcheck (no shell scripts)"
+    return 0
+  fi
+
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    skip_step "shellcheck (not installed)"
+    return 0
+  fi
+
+  shellcheck "${files[@]}"
+}
+
+require_cargo() {
+  command -v cargo >/dev/null 2>&1 || die "cargo is not available on PATH"
+}
+
+fixture_json_smoke() {
+  cargo run --quiet -- analyse fixtures --format json --fail-on none >"$WORK_DIR/fixtures.json"
+}
+
+fixture_sarif_smoke() {
+  cargo run --quiet -- analyse fixtures --format sarif --fail-on none >"$WORK_DIR/fixtures.sarif"
+}
+
+list_rules_json_smoke() {
+  cargo run --quiet -- list-rules --format json >"$WORK_DIR/list-rules.json"
+}
+
+security_selector_listing_smoke() {
+  cargo run --quiet -- list-rules --selector Security >"$WORK_DIR/security-rules.txt"
+}
+
+summary_json_smoke() {
+  local summary_file="$WORK_DIR/summary.json"
+
+  cargo run --quiet -- summary fixtures --format json --top 5 --include-ignored >"$summary_file" || return $?
+  grep -q '"schemaVersion": "gruff.summary.v1"' "$summary_file" || return $?
+  grep -q '"topRules":' "$summary_file"
+}
+
+patch_diff_smoke() {
+  local patch_file="$WORK_DIR/fixture.patch"
+  local full_report="$WORK_DIR/fixture-full.txt"
+  local patch_report="$WORK_DIR/fixture-patch.txt"
+  local full_findings
+  local patch_findings
+
+  cat >"$patch_file" <<'PATCH'
+diff --git a/fixtures/sample.rs b/fixtures/sample.rs
+--- a/fixtures/sample.rs
++++ b/fixtures/sample.rs
+@@ -11,1 +11,1 @@
++        std::process::Command::new(command).arg(url).spawn().unwrap();
+PATCH
+
+  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline >"$full_report" || return $?
+  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --diff-patch "$patch_file" >"$patch_report" || return $?
+
+  full_findings="$(grep -c '^- \[' "$full_report" || true)"
+  patch_findings="$(grep -c '^- \[' "$patch_report" || true)"
+  if ((patch_findings >= full_findings)); then
+    printf 'patch diff smoke did not reduce findings: full=%s patch=%s\n' "$full_findings" "$patch_findings" >&2
+    return 1
+  fi
+
+  grep -q 'patch-filter' "$patch_report"
+}
+
+selector_smoke() {
+  local config_file="$WORK_DIR/selector.yaml"
+  local report_file="$WORK_DIR/selector.txt"
+
+  cat >"$config_file" <<'YAML'
+rules:
+  select: ["security.process-command"]
+YAML
+
+  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --config "$config_file" >"$report_file" || return $?
+  grep -q 'security.process-command' "$report_file" || return $?
+  if grep -q 'sensitive-data.aws-access-key' "$report_file"; then
+    printf 'selector smoke reported a rule outside the explicit allow-list\n' >&2
+    return 1
+  fi
+}
+
+exclusion_smoke() {
+  local config_file="$WORK_DIR/exclude.yaml"
+  local full_report="$WORK_DIR/exclude-full.txt"
+  local filtered_report="$WORK_DIR/exclude-filtered.txt"
+  local full_findings
+  local filtered_findings
+
+  cat >"$config_file" <<'YAML'
+exclude:
+  - rule: security.process-command
+    reason: fixture command accepted for smoke testing
+YAML
+
+  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --no-config >"$full_report" || return $?
+  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --config "$config_file" >"$filtered_report" || return $?
+
+  full_findings="$(grep -c '^- \[' "$full_report" || true)"
+  filtered_findings="$(grep -c '^- \[' "$filtered_report" || true)"
+  if ((filtered_findings >= full_findings)); then
+    printf 'exclusion smoke did not reduce findings: full=%s filtered=%s\n' "$full_findings" "$filtered_findings" >&2
+    return 1
+  fi
+
+  grep -q 'Suppressed findings:' "$filtered_report"
+}
+
+custom_rule_smoke() {
+  local config_file="$WORK_DIR/custom.yaml"
+  local rules_file="$WORK_DIR/custom-rules.json"
+  local report_file="$WORK_DIR/custom-analysis.txt"
+
+  cat >"$config_file" <<'YAML'
+custom_rules:
+  - id: custom.fixture-marker
+    pillar: Documentation
+    severity: advisory
+    message: Fixture marker
+    scope: text
+    pattern: SampleAnalyzer
+YAML
+
+  cargo run --quiet -- list-rules --format json --config "$config_file" >"$rules_file" || return $?
+  grep -q '"id": "custom.fixture-marker"' "$rules_file" || return $?
+  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --config "$config_file" >"$report_file" || return $?
+  grep -q 'custom.fixture-marker' "$report_file"
+}
+
+dogfood_failure_pattern() {
+  case "$GRUFF_RS_FAIL_ON" in
+    advisory) printf '%s\n' '^- \[(advisory|warning|error)\]' ;;
+    warning) printf '%s\n' '^- \[(warning|error)\]' ;;
+    error) printf '%s\n' '^- \[error\]' ;;
+    none) printf '%s\n' '^$' ;;
+  esac
+}
+
+dogfood_source_scan() {
+  local report_file="$WORK_DIR/src-self-scan.txt"
+  local status=0
+  local pattern
+
+  cargo run --quiet -- analyse src --format text --fail-on "$GRUFF_RS_FAIL_ON" --no-baseline >"$report_file" 2>&1 || status=$?
+
+  grep -m1 '^Score:' "$report_file" || true
+
+  if ((status != 0)); then
+    pattern="$(dogfood_failure_pattern)"
+    printf 'Dogfood scan failed at --fail-on %s. First matching findings:\n' "$GRUFF_RS_FAIL_ON"
+    grep -E "$pattern" "$report_file" | sed -n '1,20p' || true
+  fi
+
+  return "$status"
+}
+
+main() {
+  while (($#)); do
+    case "$1" in
+      --fail-on)
+        [[ $# -ge 2 ]] || die "--fail-on requires a value"
+        GRUFF_RS_FAIL_ON="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        die "unknown argument: $1"
+        ;;
+    esac
+  done
+
+  validate_fail_on
+  require_cargo
+  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gruff-rs-preflight.XXXXXX")"
+  trap cleanup EXIT
+
+  cd "$REPO_ROOT" || return 1
+
+  header
+
+  run_step "shell syntax" check_shell_syntax
+  run_step "shellcheck" check_shellcheck
+  run_step "cargo fmt" cargo fmt --check
+  run_step "cargo clippy" cargo clippy --all-targets -- -D warnings
+  run_step "cargo test" cargo test
+  run_step "list-rules JSON" list_rules_json_smoke
+  run_step "Security selector listing" security_selector_listing_smoke
+  run_step "summary JSON" summary_json_smoke
+  run_step "fixture JSON scan" fixture_json_smoke
+  run_step "fixture SARIF scan" fixture_sarif_smoke
+  run_step "patch diff smoke" patch_diff_smoke
+  run_step "selector smoke" selector_smoke
+  run_step "exclusion smoke" exclusion_smoke
+  run_step "custom rule smoke" custom_rule_smoke
+  run_step "gruff-rs dogfood scan" dogfood_source_scan
+
+  summary
+}
+
+main "$@"

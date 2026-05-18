@@ -4,7 +4,7 @@
 
 `gruff-rs` is a Rust binary implemented through `src/main.rs` plus focused modules such as `src/rules.rs`. The binary has four user-facing modes: `analyse` walks source trees and emits findings, `report` renders analysis output to a file or stdout, `list-rules` prints registry metadata, and `dashboard` starts a small local HTTP server for browser-driven scans.
 
-The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `src/main.rs` for now. Rule metadata and the built-in rule registry live in `src/rules.rs`; built-in rule dispatch is behind a module boundary. Supporting shell entrypoints live in `scripts/check.sh` and `scripts/start-dev.sh`; intentionally noisy analyzer inputs live in `fixtures/` and `tests/fixtures/`.
+The crate keeps CLI orchestration, rendering, baseline, and dashboard code in `src/main.rs` for now. Rule metadata and the built-in rule registry live in `src/rules.rs`; built-in rule dispatch is behind a module boundary. Supporting shell entrypoints live in `scripts/preflight-checks.sh` and `scripts/start-dev.sh`; intentionally noisy analyzer inputs live in `fixtures/` and `tests/fixtures/`.
 
 ## Request Flow
 
@@ -53,7 +53,7 @@ Rule tuning is loaded by `load_config` from an explicit YAML config path or the 
 
 ## Deployment / Operations
 
-CI lives in `.github/workflows/ci.yml` and runs the same local preflight command as developers: `bash scripts/check.sh`. That script runs formatting, Clippy, unit tests, rule-listing smoke, JSON and SARIF fixture scans, a patch-input diff smoke, an exclusion smoke, a custom-rule smoke, and self-scan diagnostics smoke. The expanded rubric still keeps this as a single default gate; a May 2026 measured run completed in about six and a half seconds after dependencies were built. `cargo build` remains the build smoke test, and `bash scripts/start-dev.sh` starts the dashboard using environment-overridable host, port, and project root values.
+CI lives in `.github/workflows/ci.yml` and runs the same local preflight command as developers: `bash scripts/preflight-checks.sh`. That script runs shell syntax/lint checks, formatting, Clippy, unit tests, rule-listing smoke, JSON and SARIF fixture scans, patch-input diff, selector, exclusion, and custom-rule smokes, plus a dogfood scan of `src/` that defaults to `--fail-on warning`. The expanded rubric keeps this as a single default gate so warning-level analyzer debt, including over-large source files, is visible as a preflight failure. `cargo build` remains the build smoke test, and `bash scripts/start-dev.sh` starts the dashboard using environment-overridable host, port, and project root values.
 
 ## Non-Obvious Constraints
 

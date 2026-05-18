@@ -30,7 +30,7 @@
 ## Scripts
 
 `scripts/` = Project shell entrypoints.
-`scripts/check.sh` = Formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff smoke, exclusion/custom-rule smokes, and self-scan gate.
+`scripts/preflight-checks.sh` = Shell syntax/lint, formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff, selector, exclusion/custom-rule smokes, and warning-gated dogfood scan.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
 `scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes `target/perf/last-run.json`, supports `--update-baseline` and `--check` with configurable time/RSS budgets.
 
