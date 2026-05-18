@@ -64,7 +64,7 @@ rules:
   # Flags functions with many approximate execution paths.
   complexity.npath:
     enabled: true
-    threshold: 32
+    threshold: 100
     severity: warning
   # Flags narrow blocking call patterns inside async functions.
   concurrency.blocking-call-in-async:
@@ -124,7 +124,7 @@ rules:
   # Flags functions whose deterministic token volume exceeds the configured threshold.
   metrics.halstead-volume:
     enabled: true
-    threshold: 900
+    threshold: 1500
     severity: advisory
   # Flags functions whose maintainability pressure score falls below the configured minimum.
   metrics.maintainability-pressure:
@@ -185,12 +185,12 @@ rules:
   # Flags files over the configured line-count threshold.
   size.file-length:
     enabled: true
-    threshold: 400
+    threshold: 600
     severity: warning
   # Flags functions over the configured line-count threshold.
   size.function-length:
     enabled: true
-    threshold: 30
+    threshold: 50
     severity: warning
   # Flags functions with too many parameters.
   size.parameter-count:
@@ -206,7 +206,7 @@ rules:
   # Flags long test functions that are harder to scan and maintain.
   test-quality.long-test:
     enabled: true
-    threshold: 30
+    threshold: 80
     severity: advisory
   # Flags tests that contain loop logic.
   test-quality.loop-in-test:

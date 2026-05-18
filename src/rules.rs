@@ -107,21 +107,21 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
 const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));
 const COMPLEXITY_CYCLOMATIC_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(10.0));
 const COMPLEXITY_NESTING_DEPTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
-const COMPLEXITY_NPATH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(32.0));
+const COMPLEXITY_NPATH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(100.0));
 const ARCHITECTURE_LARGE_MODULE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(25.0));
 const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(8.0));
 const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(12.0));
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(1.0));
-const METRICS_HALSTEAD_VOLUME_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(900.0));
+const METRICS_HALSTEAD_VOLUME_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(1500.0));
 const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(45.0));
 const TODO_DENSITY_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
-const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(400.0));
-const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(30.0));
+const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(600.0));
+const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(50.0));
 const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(5.0));
-const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(30.0));
+const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(80.0));
 
 macro_rules! rule_definition {
     (

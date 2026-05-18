@@ -4270,7 +4270,7 @@ mod built_in_rules {
     ) {
         let line_count = source.lines().count();
         let rule_id = "size.file-length";
-        let threshold = config.threshold(rule_id, 400.0) as usize;
+        let threshold = config.threshold(rule_id, 600.0) as usize;
         if line_count > threshold {
             findings.push(finding(
                 rule_id,
@@ -4564,7 +4564,7 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let rule_id = "size.function-length";
-        let threshold = config.threshold(rule_id, 30.0) as usize;
+        let threshold = config.threshold(rule_id, 50.0) as usize;
         if block.line_count > threshold {
             findings.push(block_finding(
                 rule_id,
@@ -4676,7 +4676,7 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let rule_id = "complexity.npath";
-        if npath <= config.threshold(rule_id, 32.0) as usize {
+        if npath <= config.threshold(rule_id, 100.0) as usize {
             return;
         }
         findings.push(block_finding_with_extras(
@@ -4949,7 +4949,7 @@ mod built_in_rules {
         config: &Config,
         findings: &mut Vec<Finding>,
     ) {
-        let volume_threshold = config.threshold("metrics.halstead-volume", 900.0);
+        let volume_threshold = config.threshold("metrics.halstead-volume", 1500.0);
         if metrics.halstead_volume > volume_threshold {
             let rule_id = "metrics.halstead-volume";
             findings.push(block_finding_with_extras(
@@ -5266,7 +5266,7 @@ mod built_in_rules {
         findings: &mut Vec<Finding>,
     ) {
         let rule_id = "test-quality.long-test";
-        let threshold = config.threshold(rule_id, 30.0) as usize;
+        let threshold = config.threshold(rule_id, 80.0) as usize;
         if block.line_count > threshold {
             findings.push(block_finding_with_metadata(
                 rule_id,
@@ -11886,13 +11886,15 @@ pub fn shallow(flag_a: bool, flag_b: bool) -> i32 {
                     baseline_with_lib(
                         root,
                         r#"/// Probe.
-pub fn many_paths(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool) -> i32 {
+pub fn many_paths(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool, h: bool) -> i32 {
     if a { 1 } else { 0 };
     if b { 1 } else { 0 };
     if c { 1 } else { 0 };
     if d { 1 } else { 0 };
     if e { 1 } else { 0 };
     if f { 1 } else { 0 };
+    if g { 1 } else { 0 };
+    if h { 1 } else { 0 };
     0
 }
 "#,
@@ -12509,7 +12511,7 @@ pub fn entry(values: Vec<i32>) {
                 "size.file-length",
                 Box::new(|root| {
                     let mut body = String::from("/// Probe.\npub fn entry() {}\n");
-                    for index in 0..420 {
+                    for index in 0..620 {
                         body.push_str(&format!("// filler line {index}\n"));
                     }
                     baseline_with_lib(root, &body);
@@ -12520,7 +12522,7 @@ pub fn entry(values: Vec<i32>) {
                 "size.function-length",
                 Box::new(|root| {
                     let mut body = String::from("/// Probe.\npub fn long_entry() {\n");
-                    for index in 0..40 {
+                    for index in 0..60 {
                         body.push_str(&format!("    let _ = {index};\n"));
                     }
                     body.push_str("}\n");
@@ -12577,10 +12579,10 @@ pub fn entry(values: Vec<i32>) {
                     let mut body = String::from(
                         "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn long() {\n        let value = 0;\n",
                     );
-                    for index in 0..40 {
+                    for index in 0..90 {
                         body.push_str(&format!("        let value = value + {index};\n"));
                     }
-                    body.push_str("        assert_eq!(value, 780);\n    }\n}\n");
+                    body.push_str("        assert_eq!(value, 4005);\n    }\n}\n");
                     baseline_with_lib(root, &body);
                 }),
                 Box::new(|root| {
@@ -12933,10 +12935,10 @@ pub fn fixture_text() {
         let mut body = String::from(
             "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod fixtures {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
         );
-        for index in 0..30 {
+        for index in 0..90 {
             body.push_str(&format!("        if {index} > 0 {{ total += {index}; }}\n"));
         }
-        body.push_str("        assert_eq!(total, 465);\n    }\n}\n");
+        body.push_str("        assert_eq!(total, 4005);\n    }\n}\n");
         baseline_with_lib(dir.path(), &body);
         let report = run_project_analysis(
             dir.path(),

@@ -77,7 +77,7 @@ rules:
     threshold: 4
     severity: warning
   complexity.npath:
-    threshold: 32
+    threshold: 100
     severity: warning
   docs.todo-density:
     threshold: 4
@@ -86,22 +86,22 @@ rules:
     threshold: 2
     severity: advisory
   metrics.halstead-volume:
-    threshold: 900
+    threshold: 1500
     severity: advisory
   metrics.maintainability-pressure:
     threshold: 45
     severity: advisory
   size.file-length:
-    threshold: 400
+    threshold: 600
     severity: warning
   size.function-length:
-    threshold: 30
+    threshold: 50
     severity: warning
   size.parameter-count:
     threshold: 5
     severity: warning
   test-quality.long-test:
-    threshold: 30
+    threshold: 80
     severity: advisory
 exclude:
   - rule: security.process-command

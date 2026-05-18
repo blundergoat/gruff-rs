@@ -1,11 +1,15 @@
-pub fn active(flag_a: bool, flag_b: bool, flag_c: bool, flag_d: bool, flag_e: bool, flag_f: bool) -> bool {
+pub fn active(flag_a: bool, flag_b: bool, flag_c: bool, flag_d: bool, flag_e: bool, flag_f: bool, flag_g: bool, flag_h: bool) -> bool {
     if flag_a {
         if flag_b {
             if flag_c {
                 if flag_d {
                     if flag_e {
                         if flag_f {
-                            return true;
+                            if flag_g {
+                                if flag_h {
+                                    return true;
+                                }
+                            }
                         }
                     }
                 }

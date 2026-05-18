@@ -30,7 +30,29 @@ Error-handling and concurrency rules are deliberately syntactic. Production pani
 
 Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside loop bodies. They are reported as waste because the current report schema does not define a separate performance pillar.
 
-Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default threshold of `900` with advisory severity. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default threshold of `45` with advisory severity. Config uses `threshold` plus `severity` for thresholded rules. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default threshold of `1500` with advisory severity. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default threshold of `45` with advisory severity. Config uses `threshold` plus `severity` for thresholded rules. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+
+## Threshold calibration
+
+Threshold defaults are anchored to documented peer analyzers where one exists, and called out as gruff-specific where no peer ships a comparable numeric default. Peer references come from the M19-M22 neighbor study notes under `.goat-flow/scratchpad/related-projects/`.
+
+| Rule | Default | Peer anchor | Note |
+| --- | --- | --- | --- |
+| `complexity.cognitive` | 15 | Detekt CognitiveComplexMethod 15, PMD CognitiveComplexity 15 | Matches the Detekt/PMD consensus. |
+| `complexity.cyclomatic` | 10 | PMD CyclomaticComplexity 10 | Between Detekt (14) and RuboCop (7). |
+| `complexity.nesting-depth` | 4 | RuboCop Metrics/BlockNesting 3 | One step looser than RuboCop's Ruby default. |
+| `complexity.npath` | 100 | PMD NPathComplexity 200 | Stricter than PMD; gruff treats Rust expression branches as denser than Java method bodies. |
+| `metrics.halstead-volume` | 1500 | none | Gruff-specific; no major peer ships Halstead as a default-on lint. Calibrated against self-scan distribution where real outliers cluster above 1500. |
+| `metrics.maintainability-pressure` | 45 | SonarQube maintainability index (concept-only) | Gruff-specific composite of token volume, cyclomatic, and Halstead volume. |
+| `architecture.large-module` | 25 items | Detekt LargeClass 600 lines (different unit) | Gruff measures public-or-visible item count per module, not raw lines; not directly comparable. |
+| `architecture.module-fan-out` | 8 | none | Gruff-specific; PMD CouplingBetweenObjects exists but its threshold is not documented in the neighbor studies. |
+| `architecture.public-api-surface` | 12 items | none | Gruff-specific external-public count; PMD TooManyMethods is the nearest peer concept. |
+| `dependency.duplicate-locked-version` | 1 | none | Cargo-specific; no peer analyzer ships this check. |
+| `docs.todo-density` | 4 per file | none (peers use binary presence) | Gruff counts TODO/FIXME comments per file rather than firing on first occurrence. |
+| `size.file-length` | 600 | Detekt LargeClass 600 | Matches Detekt exactly; PMD uses 1500 NCSS, RuboCop uses 250 lines. |
+| `size.function-length` | 50 | Detekt LongMethod 60, PMD NcssCount 60 | Slightly stricter than Detekt/PMD; far looser than RuboCop's 10-line Ruby default. |
+| `size.parameter-count` | 5 | Detekt 5-6, RuboCop 5 | Matches Detekt and RuboCop. |
+| `test-quality.long-test` | 80 | RuboCop RSpec/ExampleLength 25 (unit only) | Gruff-specific; RuboCop's peer rule is unit-spec scoped, so it does not apply to integration tests with realistic fixtures. |
 
 ## Deferred
 
