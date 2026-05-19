@@ -1,0 +1,550 @@
+use super::*;
+
+pub(crate) fn analyse_performance_block(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    for check in PERFORMANCE_CHECKS {
+        let occurrences =
+            loop_pattern_count(searchable_body, static_regex(check.regex, check.pattern));
+        if occurrences > 0 {
+            push_performance_finding(file, block, check, occurrences, findings);
+        }
+    }
+}
+
+pub(crate) fn push_performance_finding(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    check: &PerformanceCheck,
+    occurrences: usize,
+    findings: &mut Vec<Finding>,
+) {
+    findings.push(block_finding_with_extras(
+        check.rule_id,
+        format!(
+            "Function `{}` calls {} inside a loop {} time(s).",
+            block.name, check.label, occurrences
+        ),
+        file,
+        block,
+        check.severity,
+        Pillar::Waste,
+        BlockFindingExtras {
+            confidence: check.confidence,
+            remediation: Some(check.remediation.to_string()),
+            metadata: json!({ "pattern": check.label, "occurrences": occurrences }),
+        },
+    ));
+}
+
+pub(crate) fn analyse_concurrency_block(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    if block.is_async {
+        analyse_async_blocking_calls(file, block, searchable_body, findings);
+        analyse_lock_across_await(file, block, searchable_body, findings);
+    }
+
+    if static_regex(
+            &UNBOUNDED_CHANNEL_REGEX,
+            r"\b(std::sync::mpsc::channel|mpsc::unbounded_channel|unbounded_channel)(?:\s*::\s*<[^>]+>)?\s*\(",
+        )
+            .is_match(searchable_body)
+        {
+            findings.push(block_finding_with_extras(
+                "concurrency.unbounded-channel",
+                format!(
+                    "Function `{}` creates an unbounded channel.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: Confidence::Medium,
+                    remediation: Some(
+                        "Prefer a bounded channel or document the producer/consumer backpressure policy."
+                            .to_string(),
+                    ),
+                    metadata: json!({ "pattern": "unbounded-channel" }),
+                },
+            ));
+        }
+}
+
+pub(crate) fn analyse_async_blocking_calls(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let blocking_patterns = [
+        ("std::thread::sleep", "std::thread::sleep"),
+        ("std::fs::read_to_string", "std::fs::read_to_string"),
+        ("std::fs::read", "std::fs::read"),
+        ("std::fs::write", "std::fs::write"),
+        ("std::process::Command::new", "std::process::Command::new"),
+    ];
+    for (pattern, label) in blocking_patterns {
+        if searchable_body.contains(pattern) {
+            findings.push(block_finding_with_extras(
+                    "concurrency.blocking-call-in-async",
+                    format!(
+                        "Async function `{}` calls blocking API `{label}`.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    Severity::Warning,
+                    Pillar::Waste,
+                    BlockFindingExtras {
+                        confidence: Confidence::Medium,
+                        remediation: Some(
+                            "Use an async equivalent or move blocking work behind a dedicated blocking task."
+                                .to_string(),
+                        ),
+                        metadata: json!({ "pattern": label }),
+                    },
+                ));
+            break;
+        }
+    }
+}
+
+pub(crate) fn analyse_lock_across_await(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let lock_binding = static_regex(
+        &LOCK_BINDING_REGEX,
+        r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*\.(?:lock|read|write)\s*\([^;]*;",
+    );
+    let lines: Vec<&str> = searchable_body.lines().collect();
+    for (line_index, line) in lines.iter().enumerate() {
+        let Some(captures) = lock_binding.captures(line) else {
+            continue;
+        };
+        let guard = captures
+            .get(1)
+            .map(|guard| guard.as_str())
+            .unwrap_or("guard");
+        let later_lines = &lines[line_index + 1..];
+        let dropped_before_await = later_lines
+            .iter()
+            .take_while(|candidate| !candidate.contains(".await"))
+            .any(|candidate| candidate.contains(&format!("drop({guard})")));
+        if later_lines
+            .iter()
+            .any(|candidate| candidate.contains(".await"))
+            && !dropped_before_await
+        {
+            findings.push(block_finding_with_extras(
+                "concurrency.lock-across-await",
+                format!(
+                    "Async function `{}` appears to hold lock guard `{guard}` across await.",
+                    block.name
+                ),
+                file,
+                block,
+                Severity::Warning,
+                Pillar::Waste,
+                BlockFindingExtras {
+                    confidence: Confidence::Medium,
+                    remediation: Some(
+                        "Drop the guard before awaiting or use an async-aware lock.".to_string(),
+                    ),
+                    metadata: json!({ "guard": guard }),
+                },
+            ));
+            break;
+        }
+    }
+}
+
+pub(crate) fn analyse_test_block(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    analyse_ignored_test(file, block, findings);
+    analyse_test_size(file, block, config, findings);
+    let searchable_body = strip_rust_string_literals(&block.body);
+    analyse_test_assertions(file, block, &searchable_body, findings);
+    analyse_test_regex_checks(file, block, &searchable_body, findings);
+}
+
+pub(crate) fn analyse_ignored_test(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    findings: &mut Vec<Finding>,
+) {
+    if block.ignore_without_reason {
+        findings.push(block_finding(
+            "test-quality.ignored-without-reason",
+            format!(
+                "Ignored test `{}` does not explain why it is skipped.",
+                block.name
+            ),
+            file,
+            block,
+            Severity::Advisory,
+            Pillar::TestQuality,
+        ));
+    }
+}
+
+pub(crate) fn analyse_test_size(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let rule_id = "test-quality.long-test";
+    let threshold = config.threshold(rule_id, 80.0) as usize;
+    if block.line_count > threshold {
+        findings.push(block_finding_with_metadata(
+            rule_id,
+            format!(
+                "Test `{}` has {} lines, above the threshold of {threshold}.",
+                block.name, block.line_count
+            ),
+            file,
+            block,
+            config.severity(rule_id, Severity::Advisory),
+            Pillar::TestQuality,
+            json!({ "lines": block.line_count }),
+        ));
+    }
+}
+
+pub(crate) fn analyse_test_assertions(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    if has_trivial_assertion(searchable_body) {
+        findings.push(block_finding(
+            "test-quality.trivial-assertion",
+            format!("Test `{}` contains a trivial assertion.", block.name),
+            file,
+            block,
+            Severity::Warning,
+            Pillar::TestQuality,
+        ));
+    }
+
+    if !static_regex(
+        &TEST_ASSERTION_REGEX,
+        r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
+    )
+    .is_match(searchable_body)
+    {
+        findings.push(block_finding(
+            "test-quality.no-assertions",
+            format!(
+                "Test `{}` does not appear to make an assertion.",
+                block.name
+            ),
+            file,
+            block,
+            Severity::Warning,
+            Pillar::TestQuality,
+        ));
+    }
+}
+
+pub(crate) fn analyse_test_regex_checks(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    for rule in TEST_CHECKS {
+        if static_regex(rule.regex, rule.pattern).is_match(searchable_body) {
+            findings.push(block_finding(
+                rule.rule_id,
+                rule.message,
+                file,
+                block,
+                Severity::Advisory,
+                Pillar::TestQuality,
+            ));
+        }
+    }
+}
+
+pub(crate) fn analyse_line_rules(
+    file: &SourceFile,
+    source: &str,
+    blocks: &[FunctionBlock],
+    findings: &mut Vec<Finding>,
+) {
+    let searchable_source = strip_rust_string_literals(source);
+    let raw_lines: Vec<&str> = searchable_source.lines().collect();
+    let code_only_source = strip_rust_comments_after_string_mask(&searchable_source);
+    let code_only_lines: Vec<&str> = code_only_source.lines().collect();
+    let test_context_ranges: Vec<(usize, usize)> = blocks
+        .iter()
+        .filter(|block| block.is_test_context())
+        .map(|block| (block.start_line, block.start_line + block.line_count))
+        .collect();
+    let context = LineRuleContext {
+        file,
+        raw_lines: &raw_lines,
+        code_only_lines: &code_only_lines,
+        test_context_ranges: &test_context_ranges,
+    };
+
+    for line_index in 0..raw_lines.len() {
+        context.analyse_line(line_index, findings);
+    }
+
+    analyse_unreachable(file, &searchable_source, findings);
+}
+
+pub(crate) struct LineRuleContext<'a> {
+    file: &'a SourceFile,
+    raw_lines: &'a [&'a str],
+    code_only_lines: &'a [&'a str],
+    test_context_ranges: &'a [(usize, usize)],
+}
+
+impl LineRuleContext<'_> {
+    fn analyse_line(&self, line_index: usize, findings: &mut Vec<Finding>) {
+        let line_number = line_index + 1;
+        let raw_line = self.raw_lines[line_index];
+        let code_only_line = self.code_only_lines[line_index];
+        self.analyse_safety_line(raw_line, line_index, line_number, findings);
+        self.analyse_waste_line(code_only_line, line_number, findings);
+    }
+
+    fn line_is_in_test_context(&self, line_number: usize) -> bool {
+        self.test_context_ranges
+            .iter()
+            .any(|(start, end)| line_number >= *start && line_number < *end)
+    }
+}
+
+/// Returns true when the line contains a `.clone()` whose result is
+/// immediately consumed by an ownership-taking method (M33 exemptions:
+/// `unwrap_or*`, `into*`, `collect*`, `?` propagation) or is being used
+/// in a position where the surrounding code requires owned data (struct
+/// field initialisation, `Entry::*` insertion). In those cases the clone
+/// is not avoidable, so the candidate rule should stay silent.
+pub(crate) fn clone_is_consumed_or_owned(line: &str) -> bool {
+    static CONSUMER_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = static_regex(
+        &CONSUMER_REGEX,
+        r"\.clone\(\)\s*(?:\?|\.(?:unwrap_or_else|unwrap_or_default|unwrap_or|into_iter|into|collect)\b)",
+    );
+    if regex.is_match(line) {
+        return true;
+    }
+    static STRUCT_FIELD_REGEX: OnceLock<Regex> = OnceLock::new();
+    let field_regex = static_regex(
+        &STRUCT_FIELD_REGEX,
+        r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s+[^=]*\.clone\(\)\s*,?\s*$",
+    );
+    if field_regex.is_match(line) {
+        return true;
+    }
+    static ENTRY_REGEX: OnceLock<Regex> = OnceLock::new();
+    let entry_regex = static_regex(
+        &ENTRY_REGEX,
+        r"\.entry\([^)]*\.clone\(\)\s*\)|\.insert\([^,]*\.clone\(\)",
+    );
+    if entry_regex.is_match(line) {
+        return true;
+    }
+    false
+}
+
+impl LineRuleContext<'_> {
+    fn analyse_safety_line(
+        &self,
+        line: &str,
+        line_index: usize,
+        line_number: usize,
+        findings: &mut Vec<Finding>,
+    ) {
+        let has_unsafe = static_regex(&UNSAFE_BLOCK_REGEX, r"\bunsafe\s*\{").is_match(line);
+        if !has_unsafe {
+            return;
+        }
+        match find_nearby_safety_rationale(self.raw_lines, line_index) {
+            None => findings.push(finding(
+                "security.unsafe-block",
+                "Unsafe block lacks a nearby SAFETY rationale.",
+                self.file,
+                Some(line_number),
+                Severity::Warning,
+                Pillar::Security,
+            )),
+            Some(rationale) if is_weak_safety_rationale(&rationale) => {
+                findings.push(Finding::new(
+                        "docs.weak-safety-rationale",
+                        format!(
+                            "Unsafe block's SAFETY rationale is too short or vague: `{}`.",
+                            rationale.trim()
+                        ),
+                        self.file.display_path.clone(),
+                        Some(line_number),
+                        Severity::Advisory,
+                        Pillar::Documentation,
+                        Confidence::Medium,
+                        None,
+                        Some(
+                            "Explain the invariants the caller must uphold or why the operation is sound."
+                                .to_string(),
+                        ),
+                        json!({ "rationale": rationale.trim() }),
+                    ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    fn analyse_waste_line(&self, line: &str, line_number: usize, findings: &mut Vec<Finding>) {
+        if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
+            && !line.contains("#[test]")
+            && !self.line_is_in_test_context(line_number)
+        {
+            findings.push(finding(
+                "waste.unwrap-expect",
+                "unwrap()/expect() can turn recoverable errors into panics.",
+                self.file,
+                Some(line_number),
+                Severity::Advisory,
+                Pillar::Waste,
+            ));
+        }
+
+        if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
+            && !clone_is_consumed_or_owned(line)
+            && !line.contains("#[test]")
+            && !self.line_is_in_test_context(line_number)
+        {
+            findings.push(finding(
+                "waste.unnecessary-clone-candidate",
+                "clone() call may be avoidable; confirm ownership requires it.",
+                self.file,
+                Some(line_number),
+                Severity::Advisory,
+                Pillar::Waste,
+            ));
+        }
+    }
+}
+
+pub(crate) fn analyse_process_commands(
+    file: &SourceFile,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let command_regex = static_regex(
+        &PROCESS_COMMAND_REGEX,
+        r"(std::process::Command|Command)::new\s*\(",
+    );
+    let searchable = strip_rust_string_literals(source);
+    for (line_index, line) in searchable.lines().enumerate() {
+        if command_regex.is_match(line) {
+            findings.push(finding(
+                    "security.process-command",
+                    "Process command execution is used; validate command arguments are not user-controlled.",
+                    file,
+                    Some(line_index + 1),
+                    Severity::Warning,
+                    Pillar::Security,
+                ));
+        }
+    }
+}
+
+/// Lightweight comment record: line of the comment opener, the trimmed
+/// payload text (with marker bytes stripped), and whether the comment is a
+/// rustdoc form (`///` or `//!` for line, `/**` for block). Block comments
+/// keep their first-line index so findings point to the opening byte.
+pub(crate) struct RustComment {
+    pub(crate) line: usize,
+    pub(crate) text: String,
+    pub(crate) is_doc: bool,
+}
+
+/// Walks the string-masked Rust source and returns every comment span.
+/// String contents are already spaces in `masked_source`, so any `//` or
+/// `/*` we see is a real Rust comment. Newlines are preserved by the
+/// upstream `strip_rust_string_literals`, so line counts match the source.
+pub(crate) fn extract_rust_comments(masked_source: &str) -> Vec<RustComment> {
+    let bytes = masked_source.as_bytes();
+    let mut comments = Vec::new();
+    let mut line = 1usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
+            let comment_line = line;
+            let is_doc = bytes
+                .get(index + 2)
+                .copied()
+                .map(|byte| byte == b'/' || byte == b'!')
+                .unwrap_or(false);
+            let text_start = if is_doc { index + 3 } else { index + 2 };
+            let mut end = text_start;
+            while end < bytes.len() && bytes[end] != b'\n' {
+                end += 1;
+            }
+            let text = std::str::from_utf8(&bytes[text_start..end])
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            comments.push(RustComment {
+                line: comment_line,
+                text,
+                is_doc,
+            });
+            index = end;
+            continue;
+        }
+        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+            let comment_line = line;
+            let is_doc = bytes.get(index + 2).copied() == Some(b'*');
+            let text_start = if is_doc { index + 3 } else { index + 2 };
+            let mut end = text_start;
+            while end + 1 < bytes.len() {
+                if bytes[end] == b'*' && bytes[end + 1] == b'/' {
+                    break;
+                }
+                if bytes[end] == b'\n' {
+                    line += 1;
+                }
+                end += 1;
+            }
+            let text = std::str::from_utf8(&bytes[text_start..end])
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            comments.push(RustComment {
+                line: comment_line,
+                text,
+                is_doc,
+            });
+            index = (end + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[index] == b'\n' {
+            line += 1;
+        }
+        index += 1;
+    }
+    comments
+}
