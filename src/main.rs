@@ -982,7 +982,7 @@ impl FunctionBlock {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let global = cli.global.clone();
+    let global = cli.global;
     let writer = global.writer();
     match cli.command {
         Commands::Analyse(args) => {
@@ -2064,7 +2064,8 @@ fn read_config_value(
 
     let raw = fs::read_to_string(&path)
         .map_err(|error| format!("unable to read config {}: {error}", path.display()))?;
-    Ok(Some((path.clone(), parse_config_value(&path, &raw)?)))
+    let value = parse_config_value(&path, &raw)?;
+    Ok(Some((path, value)))
 }
 
 fn apply_config_value(path: &Path, value: &Value, config: &mut Config) -> Result<(), String> {
@@ -5841,6 +5842,8 @@ mod built_in_rules {
 
             if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
                 && !clone_is_consumed_or_owned(line)
+                && !line.contains("#[test]")
+                && !self.line_is_in_test_context(line_number)
             {
                 findings.push(finding(
                     "waste.unnecessary-clone-candidate",
@@ -10094,7 +10097,8 @@ exclude:
         assert_eq!(total_suppressed_findings(&selected.suppressions), 1);
 
         let baseline_path = dir.path().join("baseline.json");
-        write_baseline(&baseline_path, &[selected.findings[0].clone()]).expect("baseline write");
+        write_baseline(&baseline_path, std::slice::from_ref(&selected.findings[0]))
+            .expect("baseline write");
         let baseline_filtered = run_project_analysis(
             dir.path(),
             AnalysisOptions {
@@ -11675,7 +11679,8 @@ rules:
         assert!(!before.findings.is_empty());
 
         let baseline_path = dir.path().join("baseline.json");
-        write_baseline(&baseline_path, &[before.findings[0].clone()]).expect("baseline write");
+        write_baseline(&baseline_path, std::slice::from_ref(&before.findings[0]))
+            .expect("baseline write");
 
         let suppressed = run_project_analysis(
             dir.path(),
@@ -14308,6 +14313,63 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
         assert!(
             clones.is_empty(),
             "consumed/owned clones must stay silent; findings={clones:?}"
+        );
+    }
+
+    /// M38 negative: `waste.unnecessary-clone-candidate` must skip clones
+    /// inside `#[test]` fns and any fn inside a `#[cfg(test)]` module, so the
+    /// rule stays symmetric with `waste.unwrap-expect`, whose
+    /// `analyse_waste_line` branch already applies
+    /// `!line.contains("#[test]") && !self.line_is_in_test_context(...)`.
+    /// A production clone outside any test context must still fire so the
+    /// guard does not silence real waste.
+    #[test]
+    fn m38_unnecessary_clone_candidate_skips_test_context() {
+        let _guard = analysis_lock();
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(
+            dir.path(),
+            r##"/// Probe.
+pub fn entry(value: &String) -> String {
+    value.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared_setup(seed: &String) -> String {
+        seed.clone()
+    }
+
+    #[test]
+    fn check() {
+        let original = String::from("x");
+        let _copy = original.clone();
+        let _via = shared_setup(&original);
+    }
+}
+"##,
+        );
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let clones: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "waste.unnecessary-clone-candidate")
+            .collect();
+        assert_eq!(
+            clones.len(),
+            1,
+            "expected exactly one clone finding (the production one in `pub fn entry`); findings={clones:?}"
         );
     }
 
