@@ -85,7 +85,7 @@ fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option
         CustomRuleScope::RustCode => unit
             .file
             .is_rust
-            .then(|| Cow::Owned(built_in_rules::strip_rust_string_literals(unit.source))),
+            .then(|| Cow::Owned(crate::parser::strip_rust_string_literals(unit.source))),
         CustomRuleScope::Comments => unit
             .file
             .is_rust
@@ -101,7 +101,7 @@ fn rust_comment_scope_source(source: &str) -> String {
         .collect::<Vec<u8>>();
     let mut index = 0usize;
     while index < bytes.len() {
-        if let Some(raw_end) = built_in_rules::raw_string_end(bytes, index) {
+        if let Some(raw_end) = crate::parser::raw_string_end(bytes, index) {
             index = raw_end;
             continue;
         }
