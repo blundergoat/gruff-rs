@@ -179,4 +179,3 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
         ]
     );
 }
-

@@ -123,4 +123,3 @@ pub(crate) fn dashboard_scan_preserves_cwd_and_report_paths() {
         .body
         .contains(&dir.path().join("sample.rs").display().to_string()));
 }
-

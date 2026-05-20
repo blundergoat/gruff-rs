@@ -104,6 +104,35 @@ pub fn documented_invariant(flag: bool) {
 }
 
 #[test]
+fn panic_in_test() {
+    panic!("expected failure");
+}
+
+mod tests {
+    pub fn helper_placeholder() {
+        todo!("test helper");
+    }
+}
+"#,
+    )
+    .expect("negative lib write");
+
+    let negative = run_project_analysis(
+        negative_dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("error-handling negative analysis succeeds");
+    assert_missing_rule(&negative, "error-handling.production-panic");
+    assert_missing_rule(&negative, "error-handling.unimplemented-placeholder");
+    assert_missing_rule(&negative, "error-handling.public-unwrap");
+}
+
+#[test]
 pub(crate) fn concurrency_rules_flag_narrow_async_and_channel_patterns() {
     let _guard = analysis_lock();
     let positive_dir = tempdir().expect("tempdir");
@@ -557,4 +586,3 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
     assert_missing_rule(&test_negative, "test-quality.no-assertions");
 }
-

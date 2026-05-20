@@ -251,4 +251,3 @@ exclude:
                 || finding["filePath"] != "tests/process.rs"
         }));
 }
-

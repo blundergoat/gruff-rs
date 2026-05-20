@@ -210,4 +210,3 @@ pub(crate) fn diff_requires_explicit_unsafe_git_flag() {
     ]);
     assert!(with_flag.is_ok());
 }
-

@@ -9,9 +9,10 @@ mod config;
 mod custom_rules;
 mod diff;
 mod exclusions;
+mod m33_regressions;
+mod m35_m37_m38_regressions;
 mod project_model;
 mod project_rules;
-mod regression_milestones;
 mod renderers;
 mod rust_rules;
 mod sarif;
@@ -172,12 +173,7 @@ fn assert_missing_rule(report: &AnalysisReport, rule_id: &str) {
     );
 }
 
-fn metric_metadata_number(
-    report: &AnalysisReport,
-    rule_id: &str,
-    symbol: &str,
-    key: &str,
-) -> f64 {
+fn metric_metadata_number(report: &AnalysisReport, rule_id: &str, symbol: &str, key: &str) -> f64 {
     report
         .findings
         .iter()

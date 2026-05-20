@@ -204,4 +204,3 @@ pub(crate) fn missing_readme_is_project_scoped() {
     assert_has_rule(&missing, "docs.missing-readme");
     assert_missing_rule(&present, "docs.missing-readme");
 }
-

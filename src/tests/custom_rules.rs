@@ -529,4 +529,3 @@ pub(crate) fn fingerprint_stable_for_custom_rule() {
 
     assert_eq!(finding.fingerprint, "223b4b2c56b0f0e1");
 }
-

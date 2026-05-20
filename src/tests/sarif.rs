@@ -242,4 +242,3 @@ pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
         "{result_rule_ids:?}"
     );
 }
-

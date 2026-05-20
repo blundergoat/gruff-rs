@@ -386,7 +386,7 @@ license = "MIT"
         positive_dir.path().join("src/lib.rs"),
         r#"fn isolated_helper() {}
 
-pub(crate) struct HiddenType;
+struct HiddenType;
 
 enum HiddenEnum {
     Ready,
@@ -452,3 +452,31 @@ register!(macro_registered);
 #[cfg(feature = "optional")]
 fn cfg_only() {}
 
+#[test]
+fn test_only_helper() {}
+
+mod tests {
+    fn module_test_helper() {}
+}
+
+fn referenced_helper() {}
+
+pub fn entry() {
+    referenced_helper();
+}
+"#,
+    )
+    .expect("negative lib write");
+
+    let negative = run_project_analysis(
+        negative_dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("dead-code negative analysis succeeds");
+    assert_missing_rule(&negative, "dead-code.unused-private-item-candidate");
+}

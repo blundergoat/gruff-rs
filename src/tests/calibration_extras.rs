@@ -283,4 +283,3 @@ mod fixtures {
     );
     assert_eq!(hardcoded_env_findings[0].line, Some(3));
 }
-

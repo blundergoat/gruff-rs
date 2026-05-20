@@ -331,4 +331,3 @@ allowlists:
         "ghp_...bbbb (redacted, 26 chars)"
     );
 }
-

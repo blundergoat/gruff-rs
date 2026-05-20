@@ -24,6 +24,28 @@ impl Bad {
 }
 
 #[test]
+fn test_no_assert() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+"#,
+        ]
+        .concat(),
+    )
+    .expect("fixture write");
+    let report = analyse_project_paths(dir.path(), vec![PathBuf::from(".")]);
+
+    let rule_ids: BTreeSet<&str> = report
+        .findings
+        .iter()
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert!(rule_ids.contains("security.process-command"));
+    assert!(rule_ids.contains("size.parameter-count"));
+    assert!(rule_ids.contains("test-quality.no-assertions"));
+    assert!(rule_ids.contains("modernisation.public-field"));
+}
+
+#[test]
 pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
     let _guard = analysis_lock();
     let report = analyse_test_paths(vec![PathBuf::from("fixtures/sample.rs")]);
@@ -540,4 +562,3 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
     assert_eq!(grade(60.0), "D");
     assert_eq!(grade(59.9), "F");
 }
-

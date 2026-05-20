@@ -169,4 +169,3 @@ pub(crate) fn baseline_generation_and_failure_modes_are_reported_cleanly() {
     .expect_err("missing baseline rejected");
     assert!(missing.contains("unable to read baseline"));
 }
-
