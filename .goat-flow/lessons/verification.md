@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-18
+last_reviewed: 2026-05-21
 ---
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
@@ -57,7 +57,7 @@ correctness and performance evidence.
 
 When a late verification pass catches a structural Clippy failure, do not add an
 allow just to finish the milestone. In M31, threading suppression state pushed
-`src/main.rs` (search: `fn build_report`) over the argument-count limit; bundling
+`src/analysis.rs` (search: `fn build_report`) over the argument-count limit; bundling
 the summaries and SARIF-only suppressed findings into a small state struct kept
 the pipeline explicit and lint-clean.
 

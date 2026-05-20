@@ -201,3 +201,4 @@ pub(crate) fn validate_rule_options(
         }
     }
     Ok(string_arrays)
+}

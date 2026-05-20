@@ -5,6 +5,16 @@
 If the trap is in the code itself → `.goat-flow/footguns/` instead.
 If a proven approach should be reused → `.goat-flow/patterns/` instead.
 
+## Automatic Capture Policy
+
+Manual edits are normal: an explicit request to add or update a durable learning-loop entry means edit the Markdown in the correct directory. Programmatic automatic capture from terminal sessions, quality reports, PR reviews, or agent output is disabled unless `.goat-flow/config.yaml` explicitly sets `learning-loop.auto-capture.enabled: true` and a CLI-owned writer for that target exists. Prompts may suggest an entry, but automatic durable writes belong to CLI-owned code after opt-in.
+
+Auto-capture candidates must follow Extract / Consolidate / Skip:
+
+- Extract only when the item changes a future READ/SCOPE/ACT/VERIFY decision.
+- Consolidate into an existing entry when the same root cause already exists.
+- Skip raw tool output, successful smoke runs, UI/deploy churn, chain-of-thought, screenshots, raw JSON/HTML, duplicate dumps, and "I read the docs" summaries.
+
 Prefer category bucket files such as `verification.md`, `workflow.md`, or `coordination.md`. Every bucket file MUST start with a YAML frontmatter block that includes BOTH a `category` and a `last_reviewed` date (ISO `YYYY-MM-DD`). `goat-flow stats --check` fails when `last_reviewed` is missing.
 
 ```yaml

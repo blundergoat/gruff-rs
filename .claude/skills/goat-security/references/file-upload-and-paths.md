@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.6.4"
+goat-flow-reference-version: "1.7.0"
 ---
 # goat-security reference: file upload and paths
 
@@ -34,7 +34,7 @@ Use this pack for uploads, archives, temp files, export/import jobs, filesystem 
 
 - path is entirely server-generated and input never influences it
 - uploaded files are stored outside execution paths and served with safe content disposition
-- framework utility already rejects traversal and the code uses it correctly
+- framework utility rejects traversal and the reviewed call path uses it before filesystem access
 
 ## Verification prompts
 

@@ -246,4 +246,3 @@ pub(crate) fn inferred_file_module_path(file: &SourceFile) -> String {
         .unwrap_or(path);
     without_extension.replace('/', "::")
 }
-

@@ -186,8 +186,6 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
     });
 }
 
-
-
 pub(crate) fn has_cfg_attr(attrs: &[syn::Attribute]) -> bool {
     attrs
         .iter()

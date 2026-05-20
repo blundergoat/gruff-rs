@@ -1,7 +1,7 @@
 ---
 name: goat-review
 description: "Use when reviewing a diff, PR, or set of code changes, or auditing a codebase area for quality issues. Triggers: 'review this', 'code review', 'audit X', 'look at these changes'."
-goat-flow-skill-version: "1.6.4"
+goat-flow-skill-version: "1.7.0"
 ---
 # /goat-review
 
@@ -14,22 +14,22 @@ On full-depth, also read `.goat-flow/skill-reference/skill-conventions.md`.
 
 Use when reviewing a diff, PR, or set of changes. Also for quality audits of a codebase area.
 
-**Boundary:** goat-review owns code quality, style, correctness. goat-security owns threat models, compliance, CVEs, auth boundaries. If you find a security issue, flag it and suggest `/goat-security`.
+**Boundary:** goat-review owns quality, style, correctness. goat-security owns threat models, compliance, CVEs, auth boundaries. Security issues: flag and suggest `/goat-security`.
 
-**NOT this skill:** OWASP assessment → /goat-security. Understanding code → /goat-debug. Generating tests → /goat-qa. Planning milestones → /goat-plan. Feature briefs → dispatcher Planning Route.
+**NOT this skill:** OWASP assessment → /goat-security. Understanding code → /goat-debug. Generating tests → /goat-qa. Planning milestones → /goat-plan. Feature briefs → dispatcher Route Map.
 
 ## Step 0 - Scope, Size, Spec
 
-> "Reviewing [X] -- diff review (quick), PR review against a base branch, or area audit with DoD cross-checks (full)?"
+> "Reviewing [X] -- diff review (quick), PR review against a base branch, or area audit + DoD cross-checks (full)?"
 
 - If user already says "quick", "PR", or "full", confirm and continue.
 - If arriving from the dispatcher with depth already chosen, skip the depth question.
-- If vague, ask one follow-up covering: which files, what concerns you, diff / PR / audit.
+- If vague, ask one follow-up covering files, concerns, and diff / PR / audit.
 - Auto-detect scope: (1) explicit input, (2) staged changes, (3) unstaged changes, (4) PR-style when HEAD is on a non-default branch with commits ahead of the detected review base, (5) git diff.
 
-**PR mode (prefer PR link):** ask for PR URL/number first -- it collapses base, head, description, and linked issues into one input. Prompt: "PR URL or number? (e.g. `#123`) -- or say 'local' if the branch isn't pushed." Resolve with `gh pr view <ref> --json baseRefName,headRefName,headRefOid,url,title,body`; diff via `gh pr diff <ref>`. Record PR URL and base SHA in Review Integrity.
+**PR mode (prefer PR link):** ask for PR URL/number first; it collapses base, head, description, and linked issues. Prompt: "PR URL or number? -- or say 'local' if not pushed." Resolve with `gh pr view <ref> --json baseRefName,headRefName,headRefOid,url,title,body`; diff via `gh pr diff <ref>`. Record PR URL and base SHA.
 
-**PR mode (base fallback):** when no PR link or `gh` unavailable, resolve base: (1) explicit user base, (2) `.goat-flow/config.yaml` `skills.goat-review.local_pr_base` (record `configured-base=<base>`; if unresolvable record `configured-base-unresolved=<base>` and continue), (3) `git symbolic-ref --short refs/remotes/origin/HEAD` or `git remote show origin`, (4) ask user, (5) last-resort fallback `main` with `base-detection-failed`. Run `git fetch origin <base> --quiet` (best-effort). Diff via `git diff origin/<base>...HEAD` (three-dot merge-base). If fetch fails, fall back to local `<base>` with `base-fetch-failed` flag. Record resolved base, source annotation, and short SHA in Review Integrity.
+**PR mode (base fallback):** when no PR link or `gh` unavailable, resolve base in order: (1) explicit user base, (2) `.goat-flow/config.yaml`'s `skills.goat-review.local_pr_base` (record `configured-base=<base>`, or `configured-base-unresolved=<base>` if unresolvable), (3) `git symbolic-ref --short refs/remotes/origin/HEAD` or `git remote show origin`, (4) ask user, (5) last-resort fallback `main` with `base-detection-failed`. Run `git fetch origin <base> --quiet`; diff via `git diff origin/<base>...HEAD`. On fetch failure, fall back to local `<base>` with `base-fetch-failed`. Record resolved base, source, and short SHA in Review Integrity.
 
 **Size sizing (before Pass 1):** measure the diff. If it exceeds **20 files OR 3000 changed lines**, propose chunking by file group and ask. If the user proceeds un-chunked, record as `large-diff-unchunked` for Review Integrity.
 
@@ -71,7 +71,7 @@ The review runs two sequential passes. This is a deliberate reading discipline, 
 
 ### Pass 1 - Blind Suspicion (diff only)
 
-Read the diff **without opening full files**. The point is to see what the diff itself reveals before the author's surrounding code anchors you.
+Read the diff **without opening full files**. The point is to see what the diff reveals before surrounding code anchors you.
 
 Scan for:
 - **Severity cues:** auth/permission checks, secret handling, SQL/shell/API calls, data mutation, state transitions
@@ -81,7 +81,7 @@ Scan for:
   - *Concurrency* - race windows, shared state, concurrent access
   - *Error handling* - timeouts, retries/backoff, silent exception swallowing
   - *Contract changes* - signature, return type, error channel, status code, event shape
-  - *Observability & DDT testability* - complex state transitions, background tasks, retry logic, or async flows without logging, telemetry, or surface-level signals. Ask: "can a human tell if this succeeded or failed without instrumenting it?" If no: `[SHOULD:needs-signal]` or `[MUST:needs-signal]` depending on risk
+  - *Observability & DDT testability* - state transitions, background tasks, retries, or async flows lacking logs, telemetry, or signals. Ask: "can a human tell if this succeeded without instrumenting it?" If no: `[SHOULD:needs-signal]` or `[MUST:needs-signal]` per risk
 
 Write raw suspicions with `file + semantic anchor` drawn from the diff. Do NOT verify, confirm, or dismiss in this pass. Over-capture is fine; Pass 2 filters.
 
@@ -92,7 +92,7 @@ Write raw suspicions with `file + semantic anchor` drawn from the diff. Do NOT v
 Now read full files for context. For each Pass-1 suspicion:
 
 - **Try to DISPROVE it** (negative verification). Re-read the `file + semantic anchor`, look for a guard, an upstream check, a framework mitigation, or a contract that removes the risk.
-- **Blast Radius Rule:** if a suspicion involves a contract change (signature, payload shape, exported type, event shape, error channel, status code), MUST execute `rg -n '<symbol>' -t ts -t js -t py -t php -t go -t rust` to locate external call-sites before resolving. Verify at least one consumer. If skipped, stays UNRESOLVED and gets `coverage-degraded`.
+- **Blast Radius Rule:** if a suspicion involves a contract change (signature, payload shape, exported type, event shape, error channel, status code), MUST run an external call-site search before resolving. Prefer `rg -n '<symbol>' -t ts -t js -t py -t php -t go -t rust`; if shell `rg` is unavailable, use the host search tool or `grep -rniE '<symbol>'` and record the fallback. Verify at least one consumer. If skipped, stays UNRESOLVED and gets `coverage-degraded`.
 - Mark each suspicion: **CONFIRMED** / **REFUTED** / **UNRESOLVED**.
 - **Refutation Ledger:** REFUTED suspicions are not silently dropped. Write a ledger to `.goat-flow/scratchpad/goat-review-refutations.<random>.txt`. Each entry: original suspicion (verbatim), refuting evidence (`file + semantic anchor`), one-sentence rationale. Refuted suspicions do not appear in final output; the ledger is the audit trail.
 - Add findings that only became visible with file context (integration breakage, call-site contract mismatch, regression in a sibling file).
@@ -139,9 +139,9 @@ Check each finding with targeted grep-first retrieval against `.goat-flow/footgu
 
 **BLOCKING GATE:** Present findings using Output Format below, then pause for human to drill in. After the human responds, evaluate Pass 3 auto-trigger conditions before presenting the Ship Verdict - do not skip the refuter when conditions are met.
 
-**Review DoD gate:** for reporting-only review, verify findings, cross-references, and scope boundaries. Do not imply implementation tests unless directly needed for a finding. If user says "implement", switch to instruction file's implementation DoD.
+**Review DoD gate:** for reporting-only review, verify findings, cross-references, and scope. No implementation tests unless a finding requires it. If user says "implement", switch to the instruction file's implementation DoD.
 
-**Proof Gate:** per `skill-preamble.md` -- re-read each `file + semantic anchor` fresh before presentation; downgrade unverifiable evidence to UNVERIFIED.
+**Proof Gate:** per `skill-preamble.md`.
 
 ## Area Audit (Full)
 
@@ -163,11 +163,11 @@ If none detected, emit "No drift detected against M[NN]" so the reader knows the
 
 Triggers when ANY of: (1) user opts in at Step 0, (2) Review Integrity would be `coverage-degraded` or `high-inference`, (3) any `[MUST:needs-decision]` finding exists, (4) any INTENT-MISMATCH finding exists.
 
-**Method:** spawn an opposite-model refuter (`codex exec` from Claude Code, `claude -p` from Codex). Pass the FINDINGS LIST, not the diff. The refuter verifies or challenges findings against the live repo. Full prompt template: `references/refuter-spec.md`.
+**Method:** Use an authenticated external refuter runtime, not the host model. Default host map: Claude -> `codex exec`; Codex/Copilot/Gemini -> `claude -p` unless a verified stronger opposite runtime is documented. Pass FINDINGS LIST, not the diff. Template: `references/refuter-spec.md`.
 
 **Synthesis:** REFUTER-CONFIRMED findings get `[CONFIRMED-CROSS-MODEL]` upgrade. REFUTER-REFUTED move to `## Refuted by Refuter` with reasoning preserved verbatim. REFUTER-UNRESOLVED keep original severity; add `cross-model-unresolved` to Review Integrity. Refuter leads do not become findings unless host verifies via Pass 2 rules.
 
-**Constraints:** MUST NOT run without an authenticated opposite runtime (`codex login status` for Codex, `claude auth status` for Claude Code; version-only commands do not count). MUST treat REFUTER-REFUTED as advisory. MUST emit `cross-model-refuter-failed` if refuter call errors. Requires cross-model infrastructure; opt-in at Step 0 or auto-triggered by the degradation conditions listed in Pass 3.
+**Constraints:** Run the target auth check from `references/refuter-spec.md` first; version-only commands do not count. If no authenticated refuter exists for the current host, skip Pass 3 and emit `cross-model-refuter-failed`. REFUTER-REFUTED stays advisory.
 
 ## Review Integrity (confidence signal)
 
@@ -195,9 +195,9 @@ Never leave this section empty. "confident - no degradation flags" is the minimu
 - Pre-existing issues ARE in scope
 
 **Both modes:**
-- MUST run external call-site grep for any contract-change suspicion before resolving (Blast Radius Rule); flag `coverage-degraded` if skipped
+- MUST run external call-site search for any contract-change suspicion before resolving (Blast Radius Rule); prefer `rg`, fall back to host search or `grep -rniE`, and flag `coverage-degraded` if skipped
 - MUST tag every surfaced finding with `[SEVERITY:ACTION]`
-- MUST check each finding with targeted grep-first retrieval against `.goat-flow/footguns/`; omit the tag when no direct match after the allowed reword
+- MUST grep `.goat-flow/footguns/` per finding; omit the tag on no direct match after the allowed reword
 - MUST order findings by severity, not by file or discovery order
 - MUST emit Review Integrity on every run
 - MUST propose chunking when the diff exceeds 20 files OR 3000 changed lines

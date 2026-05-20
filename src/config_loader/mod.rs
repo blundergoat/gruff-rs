@@ -5,13 +5,17 @@ mod exclusions;
 mod rule_settings;
 mod selectors;
 
-pub(crate) use custom_rules::parse_custom_rule;
-pub(crate) use exclusions::parse_exclusion_rule;
-pub(crate) use rule_settings::{
-    apply_custom_rule_settings, apply_selector_settings, validate_optional_rule_options,
+pub(crate) use custom_rules::{parse_custom_rule, parse_severity_name};
+pub(crate) use exclusions::{
+    apply_exclusions_section, required_config_string, required_non_empty_config_string,
 };
+pub(crate) use rule_settings::{
+    apply_custom_rule_settings, apply_selector_settings, insert_rule_setting,
+};
+#[cfg(test)]
+pub(crate) use selectors::expand_rule_selector;
 pub(crate) use selectors::{
-    expand_rule_selector, expand_rule_selector_with_custom, expand_rule_selectors,
+    expand_rule_selector_with_custom, expand_rule_selectors, parse_pillar_selector,
 };
 
 pub(crate) fn load_config(
@@ -177,13 +181,6 @@ pub(crate) fn apply_custom_rules_section(
     config.custom_rules = custom_rules;
     Ok(())
 }
-
-
-
-}
-
-    ("Design", Pillar::Design),
-];
 
 pub(crate) fn default_config_path(project_root: &Path) -> Option<PathBuf> {
     DEFAULT_CONFIG_FILES

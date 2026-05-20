@@ -1,0 +1,182 @@
+use super::*;
+
+#[test]
+pub(crate) fn selector_set_matches_registry_with_negative_precedence() {
+    let registry = rules::builtin_registry();
+    let mut config = Config::default();
+    config.selectors.positive =
+        expand_rule_selector("Security", &registry, "test").expect("pillar selector");
+    config.selectors.has_positive = true;
+    config.selectors.negative = expand_rule_selector("security.process-command", &registry, "test")
+        .expect("exact selector");
+
+    let enabled: Vec<&str> = registry
+        .definitions()
+        .iter()
+        .map(|definition| definition.id)
+        .filter(|rule_id| config.rule_enabled(rule_id))
+        .collect();
+    eprintln!("selector enabled ids: {enabled:?}");
+
+    assert!(config.rule_enabled("security.unsafe-block"));
+    assert!(!config.rule_enabled("security.process-command"));
+    assert!(!config.rule_enabled("docs.missing-readme"));
+}
+
+#[test]
+pub(crate) fn selector_config_supports_empty_pillar_prefix_exact_negative_and_custom_blocks() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: []
+"#,
+    );
+    let config = load_config(dir.path(), &options).expect("empty selector accepted");
+    assert!(config.rule_enabled("security.process-command"));
+    assert!(config.rule_enabled("docs.missing-readme"));
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["Security"]
+"#,
+    );
+    let config = load_config(dir.path(), &options).expect("pillar selector accepted");
+    assert!(config.rule_enabled("security.process-command"));
+    assert!(config.rule_enabled("security.unsafe-block"));
+    assert!(!config.rule_enabled("docs.missing-readme"));
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["security"]
+  ignore: ["security.process-command"]
+"#,
+    );
+    let config = load_config(dir.path(), &options).expect("prefix and exact selectors accepted");
+    assert!(!config.rule_enabled("security.process-command"));
+    assert!(config.rule_enabled("security.unsafe-block"));
+    assert!(!config.rule_enabled("docs.missing-readme"));
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["security.unsafe-block"]
+  custom:
+    security.unsafe-block:
+      enabled: false
+"#,
+    );
+    let config = load_config(dir.path(), &options).expect("custom exact block accepted");
+    assert!(!config.rule_enabled("security.unsafe-block"));
+    assert!(!config.rule_enabled("security.process-command"));
+}
+
+#[test]
+pub(crate) fn selector_config_rejects_unknown_pillar_prefix_exact_and_shapes() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["Securtiy"]
+"#,
+    );
+    let error = load_config(dir.path(), &options).expect_err("unknown pillar rejected");
+    assert!(error.contains("unknown selector `Securtiy`"), "{error}");
+    assert!(error.contains("rules.select[0]"), "{error}");
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["does-not-exist.*"]
+"#,
+    );
+    let error = load_config(dir.path(), &options).expect_err("unknown prefix rejected");
+    assert!(
+        error.contains("unknown selector `does-not-exist.*`"),
+        "{error}"
+    );
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["security*"]
+"#,
+    );
+    let error = load_config(dir.path(), &options).expect_err("unsupported glob rejected");
+    assert!(
+        error.contains("unsupported selector `security*`"),
+        "{error}"
+    );
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  custom:
+    unknown.rule:
+      enabled: false
+"#,
+    );
+    let error = load_config(dir.path(), &options).expect_err("unknown exact id rejected");
+    assert!(error.contains("unknown rule id `unknown.rule`"), "{error}");
+}
+
+#[test]
+pub(crate) fn list_rules_selector_preview_is_deterministic() {
+    let text = render_rule_list(
+        Path::new("."),
+        &ListRulesArgs {
+            format: RuleListFormat::Text,
+            selector: Some("Security".to_string()),
+            config: None,
+            no_config: true,
+        },
+    )
+    .expect("selector preview");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "dependency.duplicate-locked-version",
+            "dependency.git-source",
+            "dependency.path-source",
+            "dependency.wildcard-version",
+            "security.process-command",
+            "security.unsafe-block"
+        ]
+    );
+
+    let json_output = render_rule_list(
+        Path::new("."),
+        &ListRulesArgs {
+            format: RuleListFormat::Json,
+            selector: Some("performance.*".to_string()),
+            config: None,
+            no_config: true,
+        },
+    )
+    .expect("selector json preview");
+    let ids: Vec<String> = serde_json::from_str(&json_output).expect("selector json");
+    assert_eq!(
+        ids,
+        vec![
+            "performance.clone-in-loop",
+            "performance.format-in-loop",
+            "performance.regex-in-loop"
+        ]
+    );
+}
+

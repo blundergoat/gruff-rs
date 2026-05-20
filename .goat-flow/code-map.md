@@ -13,8 +13,8 @@
 
 `src/` = Rust source directory.
 `src/main.rs` = CLI orchestration, Git-ignore-aware source discovery, analyzer pipeline, patch-input diff filtering, parsed source/project context construction, config loading, regex custom-rule loading/evaluation, text/markdown/github/hotspot/SARIF renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
-`src/html_report.rs` = HTML inspection report renderer; builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
-`src/rules.rs` = Rule metadata contracts and the sorted built-in rule registry used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
+`src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
+`src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split across `definitions_a.rs` and `definitions_b.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
 
 ## Fixtures
 

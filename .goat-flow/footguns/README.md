@@ -5,6 +5,16 @@
 If the agent did something wrong → `.goat-flow/lessons/` instead.
 If a proven approach should be reused → `.goat-flow/patterns/` instead.
 
+## Automatic Capture Policy
+
+Manual edits are normal: an explicit request to add or update a durable learning-loop entry means edit the Markdown in the correct directory. Programmatic automatic capture from terminal sessions, quality reports, PR reviews, or agent output is disabled unless `.goat-flow/config.yaml` explicitly sets `learning-loop.auto-capture.enabled: true` and a CLI-owned writer for that target exists. Prompts may suggest an entry, but automatic durable writes belong to CLI-owned code after opt-in.
+
+Auto-capture candidates must follow Extract / Consolidate / Skip:
+
+- Extract only when the item changes a future READ/SCOPE/ACT/VERIFY decision.
+- Consolidate into an existing entry when the same root cause already exists.
+- Skip raw tool output, successful smoke runs, UI/deploy churn, chain-of-thought, screenshots, raw JSON/HTML, duplicate dumps, and "I read the docs" summaries.
+
 Every entry MUST include file path evidence with grep-friendly semantic anchors (function name, unique string, or `(search: "pattern")`) per ADR-024. Do not use line numbers - they go stale on every edit.
 
 Agents should scan only entries above the `## Resolved Entries` section. Resolved entries are historical record, not active traps.

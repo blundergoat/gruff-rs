@@ -166,3 +166,5 @@ const PILLAR_SELECTOR_NAMES: &[(&str, Pillar)] = &[
     ("Sensitive data", Pillar::SensitiveData),
     ("TestQuality", Pillar::TestQuality),
     ("Test quality", Pillar::TestQuality),
+    ("Design", Pillar::Design),
+];

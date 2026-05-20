@@ -41,6 +41,10 @@ logs/sessions/*.md
 logs/quality/*.json
 logs/quality/*.md
 !logs/quality/README.md
+# Keep the evidence-event path and README committed, but ignore runtime JSONL.
+!logs/events/
+logs/events/*.jsonl
+!logs/events/README.md
 # Keep the critique-history path and README committed, but ignore run snapshots.
 !logs/critiques/
 logs/critiques/*.md
