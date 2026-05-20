@@ -4,7 +4,7 @@ use super::*;
 /// predicate names (subject-predicate form, common predicate verbs) while
 /// keeping passive shapes like `triggered_by` flagged.
 #[test]
-pub(crate) fn m35_boolean_prefix_accepts_idioms_and_flags_passive() {
+pub(crate) fn boolean_prefix_accepts_idioms_and_flags_passive() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -72,72 +72,12 @@ pub fn triggered_by() -> bool { true }
     }
 }
 
-/// M35 negative: prose inside Rust comments must not trigger code-pattern
-/// line rules. `naming.short-variable`, `naming.placeholder-identifier`,
-/// `waste.unwrap-expect`, and `waste.unnecessary-clone-candidate` all run
-/// off the code-only line view that masks comments to spaces. The
-/// `security.unsafe-block` rule remains comment-aware so it can still
-/// find nearby `SAFETY:` rationale comments.
-#[test]
-pub(crate) fn m35_line_rules_skip_prose_in_comments() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r##"//! Probe.
-//
-// Documentation prose with code-shaped fragments that must stay silent:
-//   - "for a built-in rule" (naming.short-variable false-positive bait)
-//   - `let foo = ...` (naming.placeholder-identifier bait)
-//   - `.unwrap()` mentioned in prose (waste.unwrap-expect bait)
-//   - `.clone()` mentioned in prose (waste.unnecessary-clone-candidate bait)
-
-/// for a, this is a documentation paragraph that mentions `.unwrap()` and `.clone()`
-/// and even shows `let foo = bar;` as an example. None of these should fire.
-pub fn well_documented(name: String) -> String {
-    /* a block comment also mentioning .unwrap() and .clone() and let foo = ... */
-    name
-}
-"##,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    for rule in [
-        "naming.short-variable",
-        "naming.placeholder-identifier",
-        "waste.unwrap-expect",
-        "waste.unnecessary-clone-candidate",
-    ] {
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|finding| finding.rule_id == rule),
-            "{rule} must not fire on prose in comments; findings={:?}",
-            report
-                .findings
-                .iter()
-                .filter(|f| f.rule_id == rule)
-                .map(|f| f.line)
-                .collect::<Vec<_>>()
-        );
-    }
-}
-
 /// M35 negative: `security.unsafe-block` must STILL find nearby `SAFETY:`
 /// rationale comments after the M35 raw/code-only split. The unsafe-block
 /// rule uses the raw (comment-preserved) line view so it can read the
 /// `SAFETY:` marker.
 #[test]
-pub(crate) fn m35_unsafe_block_still_sees_safety_rationale_comment() {
+pub(crate) fn unsafe_block_still_sees_safety_rationale_comment() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -180,92 +120,13 @@ pub fn unexplained() {
         );
 }
 
-/// M35 negative: external-public-API rules must not fire on `pub(crate)`,
-/// `pub(super)`, or `pub(in path)` items. Those are crate-visible (so
-/// dead-code / reachability rules still see them as reachable) but they
-/// are NOT part of the external API surface, so reportable rules stay
-/// silent. The corresponding `pub` bare positives are covered by the
-/// existing fixture-based proofs.
-#[test]
-pub(crate) fn m35_external_public_rules_skip_crate_visible_items() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r##"//! Probe.
-pub(crate) struct Buckets {
-    pub(crate) primary: Vec<u32>,
-    pub(super) seen: u32,
-}
-
-pub(crate) fn maybe_one(value: Option<u32>) -> u32 {
-    value.unwrap()
-}
-
-pub(crate) fn entry_a() {}
-pub(crate) fn entry_b() {}
-pub(crate) fn entry_c() {}
-pub(crate) fn entry_d() {}
-pub(crate) fn entry_e() {}
-pub(crate) fn entry_f() {}
-pub(crate) fn entry_g() {}
-pub(crate) fn entry_h() {}
-pub(crate) fn entry_i() {}
-pub(crate) fn entry_j() {}
-pub(crate) fn entry_k() {}
-pub(crate) fn entry_l() {}
-pub(crate) fn entry_m() {}
-pub(crate) fn entry_n() {}
-"##,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    for rule in [
-        "modernisation.public-field",
-        "docs.missing-public-doc",
-        "error-handling.public-unwrap",
-        "architecture.public-api-surface",
-    ] {
-        assert!(
-            !report
-                .findings
-                .iter()
-                .any(|finding| finding.rule_id == rule),
-            "{rule} must not fire on crate-visible items; findings={:?}",
-            report
-                .findings
-                .iter()
-                .map(|f| (&f.rule_id, f.line))
-                .collect::<Vec<_>>()
-        );
-    }
-    // The broader (non-public-API) unwrap rule SHOULD still fire on the
-    // production unwrap inside `maybe_one`, even though the public-API
-    // rule does not.
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.rule_id == "waste.unwrap-expect"),
-        "waste.unwrap-expect must still fire on production unwraps regardless of visibility"
-    );
-}
-
 /// M37 calibration: the three new naming options
 /// (`predicatePrefixes`, `extraPlaceholders`, `extraGenericNames`) plumb
 /// through the typed-option config and influence rule dispatch. Wrong
 /// shapes (a non-array value) are rejected with the expected error
 /// format.
 #[test]
-pub(crate) fn m37_naming_options_round_trip_through_config() {
+pub(crate) fn naming_options_round_trip_through_config() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -380,61 +241,4 @@ rules:
         error.contains("predicatePrefixes") && error.contains("naming.placeholder-identifier"),
         "unexpected error: {error}"
     );
-}
-
-/// M38 negative: `waste.unnecessary-clone-candidate` must skip clones
-/// inside `#[test]` fns and any fn inside a `#[cfg(test)]` module, so the
-/// rule stays symmetric with `waste.unwrap-expect`, whose
-/// `analyse_waste_line` branch already applies
-/// `!line.contains("#[test]") && !self.line_is_in_test_context(...)`.
-/// A production clone outside any test context must still fire so the
-/// guard does not silence real waste.
-#[test]
-pub(crate) fn m38_unnecessary_clone_candidate_skips_test_context() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r##"/// Probe.
-pub fn entry(value: &String) -> String {
-    value.clone()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn shared_setup(seed: &String) -> String {
-        seed.clone()
-    }
-
-    #[test]
-    fn check() {
-        let original = String::from("x");
-        let _copy = original.clone();
-        let _via = shared_setup(&original);
-    }
-}
-"##,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let clones: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "waste.unnecessary-clone-candidate")
-        .collect();
-    assert_eq!(
-            clones.len(),
-            1,
-            "expected exactly one clone finding (the production one in `pub fn entry`); findings={clones:?}"
-        );
 }

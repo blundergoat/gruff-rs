@@ -6,7 +6,7 @@ use super::*;
 /// `collect`, `?` propagation), struct-field initialisation, or
 /// `HashMap::entry/insert` keys. These are not avoidable clones.
 #[test]
-pub(crate) fn m33_unnecessary_clone_candidate_skips_consumed_or_owned_uses() {
+pub(crate) fn unnecessary_clone_candidate_skips_consumed_or_owned_uses() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -58,7 +58,7 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
 /// only the wrapping `format`, `concat`, punctuation, and `{}` placeholder
 /// tokens count.
 #[test]
-pub(crate) fn m33_halstead_volume_skips_string_literal_tokens() {
+pub(crate) fn halstead_volume_skips_string_literal_tokens() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     let mut body =
@@ -95,7 +95,7 @@ pub(crate) fn m33_halstead_volume_skips_string_literal_tokens() {
 /// a single declarative literal (here, a 70-entry `vec![...]`). Function
 /// length is intended to flag logic, not table-data registries.
 #[test]
-pub(crate) fn m33_function_length_skips_declarative_vec_body() {
+pub(crate) fn function_length_skips_declarative_vec_body() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     let mut body = String::from("/// Probe.\npub fn registry() -> Vec<i32> {\n    vec![\n");
@@ -130,7 +130,7 @@ pub(crate) fn m33_function_length_skips_declarative_vec_body() {
 /// module). The dedicated `test-quality.unwrap-in-test` rule covers the
 /// test-side concern.
 #[test]
-pub(crate) fn m33_unwrap_expect_skips_cfg_test_module() {
+pub(crate) fn unwrap_expect_skips_cfg_test_module() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -199,7 +199,7 @@ mod tests {
 /// shape (a char-literal `'"'` followed by a `concat!(...)` fixture
 /// containing a fake `Command::new`) and expects zero findings.
 #[test]
-pub(crate) fn m33_process_command_silent_after_char_literal_quote() {
+pub(crate) fn process_command_silent_after_char_literal_quote() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -235,4 +235,200 @@ pub fn fixture(name: &str) -> String {
         command_findings.is_empty(),
         "char-literal `'\"'` must not flip the string mask; findings={command_findings:?}"
     );
+}
+
+/// M35 negative: prose inside Rust comments must not trigger code-pattern
+/// line rules. `naming.short-variable`, `naming.placeholder-identifier`,
+/// `waste.unwrap-expect`, and `waste.unnecessary-clone-candidate` all run
+/// off the code-only line view that masks comments to spaces. The
+/// `security.unsafe-block` rule remains comment-aware so it can still
+/// find nearby `SAFETY:` rationale comments.
+#[test]
+pub(crate) fn line_rules_skip_prose_in_comments() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"//! Probe.
+//
+// Documentation prose with code-shaped fragments that must stay silent:
+//   - "for a built-in rule" (naming.short-variable false-positive bait)
+//   - `let foo = ...` (naming.placeholder-identifier bait)
+//   - `.unwrap()` mentioned in prose (waste.unwrap-expect bait)
+//   - `.clone()` mentioned in prose (waste.unnecessary-clone-candidate bait)
+
+/// for a, this is a documentation paragraph that mentions `.unwrap()` and `.clone()`
+/// and even shows `let foo = bar;` as an example. None of these should fire.
+pub fn well_documented(name: String) -> String {
+    /* a block comment also mentioning .unwrap() and .clone() and let foo = ... */
+    name
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    for rule in [
+        "naming.short-variable",
+        "naming.placeholder-identifier",
+        "waste.unwrap-expect",
+        "waste.unnecessary-clone-candidate",
+    ] {
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == rule),
+            "{rule} must not fire on prose in comments; findings={:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.rule_id == rule)
+                .map(|f| f.line)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// M35 negative: external-public-API rules must not fire on `pub(crate)`,
+/// `pub(super)`, or `pub(in path)` items. Those are crate-visible (so
+/// dead-code / reachability rules still see them as reachable) but they
+/// are NOT part of the external API surface, so reportable rules stay
+/// silent. The corresponding `pub` bare positives are covered by the
+/// existing fixture-based proofs.
+#[test]
+pub(crate) fn external_public_rules_skip_crate_visible_items() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"//! Probe.
+pub(crate) struct Buckets {
+    pub(crate) primary: Vec<u32>,
+    pub(super) seen: u32,
+}
+
+pub(crate) fn maybe_one(value: Option<u32>) -> u32 {
+    value.unwrap()
+}
+
+pub(crate) fn entry_a() {}
+pub(crate) fn entry_b() {}
+pub(crate) fn entry_c() {}
+pub(crate) fn entry_d() {}
+pub(crate) fn entry_e() {}
+pub(crate) fn entry_f() {}
+pub(crate) fn entry_g() {}
+pub(crate) fn entry_h() {}
+pub(crate) fn entry_i() {}
+pub(crate) fn entry_j() {}
+pub(crate) fn entry_k() {}
+pub(crate) fn entry_l() {}
+pub(crate) fn entry_m() {}
+pub(crate) fn entry_n() {}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    for rule in [
+        "modernisation.public-field",
+        "docs.missing-public-doc",
+        "error-handling.public-unwrap",
+        "architecture.public-api-surface",
+    ] {
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == rule),
+            "{rule} must not fire on crate-visible items; findings={:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| (&f.rule_id, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+    // The broader (non-public-API) unwrap rule SHOULD still fire on the
+    // production unwrap inside `maybe_one`, even though the public-API
+    // rule does not.
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "waste.unwrap-expect"),
+        "waste.unwrap-expect must still fire on production unwraps regardless of visibility"
+    );
+}
+
+/// M38 negative: `waste.unnecessary-clone-candidate` must skip clones
+/// inside `#[test]` fns and any fn inside a `#[cfg(test)]` module, so the
+/// rule stays symmetric with `waste.unwrap-expect`, whose
+/// `analyse_waste_line` branch already applies
+/// `!line.contains("#[test]") && !self.line_is_in_test_context(...)`.
+/// A production clone outside any test context must still fire so the
+/// guard does not silence real waste.
+#[test]
+pub(crate) fn unnecessary_clone_candidate_skips_test_context() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry(value: &String) -> String {
+    value.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared_setup(seed: &String) -> String {
+        seed.clone()
+    }
+
+    #[test]
+    fn check() {
+        let original = String::from("x");
+        let _copy = original.clone();
+        let _via = shared_setup(&original);
+    }
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let clones: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "waste.unnecessary-clone-candidate")
+        .collect();
+    assert_eq!(
+            clones.len(),
+            1,
+            "expected exactly one clone finding (the production one in `pub fn entry`); findings={clones:?}"
+        );
 }
