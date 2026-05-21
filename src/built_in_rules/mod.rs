@@ -3,22 +3,30 @@ use super::*;
 mod behavior_rules;
 mod blocks;
 mod comment_item_and_blocks;
+mod concurrency_rules;
 mod dead_code;
 mod function_block_metrics;
 mod function_block_rules;
 mod helpers;
+mod perf_rules;
 mod predicates;
 mod test_context;
+mod test_rules;
+mod waste_rules;
 
 pub(crate) use behavior_rules::*;
 pub(crate) use blocks::*;
 pub(crate) use comment_item_and_blocks::*;
+pub(crate) use concurrency_rules::*;
 pub(crate) use dead_code::*;
 pub(crate) use function_block_metrics::*;
 pub(crate) use function_block_rules::*;
 pub(crate) use helpers::*;
+pub(crate) use perf_rules::*;
 pub(crate) use predicates::*;
 pub(crate) use test_context::*;
+pub(crate) use test_rules::*;
+pub(crate) use waste_rules::*;
 
 struct RegexRule {
     rule_id: &'static str,

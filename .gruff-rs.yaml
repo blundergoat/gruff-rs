@@ -293,15 +293,10 @@ exclude:
       - src/render.rs
       - src/analyse_project.rs
       - src/built_in_rules/mod.rs
-      - src/built_in_rules/behavior_rules.rs
-    reason: "These modules sit at the natural decomposition boundaries of the project: main.rs is the binary entry-point + CLI surface, render.rs is the output-format dispatcher across many formats, analyse_project.rs runs every project-level rule, built_in_rules/mod.rs is the rule registry coordinator, and behavior_rules.rs hosts the line-rule context plus perf/clone/test rule helpers. Each item is small and the modules are cohesive; splitting further would fragment unified concerns. Tracked as residual architectural debt for v0.2."
+    reason: "These modules sit at the natural decomposition boundaries of the project: main.rs is the binary entry-point + CLI surface, render.rs is the output-format dispatcher across many formats, analyse_project.rs runs every project-level rule, and built_in_rules/mod.rs is the rule registry coordinator. Each item is small and the modules are cohesive; splitting further would fragment unified concerns. Tracked as residual architectural debt for v0.2."
   - rule: architecture.module-fan-out
     paths:
       - src/main.rs
       - src/tests/mod.rs
       - src/built_in_rules/mod.rs
     reason: "main.rs declares the binary's top-level modules; src/tests/mod.rs aggregates per-feature test files; src/built_in_rules/mod.rs aggregates the rule-category submodules. All three are intentional aggregation points where a high mod count is the design, not technical debt."
-  - rule: size.file-length
-    paths:
-      - src/built_in_rules/behavior_rules.rs
-    reason: "behavior_rules.rs holds the line-rule context (LineRuleContext + per-rule analysers) plus the waste/perf clone-and-format ownership-pattern tables. The patterns are dense by design (each is one regex declaration). Splitting would fragment closely-coupled rule logic and lookup tables. Tracked as residual architectural debt for v0.2."
