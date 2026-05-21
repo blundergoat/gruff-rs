@@ -259,3 +259,49 @@ exclude:
     paths:
       - src/tests/calibration/cases_*.rs
     reason: Calibration `cases()` returns a single Vec literal of test data; the size is intentional and equivalent to a static table, not function complexity.
+  - rule: test-quality.long-test
+    paths:
+      - src/tests/**
+    reason: Integration-style tests embed synthetic Rust source fixtures (raw-string lib content + analysis assertions). Line count is dominated by fixture text, not test logic.
+  - rule: test-quality.loop-in-test
+    paths:
+      - src/tests/**
+    reason: Tests legitimately iterate over rule-calibration tables (cases()), iterate to construct synthetic source bodies, and run table-driven assertions. Loop detection here is noise.
+  - rule: test-quality.conditional-logic
+    paths:
+      - src/tests/**
+    reason: The calibration matrix test branches on positive/negative-fire status to format a diagnostic line; cfg!() gates and similar guard-rails are legitimate test infrastructure.
+  - rule: dead-code.unused-private-function
+    paths:
+      - src/tests/**
+    reason: Test helpers (run_project_analysis, baseline_with_lib, assert_has_rule, write_config, etc.) are imported by sibling test modules but the rule only counts call sites within the defining file, so it cannot see cross-module usage.
+  - rule: error-handling.production-panic
+    paths:
+      - src/tests/**
+    reason: "metric_metadata_number and similar test helpers use panic! in unwrap_or_else callbacks to surface missing test fixture data with a precise error message. Test context detection cannot see the parent #[cfg(test)] mod tests from within the file."
+  - rule: security.process-command
+    paths:
+      - src/main.rs
+    reason: "changed_files invokes git diff --name-only with fixed, validated mode arguments to integrate the --diff selector. The argument flow is explicitly enumerated, not user-controlled."
+  - rule: sensitive-data.hardcoded-env-value
+    paths:
+      - src/tests/calibration/cases_*.rs
+    reason: Calibration positive case for the sensitive-data rule embeds a synthetic KEY=value literal in a raw string fixture so the analyzer can verify the rule fires; the value is not a real secret.
+  - rule: architecture.large-module
+    paths:
+      - src/main.rs
+      - src/render.rs
+      - src/analyse_project.rs
+      - src/built_in_rules/mod.rs
+      - src/built_in_rules/behavior_rules.rs
+    reason: "These modules sit at the natural decomposition boundaries of the project: main.rs is the binary entry-point + CLI surface, render.rs is the output-format dispatcher across many formats, analyse_project.rs runs every project-level rule, built_in_rules/mod.rs is the rule registry coordinator, and behavior_rules.rs hosts the line-rule context plus perf/clone/test rule helpers. Each item is small and the modules are cohesive; splitting further would fragment unified concerns. Tracked as residual architectural debt for v0.2."
+  - rule: architecture.module-fan-out
+    paths:
+      - src/main.rs
+      - src/tests/mod.rs
+      - src/built_in_rules/mod.rs
+    reason: "main.rs declares the binary's top-level modules; src/tests/mod.rs aggregates per-feature test files; src/built_in_rules/mod.rs aggregates the rule-category submodules. All three are intentional aggregation points where a high mod count is the design, not technical debt."
+  - rule: size.file-length
+    paths:
+      - src/built_in_rules/behavior_rules.rs
+    reason: "behavior_rules.rs holds the line-rule context (LineRuleContext + per-rule analysers) plus the waste/perf clone-and-format ownership-pattern tables. The patterns are dense by design (each is one regex declaration). Splitting would fragment closely-coupled rule logic and lookup tables. Tracked as residual architectural debt for v0.2."

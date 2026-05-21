@@ -155,14 +155,15 @@ fn analyse_text_rules(
         }));
     }
 
-    let todo_count = source.matches("TODO").count() + source.matches("FIXME").count();
+    let string_masked = strip_rust_string_literals(source);
+    let todo_count = string_masked.matches("TODO").count() + string_masked.matches("FIXME").count();
     let rule_id = "docs.todo-density";
     if todo_count >= config.threshold(rule_id, 4.0) as usize {
         findings.push(finding(SimpleFindingDescriptor {
             rule_id,
             message: format!("File contains {todo_count} TODO/FIXME markers."),
             file,
-            line: Some(first_matching_line(source, "TODO").unwrap_or(1)),
+            line: Some(first_matching_line(&string_masked, "TODO").unwrap_or(1)),
             severity: config.severity(rule_id, Severity::Advisory),
             pillar: Pillar::Documentation,
         }));
@@ -521,13 +522,13 @@ impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
 /// references, or-patterns, and typed patterns. Unhandled variants
 /// (`Pat::Lit`, `Pat::Wild`, etc.) carry no bindings to inspect.
 fn walk_pat_idents<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
-    if walk_unary_pat(pat, callback) {
+    if should_recurse_walk_pat(pat, callback) {
         return;
     }
     walk_compound_pat(pat, callback);
 }
 
-fn walk_unary_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) -> bool {
+fn should_recurse_walk_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) -> bool {
     match pat {
         syn::Pat::Ident(pat_ident) => {
             callback(&pat_ident.ident);

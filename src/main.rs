@@ -116,7 +116,7 @@ struct FunctionMetrics {
 }
 
 impl FunctionBlock {
-    fn is_test_context(&self) -> bool {
+    pub(crate) fn is_test_context(&self) -> bool {
         self.is_test || self.test_context
     }
 }
@@ -303,7 +303,7 @@ fn listed_rules(registry: &rules::RuleRegistry, custom_rules: &[CustomRule]) -> 
     listed
 }
 
-fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedRule {
+pub(crate) fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedRule {
     ListedRule {
         id: definition.id.to_string(),
         name: definition.name.to_string(),
@@ -321,7 +321,7 @@ fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedRule {
     }
 }
 
-fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
+pub(crate) fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
     ListedRule {
         id: rule.id.clone(),
         name: custom_rule_name(&rule.id),
@@ -407,7 +407,7 @@ fn run_completion(args: CompletionArgs, writer: OutputWriter) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
+pub(crate) fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = built_in_rules::analyse(unit, config);
     findings.extend(custom_rules::analyse(unit, config));
     findings
@@ -417,7 +417,7 @@ mod built_in_rules;
 
 mod custom_rules;
 
-fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
+pub(crate) fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
     let mut command = std::process::Command::new("git");
     command.arg("diff").arg("--name-only");
     match mode {
@@ -441,7 +441,7 @@ fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
         .collect())
 }
 
-fn write_baseline(path: &Path, findings: &[Finding]) -> Result<(), String> {
+pub(crate) fn write_baseline(path: &Path, findings: &[Finding]) -> Result<(), String> {
     let entries: Vec<BaselineEntry> = findings
         .iter()
         .map(|finding| BaselineEntry {
@@ -465,7 +465,7 @@ fn write_baseline(path: &Path, findings: &[Finding]) -> Result<(), String> {
     .map_err(|error| format!("unable to write baseline {}: {error}", path.display()))
 }
 
-fn apply_baseline(path: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
+pub(crate) fn apply_baseline(path: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("unable to read baseline {}: {error}", path.display()))?;
     let data: BaselineData = serde_json::from_str(&raw)
@@ -479,16 +479,16 @@ fn apply_baseline(path: &Path, findings: &mut Vec<Finding>) -> Result<(), String
         .map(|entry| (entry.fingerprint, entry.rule_id, entry.file_path))
         .collect();
     findings.retain(|finding| {
-        !keys.contains(&(
-            finding.fingerprint.clone(),
-            finding.rule_id.clone(),
-            finding.file_path.clone(),
-        ))
+        !keys.iter().any(|(fingerprint, rule_id, file_path)| {
+            fingerprint == &finding.fingerprint
+                && rule_id == &finding.rule_id
+                && file_path == &finding.file_path
+        })
     });
     Ok(())
 }
 
-fn record_history(
+pub(crate) fn record_history(
     project_root: &Path,
     history_file: &Path,
     findings: &[Finding],
@@ -537,7 +537,7 @@ fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-fn path_matches(pattern: &str, path: &str) -> bool {
+pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
     if pattern == path {
         return true;
     }

@@ -217,12 +217,20 @@ pub(crate) fn round_one_decimal(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
-pub(crate) fn loop_pattern_count(source: &str, pattern: &Regex) -> usize {
+/// Counts occurrences of `pattern` that appear inside a loop body in
+/// `source`. `count_line` lets callers skip structurally exempt lines
+/// (struct-field clones, owned API arguments) so the performance rules
+/// fire only on real per-tick waste, not on idiomatic per-iteration
+/// owned-value construction.
+pub(crate) fn loop_pattern_count_filtered<F>(source: &str, pattern: &Regex, count_line: F) -> usize
+where
+    F: Fn(&str) -> bool,
+{
     let loop_start = static_regex(&LOOP_START_REGEX, r"\b(for|while|loop)\b");
     let mut state = LoopPatternState::default();
 
     for line in source.lines() {
-        state.process_line(line, pattern, loop_start);
+        state.process_line(line, pattern, loop_start, &count_line);
     }
 
     state.occurrences
@@ -237,8 +245,19 @@ pub(crate) struct LoopPatternState {
 }
 
 impl LoopPatternState {
-    fn process_line(&mut self, line: &str, pattern: &Regex, loop_start: &Regex) {
-        let matches: Vec<usize> = pattern.find_iter(line).map(|found| found.start()).collect();
+    fn process_line<F: Fn(&str) -> bool>(
+        &mut self,
+        line: &str,
+        pattern: &Regex,
+        loop_start: &Regex,
+        count_line: &F,
+    ) {
+        let line_counts = count_line(line);
+        let matches: Vec<usize> = if line_counts {
+            pattern.find_iter(line).map(|found| found.start()).collect()
+        } else {
+            Vec::new()
+        };
         let mut next_match = 0usize;
         if loop_start.is_match(line) {
             self.pending_loop = true;

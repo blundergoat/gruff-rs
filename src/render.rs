@@ -52,17 +52,20 @@ fn render_text_diagnostics(output: &mut String, report: &AnalysisReport) {
     }
     output.push_str("\nDiagnostics:\n");
     for diagnostic in &report.diagnostics {
-        output.push_str(&format!(
-            "- {}: {}{}\n",
-            diagnostic.diagnostic_type,
-            diagnostic.message,
-            diagnostic
-                .file_path
-                .as_ref()
-                .map(|path| format!(" ({path})"))
-                .unwrap_or_default()
-        ));
+        output.push_str(&format_text_diagnostic_line(diagnostic));
     }
+}
+
+fn format_text_diagnostic_line(diagnostic: &RunDiagnostic) -> String {
+    let file_suffix = diagnostic
+        .file_path
+        .as_deref()
+        .map(|path| format!(" ({path})"))
+        .unwrap_or_default();
+    format!(
+        "- {}: {}{file_suffix}\n",
+        diagnostic.diagnostic_type, diagnostic.message
+    )
 }
 
 fn render_text_findings(output: &mut String, report: &AnalysisReport) {
@@ -219,7 +222,7 @@ fn sarif_document(report: &AnalysisReport, rules: &[Value], results: &[Value]) -
     })
 }
 
-fn sarif_rule(definition: &rules::RuleDefinition) -> Value {
+pub(crate) fn sarif_rule(definition: &rules::RuleDefinition) -> Value {
     json!({
         "id": definition.id,
         "name": definition.name,

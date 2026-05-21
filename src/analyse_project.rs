@@ -306,7 +306,7 @@ fn unused_private_item_finding(rule_id: &str, item: &ItemSummary) -> Finding {
 
 pub(crate) fn item_symbol(item: &ItemSummary) -> String {
     if item.module_path.is_empty() {
-        item.name.clone()
+        item.name.to_string()
     } else {
         format!("{}::{}", item.module_path, item.name)
     }

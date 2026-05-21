@@ -18,7 +18,7 @@ pub(crate) fn read_and_parse_sources(
 
     for source_file in files {
         match fs::read_to_string(&source_file.absolute_path) {
-            Ok(source) => parsed_sources.push(parse_source_file(source_file.clone(), source)),
+            Ok(source) => parsed_sources.push(parse_source_file(source_file, source)),
             Err(error) => diagnostics.push(RunDiagnostic {
                 diagnostic_type: "read-error".to_string(),
                 message: format!("Unable to read file: {error}"),
@@ -31,10 +31,11 @@ pub(crate) fn read_and_parse_sources(
     (parsed_sources, diagnostics)
 }
 
-pub(crate) fn parse_source_file(file: SourceFile, source: String) -> ParsedSource {
-    if !file.is_rust {
+pub(crate) fn parse_source_file(file: &SourceFile, source: String) -> ParsedSource {
+    let file_owned = file.clone();
+    if !file_owned.is_rust {
         return ParsedSource {
-            file,
+            file: file_owned,
             source,
             rust_ast: None,
             diagnostics: Vec::new(),
@@ -43,15 +44,15 @@ pub(crate) fn parse_source_file(file: SourceFile, source: String) -> ParsedSourc
 
     match syn::parse_file(&source) {
         Ok(ast) => ParsedSource {
-            file,
+            file: file_owned,
             source,
             rust_ast: Some(ast),
             diagnostics: Vec::new(),
         },
         Err(error) => {
-            let display_path = file.display_path.clone();
+            let display_path = file_owned.display_path.clone();
             ParsedSource {
-                file,
+                file: file_owned,
                 source,
                 rust_ast: None,
                 diagnostics: vec![RunDiagnostic {

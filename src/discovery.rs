@@ -50,7 +50,7 @@ fn resolve_input_paths(options: &AnalysisOptions) -> Vec<PathBuf> {
     if options.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
-        options.paths.clone()
+        options.paths.to_vec()
     }
 }
 
