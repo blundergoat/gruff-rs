@@ -191,20 +191,31 @@ pub(crate) fn validate_rule_options(
         .ok_or_else(|| format!("config key `rules.{rule_id}.options` must be an object"))?;
     let mut string_arrays = HashMap::new();
     for (name, value) in options {
-        let kind = registry
-            .option_value_kind(rule_id, name)
-            .ok_or_else(|| format!("unknown option `{name}` for rule `{rule_id}`"))?;
-        match kind {
-            rules::OptionValueKind::StringArray => {
-                let parsed = string_array(value, &format!("rules.{rule_id}.options.{name}"))?;
-                string_arrays.insert(name.clone(), parsed);
-            }
-            rules::OptionValueKind::Boolean => {
-                value.as_bool().ok_or_else(|| {
-                    format!("config key `rules.{rule_id}.options.{name}` must be a boolean")
-                })?;
-            }
-        }
+        validate_rule_option_entry(rule_id, name, value, registry, &mut string_arrays)?;
     }
     Ok(string_arrays)
+}
+
+fn validate_rule_option_entry(
+    rule_id: &str,
+    name: &str,
+    value: &Value,
+    registry: &rules::RuleRegistry,
+    string_arrays: &mut HashMap<String, Vec<String>>,
+) -> Result<(), String> {
+    let kind = registry
+        .option_value_kind(rule_id, name)
+        .ok_or_else(|| format!("unknown option `{name}` for rule `{rule_id}`"))?;
+    match kind {
+        rules::OptionValueKind::StringArray => {
+            let parsed = string_array(value, &format!("rules.{rule_id}.options.{name}"))?;
+            string_arrays.insert(name.to_string(), parsed);
+        }
+        rules::OptionValueKind::Boolean => {
+            value.as_bool().ok_or_else(|| {
+                format!("config key `rules.{rule_id}.options.{name}` must be a boolean")
+            })?;
+        }
+    }
+    Ok(())
 }

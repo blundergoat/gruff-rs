@@ -37,21 +37,7 @@ pub(crate) fn strip_rust_string_literals(source: &str) -> String {
         }
 
         if bytes[index] == b'"' {
-            output.push(' ');
-            index += 1;
-            while index < bytes.len() {
-                let byte = bytes[index];
-                mask_byte(byte, &mut output);
-                index += 1;
-                if byte == b'\\' && index < bytes.len() {
-                    mask_byte(bytes[index], &mut output);
-                    index += 1;
-                    continue;
-                }
-                if byte == b'"' {
-                    break;
-                }
-            }
+            index = mask_double_quoted_string(bytes, index, &mut output);
             continue;
         }
 
@@ -60,6 +46,29 @@ pub(crate) fn strip_rust_string_literals(source: &str) -> String {
     }
 
     output
+}
+
+/// Masks a `"..."` Rust string literal starting at the opening quote at
+/// `start`. Handles backslash escapes so `\"` does not terminate the
+/// string. Returns the byte index just past the closing quote (or
+/// `bytes.len()` if the source is malformed and the quote is unclosed).
+fn mask_double_quoted_string(bytes: &[u8], start: usize, output: &mut String) -> usize {
+    output.push(' ');
+    let mut index = start + 1;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        mask_byte(byte, output);
+        index += 1;
+        if byte == b'\\' && index < bytes.len() {
+            mask_byte(bytes[index], output);
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            break;
+        }
+    }
+    index
 }
 
 /// Returns the byte index just past a Rust character literal that starts at
@@ -71,33 +80,41 @@ pub(crate) fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     if bytes.get(start).copied()? != b'\'' {
         return None;
     }
-    let mut cursor = start + 1;
-    if bytes.get(cursor).copied()? == b'\\' {
-        cursor += 1;
-        let escape = bytes.get(cursor).copied()?;
-        cursor += 1;
-        match escape {
-            b'x' => cursor = cursor.checked_add(2)?,
-            b'u' => {
-                if bytes.get(cursor).copied()? == b'{' {
-                    cursor += 1;
-                    while bytes.get(cursor).copied()? != b'}' {
-                        cursor += 1;
-                        if cursor.saturating_sub(start) > 12 {
-                            return None;
-                        }
-                    }
-                    cursor += 1;
-                } else {
-                    return None;
-                }
-            }
-            _ => {}
-        }
-    } else {
-        cursor += 1;
-    }
+    let cursor = char_literal_body_end(bytes, start + 1, start)?;
     (bytes.get(cursor).copied()? == b'\'').then_some(cursor + 1)
+}
+
+/// Advances past the character payload between the opening and closing
+/// quotes of a char literal. Handles escape sequences (`\n`, `\x41`,
+/// `\u{0041}`, etc.) plus plain single-byte chars. `start` is the literal's
+/// opening-quote index, kept around for unicode-escape sanity bounds.
+fn char_literal_body_end(bytes: &[u8], cursor: usize, start: usize) -> Option<usize> {
+    if bytes.get(cursor).copied()? != b'\\' {
+        return Some(cursor + 1);
+    }
+    let escape = bytes.get(cursor + 1).copied()?;
+    let after_escape = cursor + 2;
+    match escape {
+        b'x' => after_escape.checked_add(2),
+        b'u' => unicode_escape_end(bytes, after_escape, start),
+        _ => Some(after_escape),
+    }
+}
+
+/// Advances past a `\u{XXXX}` unicode escape. `cursor` is the byte after
+/// the `\u`; on success, returns the byte after the closing brace.
+fn unicode_escape_end(bytes: &[u8], cursor: usize, start: usize) -> Option<usize> {
+    if bytes.get(cursor).copied()? != b'{' {
+        return None;
+    }
+    let mut walk = cursor + 1;
+    while bytes.get(walk).copied()? != b'}' {
+        walk += 1;
+        if walk.saturating_sub(start) > 12 {
+            return None;
+        }
+    }
+    Some(walk + 1)
 }
 
 /// Masks Rust comments (`//`, `///`, `//!`, `/* */`, `/** */`) into spaces
@@ -110,38 +127,53 @@ pub(crate) fn strip_rust_comments_after_string_mask(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut index = 0usize;
     while index < bytes.len() {
-        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
-            while index < bytes.len() && bytes[index] != b'\n' {
-                output.push(' ');
-                index += 1;
-            }
+        if starts_with_two(bytes, index, b'/', b'/') {
+            index = mask_line_comment(bytes, index, &mut output);
             continue;
         }
-        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
-            output.push(' ');
-            output.push(' ');
-            index += 2;
-            while index < bytes.len() {
-                if index + 1 < bytes.len() && bytes[index] == b'*' && bytes[index + 1] == b'/' {
-                    output.push(' ');
-                    output.push(' ');
-                    index += 2;
-                    break;
-                }
-                let byte = bytes[index];
-                if byte == b'\n' {
-                    output.push('\n');
-                } else {
-                    output.push(' ');
-                }
-                index += 1;
-            }
+        if starts_with_two(bytes, index, b'/', b'*') {
+            index = mask_block_comment(bytes, index, &mut output);
             continue;
         }
         output.push(bytes[index] as char);
         index += 1;
     }
     output
+}
+
+/// Masks a `//` line comment with spaces (preserving the newline). Returns
+/// the byte index of the newline (or `bytes.len()`).
+fn mask_line_comment(bytes: &[u8], start: usize, output: &mut String) -> usize {
+    let mut index = start;
+    while index < bytes.len() && bytes[index] != b'\n' {
+        output.push(' ');
+        index += 1;
+    }
+    index
+}
+
+/// Masks a `/* ... */` block comment with spaces, preserving newlines so
+/// the line counter stays aligned. Returns the byte index just past the
+/// closing `*/` (or `bytes.len()` if unterminated).
+fn mask_block_comment(bytes: &[u8], start: usize, output: &mut String) -> usize {
+    output.push(' ');
+    output.push(' ');
+    let mut index = start + 2;
+    while index < bytes.len() {
+        if starts_with_two(bytes, index, b'*', b'/') {
+            output.push(' ');
+            output.push(' ');
+            return index + 2;
+        }
+        let byte = bytes[index];
+        if byte == b'\n' {
+            output.push('\n');
+        } else {
+            output.push(' ');
+        }
+        index += 1;
+    }
+    index
 }
 
 pub(crate) fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
@@ -215,60 +247,92 @@ pub(crate) fn extract_rust_comments(masked_source: &str) -> Vec<RustComment> {
     let mut line = 1usize;
     let mut index = 0usize;
     while index < bytes.len() {
-        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'/' {
-            let comment_line = line;
-            let is_doc = bytes
-                .get(index + 2)
-                .copied()
-                .map(|byte| byte == b'/' || byte == b'!')
-                .unwrap_or(false);
-            let text_start = if is_doc { index + 3 } else { index + 2 };
-            let mut end = text_start;
-            while end < bytes.len() && bytes[end] != b'\n' {
-                end += 1;
-            }
-            let text = std::str::from_utf8(&bytes[text_start..end])
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            comments.push(RustComment {
-                line: comment_line,
-                text,
-                is_doc,
-            });
-            index = end;
-            continue;
-        }
-        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
-            let comment_line = line;
-            let is_doc = bytes.get(index + 2).copied() == Some(b'*');
-            let text_start = if is_doc { index + 3 } else { index + 2 };
-            let mut end = text_start;
-            while end + 1 < bytes.len() {
-                if bytes[end] == b'*' && bytes[end + 1] == b'/' {
-                    break;
-                }
-                if bytes[end] == b'\n' {
-                    line += 1;
-                }
-                end += 1;
-            }
-            let text = std::str::from_utf8(&bytes[text_start..end])
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            comments.push(RustComment {
-                line: comment_line,
-                text,
-                is_doc,
-            });
-            index = (end + 2).min(bytes.len());
-            continue;
-        }
-        if bytes[index] == b'\n' {
-            line += 1;
-        }
-        index += 1;
+        advance_comment_extraction(bytes, &mut comments, &mut index, &mut line);
     }
     comments
+}
+
+fn advance_comment_extraction(
+    bytes: &[u8],
+    comments: &mut Vec<RustComment>,
+    index: &mut usize,
+    line: &mut usize,
+) {
+    if starts_with_two(bytes, *index, b'/', b'/') {
+        let (comment, next_index) = consume_line_comment(bytes, *index, *line);
+        comments.push(comment);
+        *index = next_index;
+        return;
+    }
+    if starts_with_two(bytes, *index, b'/', b'*') {
+        let (comment, next_index, next_line) = consume_block_comment(bytes, *index, *line);
+        comments.push(comment);
+        *index = next_index;
+        *line = next_line;
+        return;
+    }
+    if bytes[*index] == b'\n' {
+        *line += 1;
+    }
+    *index += 1;
+}
+
+fn starts_with_two(bytes: &[u8], index: usize, first: u8, second: u8) -> bool {
+    index + 1 < bytes.len() && bytes[index] == first && bytes[index + 1] == second
+}
+
+/// Consumes a `//` line comment starting at `index` (with current `line`)
+/// and returns the captured comment and the new cursor position. The new
+/// position points at the trailing newline (or EOF) so the outer loop
+/// increments `line` on the next pass.
+fn consume_line_comment(bytes: &[u8], index: usize, line: usize) -> (RustComment, usize) {
+    let is_doc = bytes
+        .get(index + 2)
+        .copied()
+        .map(|byte| byte == b'/' || byte == b'!')
+        .unwrap_or(false);
+    let text_start = if is_doc { index + 3 } else { index + 2 };
+    let mut end = text_start;
+    while end < bytes.len() && bytes[end] != b'\n' {
+        end += 1;
+    }
+    let text = std::str::from_utf8(&bytes[text_start..end])
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (RustComment { line, text, is_doc }, end)
+}
+
+/// Consumes a `/* ... */` block comment starting at `index` (with current
+/// `line`) and returns the captured comment, the new cursor position
+/// (past the closing `*/` if present), and the updated line counter.
+fn consume_block_comment(bytes: &[u8], index: usize, line: usize) -> (RustComment, usize, usize) {
+    let is_doc = bytes.get(index + 2).copied() == Some(b'*');
+    let text_start = if is_doc { index + 3 } else { index + 2 };
+    let (end, current_line) = scan_block_comment_body(bytes, text_start, line);
+    let text = std::str::from_utf8(&bytes[text_start..end])
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let next_index = (end + 2).min(bytes.len());
+    (RustComment { line, text, is_doc }, next_index, current_line)
+}
+
+/// Scans forward through a block-comment body starting at `text_start`,
+/// returning the byte index of the closing `*/` (or one past the last
+/// scanned byte if unterminated) plus the updated line counter for
+/// embedded newlines.
+fn scan_block_comment_body(bytes: &[u8], text_start: usize, line: usize) -> (usize, usize) {
+    let mut end = text_start;
+    let mut current_line = line;
+    while end + 1 < bytes.len() {
+        if bytes[end] == b'*' && bytes[end + 1] == b'/' {
+            return (end, current_line);
+        }
+        if bytes[end] == b'\n' {
+            current_line += 1;
+        }
+        end += 1;
+    }
+    (end, current_line)
 }

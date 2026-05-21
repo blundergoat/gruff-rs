@@ -23,6 +23,14 @@ pub(crate) fn render_report_with_scope(
 
 fn render_text(report: &AnalysisReport) -> String {
     let mut output = String::new();
+    render_text_header(&mut output, report);
+    render_text_diagnostics(&mut output, report);
+    render_text_findings(&mut output, report);
+    render_text_suppressions(&mut output, report);
+    output
+}
+
+fn render_text_header(output: &mut String, report: &AnalysisReport) {
     output.push_str(&format!("gruff-rs {}\n", report.tool.version));
     output.push_str(&format!(
         "Score: {:.1} ({}) | Findings: {} advisory, {} warning, {} error\n",
@@ -36,57 +44,64 @@ fn render_text(report: &AnalysisReport) -> String {
         "Analysed files: {}\n",
         report.paths.analysed_files
     ));
+}
 
-    if !report.diagnostics.is_empty() {
-        output.push_str("\nDiagnostics:\n");
-        for diagnostic in &report.diagnostics {
-            output.push_str(&format!(
-                "- {}: {}{}\n",
-                diagnostic.diagnostic_type,
-                diagnostic.message,
-                diagnostic
-                    .file_path
-                    .as_ref()
-                    .map(|path| format!(" ({path})"))
-                    .unwrap_or_default()
-            ));
-        }
+fn render_text_diagnostics(output: &mut String, report: &AnalysisReport) {
+    if report.diagnostics.is_empty() {
+        return;
     }
-
-    if !report.findings.is_empty() {
-        output.push_str("\nFindings:\n");
-        for finding in &report.findings {
-            output.push_str(&format!(
-                "- [{}] {}:{} {} - {}\n",
-                severity_label(finding.severity),
-                finding.file_path,
-                finding.line.unwrap_or(1),
-                finding.rule_id,
-                finding.message
-            ));
-        }
-    }
-
-    let suppressed = total_suppressed_findings(&report.suppressions);
-    if suppressed > 0 {
-        let details = report
-            .suppressions
-            .iter()
-            .filter(|summary| summary.suppressed > 0)
-            .map(|summary| {
-                format!(
-                    "exclude[{}] {}: {} ({})",
-                    summary.index, summary.rule, summary.suppressed, summary.reason
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
+    output.push_str("\nDiagnostics:\n");
+    for diagnostic in &report.diagnostics {
         output.push_str(&format!(
-            "\nSuppressed findings: {suppressed} via {details}\n"
+            "- {}: {}{}\n",
+            diagnostic.diagnostic_type,
+            diagnostic.message,
+            diagnostic
+                .file_path
+                .as_ref()
+                .map(|path| format!(" ({path})"))
+                .unwrap_or_default()
         ));
     }
+}
 
-    output
+fn render_text_findings(output: &mut String, report: &AnalysisReport) {
+    if report.findings.is_empty() {
+        return;
+    }
+    output.push_str("\nFindings:\n");
+    for finding in &report.findings {
+        output.push_str(&format!(
+            "- [{}] {}:{} {} - {}\n",
+            severity_label(finding.severity),
+            finding.file_path,
+            finding.line.unwrap_or(1),
+            finding.rule_id,
+            finding.message
+        ));
+    }
+}
+
+fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
+    let suppressed = total_suppressed_findings(&report.suppressions);
+    if suppressed == 0 {
+        return;
+    }
+    let details = report
+        .suppressions
+        .iter()
+        .filter(|summary| summary.suppressed > 0)
+        .map(|summary| {
+            format!(
+                "exclude[{}] {}: {} ({})",
+                summary.index, summary.rule, summary.suppressed, summary.reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    output.push_str(&format!(
+        "\nSuppressed findings: {suppressed} via {details}\n"
+    ));
 }
 
 pub(crate) fn total_suppressed_findings(suppressions: &[SuppressionSummary]) -> usize {
@@ -144,29 +159,40 @@ fn render_hotspot(report: &AnalysisReport) -> String {
 
 fn render_sarif(report: &AnalysisReport) -> String {
     let registry = rules::builtin_registry();
-    let rule_indices: HashMap<&str, usize> = registry
+    let rule_indices = sarif_rule_indices(&registry);
+    let rules: Vec<Value> = registry.definitions().iter().map(sarif_rule).collect();
+    let results = sarif_results(report, &rule_indices);
+
+    serde_json::to_string_pretty(&sarif_document(report, &rules, &results))
+        .expect("sarif serializes")
+}
+
+fn sarif_rule_indices(registry: &rules::RuleRegistry) -> HashMap<&str, usize> {
+    registry
         .definitions()
         .iter()
         .enumerate()
         .map(|(index, definition)| (definition.id, index))
-        .collect();
-    let mut rules = Vec::new();
-    for definition in registry.definitions() {
-        rules.push(sarif_rule(definition));
-    }
+        .collect()
+}
+
+fn sarif_results(report: &AnalysisReport, rule_indices: &HashMap<&str, usize>) -> Vec<Value> {
     let mut results: Vec<Value> = report
         .findings
         .iter()
-        .map(|finding| sarif_result(finding, &rule_indices))
+        .map(|finding| sarif_result(finding, rule_indices))
         .collect();
     results.extend(
         report
             .suppressed_findings
             .iter()
-            .map(|suppressed| sarif_suppressed_result(suppressed, &rule_indices)),
+            .map(|suppressed| sarif_suppressed_result(suppressed, rule_indices)),
     );
+    results
+}
 
-    serde_json::to_string_pretty(&json!({
+fn sarif_document(report: &AnalysisReport, rules: &[Value], results: &[Value]) -> Value {
+    json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
         "runs": [
@@ -190,8 +216,7 @@ fn render_sarif(report: &AnalysisReport) -> String {
                 },
             },
         ],
-    }))
-    .expect("sarif serializes")
+    })
 }
 
 fn sarif_rule(definition: &rules::RuleDefinition) -> Value {

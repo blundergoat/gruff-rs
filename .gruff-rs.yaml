@@ -247,3 +247,15 @@ rules:
   # Flags unwrap and expect calls outside test attributes.
   waste.unwrap-expect:
     enabled: true
+
+
+# Exclusions: per-rule waivers with reasons.
+exclude:
+  - rule: metrics.halstead-volume
+    paths:
+      - src/tests/calibration/cases_*.rs
+    reason: Calibration `cases()` returns a single Vec literal of test data; the size is intentional and equivalent to a static table, not function complexity.
+  - rule: metrics.maintainability-pressure
+    paths:
+      - src/tests/calibration/cases_*.rs
+    reason: Calibration `cases()` returns a single Vec literal of test data; the size is intentional and equivalent to a static table, not function complexity.

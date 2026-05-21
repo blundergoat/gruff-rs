@@ -53,6 +53,20 @@ pub(crate) fn read_config_value(
     Ok(Some((path, value)))
 }
 
+type ConfigSectionHandler = fn(&Value, &mut Config) -> Result<(), String>;
+
+/// Ordered list of section handlers. `custom_rules` must run before
+/// `rules` so rule-id validation in `rules` can see the configured custom
+/// rules; `exclude` runs last so its selectors can reference both
+/// built-in and custom rules.
+const CONFIG_SECTIONS: &[(&str, ConfigSectionHandler)] = &[
+    ("paths", apply_paths_section),
+    ("allowlists", apply_allowlists_section),
+    ("custom_rules", apply_custom_rules_section),
+    ("rules", apply_rules_section),
+    ("exclude", apply_exclusions_section),
+];
+
 pub(crate) fn apply_config_value(
     path: &Path,
     value: &Value,
@@ -61,26 +75,12 @@ pub(crate) fn apply_config_value(
     let root = value
         .as_object()
         .ok_or_else(|| format!("config {} must be a JSON object", path.display()))?;
-    reject_unknown_keys(
-        root,
-        &["paths", "allowlists", "rules", "exclude", "custom_rules"],
-        "config root",
-    )?;
-
-    if let Some(paths_value) = root.get("paths") {
-        apply_paths_section(paths_value, config)?;
-    }
-    if let Some(allowlists_value) = root.get("allowlists") {
-        apply_allowlists_section(allowlists_value, config)?;
-    }
-    if let Some(custom_rules_value) = root.get("custom_rules") {
-        apply_custom_rules_section(custom_rules_value, config)?;
-    }
-    if let Some(rules_value) = root.get("rules") {
-        apply_rules_section(rules_value, config)?;
-    }
-    if let Some(exclude_value) = root.get("exclude") {
-        apply_exclusions_section(exclude_value, config)?;
+    let known_keys: Vec<&str> = CONFIG_SECTIONS.iter().map(|(key, _)| *key).collect();
+    reject_unknown_keys(root, &known_keys, "config root")?;
+    for (key, handler) in CONFIG_SECTIONS {
+        if let Some(section_value) = root.get(*key) {
+            handler(section_value, config)?;
+        }
     }
     Ok(())
 }

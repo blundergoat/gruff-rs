@@ -367,89 +367,126 @@ impl NamingPatternVisitor<'_> {
     }
 
     fn check_identifier_shadow(&mut self, local: &syn::Local) {
-        let syn::Pat::Ident(pat_ident) = &local.pat else {
+        let Some(shadow) = shadow_candidate(local, self.same_file_free_fns) else {
             return;
         };
-        let Some(init) = &local.init else {
-            return;
-        };
-        let syn::Expr::Call(call) = init.expr.as_ref() else {
-            return;
-        };
-        let syn::Expr::Path(path_expr) = call.func.as_ref() else {
-            return;
-        };
-        let Some(last) = path_expr.path.segments.last() else {
-            return;
-        };
-        let binding = pat_ident.ident.to_string();
-        let callee = last.ident.to_string();
-        if binding != callee {
-            return;
-        }
-        if !self.same_file_free_fns.contains(&callee) {
-            return;
-        }
-        let line = line_from_span(pat_ident.ident.span().start());
-        self.findings.push(Finding::new(FindingDescriptor {
-            rule_id: "naming.identifier-shadow".to_string(),
-            message: format!("Local binding `{binding}` shadows same-file function `{callee}`."),
-            file_path: self.file.display_path.clone(),
-            line: Some(line),
-            severity: Severity::Advisory,
-            pillar: Pillar::Naming,
-            confidence: Confidence::High,
-            symbol: Some(binding.clone()),
-            remediation: Some(
-                "Rename the local so it does not collide with the function it calls.".to_string(),
-            ),
-            metadata: json!({ "shadows": callee }),
-        }));
+        self.findings
+            .push(identifier_shadow_finding(&self.file.display_path, shadow));
     }
 
     fn check_name(&mut self, name: &str, line: usize) {
+        if self.name_is_placeholder(name) {
+            self.findings.push(placeholder_identifier_finding(
+                &self.file.display_path,
+                name,
+                line,
+            ));
+        }
+        if self.name_is_too_short(name) {
+            self.findings
+                .push(short_variable_finding(&self.file.display_path, name, line));
+        }
+    }
+
+    fn name_is_placeholder(&self, name: &str) -> bool {
         let extra_placeholders = self
             .config
             .string_array_option("naming.placeholder-identifier", "extraPlaceholders");
-        let extra_match = extra_placeholders.iter().any(|extra| extra == name);
-        if is_placeholder_identifier(name) || extra_match {
-            self.findings.push(Finding::new(FindingDescriptor {
-                rule_id: "naming.placeholder-identifier".to_string(),
-                message: format!(
-                    "Variable `{name}` uses a placeholder name instead of domain language."
-                ),
-                file_path: self.file.display_path.clone(),
-                line: Some(line),
-                severity: Severity::Advisory,
-                pillar: Pillar::Naming,
-                confidence: Confidence::Medium,
-                symbol: Some(name.to_string()),
-                remediation: Some("Use a name that describes the domain role.".to_string()),
-                metadata: json!({}),
-            }));
-        }
-        if name.len() <= 2
+        is_placeholder_identifier(name) || extra_placeholders.iter().any(|extra| extra == name)
+    }
+
+    fn name_is_too_short(&self, name: &str) -> bool {
+        name.len() <= 2
             && !matches!(name, "i" | "j" | "k")
             && !name.starts_with('_')
             && !self
                 .config
                 .accepted_abbreviations
                 .contains(&name.to_ascii_lowercase())
-        {
-            self.findings.push(Finding::new(FindingDescriptor {
-                rule_id: "naming.short-variable".to_string(),
-                message: format!("Variable `{name}` is too short to explain intent."),
-                file_path: self.file.display_path.clone(),
-                line: Some(line),
-                severity: Severity::Advisory,
-                pillar: Pillar::Naming,
-                confidence: Confidence::Medium,
-                symbol: Some(name.to_string()),
-                remediation: Some("Use a name that describes the domain role.".to_string()),
-                metadata: json!({}),
-            }));
-        }
     }
+}
+
+struct IdentifierShadow {
+    binding: String,
+    callee: String,
+    line: usize,
+}
+
+fn shadow_candidate(
+    local: &syn::Local,
+    same_file_free_fns: &BTreeSet<String>,
+) -> Option<IdentifierShadow> {
+    let syn::Pat::Ident(pat_ident) = &local.pat else {
+        return None;
+    };
+    let init = local.init.as_ref()?;
+    let syn::Expr::Call(call) = init.expr.as_ref() else {
+        return None;
+    };
+    let syn::Expr::Path(path_expr) = call.func.as_ref() else {
+        return None;
+    };
+    let last = path_expr.path.segments.last()?;
+    let binding = pat_ident.ident.to_string();
+    let callee = last.ident.to_string();
+    if binding != callee || !same_file_free_fns.contains(&callee) {
+        return None;
+    }
+    Some(IdentifierShadow {
+        binding,
+        callee,
+        line: line_from_span(pat_ident.ident.span().start()),
+    })
+}
+
+fn identifier_shadow_finding(file_path: &str, shadow: IdentifierShadow) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: "naming.identifier-shadow".to_string(),
+        message: format!(
+            "Local binding `{}` shadows same-file function `{}`.",
+            shadow.binding, shadow.callee
+        ),
+        file_path: file_path.to_string(),
+        line: Some(shadow.line),
+        severity: Severity::Advisory,
+        pillar: Pillar::Naming,
+        confidence: Confidence::High,
+        symbol: Some(shadow.binding),
+        remediation: Some(
+            "Rename the local so it does not collide with the function it calls.".to_string(),
+        ),
+        metadata: json!({ "shadows": shadow.callee }),
+    })
+}
+
+fn placeholder_identifier_finding(file_path: &str, name: &str, line: usize) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: "naming.placeholder-identifier".to_string(),
+        message: format!("Variable `{name}` uses a placeholder name instead of domain language."),
+        file_path: file_path.to_string(),
+        line: Some(line),
+        severity: Severity::Advisory,
+        pillar: Pillar::Naming,
+        confidence: Confidence::Medium,
+        symbol: Some(name.to_string()),
+        remediation: Some("Use a name that describes the domain role.".to_string()),
+        metadata: json!({}),
+    })
+}
+
+fn short_variable_finding(file_path: &str, name: &str, line: usize) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: "naming.short-variable".to_string(),
+        message: format!("Variable `{name}` is too short to explain intent."),
+        file_path: file_path.to_string(),
+        line: Some(line),
+        severity: Severity::Advisory,
+        pillar: Pillar::Naming,
+        confidence: Confidence::Medium,
+        symbol: Some(name.to_string()),
+        remediation: Some("Use a name that describes the domain role.".to_string()),
+        metadata: json!({}),
+    })
 }
 
 impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
@@ -484,35 +521,50 @@ impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
 /// references, or-patterns, and typed patterns. Unhandled variants
 /// (`Pat::Lit`, `Pat::Wild`, etc.) carry no bindings to inspect.
 fn walk_pat_idents<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
+    if walk_unary_pat(pat, callback) {
+        return;
+    }
+    walk_compound_pat(pat, callback);
+}
+
+fn walk_unary_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) -> bool {
     match pat {
-        syn::Pat::Ident(pat_ident) => callback(&pat_ident.ident),
-        syn::Pat::Type(pat_type) => walk_pat_idents(&pat_type.pat, callback),
-        syn::Pat::Tuple(pat_tuple) => {
-            for elem in &pat_tuple.elems {
-                walk_pat_idents(elem, callback);
-            }
+        syn::Pat::Ident(pat_ident) => {
+            callback(&pat_ident.ident);
+            true
         }
-        syn::Pat::TupleStruct(pat_ts) => {
-            for elem in &pat_ts.elems {
-                walk_pat_idents(elem, callback);
-            }
+        syn::Pat::Type(pat_type) => {
+            walk_pat_idents(&pat_type.pat, callback);
+            true
         }
-        syn::Pat::Struct(pat_struct) => {
-            for field in &pat_struct.fields {
-                walk_pat_idents(&field.pat, callback);
-            }
+        syn::Pat::Reference(pat_ref) => {
+            walk_pat_idents(&pat_ref.pat, callback);
+            true
         }
-        syn::Pat::Slice(pat_slice) => {
-            for elem in &pat_slice.elems {
-                walk_pat_idents(elem, callback);
-            }
-        }
-        syn::Pat::Reference(pat_ref) => walk_pat_idents(&pat_ref.pat, callback),
-        syn::Pat::Or(pat_or) => {
-            for case in &pat_or.cases {
-                walk_pat_idents(case, callback);
-            }
-        }
+        _ => false,
+    }
+}
+
+fn walk_compound_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
+    match pat {
+        syn::Pat::Tuple(pat_tuple) => walk_each(pat_tuple.elems.iter(), callback),
+        syn::Pat::TupleStruct(pat_ts) => walk_each(pat_ts.elems.iter(), callback),
+        syn::Pat::Slice(pat_slice) => walk_each(pat_slice.elems.iter(), callback),
+        syn::Pat::Or(pat_or) => walk_each(pat_or.cases.iter(), callback),
+        syn::Pat::Struct(pat_struct) => walk_each(
+            pat_struct.fields.iter().map(|field| field.pat.as_ref()),
+            callback,
+        ),
         _ => {}
+    }
+}
+
+fn walk_each<'a, I, F>(pats: I, callback: &mut F)
+where
+    I: IntoIterator<Item = &'a syn::Pat>,
+    F: FnMut(&syn::Ident),
+{
+    for pat in pats {
+        walk_pat_idents(pat, callback);
     }
 }

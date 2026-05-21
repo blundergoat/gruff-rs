@@ -24,37 +24,57 @@ pub(crate) fn resolve_baseline(
     findings: &mut Vec<Finding>,
 ) -> Result<Option<BaselineReport>, String> {
     if let Some(path) = &options.generate_baseline {
-        let baseline_path = absolutize(project_root, path);
-        write_baseline(&baseline_path, findings)?;
-        return Ok(Some(BaselineReport {
-            path: display_path(project_root, &baseline_path),
-            source: "generated".to_string(),
-            suppressed: 0,
-            generated: true,
-        }));
+        return generate_baseline_report(project_root, path, findings).map(Some);
     }
     if options.no_baseline {
         return Ok(None);
     }
-    let selected = options
-        .baseline
-        .as_ref()
-        .map(|path| (absolutize(project_root, path), "explicit"))
-        .or_else(|| {
-            let default = project_root.join(DEFAULT_BASELINE);
-            default.exists().then_some((default, "default"))
-        });
-    let Some((baseline_path, source)) = selected else {
+    let Some((baseline_path, source)) = select_baseline_path(project_root, options) else {
         return Ok(None);
     };
-    let before = findings.len();
-    apply_baseline(&baseline_path, findings)?;
-    Ok(Some(BaselineReport {
+    apply_selected_baseline(project_root, &baseline_path, source, findings).map(Some)
+}
+
+fn generate_baseline_report(
+    project_root: &Path,
+    path: &Path,
+    findings: &[Finding],
+) -> Result<BaselineReport, String> {
+    let baseline_path = absolutize(project_root, path);
+    write_baseline(&baseline_path, findings)?;
+    Ok(BaselineReport {
         path: display_path(project_root, &baseline_path),
+        source: "generated".to_string(),
+        suppressed: 0,
+        generated: true,
+    })
+}
+
+fn select_baseline_path(
+    project_root: &Path,
+    options: &AnalysisOptions,
+) -> Option<(PathBuf, &'static str)> {
+    if let Some(path) = options.baseline.as_ref() {
+        return Some((absolutize(project_root, path), "explicit"));
+    }
+    let default = project_root.join(DEFAULT_BASELINE);
+    default.exists().then_some((default, "default"))
+}
+
+fn apply_selected_baseline(
+    project_root: &Path,
+    baseline_path: &Path,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<BaselineReport, String> {
+    let before = findings.len();
+    apply_baseline(baseline_path, findings)?;
+    Ok(BaselineReport {
+        path: display_path(project_root, baseline_path),
         source: source.to_string(),
         suppressed: before.saturating_sub(findings.len()),
         generated: false,
-    }))
+    })
 }
 
 pub(crate) fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
@@ -87,7 +107,13 @@ pub(crate) fn apply_report_exclusions(
         return (findings, Vec::new(), Vec::new());
     }
 
-    let mut summaries: Vec<SuppressionSummary> = exclusions
+    let mut summaries = initial_suppression_summaries(exclusions);
+    let (kept, suppressed) = partition_excluded_findings(findings, exclusions, &mut summaries);
+    (kept, summaries, suppressed)
+}
+
+fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<SuppressionSummary> {
+    exclusions
         .iter()
         .enumerate()
         .map(|(index, exclusion)| SuppressionSummary {
@@ -98,26 +124,32 @@ pub(crate) fn apply_report_exclusions(
             reason: exclusion.reason.clone(),
             suppressed: 0,
         })
-        .collect();
+        .collect()
+}
+
+fn partition_excluded_findings(
+    findings: Vec<Finding>,
+    exclusions: &[ExclusionRule],
+    summaries: &mut [SuppressionSummary],
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
     let mut kept = Vec::new();
     let mut suppressed = Vec::new();
-
     for finding in findings {
-        if let Some(index) = exclusions
+        match exclusions
             .iter()
             .position(|exclusion| exclusion_matches_finding(exclusion, &finding))
         {
-            summaries[index].suppressed += 1;
-            suppressed.push(SuppressedFinding {
-                finding,
-                suppression: summaries[index].clone(),
-            });
-        } else {
-            kept.push(finding);
+            Some(index) => {
+                summaries[index].suppressed += 1;
+                suppressed.push(SuppressedFinding {
+                    finding,
+                    suppression: summaries[index].clone(),
+                });
+            }
+            None => kept.push(finding),
         }
     }
-
-    (kept, summaries, suppressed)
+    (kept, suppressed)
 }
 
 pub(crate) fn exclusion_matches_finding(exclusion: &ExclusionRule, finding: &Finding) -> bool {

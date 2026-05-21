@@ -16,29 +16,31 @@ pub(crate) fn analyse_stale_todo_comment(
 ) {
     const MARKERS: &[&str] = &["TODO", "FIXME", "HACK", "XXX"];
     for marker in MARKERS {
-        if let Some((after, found_marker)) = find_marker(&comment.text, marker) {
-            if !has_durable_reference(after) {
-                findings.push(Finding::new(FindingDescriptor {
-                    rule_id: "docs.stale-todo".to_string(),
-                    message: format!(
-                        "{found_marker} comment lacks an owner, issue reference, or reason."
-                    ),
-                    file_path: file.display_path.clone(),
-                    line: Some(comment.line),
-                    severity: Severity::Advisory,
-                    pillar: Pillar::Documentation,
-                    confidence: Confidence::High,
-                    symbol: None,
-                    remediation: Some(
-                        "Add an owner (@name), issue (#123 or URL), or a colon-prefixed reason."
-                            .to_string(),
-                    ),
-                    metadata: json!({ "marker": found_marker, "missingReference": true }),
-                }));
-            }
-            return;
+        let Some((after, found_marker)) = find_marker(&comment.text, marker) else {
+            continue;
+        };
+        if !has_durable_reference(after) {
+            findings.push(stale_todo_finding(file, comment, &found_marker));
         }
+        return;
     }
+}
+
+fn stale_todo_finding(file: &SourceFile, comment: &RustComment, found_marker: &str) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: "docs.stale-todo".to_string(),
+        message: format!("{found_marker} comment lacks an owner, issue reference, or reason."),
+        file_path: file.display_path.clone(),
+        line: Some(comment.line),
+        severity: Severity::Advisory,
+        pillar: Pillar::Documentation,
+        confidence: Confidence::High,
+        symbol: None,
+        remediation: Some(
+            "Add an owner (@name), issue (#123 or URL), or a colon-prefixed reason.".to_string(),
+        ),
+        metadata: json!({ "marker": found_marker, "missingReference": true }),
+    })
 }
 
 pub(crate) fn find_marker<'a>(text: &'a str, marker: &str) -> Option<(&'a str, String)> {
@@ -65,30 +67,35 @@ pub(crate) fn find_marker<'a>(text: &'a str, marker: &str) -> Option<(&'a str, S
 pub(crate) fn has_durable_reference(after_marker: &str) -> bool {
     let trimmed = after_marker.trim_start();
     if let Some(rest) = trimmed.strip_prefix('(') {
-        if let Some(end) = rest.find(')') {
-            let inner = &rest[..end];
-            return inner.contains('#')
-                || inner.contains('@')
-                || inner.starts_with("GH-")
-                || inner.contains("://")
-                || (inner.contains(':') && inner.trim().len() >= 3);
-        }
-        return false;
+        return paren_reference_is_durable(rest);
     }
     if let Some(rest) = trimmed.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            let inner = &rest[..end];
-            return inner.contains('#')
-                || inner.contains('@')
-                || inner.starts_with("GH-")
-                || inner.contains("://");
-        }
-        return false;
+        return bracket_reference_is_durable(rest);
     }
     if let Some(rest) = trimmed.strip_prefix(':') {
         return rest.trim().len() >= 5;
     }
     false
+}
+
+fn paren_reference_is_durable(after_open_paren: &str) -> bool {
+    let Some(end) = after_open_paren.find(')') else {
+        return false;
+    };
+    let inner = &after_open_paren[..end];
+    inner.contains('#')
+        || inner.contains('@')
+        || inner.starts_with("GH-")
+        || inner.contains("://")
+        || (inner.contains(':') && inner.trim().len() >= 3)
+}
+
+fn bracket_reference_is_durable(after_open_bracket: &str) -> bool {
+    let Some(end) = after_open_bracket.find(']') else {
+        return false;
+    };
+    let inner = &after_open_bracket[..end];
+    inner.contains('#') || inner.contains('@') || inner.starts_with("GH-") || inner.contains("://")
 }
 
 pub(crate) fn analyse_commented_out_code_comment(

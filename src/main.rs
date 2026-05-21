@@ -236,31 +236,42 @@ fn render_rule_list(project_root: &Path, args: &ListRulesArgs) -> Result<String,
     let registry = rules::builtin_registry();
     let config = list_rules_config(project_root, args)?;
     if let Some(selector) = &args.selector {
-        let ids = expand_rule_selector_with_custom(
-            selector,
-            &registry,
-            &config.custom_rules,
-            "rules --selector",
-        )?;
-        return Ok(match args.format {
-            RuleListFormat::Json => serde_json::to_string_pretty(&ids).expect("rules serialize"),
-            RuleListFormat::Text => ids.into_iter().collect::<Vec<_>>().join("\n"),
-        });
+        return render_selector_output(selector, &registry, &config.custom_rules, args.format);
     }
     let rules = listed_rules(&registry, &config.custom_rules);
-    Ok(match args.format {
-        RuleListFormat::Json => serde_json::to_string_pretty(&rules).expect("rules serialize"),
-        RuleListFormat::Text => {
-            let mut out = String::new();
-            for rule in rules {
-                out.push_str(&format!(
-                    "{} [{}] {:?} {:?} - {}\n",
-                    rule.id, rule.tier, rule.pillar, rule.default_severity, rule.description
-                ));
-            }
-            out.trim_end_matches('\n').to_string()
-        }
+    Ok(format_listed_rules(&rules, args.format))
+}
+
+fn render_selector_output(
+    selector: &str,
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
+    format: RuleListFormat,
+) -> Result<String, String> {
+    let ids =
+        expand_rule_selector_with_custom(selector, registry, custom_rules, "rules --selector")?;
+    Ok(match format {
+        RuleListFormat::Json => serde_json::to_string_pretty(&ids).expect("rules serialize"),
+        RuleListFormat::Text => ids.into_iter().collect::<Vec<_>>().join("\n"),
     })
+}
+
+fn format_listed_rules(rules: &[ListedRule], format: RuleListFormat) -> String {
+    match format {
+        RuleListFormat::Json => serde_json::to_string_pretty(rules).expect("rules serialize"),
+        RuleListFormat::Text => render_listed_rules_text(rules),
+    }
+}
+
+fn render_listed_rules_text(rules: &[ListedRule]) -> String {
+    let mut out = String::new();
+    for rule in rules {
+        out.push_str(&format!(
+            "{} [{}] {:?} {:?} - {}\n",
+            rule.id, rule.tier, rule.pillar, rule.default_severity, rule.description
+        ));
+    }
+    out.trim_end_matches('\n').to_string()
 }
 
 fn list_rules_config(project_root: &Path, args: &ListRulesArgs) -> Result<Config, String> {

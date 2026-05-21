@@ -55,31 +55,48 @@ pub(crate) fn parse_lockfile_value(
 
 pub(crate) fn locked_packages(value: &toml::Value, raw: &str) -> Vec<LockedPackageSummary> {
     let package_lines = lockfile_package_lines(raw);
-    let mut packages = value
+    let mut packages = collect_locked_packages(value, &package_lines);
+    sort_locked_packages(&mut packages);
+    packages
+}
+
+fn collect_locked_packages(
+    value: &toml::Value,
+    package_lines: &HashMap<(String, String), usize>,
+) -> Vec<LockedPackageSummary> {
+    value
         .get("package")
         .and_then(toml::Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|package| {
-            let table = package.as_table()?;
-            let name = table.get("name")?.as_str()?.to_string();
-            let version = table.get("version")?.as_str()?.to_string();
-            let source = table
-                .get("source")
-                .and_then(toml::Value::as_str)
-                .map(str::to_string);
-            let line = package_lines
-                .get(&(name.clone(), version.clone()))
-                .copied()
-                .unwrap_or(1);
-            Some(LockedPackageSummary {
-                name,
-                version,
-                line,
-                source,
-            })
-        })
-        .collect::<Vec<_>>();
+        .filter_map(|package| locked_package_from_value(package, package_lines))
+        .collect()
+}
+
+fn locked_package_from_value(
+    package: &toml::Value,
+    package_lines: &HashMap<(String, String), usize>,
+) -> Option<LockedPackageSummary> {
+    let table = package.as_table()?;
+    let name = table.get("name")?.as_str()?.to_string();
+    let version = table.get("version")?.as_str()?.to_string();
+    let source = table
+        .get("source")
+        .and_then(toml::Value::as_str)
+        .map(str::to_string);
+    let line = package_lines
+        .get(&(name.clone(), version.clone()))
+        .copied()
+        .unwrap_or(1);
+    Some(LockedPackageSummary {
+        name,
+        version,
+        line,
+        source,
+    })
+}
+
+fn sort_locked_packages(packages: &mut [LockedPackageSummary]) {
     packages.sort_by(|left, right| {
         (
             left.name.as_str(),
@@ -92,7 +109,6 @@ pub(crate) fn locked_packages(value: &toml::Value, raw: &str) -> Vec<LockedPacka
                 right.source.as_deref(),
             ))
     });
-    packages
 }
 
 pub(crate) fn lockfile_package_lines(raw: &str) -> HashMap<(String, String), usize> {

@@ -37,6 +37,27 @@ pub(crate) fn parse_exclusion_rule(
         &format!("config key `{entry_path}`"),
     )?;
 
+    let (selector, rule_ids) =
+        parse_exclusion_selector(entry, &entry_path, registry, custom_rules)?;
+    let paths = parse_exclusion_paths(entry, &entry_path)?;
+    let message_contains = parse_exclusion_message_filter(entry, &entry_path)?;
+    let reason = parse_exclusion_reason(entry, &entry_path)?;
+
+    Ok(ExclusionRule {
+        selector,
+        rule_ids,
+        paths,
+        message_contains,
+        reason,
+    })
+}
+
+fn parse_exclusion_selector(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
+) -> Result<(String, BTreeSet<String>), String> {
     let selector = required_config_string(entry, "rule", &format!("{entry_path}.rule"))?;
     let rule_ids = expand_rule_selector_with_custom(
         &selector,
@@ -44,7 +65,14 @@ pub(crate) fn parse_exclusion_rule(
         custom_rules,
         &format!("{entry_path}.rule"),
     )?;
-    let paths = entry
+    Ok((selector, rule_ids))
+}
+
+fn parse_exclusion_paths(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<Vec<String>, String> {
+    Ok(entry
         .get("paths")
         .map(|value| {
             string_array(value, &format!("{entry_path}.paths")).map(|paths| {
@@ -55,7 +83,13 @@ pub(crate) fn parse_exclusion_rule(
             })
         })
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or_default())
+}
+
+fn parse_exclusion_message_filter(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<Option<String>, String> {
     let message_contains = entry
         .get("message_contains")
         .map(|value| {
@@ -64,12 +98,6 @@ pub(crate) fn parse_exclusion_rule(
             })
         })
         .transpose()?;
-    let reason = required_config_string(entry, "reason", &format!("{entry_path}.reason"))?;
-    if reason.trim().is_empty() {
-        return Err(format!(
-            "config key `{entry_path}.reason` must be a non-empty string"
-        ));
-    }
     if message_contains
         .as_deref()
         .is_some_and(|message| message.is_empty())
@@ -78,14 +106,20 @@ pub(crate) fn parse_exclusion_rule(
             "config key `{entry_path}.message_contains` must be a non-empty string"
         ));
     }
+    Ok(message_contains)
+}
 
-    Ok(ExclusionRule {
-        selector,
-        rule_ids,
-        paths,
-        message_contains,
-        reason,
-    })
+fn parse_exclusion_reason(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<String, String> {
+    let reason = required_config_string(entry, "reason", &format!("{entry_path}.reason"))?;
+    if reason.trim().is_empty() {
+        return Err(format!(
+            "config key `{entry_path}.reason` must be a non-empty string"
+        ));
+    }
+    Ok(reason)
 }
 
 pub(crate) fn required_non_empty_config_string(

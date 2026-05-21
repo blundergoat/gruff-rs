@@ -130,11 +130,17 @@ pub(crate) fn analyse_lock_across_await(
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    let lines: Vec<&str> = searchable_body.lines().collect();
+    if let Some(guard) = find_lock_guard_held_across_await(&lines) {
+        findings.push(lock_across_await_finding(file, block, &guard));
+    }
+}
+
+fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
     let lock_binding = static_regex(
         &LOCK_BINDING_REGEX,
         r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*\.(?:lock|read|write)\s*\([^;]*;",
     );
-    let lines: Vec<&str> = searchable_body.lines().collect();
     for (line_index, line) in lines.iter().enumerate() {
         let Some(captures) = lock_binding.captures(line) else {
             continue;
@@ -144,38 +150,48 @@ pub(crate) fn analyse_lock_across_await(
             .map(|guard| guard.as_str())
             .unwrap_or("guard");
         let later_lines = &lines[line_index + 1..];
-        let dropped_before_await = later_lines
-            .iter()
-            .take_while(|candidate| !candidate.contains(".await"))
-            .any(|candidate| candidate.contains(&format!("drop({guard})")));
-        if later_lines
-            .iter()
-            .any(|candidate| candidate.contains(".await"))
-            && !dropped_before_await
-        {
-            findings.push(block_finding_with_extras(
-                BlockFindingDescriptor {
-                    rule_id: "concurrency.lock-across-await",
-                    message: format!(
-                        "Async function `{}` appears to hold lock guard `{guard}` across await.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    severity: Severity::Warning,
-                    pillar: Pillar::Waste,
-                },
-                BlockFindingExtras {
-                    confidence: Confidence::Medium,
-                    remediation: Some(
-                        "Drop the guard before awaiting or use an async-aware lock.".to_string(),
-                    ),
-                    metadata: json!({ "guard": guard }),
-                },
-            ));
-            break;
+        if guard_outlives_await(later_lines, guard) {
+            return Some(guard.to_string());
         }
     }
+    None
+}
+
+fn guard_outlives_await(later_lines: &[&str], guard: &str) -> bool {
+    let any_await = later_lines
+        .iter()
+        .any(|candidate| candidate.contains(".await"));
+    if !any_await {
+        return false;
+    }
+    let dropped_before_await = later_lines
+        .iter()
+        .take_while(|candidate| !candidate.contains(".await"))
+        .any(|candidate| candidate.contains(&format!("drop({guard})")));
+    !dropped_before_await
+}
+
+fn lock_across_await_finding(file: &SourceFile, block: &FunctionBlock, guard: &str) -> Finding {
+    block_finding_with_extras(
+        BlockFindingDescriptor {
+            rule_id: "concurrency.lock-across-await",
+            message: format!(
+                "Async function `{}` appears to hold lock guard `{guard}` across await.",
+                block.name
+            ),
+            file,
+            block,
+            severity: Severity::Warning,
+            pillar: Pillar::Waste,
+        },
+        BlockFindingExtras {
+            confidence: Confidence::Medium,
+            remediation: Some(
+                "Drop the guard before awaiting or use an async-aware lock.".to_string(),
+            ),
+            metadata: json!({ "guard": guard }),
+        },
+    )
 }
 
 pub(crate) fn analyse_test_block(

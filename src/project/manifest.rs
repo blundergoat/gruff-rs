@@ -91,39 +91,56 @@ pub(crate) fn collect_manifest_dependencies(
     };
 
     for (name, dependency) in table {
-        let (requirement, path, git) = if let Some(requirement) = dependency.as_str() {
-            (Some(requirement.to_string()), None, None)
-        } else if let Some(table) = dependency.as_table() {
-            (
-                table
-                    .get("version")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                table
-                    .get("path")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                table
-                    .get("git")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        dependencies.push(DependencySummary {
-            name: name.clone(),
-            section: section.to_string(),
-            line: dependency_lines
-                .get(&(section.to_string(), name.clone()))
-                .copied()
-                .unwrap_or(1),
-            requirement,
-            path,
-            git,
-        });
+        dependencies.push(build_dependency_summary(
+            name,
+            section,
+            dependency,
+            dependency_lines,
+        ));
     }
+}
+
+fn build_dependency_summary(
+    name: &str,
+    section: &str,
+    dependency: &toml::Value,
+    dependency_lines: &HashMap<(String, String), usize>,
+) -> DependencySummary {
+    let (requirement, path, git) = dependency_source_fields(dependency);
+    DependencySummary {
+        name: name.to_string(),
+        section: section.to_string(),
+        line: dependency_lines
+            .get(&(section.to_string(), name.to_string()))
+            .copied()
+            .unwrap_or(1),
+        requirement,
+        path,
+        git,
+    }
+}
+
+fn dependency_source_fields(
+    dependency: &toml::Value,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if let Some(requirement) = dependency.as_str() {
+        return (Some(requirement.to_string()), None, None);
+    }
+    let Some(table) = dependency.as_table() else {
+        return (None, None, None);
+    };
+    (
+        table_str_field(table, "version"),
+        table_str_field(table, "path"),
+        table_str_field(table, "git"),
+    )
+}
+
+fn table_str_field(table: &toml::value::Table, key: &str) -> Option<String> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
 }
 
 pub(crate) fn manifest_package_line(raw: &str) -> usize {

@@ -1,5 +1,41 @@
 use super::*;
 
+const CUSTOM_RULE_KEYS: &[&str] = &[
+    "id",
+    "pillar",
+    "severity",
+    "confidence",
+    "message",
+    "scope",
+    "pattern",
+    "include_paths",
+    "exclude_paths",
+    "remediation",
+];
+
+struct CustomRuleIdentity {
+    id: String,
+    message: String,
+}
+
+struct CustomRuleClassification {
+    pillar: Pillar,
+    severity: Severity,
+    confidence: Confidence,
+}
+
+struct CustomRulePattern {
+    scope: CustomRuleScope,
+    pattern: String,
+    compiled_pattern: Regex,
+}
+
+struct CustomRulePathsAndDoc {
+    include_paths: Vec<String>,
+    exclude_paths: Vec<String>,
+    remediation: Option<String>,
+}
+
 pub(crate) fn parse_custom_rule(
     index: usize,
     entry_value: &Value,
@@ -11,23 +47,45 @@ pub(crate) fn parse_custom_rule(
         .ok_or_else(|| format!("config key `{entry_path}` must be an object"))?;
     reject_unknown_keys(
         entry,
-        &[
-            "id",
-            "pillar",
-            "severity",
-            "confidence",
-            "message",
-            "scope",
-            "pattern",
-            "include_paths",
-            "exclude_paths",
-            "remediation",
-        ],
+        CUSTOM_RULE_KEYS,
         &format!("config key `{entry_path}`"),
     )?;
 
+    let identity = parse_custom_rule_identity(entry, &entry_path, registry)?;
+    let classification = parse_custom_rule_classification(entry, &entry_path)?;
+    let pattern = parse_custom_rule_pattern(entry, &entry_path)?;
+    let paths_and_doc = parse_custom_rule_paths_and_doc(entry, &entry_path)?;
+
+    Ok(CustomRule {
+        id: identity.id,
+        message: identity.message,
+        pillar: classification.pillar,
+        severity: classification.severity,
+        confidence: classification.confidence,
+        scope: pattern.scope,
+        pattern: pattern.pattern,
+        compiled_pattern: pattern.compiled_pattern,
+        include_paths: paths_and_doc.include_paths,
+        exclude_paths: paths_and_doc.exclude_paths,
+        remediation: paths_and_doc.remediation,
+    })
+}
+
+fn parse_custom_rule_identity(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+    registry: &rules::RuleRegistry,
+) -> Result<CustomRuleIdentity, String> {
     let id = required_config_string(entry, "id", &format!("{entry_path}.id"))?;
     validate_custom_rule_id(&id, &format!("{entry_path}.id"), registry)?;
+    let message = required_non_empty_config_string(entry, "message", entry_path)?;
+    Ok(CustomRuleIdentity { id, message })
+}
+
+fn parse_custom_rule_classification(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<CustomRuleClassification, String> {
     let pillar = parse_required_pillar(entry, "pillar", &format!("{entry_path}.pillar"))?;
     let severity = parse_required_severity(entry, "severity", &format!("{entry_path}.severity"))?;
     let confidence = entry
@@ -35,15 +93,36 @@ pub(crate) fn parse_custom_rule(
         .map(|value| parse_custom_confidence(value, &format!("{entry_path}.confidence")))
         .transpose()?
         .unwrap_or(Confidence::Medium);
-    let message = required_non_empty_config_string(entry, "message", &entry_path)?;
+    Ok(CustomRuleClassification {
+        pillar,
+        severity,
+        confidence,
+    })
+}
+
+fn parse_custom_rule_pattern(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<CustomRulePattern, String> {
     let scope = parse_custom_rule_scope(
         &required_config_string(entry, "scope", &format!("{entry_path}.scope"))?,
         &format!("{entry_path}.scope"),
     )?;
-    let pattern = required_non_empty_config_string(entry, "pattern", &entry_path)?;
+    let pattern = required_non_empty_config_string(entry, "pattern", entry_path)?;
     let compiled_pattern = Regex::new(&pattern).map_err(|error| {
         format!("config key `{entry_path}.pattern` failed to compile regex: {error}")
     })?;
+    Ok(CustomRulePattern {
+        scope,
+        pattern,
+        compiled_pattern,
+    })
+}
+
+fn parse_custom_rule_paths_and_doc(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<CustomRulePathsAndDoc, String> {
     let include_paths = optional_normalized_string_array(
         entry,
         "include_paths",
@@ -63,16 +142,7 @@ pub(crate) fn parse_custom_rule(
                 .ok_or_else(|| format!("config key `{entry_path}.remediation` must be a string"))
         })
         .transpose()?;
-
-    Ok(CustomRule {
-        id,
-        pillar,
-        severity,
-        confidence,
-        message,
-        scope,
-        pattern,
-        compiled_pattern,
+    Ok(CustomRulePathsAndDoc {
         include_paths,
         exclude_paths,
         remediation,

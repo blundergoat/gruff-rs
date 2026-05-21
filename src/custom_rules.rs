@@ -95,31 +95,39 @@ fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option
 
 fn rust_comment_scope_source(source: &str) -> String {
     let bytes = source.as_bytes();
-    let mut output = bytes
-        .iter()
-        .map(|byte| if *byte == b'\n' { b'\n' } else { b' ' })
-        .collect::<Vec<u8>>();
+    let mut output = build_blank_scope_output(bytes);
     let mut index = 0usize;
     while index < bytes.len() {
-        if let Some(raw_end) = crate::parser::raw_string_end(bytes, index) {
-            index = raw_end;
-            continue;
-        }
-        if bytes[index] == b'"' {
-            index = skip_quoted_string(bytes, index);
-            continue;
-        }
-        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
-            index = copy_line_comment(bytes, &mut output, index);
-            continue;
-        }
-        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
-            index = copy_block_comment(bytes, &mut output, index);
-            continue;
-        }
-        index += 1;
+        index = advance_comment_scope(bytes, &mut output, index);
     }
     String::from_utf8(output).expect("comment scope source stays utf-8")
+}
+
+fn build_blank_scope_output(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\n' } else { b' ' })
+        .collect()
+}
+
+fn advance_comment_scope(bytes: &[u8], output: &mut [u8], index: usize) -> usize {
+    if let Some(raw_end) = crate::parser::raw_string_end(bytes, index) {
+        return raw_end;
+    }
+    if bytes[index] == b'"' {
+        return skip_quoted_string(bytes, index);
+    }
+    if starts_with_pair(bytes, index, b'/', b'/') {
+        return copy_line_comment(bytes, output, index);
+    }
+    if starts_with_pair(bytes, index, b'/', b'*') {
+        return copy_block_comment(bytes, output, index);
+    }
+    index + 1
+}
+
+fn starts_with_pair(bytes: &[u8], index: usize, first: u8, second: u8) -> bool {
+    bytes[index] == first && bytes.get(index + 1) == Some(&second)
 }
 
 fn skip_quoted_string(bytes: &[u8], start: usize) -> usize {

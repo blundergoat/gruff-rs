@@ -52,61 +52,75 @@ pub(crate) fn dashboard_response(
     default_root: &Path,
 ) -> DashboardResponse {
     match path {
-        "/health" => DashboardResponse {
-            status: "200 OK",
-            content_type: "text/plain; charset=utf-8",
-            body: "ok".to_string(),
-        },
-        "/scan" => {
-            let params = parse_query(query);
-            let root = params
-                .get("projectRoot")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| default_root.to_path_buf());
-            let scan_path = params
-                .get("path")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."));
-            if !root.is_dir() {
-                return DashboardResponse {
-                    status: "400 Bad Request",
-                    content_type: "text/plain; charset=utf-8",
-                    body: "invalid projectRoot".to_string(),
-                };
-            }
-            let options = AnalysisOptions {
-                paths: vec![scan_path],
-                config: None,
-                no_config: false,
-                format: OutputFormat::Html,
-                fail_on: FailThreshold::None,
-                include_ignored: false,
-                diff: None,
-                history_file: None,
-                baseline: None,
-                generate_baseline: None,
-                no_baseline: false,
-            };
-            let scope = RequestedScope::from_options(&options);
-            let body = run_analysis_in_project(&root, &options)
-                .map(|report| dashboard_shell(&report, &scope, &root))
-                .unwrap_or_else(|error| format!("<pre>{}</pre>", html_escape(&error)));
-            DashboardResponse {
-                status: "200 OK",
-                content_type: "text/html; charset=utf-8",
-                body,
-            }
-        }
+        "/health" => health_response(),
+        "/scan" => scan_response(query, default_root),
         "/" => DashboardResponse {
             status: "200 OK",
             content_type: "text/html; charset=utf-8",
             body: dashboard_index(default_root),
         },
-        _ => DashboardResponse {
-            status: "404 Not Found",
+        _ => not_found_response(),
+    }
+}
+
+fn health_response() -> DashboardResponse {
+    DashboardResponse {
+        status: "200 OK",
+        content_type: "text/plain; charset=utf-8",
+        body: "ok".to_string(),
+    }
+}
+
+fn not_found_response() -> DashboardResponse {
+    DashboardResponse {
+        status: "404 Not Found",
+        content_type: "text/plain; charset=utf-8",
+        body: "not found".to_string(),
+    }
+}
+
+fn scan_response(query: &str, default_root: &Path) -> DashboardResponse {
+    let params = parse_query(query);
+    let root = params
+        .get("projectRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_root.to_path_buf());
+    let scan_path = params
+        .get("path")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    if !root.is_dir() {
+        return DashboardResponse {
+            status: "400 Bad Request",
             content_type: "text/plain; charset=utf-8",
-            body: "not found".to_string(),
-        },
+            body: "invalid projectRoot".to_string(),
+        };
+    }
+    let options = dashboard_scan_options(scan_path);
+    let scope = RequestedScope::from_options(&options);
+    let body = run_analysis_in_project(&root, &options)
+        .map(|report| dashboard_shell(&report, &scope, &root))
+        .unwrap_or_else(|error| format!("<pre>{}</pre>", html_escape(&error)));
+    DashboardResponse {
+        status: "200 OK",
+        content_type: "text/html; charset=utf-8",
+        body,
+    }
+}
+
+fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
+    AnalysisOptions {
+        paths: vec![scan_path],
+        config: None,
+        no_config: false,
+        format: OutputFormat::Html,
+        fail_on: FailThreshold::None,
+        include_ignored: false,
+        diff: None,
+        history_file: None,
+        baseline: None,
+        generate_baseline: None,
+        no_baseline: false,
     }
 }
 

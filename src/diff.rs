@@ -167,40 +167,71 @@ pub(crate) fn apply_diff_patch_filter(
 ) -> AnalysisReport {
     let total_findings = report.findings.len();
     let changed_files = patch.changed_files();
-    let missing_files: Vec<String> = changed_files
+    let missing_files = unanalysed_patch_files(&changed_files, analysed_files);
+    let kept = retain_findings_in_patch(&mut report, patch, &changed_files);
+    let kept_findings = kept.len();
+    let suppressed_findings = total_findings.saturating_sub(kept_findings);
+
+    report.findings = kept;
+    report.summary = summarize(&report.findings);
+    report.score = score_report(&report.findings);
+    push_patch_filter_diagnostic(
+        &mut report,
+        total_findings,
+        kept_findings,
+        suppressed_findings,
+        &missing_files,
+    );
+    report
+}
+
+fn unanalysed_patch_files(
+    changed_files: &BTreeSet<String>,
+    analysed_files: &BTreeSet<String>,
+) -> Vec<String> {
+    changed_files
         .iter()
         .filter(|file| !analysed_files.contains(*file))
         .cloned()
-        .collect();
-    let mut kept = Vec::new();
+        .collect()
+}
 
+fn retain_findings_in_patch(
+    report: &mut AnalysisReport,
+    patch: &DiffPatchLineMap,
+    changed_files: &BTreeSet<String>,
+) -> Vec<Finding> {
+    let mut kept = Vec::new();
     for finding in std::mem::take(&mut report.findings) {
-        if patch_intersects_finding(&finding, patch, &changed_files) {
+        if patch_intersects_finding(&finding, patch, changed_files) {
             kept.push(finding);
         }
     }
     report
         .suppressed_findings
-        .retain(|suppressed| patch_intersects_finding(&suppressed.finding, patch, &changed_files));
+        .retain(|suppressed| patch_intersects_finding(&suppressed.finding, patch, changed_files));
     recount_suppressions(&mut report.suppressions, &report.suppressed_findings);
+    kept
+}
 
-    let kept_findings = kept.len();
-    let suppressed_findings = total_findings.saturating_sub(kept_findings);
-    report.findings = kept;
-    report.summary = summarize(&report.findings);
-    report.score = score_report(&report.findings);
+fn push_patch_filter_diagnostic(
+    report: &mut AnalysisReport,
+    total_findings: usize,
+    kept_findings: usize,
+    suppressed_findings: usize,
+    missing_files: &[String],
+) {
     report.diagnostics.push(RunDiagnostic {
         diagnostic_type: "patch-filter".to_string(),
         message: patch_filter_message(
             total_findings,
             kept_findings,
             suppressed_findings,
-            &missing_files,
+            missing_files,
         ),
         file_path: None,
         line: None,
     });
-    report
 }
 
 pub(crate) fn recount_suppressions(
