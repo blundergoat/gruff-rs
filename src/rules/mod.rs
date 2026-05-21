@@ -134,7 +134,6 @@ const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition>
 const METRICS_HALSTEAD_VOLUME_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(1500.0));
 const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(45.0));
-const TODO_DENSITY_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
 const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(600.0));
 const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(50.0));
 const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(5.0));

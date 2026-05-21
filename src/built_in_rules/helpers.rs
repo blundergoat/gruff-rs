@@ -145,6 +145,7 @@ pub(crate) fn count_regex(source: &str, pattern: &Regex) -> usize {
     pattern.find_iter(source).count()
 }
 
+#[allow(dead_code)]
 pub(crate) fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
     source
         .lines()

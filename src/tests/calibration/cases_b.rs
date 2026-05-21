@@ -21,16 +21,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
         ),
         case(
-            "docs.todo-density",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\n// TODO: one\n// TODO: two\n// FIXME: three\n// TODO: four\npub fn entry() {}\n",
-                    )
-            }),
-            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
-        ),
-        case(
             "docs.stale-todo",
             Box::new(|root| {
                 baseline_with_lib(

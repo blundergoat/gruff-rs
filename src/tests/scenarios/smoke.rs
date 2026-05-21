@@ -535,7 +535,7 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
             },
         ),
         test_finding(
-            "docs.todo-density",
+            "docs.stale-todo",
             "src/b.rs",
             2,
             Severity::Advisory,

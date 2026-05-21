@@ -107,11 +107,6 @@ rules:
   # Flags projects without a root README file.
   docs.missing-readme:
     enabled: true
-  # Flags files with dense TODO or FIXME markers.
-  docs.todo-density:
-    enabled: true
-    threshold: 4
-    severity: advisory
   # Flags TODO/FIXME/HACK/XXX comments without an owner, issue, or reason.
   docs.stale-todo:
     enabled: true

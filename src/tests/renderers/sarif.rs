@@ -56,8 +56,8 @@ pub(crate) fn sarif_contract_covers_rules_locations_levels_and_metadata() {
     error.secondary_pillars = vec![Pillar::Size];
 
     let advisory = Finding::new(FindingDescriptor {
-        rule_id: "docs.todo-density".to_string(),
-        message: "Too many TODOs".to_string(),
+        rule_id: "docs.stale-todo".to_string(),
+        message: "Stale TODO marker".to_string(),
         file_path: "src/hash#name.rs".to_string(),
         line: None,
         severity: Severity::Advisory,

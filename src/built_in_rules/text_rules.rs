@@ -8,7 +8,6 @@ pub(crate) fn analyse_text_rules(
     findings: &mut Vec<Finding>,
 ) {
     analyse_file_length(file, source, config, findings);
-    analyse_todo_density(file, source, config, findings);
     analyse_sensitive_data(file, source, rust_ast, config, findings);
 }
 
@@ -29,27 +28,6 @@ fn analyse_file_length(
             line: Some(1),
             severity: config.severity(rule_id, Severity::Warning),
             pillar: Pillar::Size,
-        }));
-    }
-}
-
-fn analyse_todo_density(
-    file: &SourceFile,
-    source: &str,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let string_masked = strip_rust_string_literals(source);
-    let todo_count = string_masked.matches("TODO").count() + string_masked.matches("FIXME").count();
-    let rule_id = "docs.todo-density";
-    if todo_count >= config.threshold(rule_id, 4.0) as usize {
-        findings.push(finding(SimpleFindingDescriptor {
-            rule_id,
-            message: format!("File contains {todo_count} TODO/FIXME markers."),
-            file,
-            line: Some(first_matching_line(&string_masked, "TODO").unwrap_or(1)),
-            severity: config.severity(rule_id, Severity::Advisory),
-            pillar: Pillar::Documentation,
         }));
     }
 }

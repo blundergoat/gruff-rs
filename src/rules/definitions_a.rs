@@ -184,16 +184,6 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         "Flags projects without a root README file.",
     ),
     rule_definition!(
-        "docs.todo-density",
-        "TODO/FIXME density",
-        Pillar::Documentation,
-        RuleKind::Text,
-        Severity::Advisory,
-        Confidence::High,
-        TODO_DENSITY_THRESHOLD,
-        "Flags files with dense TODO or FIXME markers.",
-    ),
-    rule_definition!(
         "docs.stale-todo",
         "Stale TODO marker",
         Pillar::Documentation,
