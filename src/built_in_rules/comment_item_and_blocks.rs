@@ -18,21 +18,23 @@ pub(crate) fn analyse_stale_todo_comment(
     for marker in MARKERS {
         if let Some((after, found_marker)) = find_marker(&comment.text, marker) {
             if !has_durable_reference(after) {
-                findings.push(Finding::new(
-                    "docs.stale-todo",
-                    format!("{found_marker} comment lacks an owner, issue reference, or reason."),
-                    file.display_path.clone(),
-                    Some(comment.line),
-                    Severity::Advisory,
-                    Pillar::Documentation,
-                    Confidence::High,
-                    None,
-                    Some(
+                findings.push(Finding::new(FindingDescriptor {
+                    rule_id: "docs.stale-todo".to_string(),
+                    message: format!(
+                        "{found_marker} comment lacks an owner, issue reference, or reason."
+                    ),
+                    file_path: file.display_path.clone(),
+                    line: Some(comment.line),
+                    severity: Severity::Advisory,
+                    pillar: Pillar::Documentation,
+                    confidence: Confidence::High,
+                    symbol: None,
+                    remediation: Some(
                         "Add an owner (@name), issue (#123 or URL), or a colon-prefixed reason."
                             .to_string(),
                     ),
-                    json!({ "marker": found_marker, "missingReference": true }),
-                ));
+                    metadata: json!({ "marker": found_marker, "missingReference": true }),
+                }));
             }
             return;
         }
@@ -97,26 +99,26 @@ pub(crate) fn analyse_commented_out_code_comment(
     if comment.is_doc {
         return;
     }
-    if looks_like_disabled_rust_code(&comment.text) {
-        findings.push(Finding::new(
-                "docs.commented-out-code",
-                "Comment payload looks like disabled Rust code; remove or document intent.",
-                file.display_path.clone(),
-                Some(comment.line),
-                Severity::Advisory,
-                Pillar::Documentation,
-                Confidence::Medium,
-                None,
-                Some(
+    if is_disabled_rust_code(&comment.text) {
+        findings.push(Finding::new(FindingDescriptor {
+                rule_id: "docs.commented-out-code".to_string(),
+                message: "Comment payload looks like disabled Rust code; remove or document intent.".to_string(),
+                file_path: file.display_path.clone(),
+                line: Some(comment.line),
+                severity: Severity::Advisory,
+                pillar: Pillar::Documentation,
+                confidence: Confidence::Medium,
+                symbol: None,
+                remediation: Some(
                     "Delete the commented-out code or convert it to a comment explaining why it is intentionally kept."
                         .to_string(),
                 ),
-                json!({}),
-            ));
+                metadata: json!({}),
+            }));
     }
 }
 
-pub(crate) fn looks_like_disabled_rust_code(text: &str) -> bool {
+pub(crate) fn is_disabled_rust_code(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.len() < 5 {
         return false;
@@ -169,20 +171,24 @@ pub(crate) fn analyse_public_item(file: &SourceFile, item: &Item, findings: &mut
         Item::Enum(item_enum) => {
             analyse_public_named_item_doc(
                 file,
-                &item_enum.vis,
-                &item_enum.attrs,
-                item_enum.ident.to_string(),
-                item_enum.ident.span(),
+                PublicItemDoc {
+                    visibility: &item_enum.vis,
+                    attrs: &item_enum.attrs,
+                    name: item_enum.ident.to_string(),
+                    span: item_enum.ident.span(),
+                },
                 findings,
             );
         }
         Item::Trait(item_trait) => {
             analyse_public_named_item_doc(
                 file,
-                &item_trait.vis,
-                &item_trait.attrs,
-                item_trait.ident.to_string(),
-                item_trait.ident.span(),
+                PublicItemDoc {
+                    visibility: &item_trait.vis,
+                    attrs: &item_trait.attrs,
+                    name: item_trait.ident.to_string(),
+                    span: item_trait.ident.span(),
+                },
                 findings,
             );
         }
@@ -197,10 +203,12 @@ pub(crate) fn analyse_public_module_item(
 ) {
     analyse_public_named_item_doc(
         file,
-        &item_mod.vis,
-        &item_mod.attrs,
-        item_mod.ident.to_string(),
-        item_mod.ident.span(),
+        PublicItemDoc {
+            visibility: &item_mod.vis,
+            attrs: &item_mod.attrs,
+            name: item_mod.ident.to_string(),
+            span: item_mod.ident.span(),
+        },
         findings,
     );
     if let Some((_, items)) = &item_mod.content {
@@ -217,10 +225,12 @@ pub(crate) fn analyse_public_struct_item(
 ) {
     analyse_public_named_item_doc(
         file,
-        &item_struct.vis,
-        &item_struct.attrs,
-        item_struct.ident.to_string(),
-        item_struct.ident.span(),
+        PublicItemDoc {
+            visibility: &item_struct.vis,
+            attrs: &item_struct.attrs,
+            name: item_struct.ident.to_string(),
+            span: item_struct.ident.span(),
+        },
         findings,
     );
     for field in &item_struct.fields {
@@ -230,16 +240,20 @@ pub(crate) fn analyse_public_struct_item(
     }
 }
 
+pub(crate) struct PublicItemDoc<'a> {
+    pub(crate) visibility: &'a Visibility,
+    pub(crate) attrs: &'a [syn::Attribute],
+    pub(crate) name: String,
+    pub(crate) span: proc_macro2::Span,
+}
+
 pub(crate) fn analyse_public_named_item_doc(
     file: &SourceFile,
-    visibility: &Visibility,
-    attrs: &[syn::Attribute],
-    name: String,
-    span: proc_macro2::Span,
+    item: PublicItemDoc<'_>,
     findings: &mut Vec<Finding>,
 ) {
-    if is_externally_public(visibility) && !has_doc_attr(attrs) {
-        push_missing_public_item_doc(file, name, span, findings);
+    if is_externally_public(item.visibility) && !has_doc_attr(item.attrs) {
+        push_missing_public_item_doc(file, item.name, item.span, findings);
     }
 }
 
@@ -248,14 +262,16 @@ pub(crate) fn push_public_field_finding(
     span: proc_macro2::Span,
     findings: &mut Vec<Finding>,
 ) {
-    findings.push(finding(
-        "modernisation.public-field",
-        "Public struct field exposes representation; prefer accessors when invariants matter.",
+    findings.push(finding(SimpleFindingDescriptor {
+        rule_id: "modernisation.public-field",
+        message:
+            "Public struct field exposes representation; prefer accessors when invariants matter."
+                .into(),
         file,
-        Some(line_from_span(span.start())),
-        Severity::Advisory,
-        Pillar::Modernisation,
-    ));
+        line: Some(line_from_span(span.start())),
+        severity: Severity::Advisory,
+        pillar: Pillar::Modernisation,
+    }));
 }
 
 pub(crate) fn push_missing_public_item_doc(
@@ -264,18 +280,18 @@ pub(crate) fn push_missing_public_item_doc(
     span: proc_macro2::Span,
     findings: &mut Vec<Finding>,
 ) {
-    findings.push(Finding::new(
-        "docs.missing-public-doc",
-        format!("Public item `{name}` is missing a Rust doc comment."),
-        file.display_path.clone(),
-        Some(line_from_span(span.start())),
-        Severity::Advisory,
-        Pillar::Documentation,
-        Confidence::Medium,
-        Some(name),
-        Some("Add a /// doc comment explaining the public API contract.".to_string()),
-        json!({}),
-    ));
+    findings.push(Finding::new(FindingDescriptor {
+        rule_id: "docs.missing-public-doc".to_string(),
+        message: format!("Public item `{name}` is missing a Rust doc comment."),
+        file_path: file.display_path.clone(),
+        line: Some(line_from_span(span.start())),
+        severity: Severity::Advisory,
+        pillar: Pillar::Documentation,
+        confidence: Confidence::Medium,
+        symbol: Some(name),
+        remediation: Some("Add a /// doc comment explaining the public API contract.".to_string()),
+        metadata: json!({}),
+    }));
 }
 
 pub(crate) fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
@@ -319,8 +335,8 @@ pub(crate) fn push_item_function_block(
         attrs: &item_fn.attrs,
         test_context,
         is_async: item_fn.sig.asyncness.is_some(),
-        returns_bool: returns_bool(&item_fn.sig.output),
-        returns_result: returns_result(&item_fn.sig.output),
+        returns_bool: is_bool_return_type(&item_fn.sig.output),
+        returns_result: is_result_return_type(&item_fn.sig.output),
         name_start: item_fn.sig.ident.span().start(),
         block_end: item_fn.block.span().end(),
         block: &item_fn.block,
@@ -354,8 +370,8 @@ pub(crate) fn push_impl_method_function_block(
         attrs: &method.attrs,
         test_context,
         is_async: method.sig.asyncness.is_some(),
-        returns_bool: returns_bool(&method.sig.output),
-        returns_result: returns_result(&method.sig.output),
+        returns_bool: is_bool_return_type(&method.sig.output),
+        returns_result: is_result_return_type(&method.sig.output),
         name_start: method.sig.ident.span().start(),
         block_end: method.block.span().end(),
         block: &method.block,

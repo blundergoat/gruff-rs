@@ -14,13 +14,13 @@ pub(crate) fn selector_set_matches_registry_with_negative_precedence() {
         .definitions()
         .iter()
         .map(|definition| definition.id)
-        .filter(|rule_id| config.rule_enabled(rule_id))
+        .filter(|rule_id| config.is_rule_enabled(rule_id))
         .collect();
     eprintln!("selector enabled ids: {enabled:?}");
 
-    assert!(config.rule_enabled("security.unsafe-block"));
-    assert!(!config.rule_enabled("security.process-command"));
-    assert!(!config.rule_enabled("docs.missing-readme"));
+    assert!(config.is_rule_enabled("security.unsafe-block"));
+    assert!(!config.is_rule_enabled("security.process-command"));
+    assert!(!config.is_rule_enabled("docs.missing-readme"));
 }
 
 #[test]
@@ -36,8 +36,8 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("empty selector accepted");
-    assert!(config.rule_enabled("security.process-command"));
-    assert!(config.rule_enabled("docs.missing-readme"));
+    assert!(config.is_rule_enabled("security.process-command"));
+    assert!(config.is_rule_enabled("docs.missing-readme"));
 
     write_config(
         dir.path(),
@@ -47,9 +47,9 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("pillar selector accepted");
-    assert!(config.rule_enabled("security.process-command"));
-    assert!(config.rule_enabled("security.unsafe-block"));
-    assert!(!config.rule_enabled("docs.missing-readme"));
+    assert!(config.is_rule_enabled("security.process-command"));
+    assert!(config.is_rule_enabled("security.unsafe-block"));
+    assert!(!config.is_rule_enabled("docs.missing-readme"));
 
     write_config(
         dir.path(),
@@ -60,9 +60,9 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("prefix and exact selectors accepted");
-    assert!(!config.rule_enabled("security.process-command"));
-    assert!(config.rule_enabled("security.unsafe-block"));
-    assert!(!config.rule_enabled("docs.missing-readme"));
+    assert!(!config.is_rule_enabled("security.process-command"));
+    assert!(config.is_rule_enabled("security.unsafe-block"));
+    assert!(!config.is_rule_enabled("docs.missing-readme"));
 
     write_config(
         dir.path(),
@@ -75,8 +75,8 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("custom exact block accepted");
-    assert!(!config.rule_enabled("security.unsafe-block"));
-    assert!(!config.rule_enabled("security.process-command"));
+    assert!(!config.is_rule_enabled("security.unsafe-block"));
+    assert!(!config.is_rule_enabled("security.process-command"));
 }
 
 #[test]

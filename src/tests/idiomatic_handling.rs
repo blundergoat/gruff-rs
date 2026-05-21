@@ -46,7 +46,7 @@ pub fn triggered_by() -> bool { true }
         .collect();
     let triggered_by_count = predicate_findings
         .iter()
-        .filter(|f| f.symbol.as_deref() == Some("triggered_by"))
+        .filter(|finding| finding.symbol.as_deref() == Some("triggered_by"))
         .count();
     assert_eq!(
         triggered_by_count, 1,
@@ -64,7 +64,7 @@ pub fn triggered_by() -> bool { true }
     ] {
         let still_flagged = predicate_findings
             .iter()
-            .any(|f| f.symbol.as_deref() == Some(accepted));
+            .any(|finding| finding.symbol.as_deref() == Some(accepted));
         assert!(
                 !still_flagged,
                 "{accepted} must be accepted by the idiom-aware predicate rule; findings={predicate_findings:?}"

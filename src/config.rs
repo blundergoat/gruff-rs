@@ -155,7 +155,7 @@ impl Config {
         }
     }
 
-    pub(crate) fn rule_enabled(&self, rule_id: &str) -> bool {
+    pub(crate) fn is_rule_enabled(&self, rule_id: &str) -> bool {
         if self.selectors.negative.contains(rule_id) {
             return false;
         }

@@ -105,7 +105,10 @@ fn build_pillar_rows(pillars: &[PillarScore], findings: &[Finding]) -> Vec<Pilla
             let mut advisories = 0usize;
             let mut warnings = 0usize;
             let mut errors = 0usize;
-            for finding in findings.iter().filter(|f| f.pillar == pillar.pillar) {
+            for finding in findings
+                .iter()
+                .filter(|entry| entry.pillar == pillar.pillar)
+            {
                 match finding.severity {
                     Severity::Advisory => advisories += 1,
                     Severity::Warning => warnings += 1,
@@ -262,7 +265,7 @@ pub(crate) fn grade_class_letter(grade_letter: &str) -> char {
     grade_letter
         .chars()
         .next()
-        .map(|c| c.to_ascii_lowercase())
-        .filter(|c| matches!(c, 'a' | 'b' | 'c' | 'd' | 'f'))
+        .map(|character| character.to_ascii_lowercase())
+        .filter(|character| matches!(character, 'a' | 'b' | 'c' | 'd' | 'f'))
         .unwrap_or('n')
 }

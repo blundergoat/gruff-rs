@@ -123,18 +123,18 @@ pub(crate) fn analyse_dead_function(
         return;
     }
     if function_call_count(source, &name) == 0 {
-        findings.push(Finding::new(
-            "dead-code.unused-private-function",
-            format!("Private function `{name}` appears to be unused in this file."),
-            file.display_path.clone(),
-            Some(line_from_span(span.start())),
-            Severity::Advisory,
-            Pillar::DeadCode,
-            Confidence::Low,
-            Some(name),
-            Some("Remove the function or add a real call site.".to_string()),
-            json!({}),
-        ));
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "dead-code.unused-private-function".to_string(),
+            message: format!("Private function `{name}` appears to be unused in this file."),
+            file_path: file.display_path.clone(),
+            line: Some(line_from_span(span.start())),
+            severity: Severity::Advisory,
+            pillar: Pillar::DeadCode,
+            confidence: Confidence::Low,
+            symbol: Some(name),
+            remediation: Some("Remove the function or add a real call site.".to_string()),
+            metadata: json!({}),
+        }));
     }
 }
 
@@ -173,14 +173,14 @@ pub(crate) fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mu
     for (line_index, line) in source.lines().enumerate() {
         let trimmed = line.trim();
         if previous_terminated && useful.is_match(trimmed) && !trimmed.starts_with('}') {
-            findings.push(finding(
-                "waste.unreachable-code",
-                "Statement appears after a terminating statement.",
+            findings.push(finding(SimpleFindingDescriptor {
+                rule_id: "waste.unreachable-code",
+                message: "Statement appears after a terminating statement.".into(),
                 file,
-                Some(line_index + 1),
-                Severity::Warning,
-                Pillar::Waste,
-            ));
+                line: Some(line_index + 1),
+                severity: Severity::Warning,
+                pillar: Pillar::Waste,
+            }));
         }
         previous_terminated = terminator.is_match(trimmed) && trimmed.ends_with(';');
     }

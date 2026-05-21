@@ -34,8 +34,10 @@ pub(crate) fn apply_custom_rule_settings(
         insert_rule_setting(
             rule_id,
             rule_value,
-            registry,
-            custom_rules,
+            RuleSources {
+                registry,
+                custom_rules,
+            },
             settings,
             "rules.custom",
         )?;
@@ -43,16 +45,20 @@ pub(crate) fn apply_custom_rule_settings(
     Ok(())
 }
 
+pub(crate) struct RuleSources<'a> {
+    pub(crate) registry: &'a rules::RuleRegistry,
+    pub(crate) custom_rules: &'a [CustomRule],
+}
+
 pub(crate) fn insert_rule_setting(
     rule_id: &str,
     rule_value: &Value,
-    registry: &rules::RuleRegistry,
-    custom_rules: &[CustomRule],
+    sources: RuleSources<'_>,
     settings: &mut HashMap<String, RuleSetting>,
     context: &str,
 ) -> Result<(), String> {
-    let is_builtin = registry.contains(rule_id);
-    let is_custom = custom_rules.iter().any(|rule| rule.id == rule_id);
+    let is_builtin = sources.registry.contains(rule_id);
+    let is_custom = sources.custom_rules.iter().any(|rule| rule.id == rule_id);
     if !is_builtin && !is_custom {
         return Err(format!(
             "unknown rule id `{rule_id}` in config key `{context}`"
@@ -61,7 +67,7 @@ pub(crate) fn insert_rule_setting(
     if settings.contains_key(rule_id) {
         return Err(format!("duplicate rule config for `{rule_id}`"));
     }
-    let setting = parse_rule_setting(rule_id, rule_value, registry, is_custom)?;
+    let setting = parse_rule_setting(rule_id, rule_value, sources.registry, is_custom)?;
     settings.insert(rule_id.to_string(), setting);
     Ok(())
 }

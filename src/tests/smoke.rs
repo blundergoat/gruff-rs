@@ -528,9 +528,11 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
             "dead-code.unused-private-function",
             "src/b.rs",
             1,
-            Severity::Warning,
-            Pillar::DeadCode,
-            Confidence::Low,
+            TestFindingClassification {
+                severity: Severity::Warning,
+                pillar: Pillar::DeadCode,
+                confidence: Confidence::Low,
+            },
         ),
         test_finding(
             "docs.todo-density",

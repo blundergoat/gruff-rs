@@ -1,33 +1,34 @@
 use super::*;
 
+pub(crate) struct ProjectIndexBuilders<'a> {
+    pub(crate) modules: &'a mut Vec<ModuleSummary>,
+    pub(crate) items: &'a mut Vec<ItemSummary>,
+    pub(crate) call_names: &'a mut Vec<CallNameSummary>,
+}
+
 pub(crate) fn collect_project_rust_index(
     file: &SourceFile,
     source: &str,
     ast: &syn::File,
     module_path: &str,
-    modules: &mut Vec<ModuleSummary>,
-    items: &mut Vec<ItemSummary>,
-    call_names: &mut Vec<CallNameSummary>,
-) {
-    collect_project_items(file, &ast.items, module_path, false, false, modules, items);
-    collect_call_names(file, source, call_names);
-}
-
-pub(crate) fn collect_project_items(
-    file: &SourceFile,
-    syn_items: &[Item],
-    module_path: &str,
-    cfg_context: bool,
-    test_context: bool,
-    modules: &mut Vec<ModuleSummary>,
-    items: &mut Vec<ItemSummary>,
+    builders: ProjectIndexBuilders<'_>,
 ) {
     let scope = ProjectItemScope {
         file,
         module_path,
-        cfg_context,
-        test_context,
+        cfg_context: false,
+        test_context: false,
     };
+    collect_project_items(scope, &ast.items, builders.modules, builders.items);
+    collect_call_names(file, source, builders.call_names);
+}
+
+pub(crate) fn collect_project_items(
+    scope: ProjectItemScope<'_>,
+    syn_items: &[Item],
+    modules: &mut Vec<ModuleSummary>,
+    items: &mut Vec<ItemSummary>,
+) {
     for item in syn_items {
         collect_project_item(scope, item, modules, items);
     }
@@ -35,10 +36,10 @@ pub(crate) fn collect_project_items(
 
 #[derive(Clone, Copy)]
 pub(crate) struct ProjectItemScope<'a> {
-    file: &'a SourceFile,
-    module_path: &'a str,
-    cfg_context: bool,
-    test_context: bool,
+    pub(crate) file: &'a SourceFile,
+    pub(crate) module_path: &'a str,
+    pub(crate) cfg_context: bool,
+    pub(crate) test_context: bool,
 }
 
 pub(crate) fn collect_project_item(
@@ -64,8 +65,7 @@ pub(crate) fn collect_project_function(
     items: &mut Vec<ItemSummary>,
 ) {
     items.push(project_item(
-        scope.file,
-        scope.module_path,
+        scope,
         item_fn.sig.ident.to_string(),
         "function",
         line_from_span(item_fn.sig.ident.span().start()),
@@ -84,8 +84,7 @@ pub(crate) fn collect_project_struct(
     items: &mut Vec<ItemSummary>,
 ) {
     items.push(project_item(
-        scope.file,
-        scope.module_path,
+        scope,
         item_struct.ident.to_string(),
         "struct",
         line_from_span(item_struct.ident.span().start()),
@@ -104,8 +103,7 @@ pub(crate) fn collect_project_enum(
     items: &mut Vec<ItemSummary>,
 ) {
     items.push(project_item(
-        scope.file,
-        scope.module_path,
+        scope,
         item_enum.ident.to_string(),
         "enum",
         line_from_span(item_enum.ident.span().start()),
@@ -124,8 +122,7 @@ pub(crate) fn collect_project_trait(
     items: &mut Vec<ItemSummary>,
 ) {
     items.push(project_item(
-        scope.file,
-        scope.module_path,
+        scope,
         item_trait.ident.to_string(),
         "trait",
         line_from_span(item_trait.ident.span().start()),
@@ -157,8 +154,7 @@ pub(crate) fn collect_project_method(
     items: &mut Vec<ItemSummary>,
 ) {
     items.push(project_item(
-        scope.file,
-        scope.module_path,
+        scope,
         method.sig.ident.to_string(),
         "method",
         line_from_span(method.sig.ident.span().start()),
@@ -191,29 +187,26 @@ pub(crate) fn collect_project_module(
         cfg_gated: module_cfg_gated,
     });
     if let Some((_, nested)) = &item_mod.content {
-        collect_project_items(
-            scope.file,
-            nested,
-            &current_module,
-            module_cfg_gated,
-            module_test_context,
-            modules,
-            items,
-        );
+        let nested_scope = ProjectItemScope {
+            file: scope.file,
+            module_path: &current_module,
+            cfg_context: module_cfg_gated,
+            test_context: module_test_context,
+        };
+        collect_project_items(nested_scope, nested, modules, items);
     }
 }
 
 pub(crate) fn project_item(
-    file: &SourceFile,
-    module_path: &str,
+    scope: ProjectItemScope<'_>,
     name: String,
     kind: &str,
     line: usize,
     context: ProjectItemContext,
 ) -> ItemSummary {
     ItemSummary {
-        file_path: file.display_path.clone(),
-        module_path: module_path.to_string(),
+        file_path: scope.file.display_path.clone(),
+        module_path: scope.module_path.to_string(),
         name,
         kind: kind.to_string(),
         line,

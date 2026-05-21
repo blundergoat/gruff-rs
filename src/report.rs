@@ -66,22 +66,33 @@ pub(crate) struct Finding {
     pub(crate) fingerprint: String,
 }
 
+pub(crate) struct FindingDescriptor {
+    pub(crate) rule_id: String,
+    pub(crate) message: String,
+    pub(crate) file_path: String,
+    pub(crate) line: Option<usize>,
+    pub(crate) severity: Severity,
+    pub(crate) pillar: Pillar,
+    pub(crate) confidence: Confidence,
+    pub(crate) symbol: Option<String>,
+    pub(crate) remediation: Option<String>,
+    pub(crate) metadata: Value,
+}
+
 impl Finding {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        rule_id: &str,
-        message: impl Into<String>,
-        file_path: impl Into<String>,
-        line: Option<usize>,
-        severity: Severity,
-        pillar: Pillar,
-        confidence: Confidence,
-        symbol: Option<String>,
-        remediation: Option<String>,
-        metadata: Value,
-    ) -> Self {
-        let file_path = file_path.into();
-        let message = message.into();
+    pub(crate) fn new(descriptor: FindingDescriptor) -> Self {
+        let FindingDescriptor {
+            rule_id,
+            message,
+            file_path,
+            line,
+            severity,
+            pillar,
+            confidence,
+            symbol,
+            remediation,
+            metadata,
+        } = descriptor;
         let mut hasher = Sha256::new();
         hasher.update(rule_id.as_bytes());
         hasher.update(b"\0");
@@ -93,7 +104,7 @@ impl Finding {
         let fingerprint = format!("{:x}", hasher.finalize())[..16].to_string();
 
         Self {
-            rule_id: rule_id.to_string(),
+            rule_id,
             message,
             file_path,
             line,

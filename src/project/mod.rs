@@ -4,7 +4,9 @@ mod items;
 mod lockfile;
 mod manifest;
 
-pub(crate) use items::{collect_project_rust_index, inferred_file_module_path};
+pub(crate) use items::{
+    collect_project_rust_index, inferred_file_module_path, ProjectIndexBuilders,
+};
 pub(crate) use lockfile::read_lockfile_summary;
 pub(crate) use manifest::read_manifest_summary;
 
@@ -114,9 +116,11 @@ pub(crate) fn project_index(sources: &[ParsedSource]) -> ProjectIndex {
                 &source.source,
                 ast,
                 &module_path,
-                &mut modules,
-                &mut items,
-                &mut call_names,
+                ProjectIndexBuilders {
+                    modules: &mut modules,
+                    items: &mut items,
+                    call_names: &mut call_names,
+                },
             );
         }
     }
@@ -215,10 +219,10 @@ pub(crate) fn has_cfg_test_attr(attrs: &[syn::Attribute]) -> bool {
 }
 
 pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| path_ends_with(attr, "test"))
+    attrs.iter().any(|attr| last_segment_matches(attr, "test"))
 }
 
-pub(crate) fn path_ends_with(attr: &syn::Attribute, name: &str) -> bool {
+pub(crate) fn last_segment_matches(attr: &syn::Attribute, name: &str) -> bool {
     attr.path()
         .segments
         .last()

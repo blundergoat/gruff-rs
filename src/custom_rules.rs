@@ -5,7 +5,7 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
     let line_offsets = line_starts(unit.source);
     for rule in &config.custom_rules {
-        if !config.rule_enabled(&rule.id) || !custom_rule_applies_to_path(rule, unit.file) {
+        if !config.is_rule_enabled(&rule.id) || !custom_rule_matches_path(rule, unit.file) {
             continue;
         }
         let Some(scope_source) = scoped_source(rule.scope, unit) else {
@@ -30,23 +30,23 @@ fn evaluate_rule(
     rule.compiled_pattern
         .find_iter(source)
         .map(|matched| {
-            Finding::new(
-                &rule.id,
-                rule.message.clone(),
-                unit.file.display_path.clone(),
-                Some(finding_line_for_match(
+            Finding::new(FindingDescriptor {
+                rule_id: rule.id.clone(),
+                message: rule.message.clone(),
+                file_path: unit.file.display_path.clone(),
+                line: Some(finding_line_for_match(
                     source,
                     line_starts,
                     matched.start(),
                     matched.end(),
                 )),
-                rule.severity,
-                rule.pillar,
-                rule.confidence,
-                Some(format!("byte:{}", matched.start())),
-                rule.remediation.clone(),
-                json!({ "scope": rule.scope.as_str() }),
-            )
+                severity: rule.severity,
+                pillar: rule.pillar,
+                confidence: rule.confidence,
+                symbol: Some(format!("byte:{}", matched.start())),
+                remediation: rule.remediation.clone(),
+                metadata: json!({ "scope": rule.scope.as_str() }),
+            })
         })
         .collect()
 }
@@ -66,7 +66,7 @@ fn finding_line_for_match(source: &str, line_starts: &[usize], start: usize, end
     byte_line_from_starts(line_starts, line_byte)
 }
 
-fn custom_rule_applies_to_path(rule: &CustomRule, file: &SourceFile) -> bool {
+fn custom_rule_matches_path(rule: &CustomRule, file: &SourceFile) -> bool {
     let path = normalize_report_path(&file.display_path);
     (rule.include_paths.is_empty()
         || rule

@@ -27,7 +27,16 @@ pub(crate) fn analyse_block(
 
     analyse_block_size(file, block, config, findings);
     let cyclomatic = analyse_block_complexity(file, block, &searchable_body, config, findings);
-    analyse_metric_block(file, block, &searchable_body, cyclomatic, config, findings);
+    analyse_metric_block(
+        BlockAnalysisContext {
+            file,
+            block,
+            config,
+        },
+        &searchable_body,
+        cyclomatic,
+        findings,
+    );
     analyse_performance_block(file, block, &searchable_body, findings);
     analyse_design_block(file, block, cyclomatic, findings);
     analyse_block_naming(file, block, config, findings);
@@ -46,30 +55,30 @@ pub(crate) fn analyse_block_size(
     let rule_id = "size.function-length";
     let threshold = config.threshold(rule_id, 50.0) as usize;
     if block.line_count > threshold && !block.body_is_declarative_literal {
-        findings.push(block_finding(
+        findings.push(block_finding(BlockFindingDescriptor {
             rule_id,
-            format!(
+            message: format!(
                 "Function `{}` has {} lines, above the threshold of {threshold}.",
                 block.name, block.line_count
             ),
             file,
             block,
-            config.severity(rule_id, Severity::Warning),
-            Pillar::Size,
-        ));
+            severity: config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Size,
+        }));
     }
 
     let params = block.param_count;
     let rule_id = "size.parameter-count";
     if params > config.threshold(rule_id, 5.0) as usize {
-        findings.push(block_finding(
+        findings.push(block_finding(BlockFindingDescriptor {
             rule_id,
-            format!("Function `{}` declares {params} parameters.", block.name),
+            message: format!("Function `{}` declares {params} parameters.", block.name),
             file,
             block,
-            config.severity(rule_id, Severity::Warning),
-            Pillar::Size,
-        ));
+            severity: config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Size,
+        }));
     }
 }
 
@@ -97,7 +106,16 @@ pub(crate) fn analyse_block_complexity(
         config,
         findings,
     );
-    analyse_cognitive_complexity(file, block, cyclomatic, nesting, config, findings);
+    analyse_cognitive_complexity(
+        BlockAnalysisContext {
+            file,
+            block,
+            config,
+        },
+        cyclomatic,
+        nesting,
+        findings,
+    );
     cyclomatic
 }
 
@@ -113,15 +131,17 @@ pub(crate) fn analyse_cyclomatic_complexity(
         return;
     }
     findings.push(block_finding_with_metadata(
-        rule_id,
-        format!(
-            "Function `{}` has cyclomatic complexity {cyclomatic}.",
-            block.name
-        ),
-        file,
-        block,
-        config.severity(rule_id, Severity::Warning),
-        Pillar::Complexity,
+        BlockFindingDescriptor {
+            rule_id,
+            message: format!(
+                "Function `{}` has cyclomatic complexity {cyclomatic}.",
+                block.name
+            ),
+            file,
+            block,
+            severity: config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Complexity,
+        },
         json!({ "complexity": cyclomatic }),
     ));
 }
@@ -138,12 +158,14 @@ pub(crate) fn analyse_nesting_depth(
         return;
     }
     findings.push(block_finding_with_metadata(
-        rule_id,
-        format!("Function `{}` has nesting depth {nesting}.", block.name),
-        file,
-        block,
-        config.severity(rule_id, Severity::Warning),
-        Pillar::Complexity,
+        BlockFindingDescriptor {
+            rule_id,
+            message: format!("Function `{}` has nesting depth {nesting}.", block.name),
+            file,
+            block,
+            severity: config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Complexity,
+        },
         json!({ "nestingDepth": nesting }),
     ));
 }
@@ -160,15 +182,17 @@ pub(crate) fn analyse_npath_complexity(
         return;
     }
     findings.push(block_finding_with_extras(
-        rule_id,
-        format!(
-            "Function `{}` has approximate NPath complexity {npath}.",
-            block.name
-        ),
-        file,
-        block,
-        config.severity(rule_id, Severity::Warning),
-        Pillar::Complexity,
+        BlockFindingDescriptor {
+            rule_id,
+            message: format!(
+                "Function `{}` has approximate NPath complexity {npath}.",
+                block.name
+            ),
+            file,
+            block,
+            severity: config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Complexity,
+        },
         BlockFindingExtras {
             confidence: Confidence::Medium,
             remediation: None,
@@ -177,29 +201,35 @@ pub(crate) fn analyse_npath_complexity(
     ));
 }
 
+pub(crate) struct BlockAnalysisContext<'a> {
+    pub(crate) file: &'a SourceFile,
+    pub(crate) block: &'a FunctionBlock,
+    pub(crate) config: &'a Config,
+}
+
 pub(crate) fn analyse_cognitive_complexity(
-    file: &SourceFile,
-    block: &FunctionBlock,
+    ctx: BlockAnalysisContext<'_>,
     cyclomatic: usize,
     nesting: usize,
-    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
     let cognitive = cyclomatic + nesting.saturating_mul(2);
     let rule_id = "complexity.cognitive";
-    if cognitive <= config.threshold(rule_id, 15.0) as usize {
+    if cognitive <= ctx.config.threshold(rule_id, 15.0) as usize {
         return;
     }
     findings.push(block_finding_with_metadata(
-        rule_id,
-        format!(
-            "Function `{}` has cognitive complexity {cognitive}.",
-            block.name
-        ),
-        file,
-        block,
-        config.severity(rule_id, Severity::Warning),
-        Pillar::Complexity,
+        BlockFindingDescriptor {
+            rule_id,
+            message: format!(
+                "Function `{}` has cognitive complexity {cognitive}.",
+                ctx.block.name
+            ),
+            file: ctx.file,
+            block: ctx.block,
+            severity: ctx.config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Complexity,
+        },
         json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
     ));
 }
@@ -211,14 +241,14 @@ pub(crate) fn analyse_design_block(
     findings: &mut Vec<Finding>,
 ) {
     if block.line_count > 45 && cyclomatic > 10 {
-        findings.push(block_finding(
-            "design.god-function",
-            format!("Function `{}` is both long and complex.", block.name),
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "design.god-function",
+            message: format!("Function `{}` is both long and complex.", block.name),
             file,
             block,
-            Severity::Warning,
-            Pillar::Design,
-        ));
+            severity: Severity::Warning,
+            pillar: Pillar::Design,
+        }));
     }
 }
 
@@ -230,17 +260,17 @@ pub(crate) fn analyse_block_naming(
 ) {
     let extra_generic = config.string_array_option("naming.generic-function", "extraGenericNames");
     if is_generic_name(&block.name) || extra_generic.iter().any(|name| name == &block.name) {
-        findings.push(block_finding(
-            "naming.generic-function",
-            format!(
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "naming.generic-function",
+            message: format!(
                 "Function `{}` is too generic to explain intent.",
                 block.name
             ),
             file,
             block,
-            Severity::Advisory,
-            Pillar::Naming,
-        ));
+            severity: Severity::Advisory,
+            pillar: Pillar::Naming,
+        }));
     }
     analyse_boolean_block_name(file, block, config, findings);
     analyse_placeholder_block_name(file, block, config, findings);
@@ -257,16 +287,16 @@ pub(crate) fn analyse_boolean_block_name(
         .iter()
         .any(|prefix| block.name.starts_with(prefix.as_str()));
     if block.returns_bool && !is_boolean_predicate_name(&block.name) && !accepts_extra {
-        findings.push(block_finding(
-            "naming.boolean-prefix",
-            format!(
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "naming.boolean-prefix",
+            message: format!(
                 "Boolean function `{}` should read like a predicate.",
                 block.name
             ),
             file,
             block,
-            Severity::Advisory,
-            Pillar::Naming,
-        ));
+            severity: Severity::Advisory,
+            pillar: Pillar::Naming,
+        }));
     }
 }

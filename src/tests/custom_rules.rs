@@ -514,18 +514,18 @@ custom_rules:
 
 #[test]
 pub(crate) fn fingerprint_stable_for_custom_rule() {
-    let finding = Finding::new(
-        "custom.no-hack",
-        "HACK marker",
-        "src/lib.rs",
-        Some(2),
-        Severity::Warning,
-        Pillar::Documentation,
-        Confidence::Medium,
-        Some("byte:12".to_string()),
-        None,
-        json!({ "scope": "comments" }),
-    );
+    let finding = Finding::new(FindingDescriptor {
+        rule_id: "custom.no-hack".to_string(),
+        message: "HACK marker".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        line: Some(2),
+        severity: Severity::Warning,
+        pillar: Pillar::Documentation,
+        confidence: Confidence::Medium,
+        symbol: Some("byte:12".to_string()),
+        remediation: None,
+        metadata: json!({ "scope": "comments" }),
+    });
 
     assert_eq!(finding.fingerprint, "223b4b2c56b0f0e1");
 }

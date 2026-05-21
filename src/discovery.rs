@@ -6,6 +6,21 @@ pub(crate) struct DiscoveryResult {
     pub(crate) ignored_paths: Vec<String>,
 }
 
+pub(crate) struct DiscoverySession<'a> {
+    pub(crate) project_root: &'a Path,
+    pub(crate) options: &'a AnalysisOptions,
+    pub(crate) config: &'a Config,
+    pub(crate) ignored_paths: &'a Arc<Mutex<BTreeSet<String>>>,
+}
+
+pub(crate) struct DiscoveryFilters<'a> {
+    pub(crate) project_root: &'a Path,
+    pub(crate) config: &'a Config,
+    pub(crate) ignored_paths: &'a Mutex<BTreeSet<String>>,
+    pub(crate) apply_project_ignore: bool,
+    pub(crate) include_ignored: bool,
+}
+
 pub(crate) fn discover_sources(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -14,6 +29,12 @@ pub(crate) fn discover_sources(
     let mut files = Vec::new();
     let mut missing_paths = Vec::new();
     let ignored_paths = Arc::new(Mutex::new(BTreeSet::new()));
+    let session = DiscoverySession {
+        project_root,
+        options,
+        config,
+        ignored_paths: &ignored_paths,
+    };
     let input_paths = if options.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
@@ -30,14 +51,7 @@ pub(crate) fn discover_sources(
             push_source_file(project_root, &absolute, &mut files);
             continue;
         }
-        collect_directory_sources(
-            project_root,
-            &absolute,
-            options,
-            config,
-            &ignored_paths,
-            &mut files,
-        );
+        collect_directory_sources(&absolute, &session, &mut files);
     }
 
     files.sort_by(|left, right| left.display_path.cmp(&right.display_path));
@@ -58,18 +72,16 @@ pub(crate) fn discover_sources(
 }
 
 pub(crate) fn collect_directory_sources(
-    project_root: &Path,
     absolute: &Path,
-    options: &AnalysisOptions,
-    config: &Config,
-    ignored_paths: &Arc<Mutex<BTreeSet<String>>>,
+    session: &DiscoverySession<'_>,
     files: &mut Vec<SourceFile>,
 ) {
-    let apply_project_ignore = !path_is_project_ignored(project_root, absolute, config);
-    let include_ignored = options.include_ignored;
-    let filter_root = project_root.to_path_buf();
-    let filter_config = config.clone();
-    let filter_ignored_paths = Arc::clone(ignored_paths);
+    let apply_project_ignore =
+        !path_is_project_ignored(session.project_root, absolute, session.config);
+    let include_ignored = session.options.include_ignored;
+    let filter_root = session.project_root.to_path_buf();
+    let filter_config = session.config.clone();
+    let filter_ignored_paths = Arc::clone(session.ignored_paths);
     let mut builder = WalkBuilder::new(absolute);
     builder
         .hidden(false)
@@ -79,43 +91,36 @@ pub(crate) fn collect_directory_sources(
         .git_global(false)
         .git_exclude(!include_ignored)
         .filter_entry(move |entry| {
-            should_descend(
-                entry,
-                &filter_root,
-                include_ignored,
-                &filter_config,
+            let filters = DiscoveryFilters {
+                project_root: &filter_root,
+                config: &filter_config,
+                ignored_paths: &filter_ignored_paths,
                 apply_project_ignore,
-                &filter_ignored_paths,
-            )
+                include_ignored,
+            };
+            should_descend(entry, &filters)
         });
 
+    let outer_filters = DiscoveryFilters {
+        project_root: session.project_root,
+        config: session.config,
+        ignored_paths: session.ignored_paths,
+        apply_project_ignore,
+        include_ignored,
+    };
     for entry in builder.build().filter_map(Result::ok).filter(|entry| {
         entry
             .file_type()
             .is_some_and(|file_type| file_type.is_file())
     }) {
-        if !should_include_file(
-            &entry,
-            project_root,
-            options,
-            config,
-            apply_project_ignore,
-            ignored_paths,
-        ) {
+        if !should_include_file(&entry, &outer_filters) {
             continue;
         }
-        push_source_file(project_root, entry.path(), files);
+        push_source_file(session.project_root, entry.path(), files);
     }
 }
 
-pub(crate) fn should_descend(
-    entry: &DirEntry,
-    project_root: &Path,
-    include_ignored: bool,
-    config: &Config,
-    apply_project_ignore: bool,
-    ignored_paths: &Mutex<BTreeSet<String>>,
-) -> bool {
+pub(crate) fn should_descend(entry: &DirEntry, filters: &DiscoveryFilters<'_>) -> bool {
     if entry.depth() == 0
         || !entry
             .file_type()
@@ -124,41 +129,37 @@ pub(crate) fn should_descend(
         return true;
     }
 
-    let relative = display_path(project_root, entry.path());
+    let relative = display_path(filters.project_root, entry.path());
     if is_vcs_internal_dir(&relative) {
-        record_ignored_path(ignored_paths, relative);
+        record_ignored_path(filters.ignored_paths, relative);
         return false;
     }
 
-    if !include_ignored && is_default_ignored_dir(&relative) {
-        record_ignored_path(ignored_paths, relative);
+    if !filters.include_ignored && is_default_ignored_dir(&relative) {
+        record_ignored_path(filters.ignored_paths, relative);
         return false;
     }
 
-    if !include_ignored
-        && apply_project_ignore
-        && path_is_project_ignored(project_root, entry.path(), config)
+    if !filters.include_ignored
+        && filters.apply_project_ignore
+        && path_is_project_ignored(filters.project_root, entry.path(), filters.config)
     {
-        record_ignored_path(ignored_paths, relative);
+        record_ignored_path(filters.ignored_paths, relative);
         return false;
     }
 
     true
 }
 
-pub(crate) fn should_include_file(
-    entry: &DirEntry,
-    project_root: &Path,
-    options: &AnalysisOptions,
-    config: &Config,
-    apply_project_ignore: bool,
-    ignored_paths: &Mutex<BTreeSet<String>>,
-) -> bool {
-    if options.include_ignored || !apply_project_ignore {
+pub(crate) fn should_include_file(entry: &DirEntry, filters: &DiscoveryFilters<'_>) -> bool {
+    if filters.include_ignored || !filters.apply_project_ignore {
         return true;
     }
-    if path_is_project_ignored(project_root, entry.path(), config) {
-        record_ignored_path(ignored_paths, display_path(project_root, entry.path()));
+    if path_is_project_ignored(filters.project_root, entry.path(), filters.config) {
+        record_ignored_path(
+            filters.ignored_paths,
+            display_path(filters.project_root, entry.path()),
+        );
         return false;
     }
     true

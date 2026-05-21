@@ -76,8 +76,9 @@ pub(crate) use render::{
 };
 use report::{
     AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence, FileScore, Finding,
-    PathSummary, Pillar, PillarScore, ReportSuppressions, RunDiagnostic, RunInfo, ScoreReport,
-    Severity, Summary, SuppressedFinding, SuppressionSummary, ToolInfo, SCORE_PILLARS,
+    FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions, RunDiagnostic,
+    RunInfo, ScoreReport, Severity, Summary, SuppressedFinding, SuppressionSummary, ToolInfo,
+    SCORE_PILLARS,
 };
 pub(crate) use scoring::{grade, score_report, summarize};
 use source::{

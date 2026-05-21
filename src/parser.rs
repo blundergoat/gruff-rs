@@ -167,7 +167,7 @@ pub(crate) fn count_raw_string_hashes(bytes: &[u8], cursor: &mut usize) -> usize
 
 pub(crate) fn find_raw_string_end(bytes: &[u8], hashes: usize, mut cursor: usize) -> Option<usize> {
     while cursor < bytes.len() {
-        if bytes[cursor] == b'"' && raw_string_hashes_match(bytes, cursor + 1, hashes) {
+        if bytes[cursor] == b'"' && has_raw_string_hashes_at(bytes, cursor + 1, hashes) {
             return Some(cursor + 1 + hashes);
         }
         cursor += 1;
@@ -175,7 +175,7 @@ pub(crate) fn find_raw_string_end(bytes: &[u8], hashes: usize, mut cursor: usize
     None
 }
 
-pub(crate) fn raw_string_hashes_match(bytes: &[u8], start: usize, hashes: usize) -> bool {
+pub(crate) fn has_raw_string_hashes_at(bytes: &[u8], start: usize, hashes: usize) -> bool {
     bytes
         .get(start..start + hashes)
         .is_some_and(|slice| slice.iter().all(|byte| *byte == b'#'))

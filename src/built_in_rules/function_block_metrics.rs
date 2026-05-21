@@ -124,11 +124,11 @@ pub(crate) fn count_params(
         .count()
 }
 
-pub(crate) fn returns_bool(output: &ReturnType) -> bool {
-    let ReturnType::Type(_, ty) = output else {
+pub(crate) fn is_bool_return_type(output: &ReturnType) -> bool {
+    let ReturnType::Type(_, return_type) = output else {
         return false;
     };
-    let Type::Path(path) = ty.as_ref() else {
+    let Type::Path(path) = return_type.as_ref() else {
         return false;
     };
     path.path.is_ident("bool")
@@ -139,11 +139,11 @@ pub(crate) fn returns_bool(output: &ReturnType) -> bool {
 /// `type Result<T> = std::result::Result<T, MyError>`) cannot be detected
 /// without type resolution, so they are intentionally NOT covered by this
 /// rule per ADR-008.
-pub(crate) fn returns_result(output: &ReturnType) -> bool {
-    let ReturnType::Type(_, ty) = output else {
+pub(crate) fn is_result_return_type(output: &ReturnType) -> bool {
+    let ReturnType::Type(_, return_type) = output else {
         return false;
     };
-    let Type::Path(path) = ty.as_ref() else {
+    let Type::Path(path) = return_type.as_ref() else {
         return false;
     };
     path.path

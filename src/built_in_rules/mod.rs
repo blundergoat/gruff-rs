@@ -1,21 +1,21 @@
 use super::*;
 
-mod analyzers_a;
-mod analyzers_b;
-mod analyzers_c;
-mod analyzers_d;
+mod behavior_rules;
 mod blocks;
+mod comment_item_and_blocks;
 mod dead_code;
+mod function_block_metrics;
+mod function_block_rules;
 mod helpers;
 mod predicates;
 mod test_context;
 
-pub(crate) use analyzers_a::*;
-pub(crate) use analyzers_b::*;
-pub(crate) use analyzers_c::*;
-pub(crate) use analyzers_d::*;
+pub(crate) use behavior_rules::*;
 pub(crate) use blocks::*;
+pub(crate) use comment_item_and_blocks::*;
 pub(crate) use dead_code::*;
+pub(crate) use function_block_metrics::*;
+pub(crate) use function_block_rules::*;
 pub(crate) use helpers::*;
 pub(crate) use predicates::*;
 pub(crate) use test_context::*;
@@ -130,7 +130,7 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     }
     findings
         .into_iter()
-        .filter(|finding| config.rule_enabled(&finding.rule_id))
+        .filter(|finding| config.is_rule_enabled(&finding.rule_id))
         .collect()
 }
 
@@ -145,27 +145,27 @@ fn analyse_text_rules(
     let rule_id = "size.file-length";
     let threshold = config.threshold(rule_id, 600.0) as usize;
     if line_count > threshold {
-        findings.push(finding(
+        findings.push(finding(SimpleFindingDescriptor {
             rule_id,
-            format!("File has {line_count} lines, above the threshold of {threshold}."),
+            message: format!("File has {line_count} lines, above the threshold of {threshold}."),
             file,
-            Some(1),
-            config.severity(rule_id, Severity::Warning),
-            Pillar::Size,
-        ));
+            line: Some(1),
+            severity: config.severity(rule_id, Severity::Warning),
+            pillar: Pillar::Size,
+        }));
     }
 
     let todo_count = source.matches("TODO").count() + source.matches("FIXME").count();
     let rule_id = "docs.todo-density";
     if todo_count >= config.threshold(rule_id, 4.0) as usize {
-        findings.push(finding(
+        findings.push(finding(SimpleFindingDescriptor {
             rule_id,
-            format!("File contains {todo_count} TODO/FIXME markers."),
+            message: format!("File contains {todo_count} TODO/FIXME markers."),
             file,
-            Some(first_matching_line(source, "TODO").unwrap_or(1)),
-            config.severity(rule_id, Severity::Advisory),
-            Pillar::Documentation,
-        ));
+            line: Some(first_matching_line(source, "TODO").unwrap_or(1)),
+            severity: config.severity(rule_id, Severity::Advisory),
+            pillar: Pillar::Documentation,
+        }));
     }
 
     analyse_sensitive_data(file, source, rust_ast, config, findings);
@@ -184,18 +184,20 @@ fn analyse_sensitive_data(
             if config.secret_previews.contains(&preview) {
                 continue;
             }
-            findings.push(Finding::new(
-                rule.rule_id,
-                rule.message,
-                file.display_path.clone(),
-                Some(byte_line(source, capture.start())),
-                Severity::Error,
-                Pillar::SensitiveData,
-                Confidence::High,
-                None,
-                Some("Remove the secret and load it from a secure runtime source.".to_string()),
-                json!({ "preview": preview }),
-            ));
+            findings.push(Finding::new(FindingDescriptor {
+                rule_id: rule.rule_id.to_string(),
+                message: rule.message.to_string(),
+                file_path: file.display_path.clone(),
+                line: Some(byte_line(source, capture.start())),
+                severity: Severity::Error,
+                pillar: Pillar::SensitiveData,
+                confidence: Confidence::High,
+                symbol: None,
+                remediation: Some(
+                    "Remove the secret and load it from a secure runtime source.".to_string(),
+                ),
+                metadata: json!({ "preview": preview }),
+            }));
         }
     }
 
@@ -225,18 +227,20 @@ fn analyse_env_like_secrets(
         if config.secret_previews.contains(&preview) {
             continue;
         }
-        findings.push(Finding::new(
-            "sensitive-data.hardcoded-env-value",
-            "Hardcoded environment-style secret assignment detected.",
-            file.display_path.clone(),
-            Some(line),
-            Severity::Error,
-            Pillar::SensitiveData,
-            Confidence::High,
-            None,
-            Some("Load secret values from runtime configuration instead of source.".to_string()),
-            json!({ "preview": preview }),
-        ));
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "sensitive-data.hardcoded-env-value".to_string(),
+            message: "Hardcoded environment-style secret assignment detected.".to_string(),
+            file_path: file.display_path.clone(),
+            line: Some(line),
+            severity: Severity::Error,
+            pillar: Pillar::SensitiveData,
+            confidence: Confidence::High,
+            symbol: None,
+            remediation: Some(
+                "Load secret values from runtime configuration instead of source.".to_string(),
+            ),
+            metadata: json!({ "preview": preview }),
+        }));
     }
 }
 
@@ -256,25 +260,27 @@ fn analyse_high_entropy_strings(
             continue;
         };
         let value = secret.as_str();
-        if !looks_high_entropy(value) {
+        if !is_high_entropy(value) {
             continue;
         }
         let preview = redact(value);
         if config.secret_previews.contains(&preview) {
             continue;
         }
-        findings.push(Finding::new(
-            "sensitive-data.high-entropy-string",
-            "High-entropy string literal detected.",
-            file.display_path.clone(),
-            Some(byte_line(source, secret.start())),
-            Severity::Error,
-            Pillar::SensitiveData,
-            Confidence::Medium,
-            None,
-            Some("Move generated secrets to a secure runtime secret source.".to_string()),
-            json!({ "preview": preview, "entropy": shannon_entropy(value) }),
-        ));
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "sensitive-data.high-entropy-string".to_string(),
+            message: "High-entropy string literal detected.".to_string(),
+            file_path: file.display_path.clone(),
+            line: Some(byte_line(source, secret.start())),
+            severity: Severity::Error,
+            pillar: Pillar::SensitiveData,
+            confidence: Confidence::Medium,
+            symbol: None,
+            remediation: Some(
+                "Move generated secrets to a secure runtime secret source.".to_string(),
+            ),
+            metadata: json!({ "preview": preview, "entropy": shannon_entropy(value) }),
+        }));
     }
 }
 
@@ -385,18 +391,20 @@ impl NamingPatternVisitor<'_> {
             return;
         }
         let line = line_from_span(pat_ident.ident.span().start());
-        self.findings.push(Finding::new(
-            "naming.identifier-shadow",
-            format!("Local binding `{binding}` shadows same-file function `{callee}`."),
-            self.file.display_path.clone(),
-            Some(line),
-            Severity::Advisory,
-            Pillar::Naming,
-            Confidence::High,
-            Some(binding.clone()),
-            Some("Rename the local so it does not collide with the function it calls.".to_string()),
-            json!({ "shadows": callee }),
-        ));
+        self.findings.push(Finding::new(FindingDescriptor {
+            rule_id: "naming.identifier-shadow".to_string(),
+            message: format!("Local binding `{binding}` shadows same-file function `{callee}`."),
+            file_path: self.file.display_path.clone(),
+            line: Some(line),
+            severity: Severity::Advisory,
+            pillar: Pillar::Naming,
+            confidence: Confidence::High,
+            symbol: Some(binding.clone()),
+            remediation: Some(
+                "Rename the local so it does not collide with the function it calls.".to_string(),
+            ),
+            metadata: json!({ "shadows": callee }),
+        }));
     }
 
     fn check_name(&mut self, name: &str, line: usize) {
@@ -405,18 +413,20 @@ impl NamingPatternVisitor<'_> {
             .string_array_option("naming.placeholder-identifier", "extraPlaceholders");
         let extra_match = extra_placeholders.iter().any(|extra| extra == name);
         if is_placeholder_identifier(name) || extra_match {
-            self.findings.push(Finding::new(
-                "naming.placeholder-identifier",
-                format!("Variable `{name}` uses a placeholder name instead of domain language."),
-                self.file.display_path.clone(),
-                Some(line),
-                Severity::Advisory,
-                Pillar::Naming,
-                Confidence::Medium,
-                Some(name.to_string()),
-                Some("Use a name that describes the domain role.".to_string()),
-                json!({}),
-            ));
+            self.findings.push(Finding::new(FindingDescriptor {
+                rule_id: "naming.placeholder-identifier".to_string(),
+                message: format!(
+                    "Variable `{name}` uses a placeholder name instead of domain language."
+                ),
+                file_path: self.file.display_path.clone(),
+                line: Some(line),
+                severity: Severity::Advisory,
+                pillar: Pillar::Naming,
+                confidence: Confidence::Medium,
+                symbol: Some(name.to_string()),
+                remediation: Some("Use a name that describes the domain role.".to_string()),
+                metadata: json!({}),
+            }));
         }
         if name.len() <= 2
             && !matches!(name, "i" | "j" | "k")
@@ -426,18 +436,18 @@ impl NamingPatternVisitor<'_> {
                 .accepted_abbreviations
                 .contains(&name.to_ascii_lowercase())
         {
-            self.findings.push(Finding::new(
-                "naming.short-variable",
-                format!("Variable `{name}` is too short to explain intent."),
-                self.file.display_path.clone(),
-                Some(line),
-                Severity::Advisory,
-                Pillar::Naming,
-                Confidence::Medium,
-                Some(name.to_string()),
-                Some("Use a name that describes the domain role.".to_string()),
-                json!({}),
-            ));
+            self.findings.push(Finding::new(FindingDescriptor {
+                rule_id: "naming.short-variable".to_string(),
+                message: format!("Variable `{name}` is too short to explain intent."),
+                file_path: self.file.display_path.clone(),
+                line: Some(line),
+                severity: Severity::Advisory,
+                pillar: Pillar::Naming,
+                confidence: Confidence::Medium,
+                symbol: Some(name.to_string()),
+                remediation: Some("Use a name that describes the domain role.".to_string()),
+                metadata: json!({}),
+            }));
         }
     }
 }

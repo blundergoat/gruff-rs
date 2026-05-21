@@ -39,46 +39,46 @@ pub(crate) fn sarif_suppression_results_carry_in_source_justification() {
 
 #[test]
 pub(crate) fn sarif_contract_covers_rules_locations_levels_and_metadata() {
-    let mut error = Finding::new(
-        "complexity.cyclomatic",
-        "Complex function",
-        r".\src\space name.rs",
-        Some(10),
-        Severity::Error,
-        Pillar::Complexity,
-        Confidence::Medium,
-        Some("complex".to_string()),
-        Some("Split branches.".to_string()),
-        json!({}),
-    );
+    let mut error = Finding::new(FindingDescriptor {
+        rule_id: "complexity.cyclomatic".to_string(),
+        message: "Complex function".to_string(),
+        file_path: r".\src\space name.rs".to_string(),
+        line: Some(10),
+        severity: Severity::Error,
+        pillar: Pillar::Complexity,
+        confidence: Confidence::Medium,
+        symbol: Some("complex".to_string()),
+        remediation: Some("Split branches.".to_string()),
+        metadata: json!({}),
+    });
     error.column = Some(5);
     error.end_line = Some(12);
     error.secondary_pillars = vec![Pillar::Size];
 
-    let advisory = Finding::new(
-        "docs.todo-density",
-        "Too many TODOs",
-        "src/hash#name.rs",
-        None,
-        Severity::Advisory,
-        Pillar::Documentation,
-        Confidence::Low,
-        None,
-        None,
-        Value::Null,
-    );
-    let unknown = Finding::new(
-        "custom.example",
-        "Custom warning",
-        "src/q?percent%.rs",
-        Some(3),
-        Severity::Warning,
-        Pillar::Naming,
-        Confidence::High,
-        Some("custom".to_string()),
-        None,
-        json!({ "detail": "kept" }),
-    );
+    let advisory = Finding::new(FindingDescriptor {
+        rule_id: "docs.todo-density".to_string(),
+        message: "Too many TODOs".to_string(),
+        file_path: "src/hash#name.rs".to_string(),
+        line: None,
+        severity: Severity::Advisory,
+        pillar: Pillar::Documentation,
+        confidence: Confidence::Low,
+        symbol: None,
+        remediation: None,
+        metadata: Value::Null,
+    });
+    let unknown = Finding::new(FindingDescriptor {
+        rule_id: "custom.example".to_string(),
+        message: "Custom warning".to_string(),
+        file_path: "src/q?percent%.rs".to_string(),
+        line: Some(3),
+        severity: Severity::Warning,
+        pillar: Pillar::Naming,
+        confidence: Confidence::High,
+        symbol: Some("custom".to_string()),
+        remediation: None,
+        metadata: json!({ "detail": "kept" }),
+    });
     let report = sample_report_with(vec![error, advisory, unknown], Vec::new());
     let sarif = sample_sarif(&report);
 

@@ -175,13 +175,13 @@ pub(crate) fn apply_diff_patch_filter(
     let mut kept = Vec::new();
 
     for finding in std::mem::take(&mut report.findings) {
-        if diff_patch_keeps_finding(&finding, patch, &changed_files) {
+        if patch_intersects_finding(&finding, patch, &changed_files) {
             kept.push(finding);
         }
     }
     report
         .suppressed_findings
-        .retain(|suppressed| diff_patch_keeps_finding(&suppressed.finding, patch, &changed_files));
+        .retain(|suppressed| patch_intersects_finding(&suppressed.finding, patch, &changed_files));
     recount_suppressions(&mut report.suppressions, &report.suppressed_findings);
 
     let kept_findings = kept.len();
@@ -217,7 +217,7 @@ pub(crate) fn recount_suppressions(
     }
 }
 
-pub(crate) fn diff_patch_keeps_finding(
+pub(crate) fn patch_intersects_finding(
     finding: &Finding,
     patch: &DiffPatchLineMap,
     changed_files: &BTreeSet<String>,

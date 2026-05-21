@@ -162,11 +162,13 @@ pub(crate) fn run_analysis_in_project(
     let report = build_report(
         project_root,
         options,
-        discovery,
-        diagnostics,
-        findings,
-        baseline_report,
-        suppressions,
+        ReportInputs {
+            discovery,
+            diagnostics,
+            findings,
+            baseline_report,
+            suppressions,
+        },
     );
     let mut report = apply_diff_selection(project_root, options, report, &analysed_paths)?;
     record_history_if_requested(project_root, options, &mut report);
@@ -252,15 +254,26 @@ pub(crate) fn record_history_if_requested(
     }
 }
 
+pub(crate) struct ReportInputs {
+    pub(crate) discovery: DiscoveryResult,
+    pub(crate) diagnostics: Vec<RunDiagnostic>,
+    pub(crate) findings: Vec<Finding>,
+    pub(crate) baseline_report: Option<BaselineReport>,
+    pub(crate) suppressions: ReportSuppressions,
+}
+
 pub(crate) fn build_report(
     project_root: &Path,
     options: &AnalysisOptions,
-    discovery: DiscoveryResult,
-    diagnostics: Vec<RunDiagnostic>,
-    findings: Vec<Finding>,
-    baseline_report: Option<BaselineReport>,
-    suppressions: ReportSuppressions,
+    inputs: ReportInputs,
 ) -> AnalysisReport {
+    let ReportInputs {
+        discovery,
+        diagnostics,
+        findings,
+        baseline_report,
+        suppressions,
+    } = inputs;
     let summary = summarize(&findings);
     let score = score_report(&findings);
     AnalysisReport {

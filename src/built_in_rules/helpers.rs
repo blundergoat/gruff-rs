@@ -66,55 +66,49 @@ pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     has_same_literal
 }
 
-pub(crate) fn finding(
-    rule_id: &str,
-    message: impl Into<String>,
-    file: &SourceFile,
-    line: Option<usize>,
-    severity: Severity,
-    pillar: Pillar,
-) -> Finding {
-    Finding::new(
-        rule_id,
-        message,
-        file.display_path.clone(),
-        line,
-        severity,
-        pillar,
-        Confidence::High,
-        None,
-        None,
-        json!({}),
-    )
+pub(crate) struct SimpleFindingDescriptor<'a> {
+    pub(crate) rule_id: &'a str,
+    pub(crate) message: String,
+    pub(crate) file: &'a SourceFile,
+    pub(crate) line: Option<usize>,
+    pub(crate) severity: Severity,
+    pub(crate) pillar: Pillar,
 }
 
-pub(crate) fn block_finding(
-    rule_id: &str,
-    message: impl Into<String>,
-    file: &SourceFile,
-    block: &FunctionBlock,
-    severity: Severity,
-    pillar: Pillar,
-) -> Finding {
-    block_finding_with_metadata(rule_id, message, file, block, severity, pillar, json!({}))
+pub(crate) fn finding(descriptor: SimpleFindingDescriptor<'_>) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: descriptor.rule_id.to_string(),
+        message: descriptor.message,
+        file_path: descriptor.file.display_path.clone(),
+        line: descriptor.line,
+        severity: descriptor.severity,
+        pillar: descriptor.pillar,
+        confidence: Confidence::High,
+        symbol: None,
+        remediation: None,
+        metadata: json!({}),
+    })
+}
+
+pub(crate) struct BlockFindingDescriptor<'a> {
+    pub(crate) rule_id: &'a str,
+    pub(crate) message: String,
+    pub(crate) file: &'a SourceFile,
+    pub(crate) block: &'a FunctionBlock,
+    pub(crate) severity: Severity,
+    pub(crate) pillar: Pillar,
+}
+
+pub(crate) fn block_finding(descriptor: BlockFindingDescriptor<'_>) -> Finding {
+    block_finding_with_metadata(descriptor, json!({}))
 }
 
 pub(crate) fn block_finding_with_metadata(
-    rule_id: &str,
-    message: impl Into<String>,
-    file: &SourceFile,
-    block: &FunctionBlock,
-    severity: Severity,
-    pillar: Pillar,
+    descriptor: BlockFindingDescriptor<'_>,
     metadata: Value,
 ) -> Finding {
     block_finding_with_extras(
-        rule_id,
-        message,
-        file,
-        block,
-        severity,
-        pillar,
+        descriptor,
         BlockFindingExtras {
             confidence: Confidence::High,
             remediation: None,
@@ -130,26 +124,21 @@ pub(crate) struct BlockFindingExtras {
 }
 
 pub(crate) fn block_finding_with_extras(
-    rule_id: &str,
-    message: impl Into<String>,
-    file: &SourceFile,
-    block: &FunctionBlock,
-    severity: Severity,
-    pillar: Pillar,
+    descriptor: BlockFindingDescriptor<'_>,
     extras: BlockFindingExtras,
 ) -> Finding {
-    Finding::new(
-        rule_id,
-        message,
-        file.display_path.clone(),
-        Some(block.start_line),
-        severity,
-        pillar,
-        extras.confidence,
-        Some(block.name.clone()),
-        extras.remediation,
-        extras.metadata,
-    )
+    Finding::new(FindingDescriptor {
+        rule_id: descriptor.rule_id.to_string(),
+        message: descriptor.message,
+        file_path: descriptor.file.display_path.clone(),
+        line: Some(descriptor.block.start_line),
+        severity: descriptor.severity,
+        pillar: descriptor.pillar,
+        confidence: extras.confidence,
+        symbol: Some(descriptor.block.name.clone()),
+        remediation: extras.remediation,
+        metadata: extras.metadata,
+    })
 }
 
 pub(crate) fn count_regex(source: &str, pattern: &Regex) -> usize {
@@ -188,7 +177,7 @@ pub(crate) fn redact(value: &str) -> String {
     format!("{start}...{end} (redacted, {char_count} chars)")
 }
 
-pub(crate) fn looks_high_entropy(value: &str) -> bool {
+pub(crate) fn is_high_entropy(value: &str) -> bool {
     if value.chars().count() < 32 {
         return false;
     }

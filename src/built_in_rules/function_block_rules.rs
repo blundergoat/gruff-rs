@@ -10,15 +10,17 @@ pub(crate) fn analyse_placeholder_block_name(
     let extra_match = extras.iter().any(|name| name == &block.name);
     if is_placeholder_identifier(&block.name) || extra_match {
         findings.push(block_finding_with_extras(
-            "naming.placeholder-identifier",
-            format!(
-                "Function `{}` uses a placeholder name instead of domain language.",
-                block.name
-            ),
-            file,
-            block,
-            Severity::Advisory,
-            Pillar::Naming,
+            BlockFindingDescriptor {
+                rule_id: "naming.placeholder-identifier",
+                message: format!(
+                    "Function `{}` uses a placeholder name instead of domain language.",
+                    block.name
+                ),
+                file,
+                block,
+                severity: Severity::Advisory,
+                pillar: Pillar::Naming,
+            },
             BlockFindingExtras {
                 confidence: Confidence::Medium,
                 remediation: None,
@@ -34,17 +36,17 @@ pub(crate) fn analyse_public_function_doc(
     findings: &mut Vec<Finding>,
 ) {
     if block.is_externally_public && !has_doc_comment_before(&block.body) {
-        findings.push(block_finding(
-            "docs.missing-public-doc",
-            format!(
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "docs.missing-public-doc",
+            message: format!(
                 "Public function `{}` is missing a Rust doc comment.",
                 block.name
             ),
             file,
             block,
-            Severity::Advisory,
-            Pillar::Documentation,
-        ));
+            severity: Severity::Advisory,
+            pillar: Pillar::Documentation,
+        }));
     }
 }
 
@@ -64,15 +66,17 @@ pub(crate) fn analyse_missing_errors_section(
         return;
     }
     findings.push(block_finding_with_extras(
-        "docs.missing-errors-section",
-        format!(
-            "Public function `{}` returns Result but its rustdoc lacks a `# Errors` section.",
-            block.name
-        ),
-        file,
-        block,
-        Severity::Advisory,
-        Pillar::Documentation,
+        BlockFindingDescriptor {
+            rule_id: "docs.missing-errors-section",
+            message: format!(
+                "Public function `{}` returns Result but its rustdoc lacks a `# Errors` section.",
+                block.name
+            ),
+            file,
+            block,
+            severity: Severity::Advisory,
+            pillar: Pillar::Documentation,
+        },
         BlockFindingExtras {
             confidence: Confidence::High,
             remediation: Some(
@@ -137,12 +141,14 @@ pub(crate) fn analyse_panic_block(
     let has_panic = static_regex(&PANIC_MACRO_REGEX, r"\bpanic!\s*\(").is_match(searchable_body);
     if has_panic && !has_nearby_invariant_comment(searchable_body) {
         findings.push(block_finding_with_extras(
-            "error-handling.production-panic",
-            format!("Function `{}` calls panic! in production code.", block.name),
-            file,
-            block,
-            Severity::Warning,
-            Pillar::Waste,
+            BlockFindingDescriptor {
+                rule_id: "error-handling.production-panic",
+                message: format!("Function `{}` calls panic! in production code.", block.name),
+                file,
+                block,
+                severity: Severity::Warning,
+                pillar: Pillar::Waste,
+            },
             BlockFindingExtras {
                 confidence: Confidence::High,
                 remediation: Some(
@@ -165,15 +171,17 @@ pub(crate) fn analyse_placeholder_block(
         .is_match(searchable_body)
     {
         findings.push(block_finding_with_extras(
-            "error-handling.unimplemented-placeholder",
-            format!(
-                "Function `{}` contains todo!/unimplemented! placeholder code.",
-                block.name
-            ),
-            file,
-            block,
-            Severity::Warning,
-            Pillar::Waste,
+            BlockFindingDescriptor {
+                rule_id: "error-handling.unimplemented-placeholder",
+                message: format!(
+                    "Function `{}` contains todo!/unimplemented! placeholder code.",
+                    block.name
+                ),
+                file,
+                block,
+                severity: Severity::Warning,
+                pillar: Pillar::Waste,
+            },
             BlockFindingExtras {
                 confidence: Confidence::High,
                 remediation: Some(
@@ -196,15 +204,17 @@ pub(crate) fn analyse_public_unwrap_block(
         .is_match(searchable_body);
     if block.is_externally_public && has_unwrap {
         findings.push(block_finding_with_extras(
-            "error-handling.public-unwrap",
-            format!(
-                "Public function `{}` uses unwrap()/expect() in its implementation.",
-                block.name
-            ),
-            file,
-            block,
-            Severity::Warning,
-            Pillar::Waste,
+            BlockFindingDescriptor {
+                rule_id: "error-handling.public-unwrap",
+                message: format!(
+                    "Public function `{}` uses unwrap()/expect() in its implementation.",
+                    block.name
+                ),
+                file,
+                block,
+                severity: Severity::Warning,
+                pillar: Pillar::Waste,
+            },
             BlockFindingExtras {
                 confidence: Confidence::High,
                 remediation: Some(
@@ -217,38 +227,53 @@ pub(crate) fn analyse_public_unwrap_block(
 }
 
 pub(crate) fn analyse_metric_block(
-    file: &SourceFile,
-    block: &FunctionBlock,
+    ctx: BlockAnalysisContext<'_>,
     searchable_body: &str,
     cyclomatic: usize,
-    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
     let metrics = function_metrics(searchable_body, cyclomatic);
-    analyse_halstead_volume(file, block, &metrics, config, findings);
-    analyse_maintainability_pressure(file, block, &metrics, cyclomatic, config, findings);
+    analyse_halstead_volume(
+        BlockAnalysisContext {
+            file: ctx.file,
+            block: ctx.block,
+            config: ctx.config,
+        },
+        &metrics,
+        findings,
+    );
+    analyse_maintainability_pressure(
+        BlockAnalysisContext {
+            file: ctx.file,
+            block: ctx.block,
+            config: ctx.config,
+        },
+        &metrics,
+        cyclomatic,
+        findings,
+    );
 }
 
 pub(crate) fn analyse_halstead_volume(
-    file: &SourceFile,
-    block: &FunctionBlock,
+    ctx: BlockAnalysisContext<'_>,
     metrics: &FunctionMetrics,
-    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    let volume_threshold = config.threshold("metrics.halstead-volume", 1500.0);
+    let volume_threshold = ctx.config.threshold("metrics.halstead-volume", 1500.0);
     if metrics.halstead_volume > volume_threshold {
         let rule_id = "metrics.halstead-volume";
         findings.push(block_finding_with_extras(
-            rule_id,
-            format!(
-                "Function `{}` has Halstead-style volume {:.1}, above the threshold of {:.1}.",
-                block.name, metrics.halstead_volume, volume_threshold
-            ),
-            file,
-            block,
-            config.severity(rule_id, Severity::Advisory),
-            Pillar::Complexity,
+            BlockFindingDescriptor {
+                rule_id,
+                message: format!(
+                    "Function `{}` has Halstead-style volume {:.1}, above the threshold of {:.1}.",
+                    ctx.block.name, metrics.halstead_volume, volume_threshold
+                ),
+                file: ctx.file,
+                block: ctx.block,
+                severity: ctx.config.severity(rule_id, Severity::Advisory),
+                pillar: Pillar::Complexity,
+            },
             BlockFindingExtras {
                 confidence: Confidence::Medium,
                 remediation: Some(
@@ -266,26 +291,28 @@ pub(crate) fn analyse_halstead_volume(
 }
 
 pub(crate) fn analyse_maintainability_pressure(
-    file: &SourceFile,
-    block: &FunctionBlock,
+    ctx: BlockAnalysisContext<'_>,
     metrics: &FunctionMetrics,
     cyclomatic: usize,
-    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    let minimum_score = config.threshold("metrics.maintainability-pressure", 45.0);
+    let minimum_score = ctx
+        .config
+        .threshold("metrics.maintainability-pressure", 45.0);
     if metrics.maintainability_score < minimum_score {
         let rule_id = "metrics.maintainability-pressure";
         findings.push(block_finding_with_extras(
-                rule_id,
-                format!(
-                    "Function `{}` has maintainability pressure score {:.1}, below the minimum of {:.1}.",
-                    block.name, metrics.maintainability_score, minimum_score
-                ),
-                file,
-                block,
-                config.severity(rule_id, Severity::Advisory),
-                Pillar::Complexity,
+                BlockFindingDescriptor {
+                    rule_id,
+                    message: format!(
+                        "Function `{}` has maintainability pressure score {:.1}, below the minimum of {:.1}.",
+                        ctx.block.name, metrics.maintainability_score, minimum_score
+                    ),
+                    file: ctx.file,
+                    block: ctx.block,
+                    severity: ctx.config.severity(rule_id, Severity::Advisory),
+                    pillar: Pillar::Complexity,
+                },
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
                     remediation: Some(

@@ -23,15 +23,17 @@ pub(crate) fn push_performance_finding(
     findings: &mut Vec<Finding>,
 ) {
     findings.push(block_finding_with_extras(
-        check.rule_id,
-        format!(
-            "Function `{}` calls {} inside a loop {} time(s).",
-            block.name, check.label, occurrences
-        ),
-        file,
-        block,
-        check.severity,
-        Pillar::Waste,
+        BlockFindingDescriptor {
+            rule_id: check.rule_id,
+            message: format!(
+                "Function `{}` calls {} inside a loop {} time(s).",
+                block.name, check.label, occurrences
+            ),
+            file,
+            block,
+            severity: check.severity,
+            pillar: Pillar::Waste,
+        },
         BlockFindingExtras {
             confidence: check.confidence,
             remediation: Some(check.remediation.to_string()),
@@ -58,15 +60,17 @@ pub(crate) fn analyse_concurrency_block(
             .is_match(searchable_body)
         {
             findings.push(block_finding_with_extras(
-                "concurrency.unbounded-channel",
-                format!(
-                    "Function `{}` creates an unbounded channel.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Advisory,
-                Pillar::Waste,
+                BlockFindingDescriptor {
+                    rule_id: "concurrency.unbounded-channel",
+                    message: format!(
+                        "Function `{}` creates an unbounded channel.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    severity: Severity::Advisory,
+                    pillar: Pillar::Waste,
+                },
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
                     remediation: Some(
@@ -95,15 +99,17 @@ pub(crate) fn analyse_async_blocking_calls(
     for (pattern, label) in blocking_patterns {
         if searchable_body.contains(pattern) {
             findings.push(block_finding_with_extras(
-                    "concurrency.blocking-call-in-async",
-                    format!(
-                        "Async function `{}` calls blocking API `{label}`.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    Severity::Warning,
-                    Pillar::Waste,
+                    BlockFindingDescriptor {
+                        rule_id: "concurrency.blocking-call-in-async",
+                        message: format!(
+                            "Async function `{}` calls blocking API `{label}`.",
+                            block.name
+                        ),
+                        file,
+                        block,
+                        severity: Severity::Warning,
+                        pillar: Pillar::Waste,
+                    },
                     BlockFindingExtras {
                         confidence: Confidence::Medium,
                         remediation: Some(
@@ -148,15 +154,17 @@ pub(crate) fn analyse_lock_across_await(
             && !dropped_before_await
         {
             findings.push(block_finding_with_extras(
-                "concurrency.lock-across-await",
-                format!(
-                    "Async function `{}` appears to hold lock guard `{guard}` across await.",
-                    block.name
-                ),
-                file,
-                block,
-                Severity::Warning,
-                Pillar::Waste,
+                BlockFindingDescriptor {
+                    rule_id: "concurrency.lock-across-await",
+                    message: format!(
+                        "Async function `{}` appears to hold lock guard `{guard}` across await.",
+                        block.name
+                    ),
+                    file,
+                    block,
+                    severity: Severity::Warning,
+                    pillar: Pillar::Waste,
+                },
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
                     remediation: Some(
@@ -189,17 +197,17 @@ pub(crate) fn analyse_ignored_test(
     findings: &mut Vec<Finding>,
 ) {
     if block.ignore_without_reason {
-        findings.push(block_finding(
-            "test-quality.ignored-without-reason",
-            format!(
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "test-quality.ignored-without-reason",
+            message: format!(
                 "Ignored test `{}` does not explain why it is skipped.",
                 block.name
             ),
             file,
             block,
-            Severity::Advisory,
-            Pillar::TestQuality,
-        ));
+            severity: Severity::Advisory,
+            pillar: Pillar::TestQuality,
+        }));
     }
 }
 
@@ -213,15 +221,17 @@ pub(crate) fn analyse_test_size(
     let threshold = config.threshold(rule_id, 80.0) as usize;
     if block.line_count > threshold {
         findings.push(block_finding_with_metadata(
-            rule_id,
-            format!(
-                "Test `{}` has {} lines, above the threshold of {threshold}.",
-                block.name, block.line_count
-            ),
-            file,
-            block,
-            config.severity(rule_id, Severity::Advisory),
-            Pillar::TestQuality,
+            BlockFindingDescriptor {
+                rule_id,
+                message: format!(
+                    "Test `{}` has {} lines, above the threshold of {threshold}.",
+                    block.name, block.line_count
+                ),
+                file,
+                block,
+                severity: config.severity(rule_id, Severity::Advisory),
+                pillar: Pillar::TestQuality,
+            },
             json!({ "lines": block.line_count }),
         ));
     }
@@ -234,14 +244,14 @@ pub(crate) fn analyse_test_assertions(
     findings: &mut Vec<Finding>,
 ) {
     if has_trivial_assertion(searchable_body) {
-        findings.push(block_finding(
-            "test-quality.trivial-assertion",
-            format!("Test `{}` contains a trivial assertion.", block.name),
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "test-quality.trivial-assertion",
+            message: format!("Test `{}` contains a trivial assertion.", block.name),
             file,
             block,
-            Severity::Warning,
-            Pillar::TestQuality,
-        ));
+            severity: Severity::Warning,
+            pillar: Pillar::TestQuality,
+        }));
     }
 
     if !static_regex(
@@ -250,17 +260,17 @@ pub(crate) fn analyse_test_assertions(
     )
     .is_match(searchable_body)
     {
-        findings.push(block_finding(
-            "test-quality.no-assertions",
-            format!(
+        findings.push(block_finding(BlockFindingDescriptor {
+            rule_id: "test-quality.no-assertions",
+            message: format!(
                 "Test `{}` does not appear to make an assertion.",
                 block.name
             ),
             file,
             block,
-            Severity::Warning,
-            Pillar::TestQuality,
-        ));
+            severity: Severity::Warning,
+            pillar: Pillar::TestQuality,
+        }));
     }
 }
 
@@ -272,14 +282,14 @@ pub(crate) fn analyse_test_regex_checks(
 ) {
     for rule in TEST_CHECKS {
         if static_regex(rule.regex, rule.pattern).is_match(searchable_body) {
-            findings.push(block_finding(
-                rule.rule_id,
-                rule.message,
+            findings.push(block_finding(BlockFindingDescriptor {
+                rule_id: rule.rule_id,
+                message: rule.message.into(),
                 file,
                 block,
-                Severity::Advisory,
-                Pillar::TestQuality,
-            ));
+                severity: Severity::Advisory,
+                pillar: Pillar::TestQuality,
+            }));
         }
     }
 }
@@ -383,33 +393,33 @@ impl LineRuleContext<'_> {
             return;
         }
         match find_nearby_safety_rationale(self.raw_lines, line_index) {
-            None => findings.push(finding(
-                "security.unsafe-block",
-                "Unsafe block lacks a nearby SAFETY rationale.",
-                self.file,
-                Some(line_number),
-                Severity::Warning,
-                Pillar::Security,
-            )),
+            None => findings.push(finding(SimpleFindingDescriptor {
+                rule_id: "security.unsafe-block",
+                message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
+                file: self.file,
+                line: Some(line_number),
+                severity: Severity::Warning,
+                pillar: Pillar::Security,
+            })),
             Some(rationale) if is_weak_safety_rationale(&rationale) => {
-                findings.push(Finding::new(
-                        "docs.weak-safety-rationale",
-                        format!(
+                findings.push(Finding::new(FindingDescriptor {
+                        rule_id: "docs.weak-safety-rationale".to_string(),
+                        message: format!(
                             "Unsafe block's SAFETY rationale is too short or vague: `{}`.",
                             rationale.trim()
                         ),
-                        self.file.display_path.clone(),
-                        Some(line_number),
-                        Severity::Advisory,
-                        Pillar::Documentation,
-                        Confidence::Medium,
-                        None,
-                        Some(
+                        file_path: self.file.display_path.clone(),
+                        line: Some(line_number),
+                        severity: Severity::Advisory,
+                        pillar: Pillar::Documentation,
+                        confidence: Confidence::Medium,
+                        symbol: None,
+                        remediation: Some(
                             "Explain the invariants the caller must uphold or why the operation is sound."
                                 .to_string(),
                         ),
-                        json!({ "rationale": rationale.trim() }),
-                    ));
+                        metadata: json!({ "rationale": rationale.trim() }),
+                    }));
             }
             Some(_) => {}
         }
@@ -420,14 +430,14 @@ impl LineRuleContext<'_> {
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
         {
-            findings.push(finding(
-                "waste.unwrap-expect",
-                "unwrap()/expect() can turn recoverable errors into panics.",
-                self.file,
-                Some(line_number),
-                Severity::Advisory,
-                Pillar::Waste,
-            ));
+            findings.push(finding(SimpleFindingDescriptor {
+                rule_id: "waste.unwrap-expect",
+                message: "unwrap()/expect() can turn recoverable errors into panics.".into(),
+                file: self.file,
+                line: Some(line_number),
+                severity: Severity::Advisory,
+                pillar: Pillar::Waste,
+            }));
         }
 
         if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
@@ -435,14 +445,14 @@ impl LineRuleContext<'_> {
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
         {
-            findings.push(finding(
-                "waste.unnecessary-clone-candidate",
-                "clone() call may be avoidable; confirm ownership requires it.",
-                self.file,
-                Some(line_number),
-                Severity::Advisory,
-                Pillar::Waste,
-            ));
+            findings.push(finding(SimpleFindingDescriptor {
+                rule_id: "waste.unnecessary-clone-candidate",
+                message: "clone() call may be avoidable; confirm ownership requires it.".into(),
+                file: self.file,
+                line: Some(line_number),
+                severity: Severity::Advisory,
+                pillar: Pillar::Waste,
+            }));
         }
     }
 }
@@ -459,14 +469,14 @@ pub(crate) fn analyse_process_commands(
     let searchable = strip_rust_string_literals(source);
     for (line_index, line) in searchable.lines().enumerate() {
         if command_regex.is_match(line) {
-            findings.push(finding(
-                    "security.process-command",
-                    "Process command execution is used; validate command arguments are not user-controlled.",
+            findings.push(finding(SimpleFindingDescriptor {
+                    rule_id: "security.process-command",
+                    message: "Process command execution is used; validate command arguments are not user-controlled.".into(),
                     file,
-                    Some(line_index + 1),
-                    Severity::Warning,
-                    Pillar::Security,
-                ));
+                    line: Some(line_index + 1),
+                    severity: Severity::Warning,
+                    pillar: Pillar::Security,
+                }));
         }
     }
 }

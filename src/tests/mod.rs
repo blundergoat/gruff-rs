@@ -68,44 +68,57 @@ fn test_finding(
     severity: Severity,
     pillar: Pillar,
 ) -> Finding {
-    test_finding_with_confidence(rule_id, file_path, line, severity, pillar, Confidence::High)
+    test_finding_with_confidence(
+        rule_id,
+        file_path,
+        line,
+        TestFindingClassification {
+            severity,
+            pillar,
+            confidence: Confidence::High,
+        },
+    )
+}
+
+pub(crate) struct TestFindingClassification {
+    pub(crate) severity: Severity,
+    pub(crate) pillar: Pillar,
+    pub(crate) confidence: Confidence,
 }
 
 fn test_finding_with_confidence(
     rule_id: &str,
     file_path: &str,
     line: usize,
-    severity: Severity,
-    pillar: Pillar,
-    confidence: Confidence,
+    classification: TestFindingClassification,
 ) -> Finding {
-    Finding::new(
-        rule_id,
-        format!("{rule_id} message"),
-        file_path,
-        Some(line),
-        severity,
-        pillar,
-        confidence,
-        Some("symbol".to_string()),
-        Some("Remediate the issue.".to_string()),
-        json!({}),
-    )
+    Finding::new(FindingDescriptor {
+        rule_id: rule_id.to_string(),
+        message: format!("{rule_id} message"),
+        file_path: file_path.to_string(),
+        line: Some(line),
+        severity: classification.severity,
+        pillar: classification.pillar,
+        confidence: classification.confidence,
+        symbol: Some("symbol".to_string()),
+        remediation: Some("Remediate the issue.".to_string()),
+        metadata: json!({}),
+    })
 }
 
 fn sample_report() -> AnalysisReport {
-    let findings = vec![Finding::new(
-        "security.process-command",
-        "Use <escaped> command & args",
-        "src/lib.rs",
-        Some(7),
-        Severity::Warning,
-        Pillar::Security,
-        Confidence::High,
-        Some("run".to_string()),
-        Some("Validate command arguments.".to_string()),
-        json!({}),
-    )];
+    let findings = vec![Finding::new(FindingDescriptor {
+        rule_id: "security.process-command".to_string(),
+        message: "Use <escaped> command & args".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        line: Some(7),
+        severity: Severity::Warning,
+        pillar: Pillar::Security,
+        confidence: Confidence::High,
+        symbol: Some("run".to_string()),
+        remediation: Some("Validate command arguments.".to_string()),
+        metadata: json!({}),
+    })];
     sample_report_with(findings, Vec::new())
 }
 

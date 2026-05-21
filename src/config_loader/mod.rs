@@ -10,7 +10,7 @@ pub(crate) use exclusions::{
     apply_exclusions_section, required_config_string, required_non_empty_config_string,
 };
 pub(crate) use rule_settings::{
-    apply_custom_rule_settings, apply_selector_settings, insert_rule_setting,
+    apply_custom_rule_settings, apply_selector_settings, insert_rule_setting, RuleSources,
 };
 #[cfg(test)]
 pub(crate) use selectors::expand_rule_selector;
@@ -148,8 +148,10 @@ pub(crate) fn apply_rules_section(rules_value: &Value, config: &mut Config) -> R
         insert_rule_setting(
             key,
             rule_value,
-            &registry,
-            &config.custom_rules,
+            RuleSources {
+                registry: &registry,
+                custom_rules: &config.custom_rules,
+            },
             &mut config.rule_settings,
             "rules",
         )?;

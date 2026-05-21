@@ -140,7 +140,7 @@ impl RunOutcome {
         if report
             .findings
             .iter()
-            .any(|finding| fail_on.triggered_by(finding.severity))
+            .any(|finding| fail_on.is_triggered_by_severity(finding.severity))
         {
             return Self::ThresholdHit;
         }
@@ -238,7 +238,7 @@ impl FailThreshold {
         }
     }
 
-    pub(crate) fn triggered_by(self, severity: Severity) -> bool {
+    pub(crate) fn is_triggered_by_severity(self, severity: Severity) -> bool {
         match self {
             Self::None => false,
             Self::Advisory => true,

@@ -80,14 +80,14 @@ pub(crate) fn halstead_volume_skips_string_literal_tokens() {
         },
     )
     .expect("analysis succeeds");
-    let hv: Vec<&Finding> = report
+    let halstead_findings: Vec<&Finding> = report
         .findings
         .iter()
         .filter(|finding| finding.rule_id == "metrics.halstead-volume")
         .collect();
     assert!(
-        hv.is_empty(),
-        "long format!(concat!(...)) template must stay below halstead threshold; findings={hv:?}"
+        halstead_findings.is_empty(),
+        "long format!(concat!(...)) template must stay below halstead threshold; findings={halstead_findings:?}"
     );
 }
 
