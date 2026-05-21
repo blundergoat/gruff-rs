@@ -2,22 +2,12 @@ use super::*;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::tempdir;
 
-mod baseline;
 mod calibration;
-mod calibration_extras;
-mod config;
-mod custom_rules;
-mod diff;
-mod exclusions;
-mod false_positive_guards;
-mod idiomatic_handling;
-mod project_model;
-mod project_rules;
+mod config_and_selectors;
+mod project_tests;
 mod renderers;
-mod rust_rules;
-mod sarif;
-mod selectors;
-mod smoke;
+mod rule_behaviours;
+mod scenarios;
 
 pub(crate) use calibration::*;
 

@@ -1,0 +1,18 @@
+//! Wrapper module that groups the per-block Rust rule submodules. Files
+//! continue to live alongside `mod.rs` and are pulled in via `#[path]`
+//! so that the top-level `built_in_rules` keeps a low module fan-out.
+pub(crate) use super::*;
+
+#[path = "blocks.rs"]
+mod blocks;
+#[path = "function_block_metrics.rs"]
+mod function_block_metrics;
+#[path = "function_block_rules.rs"]
+mod function_block_rules;
+#[path = "test_rules.rs"]
+mod test_rules;
+
+pub(crate) use blocks::*;
+pub(crate) use function_block_metrics::*;
+pub(crate) use function_block_rules::*;
+pub(crate) use test_rules::*;

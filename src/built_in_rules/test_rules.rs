@@ -1,5 +1,38 @@
 use super::*;
 
+static TEST_ASSERTION_REGEX: OnceLock<Regex> = OnceLock::new();
+static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+static LOOP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
+static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+
+const TEST_CHECKS: &[RegexRule] = &[
+    RegexRule {
+        rule_id: "test-quality.sleep-in-test",
+        regex: &SLEEP_IN_TEST_REGEX,
+        pattern: r"(std::thread::sleep|tokio::time::sleep)",
+        message: "Test sleeps instead of synchronising on behaviour.",
+    },
+    RegexRule {
+        rule_id: "test-quality.loop-in-test",
+        regex: &LOOP_IN_TEST_REGEX,
+        pattern: r"\b(for|while|loop)\b",
+        message: "Test contains loop logic.",
+    },
+    RegexRule {
+        rule_id: "test-quality.conditional-logic",
+        regex: &CONDITIONAL_LOGIC_REGEX,
+        pattern: r"\b(if|match)\b",
+        message: "Test contains conditional logic.",
+    },
+    RegexRule {
+        rule_id: "test-quality.unwrap-in-test",
+        regex: &UNWRAP_IN_TEST_REGEX,
+        pattern: r"\.unwrap\(\)",
+        message: "Test uses unwrap(), which can hide setup intent.",
+    },
+];
+
 pub(crate) fn analyse_test_block(
     file: &SourceFile,
     block: &FunctionBlock,

@@ -287,16 +287,7 @@ exclude:
     paths:
       - src/tests/calibration/cases_*.rs
     reason: Calibration positive case for the sensitive-data rule embeds a synthetic KEY=value literal in a raw string fixture so the analyzer can verify the rule fires; the value is not a real secret.
-  - rule: architecture.large-module
-    paths:
-      - src/main.rs
-      - src/render.rs
-      - src/analyse_project.rs
-      - src/built_in_rules/mod.rs
-    reason: "These modules sit at the natural decomposition boundaries of the project: main.rs is the binary entry-point + CLI surface, render.rs is the output-format dispatcher across many formats, analyse_project.rs runs every project-level rule, and built_in_rules/mod.rs is the rule registry coordinator. Each item is small and the modules are cohesive; splitting further would fragment unified concerns. Tracked as residual architectural debt for v0.2."
   - rule: architecture.module-fan-out
     paths:
       - src/main.rs
-      - src/tests/mod.rs
-      - src/built_in_rules/mod.rs
-    reason: "main.rs declares the binary's top-level modules; src/tests/mod.rs aggregates per-feature test files; src/built_in_rules/mod.rs aggregates the rule-category submodules. All three are intentional aggregation points where a high mod count is the design, not technical debt."
+    reason: "src/main.rs is the binary crate root; declaring all top-level modules here is the only legal place to do so. The rule's threshold (8) is calibrated for typical mid-tree modules, not for binary entry points. Grouping these modules under intermediate parents would add nesting without improving cohesion."
