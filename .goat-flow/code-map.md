@@ -12,9 +12,28 @@
 ## Source
 
 `src/` = Rust source directory.
-`src/main.rs` = CLI orchestration, Git-ignore-aware source discovery, analyzer pipeline, patch-input diff filtering, parsed source/project context construction, config loading, regex custom-rule loading/evaluation, text/markdown/github/hotspot/SARIF renderers, dashboard server, path helpers, built-in rule dispatch module, metric/performance helpers, and unit tests.
+`src/main.rs` = Entry point and command dispatch: `main`, `run_summary`, `run_report`, `options_from_analyse`/`options_from_report`, the `analyse_source` rule-dispatch shim, scan-timing instrumentation (`Instant::now()` around `run_analysis`), and a few orchestration helpers (`changed_files`, etc.). Most subsystem responsibilities live in dedicated modules below.
+`src/cli/` = Clap argument structs (`AnalyseArgs`, `ReportArgs`, `SummaryArgs`, `DashboardArgs`, `ListRulesArgs`, `CompletionArgs`) in `args.rs`; CLI enum, `GlobalOptions`, `OutputWriter`, and `RunOutcome::classify` in `mod.rs`. Owns the `--help` template and the `paths` positional whose default is the current directory.
+`src/analysis.rs` = `run_analysis` entry point: builds `AnalysisOptions`, drives discovery + per-source analysis + project-wide analysis, assembles the final `AnalysisReport` (schema `gruff.analysis.v1`).
+`src/discovery.rs` = Git-ignore-aware source discovery; `resolve_input_paths` defaults empty paths to `["."]` and routes through the `ignore` crate's `WalkBuilder`.
+`src/source.rs` = `SourceFile` and `SourceUnit` types plus parser invocation.
+`src/parser.rs` = Rust file parsing via `syn`; emits `parse-error` diagnostics on failure while preserving text-only rule coverage.
+`src/project/` = Project-wide aggregation (`mod.rs` builds `ProjectContext` and the identifier-count index used by cross-file dead-code analysis via `count_rust_identifiers`; `items.rs` collects project-wide item definitions; `manifest.rs`/`lockfile.rs` parse `Cargo.toml`/`Cargo.lock`).
+`src/analyse_project/` = Project-wide rule pillars: `mod.rs` orchestrator, `architecture.rs`, `dead_code.rs`, `dependencies.rs`.
+`src/built_in_rules/` = Per-source built-in rules organised by concern: `behavior_rules`, `naming_rules`, `secret_rules`, `text_rules`, `waste_rules`, `concurrency_rules`, `perf_rules`, `test_rules`, plus shared `helpers`, `predicates`, `function_block_metrics`, etc. `mod.rs` exposes the `analyse` entry point.
+`src/custom_rules.rs` = Regex-based custom rule evaluator (config-loaded; `custom.<slug>` namespace).
+`src/config.rs` = `Config`, `AnalysisOptions`, `RequestedScope` (the empty-paths→`["."]` default also lives here for renderer view-models), `FailThreshold`, `DiffSelection`.
+`src/config_loader/` = YAML config loading (`mod.rs`) plus split modules for `custom_rules`, `exclusions`, `rule_settings`, and `selectors` (selector DSL).
+`src/diff.rs` = Patch-input diff filtering for `--diff-patch`/`--diff` modes (post-analysis filter, preserves finding identity).
+`src/baseline.rs` = `gruff-baseline.json` read/write and finding match logic.
+`src/report.rs` = Public report types: `AnalysisReport`, `Finding`, `Summary`, `PathSummary`, `RunInfo`, `ToolInfo`, `ScoreReport`, `RunDiagnostic`, `BaselineReport`, and finding fingerprinting.
+`src/scoring.rs` = Composite scoring, per-pillar scoring, grade-letter mapping, and top-offenders selection.
+`src/summary.rs` = `gruff-rs summary` digest renderer: text scan card + per-pillar / top-rules / top-files digest, and `gruff.summary.v1` JSON.
+`src/render/` = Output formatters: `text.rs` (scan-card header + findings + diagnostics + suppressions), `markdown.rs`, `github.rs` (Actions annotations), `hotspot.rs` (top-offenders JSON), `sarif.rs` (SARIF v2.1.0 emitter and helpers). `mod.rs` dispatches by `OutputFormat` and threads `Option<u128>` scan duration into text only.
 `src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
+`src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, `/health`, `/favicon.ico` routes, and the form/iframe shell.
 `src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split across `definitions_a.rs` and `definitions_b.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
+`src/tests/` = Unit and integration tests grouped by concern (`scenarios/`, `rule_behaviours/`, `project_tests/`, `config_and_selectors/`, `renderers/`, `calibration/`).
 
 ## Fixtures
 

@@ -15,6 +15,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
@@ -132,10 +133,13 @@ fn main() -> ExitCode {
         Commands::Analyse(args) => {
             let options = options_from_analyse(args);
             let scope = RequestedScope::from_options(&options);
+            let started = Instant::now();
             match run_analysis(&options) {
                 Ok(report) => {
+                    let duration_ms = Some(started.elapsed().as_millis());
                     let outcome = RunOutcome::classify(&report, options.fail_on);
-                    let rendered = render_report_with_scope(&report, &scope, options.format);
+                    let rendered =
+                        render_report_with_scope(&report, &scope, options.format, duration_ms);
                     writer.emit(outcome, &rendered);
                     outcome.exit_code()
                 }
@@ -175,14 +179,14 @@ fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
     }
 }
 
-fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
+fn options_from_report(args: &ReportArgs) -> AnalysisOptions {
     let format = match args.format {
         ReportFormat::Html => OutputFormat::Html,
         ReportFormat::Json => OutputFormat::Json,
     };
-    let options = AnalysisOptions {
-        paths: args.paths,
-        config: args.config,
+    AnalysisOptions {
+        paths: args.paths.clone(),
+        config: args.config.clone(),
         no_config: args.no_config,
         format,
         fail_on: args.fail_on,
@@ -192,13 +196,18 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
         baseline: None,
         generate_baseline: None,
         no_baseline: args.no_baseline,
-    };
+    }
+}
 
+fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
+    let options = options_from_report(&args);
     let scope = RequestedScope::from_options(&options);
+    let started = Instant::now();
     match run_analysis(&options) {
         Ok(report) => {
+            let duration_ms = Some(started.elapsed().as_millis());
             let outcome = RunOutcome::classify(&report, args.fail_on);
-            let rendered = render_report_with_scope(&report, &scope, format);
+            let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             if let Some(output) = args.output {
                 if let Err(error) = fs::write(&output, rendered) {
                     eprintln!("gruff-rs: unable to write {}: {error}", output.display());
@@ -386,10 +395,12 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
         no_baseline: false,
     };
 
+    let started = Instant::now();
     match run_analysis(&options) {
         Ok(report) => {
+            let duration_ms = started.elapsed().as_millis();
             let outcome = RunOutcome::classify(&report, FailThreshold::None);
-            let rendered = summary::render(&report, args.top, args.format);
+            let rendered = summary::render(&report, args.top, args.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()
         }

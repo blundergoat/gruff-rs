@@ -11,13 +11,14 @@ pub(crate) use sarif::{sarif_physical_location_from_parts, sarif_uri};
 
 #[cfg(test)]
 pub(crate) fn render_report(report: &AnalysisReport, format: OutputFormat) -> String {
-    render_report_with_scope(report, &RequestedScope::default(), format)
+    render_report_with_scope(report, &RequestedScope::default(), format, None)
 }
 
 pub(crate) fn render_report_with_scope(
     report: &AnalysisReport,
     scope: &RequestedScope,
     format: OutputFormat,
+    duration_ms: Option<u128>,
 ) -> String {
     match format {
         OutputFormat::Json => serde_json::to_string_pretty(report).expect("report serializes"),
@@ -26,7 +27,7 @@ pub(crate) fn render_report_with_scope(
         OutputFormat::Markdown => markdown::render_markdown(report),
         OutputFormat::Github => github::render_github(report),
         OutputFormat::Hotspot => hotspot::render_hotspot(report),
-        OutputFormat::Text => text::render_text(report),
+        OutputFormat::Text => text::render_text(report, duration_ms),
     }
 }
 

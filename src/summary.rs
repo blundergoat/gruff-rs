@@ -7,10 +7,15 @@ use std::fmt::Write as _;
 const SCHEMA_VERSION: &str = "gruff.summary.v1";
 
 /// Render a compact summary view from a full analysis report.
-pub(crate) fn render(report: &AnalysisReport, top: usize, format: SummaryFormat) -> String {
+pub(crate) fn render(
+    report: &AnalysisReport,
+    top: usize,
+    format: SummaryFormat,
+    duration_ms: u128,
+) -> String {
     let digest = SummaryDigest::build(report, top);
     match format {
-        SummaryFormat::Text => render_text(&digest),
+        SummaryFormat::Text => render_text(report, &digest, duration_ms),
         SummaryFormat::Json => render_json(report, &digest),
     }
 }
@@ -114,14 +119,86 @@ fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
         .collect()
 }
 
-fn render_text(digest: &SummaryDigest) -> String {
+fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u128) -> String {
     let mut out = String::new();
+    render_scan_card(&mut out, report, duration_ms);
+    out.push('\n');
     render_pillars_text(&mut out, &digest.pillars);
     out.push('\n');
     render_rules_text(&mut out, &digest.top_rules);
     out.push('\n');
     render_files_text(&mut out, &digest.top_files);
     out.trim_end_matches('\n').to_string()
+}
+
+fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128) {
+    let _ = writeln!(
+        out,
+        "{} {}  ·  project: {}  ·  files: {}  ·  duration: {}",
+        report.tool.name,
+        report.tool.version,
+        display_project_root(&report.run.project_root),
+        report.paths.analysed_files,
+        format_duration(duration_ms),
+    );
+
+    let mut score_line = format!(
+        "Score: {:.1} ({})  ·  Findings: {} error · {} warning · {} advisory",
+        report.score.composite,
+        report.score.grade,
+        report.summary.error,
+        report.summary.warning,
+        report.summary.advisory,
+    );
+    if let Some(baseline) = &report.baseline {
+        let _ = write!(
+            score_line,
+            "  ·  baseline: {} suppressed",
+            baseline.suppressed
+        );
+    }
+    if !report.diagnostics.is_empty() {
+        let _ = write!(score_line, "  ·  diagnostics: {}", report.diagnostics.len());
+    }
+    if !report.paths.missing_paths.is_empty() {
+        let _ = write!(
+            score_line,
+            "  ·  missing paths: {}",
+            report.paths.missing_paths.len()
+        );
+    }
+    out.push_str(&score_line);
+    out.push('\n');
+}
+
+fn format_duration(duration_ms: u128) -> String {
+    if duration_ms < 1_000 {
+        format!("{duration_ms}ms")
+    } else if duration_ms < 60_000 {
+        format!("{:.2}s", duration_ms as f64 / 1_000.0)
+    } else {
+        let secs = duration_ms / 1_000;
+        let minutes = secs / 60;
+        let remainder = secs % 60;
+        format!("{minutes}m{remainder:02}s")
+    }
+}
+
+fn display_project_root(project_root: &str) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = home.to_string_lossy();
+        if !home.is_empty() {
+            if project_root == home.as_ref() {
+                return "~".to_string();
+            }
+            if let Some(rest) = project_root.strip_prefix(home.as_ref()) {
+                if rest.starts_with('/') {
+                    return format!("~{rest}");
+                }
+            }
+        }
+    }
+    project_root.to_string()
 }
 
 fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {

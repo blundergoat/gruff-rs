@@ -8,6 +8,7 @@ const SUBCOMMAND_HELP_TEMPLATE: &str = "\
 #[derive(Args, Clone)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct AnalyseArgs {
+    /// Files or directories to scan. Defaults to the current directory.
     #[arg(value_name = "paths")]
     pub(crate) paths: Vec<PathBuf>,
     #[arg(long)]
@@ -39,6 +40,7 @@ pub(crate) struct AnalyseArgs {
 #[derive(Args)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct ReportArgs {
+    /// Files or directories to scan. Defaults to the current directory.
     #[arg(value_name = "paths")]
     pub(crate) paths: Vec<PathBuf>,
     #[arg(long, default_value = "html")]
@@ -85,6 +87,7 @@ pub(crate) struct ListRulesArgs {
 #[derive(Args, Clone)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct SummaryArgs {
+    /// Files or directories to scan. Defaults to the current directory.
     #[arg(value_name = "paths")]
     pub(crate) paths: Vec<PathBuf>,
     #[arg(long)]
