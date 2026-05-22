@@ -106,7 +106,7 @@ fn build_dependency_summary(
     dependency: &toml::Value,
     dependency_lines: &HashMap<(String, String), usize>,
 ) -> DependencySummary {
-    let (requirement, path, git) = dependency_source_fields(dependency);
+    let (requirement, path, git, rev) = dependency_source_fields(dependency);
     DependencySummary {
         name: name.to_string(),
         section: section.to_string(),
@@ -117,22 +117,29 @@ fn build_dependency_summary(
         requirement,
         path,
         git,
+        rev,
     }
 }
 
 fn dependency_source_fields(
     dependency: &toml::Value,
-) -> (Option<String>, Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     if let Some(requirement) = dependency.as_str() {
-        return (Some(requirement.to_string()), None, None);
+        return (Some(requirement.to_string()), None, None, None);
     }
     let Some(table) = dependency.as_table() else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     (
         table_str_field(table, "version"),
         table_str_field(table, "path"),
         table_str_field(table, "git"),
+        table_str_field(table, "rev"),
     )
 }
 

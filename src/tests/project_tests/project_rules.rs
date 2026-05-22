@@ -15,6 +15,7 @@ edition = "2021"
 [dependencies]
 wildcard = "*"
 gitdep = { git = "https://example.invalid/repo.git", rev = "1111111111111111111111111111111111111111" }
+gitunpinned = { git = "https://example.invalid/unpinned.git" }
 pathdep = { path = "../local-path" }
 "#,
         )
@@ -51,6 +52,7 @@ version = "3.0.0"
 
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     assert_has_rule(&report, "dependency.git-source");
+    assert_has_rule(&report, "dependency.git-unpinned-revision");
     assert_has_rule(&report, "dependency.path-source");
     assert_has_rule(&report, "dependency.wildcard-version");
     assert_has_rule(&report, "dependency.duplicate-locked-version");
@@ -65,6 +67,16 @@ version = "3.0.0"
     assert_eq!(git.line, Some(8));
     assert_eq!(git.symbol.as_deref(), Some("gitdep"));
     assert_eq!(git.pillar, Pillar::Security);
+
+    let unpinned = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "dependency.git-unpinned-revision")
+        .expect("unpinned git source finding");
+    assert_eq!(unpinned.file_path, "Cargo.toml");
+    assert_eq!(unpinned.line, Some(9));
+    assert_eq!(unpinned.symbol.as_deref(), Some("gitunpinned"));
+    assert_eq!(unpinned.pillar, Pillar::Security);
 
     let metadata = report
         .findings
@@ -91,7 +103,7 @@ version = "3.0.0"
         .find(|pillar| pillar.pillar == Pillar::Security)
         .expect("security score");
     assert!(
-        security.findings >= 4,
+        security.findings >= 5,
         "expected dependency findings to affect security: {security:?}"
     );
 }
@@ -136,6 +148,7 @@ version = "1.0.0"
     )
     .expect("clean analysis succeeds");
     assert_missing_rule(&clean, "dependency.git-source");
+    assert_missing_rule(&clean, "dependency.git-unpinned-revision");
     assert_missing_rule(&clean, "dependency.path-source");
     assert_missing_rule(&clean, "dependency.wildcard-version");
     assert_missing_rule(&clean, "dependency.duplicate-locked-version");

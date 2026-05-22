@@ -115,6 +115,26 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
 
 pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
     rule_definition!(
+        "ci.github-event-shell-interpolation",
+        "GitHub event shell interpolation",
+        Pillar::Security,
+        RuleKind::Text,
+        Severity::Warning,
+        Confidence::High,
+        None,
+        "Flags GitHub event values interpolated directly into workflow shell steps.",
+    ),
+    rule_definition!(
+        "config.security-blind-ignore",
+        "Security-blind path ignore",
+        Pillar::Security,
+        RuleKind::Text,
+        Severity::Advisory,
+        Confidence::High,
+        None,
+        "Flags paths.ignore entries that can hide security-relevant files from analysis.",
+    ),
+    rule_definition!(
         "performance.clone-in-loop",
         "Clone in loop",
         Pillar::Waste,
@@ -153,6 +173,16 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags process command construction for manual argument validation.",
+    ),
+    rule_definition!(
+        "security.tls-verification-disabled",
+        "TLS verification disabled",
+        Pillar::Security,
+        RuleKind::Rust,
+        Severity::Warning,
+        Confidence::High,
+        None,
+        "Flags explicit TLS certificate or hostname verification bypasses.",
     ),
     rule_definition!(
         "security.unsafe-block",

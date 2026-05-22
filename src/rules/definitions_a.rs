@@ -121,6 +121,16 @@ pub(crate) const DEPENDENCY_RULES: &[RuleDefinition] = &[
         "Flags dependencies sourced directly from git repositories.",
     ),
     rule_definition!(
+        "dependency.git-unpinned-revision",
+        "Git dependency without fixed revision",
+        Pillar::Security,
+        RuleKind::Project,
+        Severity::Warning,
+        Confidence::High,
+        None,
+        "Flags git dependencies that do not pin a fixed rev.",
+    ),
+    rule_definition!(
         "dependency.missing-package-metadata",
         "Missing package metadata",
         Pillar::Documentation,

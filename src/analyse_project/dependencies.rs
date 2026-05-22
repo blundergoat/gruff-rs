@@ -68,6 +68,7 @@ pub(crate) fn analyse_manifest_dependency(
     findings: &mut Vec<Finding>,
 ) {
     analyse_git_dependency(manifest, dependency, config, findings);
+    analyse_unpinned_git_dependency(manifest, dependency, config, findings);
     analyse_path_dependency(manifest, dependency, config, findings);
     analyse_wildcard_dependency(manifest, dependency, config, findings);
 }
@@ -95,6 +96,36 @@ pub(crate) fn analyse_git_dependency(
                 symbol: Some(dependency.name.clone()),
                 remediation: Some(
                     "Prefer a crates.io release, or pin and review the git dependency.".to_string(),
+                ),
+                metadata: json!({ "section": dependency.section, "git": git }),
+            }));
+        }
+    }
+}
+
+pub(crate) fn analyse_unpinned_git_dependency(
+    manifest: &ManifestSummary,
+    dependency: &DependencySummary,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    if let Some(git) = &dependency.git {
+        let rule_id = "dependency.git-unpinned-revision";
+        if config.is_rule_enabled(rule_id) && is_missing_text(dependency.rev.as_deref()) {
+            findings.push(Finding::new(FindingDescriptor {
+                rule_id: rule_id.to_string(),
+                message: format!(
+                    "Dependency `{}` in `{}` uses a git source without a fixed rev.",
+                    dependency.name, dependency.section
+                ),
+                file_path: manifest.file_path.clone(),
+                line: Some(dependency.line),
+                severity: Severity::Warning,
+                pillar: Pillar::Security,
+                confidence: Confidence::High,
+                symbol: Some(dependency.name.clone()),
+                remediation: Some(
+                    "Pin git dependencies with a reviewed `rev` commit hash.".to_string(),
                 ),
                 metadata: json!({ "section": dependency.section, "git": git }),
             }));

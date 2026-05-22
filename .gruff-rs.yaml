@@ -28,6 +28,7 @@ allowlists:
     - "BEGI... KEY (redacted, 21 chars)"
     - "sk_t...aaaa (redacted, 32 chars)"
     - "pk_l...aaaa (redacted, 32 chars)"
+    - "rk_l...aaaa (redacted, 32 chars)"
     - "gho_...aaaa (redacted, 40 chars)"
     - "sk-a...aaaa (redacted, 43 chars)"
     - "AIza...aaaa (redacted, 39 chars)"
@@ -51,6 +52,9 @@ rules:
     enabled: true
     threshold: 12
     severity: advisory
+  # Flags GitHub event values interpolated directly into workflow shell steps.
+  ci.github-event-shell-interpolation:
+    enabled: true
   # Flags functions with high cognitive complexity.
   complexity.cognitive:
     enabled: true
@@ -80,6 +84,9 @@ rules:
   # Flags unbounded channel constructors in production code.
   concurrency.unbounded-channel:
     enabled: true
+  # Flags paths.ignore entries that can hide security-relevant files from analysis.
+  config.security-blind-ignore:
+    enabled: true
   # Flags private functions with no same-file call sites.
   dead-code.unused-private-function:
     enabled: true
@@ -93,6 +100,9 @@ rules:
     severity: advisory
   # Flags dependencies sourced directly from git repositories.
   dependency.git-source:
+    enabled: true
+  # Flags git dependencies that do not pin a fixed rev.
+  dependency.git-unpinned-revision:
     enabled: true
   # Flags packages missing description or license metadata.
   dependency.missing-package-metadata:
@@ -173,6 +183,9 @@ rules:
   # Flags process command construction for manual argument validation.
   security.process-command:
     enabled: true
+  # Flags explicit TLS certificate or hostname verification bypasses.
+  security.tls-verification-disabled:
+    enabled: true
   # Flags unsafe blocks without a nearby SAFETY rationale.
   security.unsafe-block:
     enabled: true
@@ -251,6 +264,26 @@ rules:
 
 # Exclusions: per-rule waivers with reasons.
 exclude:
+  - rule: config.security-blind-ignore
+    paths:
+      - .gruff-rs.yaml
+    message_contains: ".agents/**"
+    reason: Agent skill and instruction sources are intentionally excluded from routine repository self-scans; review them through targeted agent-governance changes instead of broad rubric runs.
+  - rule: config.security-blind-ignore
+    paths:
+      - .gruff-rs.yaml
+    message_contains: ".codex/**"
+    reason: Codex hook and local tool configuration is intentionally excluded from routine repository self-scans; review those files through targeted hook/config changes instead of broad rubric runs.
+  - rule: config.security-blind-ignore
+    paths:
+      - .gruff-rs.yaml
+    message_contains: ".github/**"
+    reason: GitHub workflow and repository automation files are intentionally excluded from routine repository self-scans; review them through targeted CI changes instead of broad rubric runs.
+  - rule: config.security-blind-ignore
+    paths:
+      - .gruff-rs.yaml
+    message_contains: ".goat-flow/**"
+    reason: Goat-flow project-memory files are intentionally excluded from routine repository self-scans; review them through milestone and memory updates instead of broad rubric runs.
   - rule: metrics.halstead-volume
     paths:
       - src/tests/calibration/cases_*.rs

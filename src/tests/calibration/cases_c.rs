@@ -33,6 +33,116 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                     )
             }),
         ),
+        case(
+            "security.tls-verification-disabled",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn client() {
+    let _ = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true);
+}
+"#,
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn client() {
+    let _ = reqwest::Client::builder()
+        .danger_accept_invalid_certs(false);
+}
+"#,
+                )
+            }),
+        ),
+        case(
+            "dependency.git-unpinned-revision",
+            Box::new(|root| {
+                calibration_baseline(root);
+                fs::write(
+                    root.join("Cargo.toml"),
+                    r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Calibration baseline."
+license = "MIT"
+
+[dependencies]
+gitdep = { git = "https://example.invalid/repo.git" }
+"#,
+                )
+                .expect("calibration manifest");
+                write_lib(root, "/// Probe.\npub fn entry() {}\n");
+            }),
+            Box::new(|root| {
+                calibration_baseline(root);
+                fs::write(
+                    root.join("Cargo.toml"),
+                    r#"[package]
+name = "calibration-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Calibration baseline."
+license = "MIT"
+
+[dependencies]
+gitdep = { git = "https://example.invalid/repo.git", rev = "1111111111111111111111111111111111111111" }
+"#,
+                )
+                .expect("calibration manifest");
+                write_lib(root, "/// Probe.\npub fn entry() {}\n");
+            }),
+        ),
+        case(
+            "config.security-blind-ignore",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                write_config(
+                    root,
+                    r#"
+paths:
+  ignore:
+    - .github/**
+"#,
+                );
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                write_config(
+                    root,
+                    r#"
+paths:
+  ignore:
+    - target/**
+"#,
+                );
+            }),
+        ),
+        case(
+            "ci.github-event-shell-interpolation",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\njobs:\n  test:\n    steps:\n      - run: echo '${{ github.event.pull_request.title }}'\n",
+                )
+                .expect("workflow write");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\njobs:\n  test:\n    steps:\n      - run: echo '${{ github.ref }}'\n",
+                )
+                .expect("workflow write");
+            }),
+        ),
         // ----- sensitive data -----
         case(
             "sensitive-data.api-key-pattern",

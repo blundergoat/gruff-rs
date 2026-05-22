@@ -213,6 +213,7 @@ pub(crate) fn calibration_api_key_pattern_detects_common_formats() {
 pub fn entry() {{
     let _stripe_test = "sk_test_aaaaaaaaaaaaaaaaaaaaaaaa";
     let _stripe_pub = "pk_live_aaaaaaaaaaaaaaaaaaaaaaaa";
+    let _stripe_restricted = "rk_live_aaaaaaaaaaaaaaaaaaaaaaaa";
     let _github_oauth = "gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let _github_fine_grained = "{github_fine_grained}";
     let _gitlab_token = "{gitlab_token}";
@@ -242,7 +243,7 @@ pub fn entry() {{
         .count();
     assert_eq!(
         api_key_findings,
-        10,
+        11,
         "calibration expected all common synthetic API-key formats to fire; findings={:?}",
         rule_ids(&report)
     );
@@ -335,6 +336,84 @@ pub fn run(command: &str, path: &str, dir: &std::path::Path) {
             "missing `{expected}` from risk signals: {signals:?}"
         );
     }
+}
+
+#[test]
+pub(crate) fn calibration_security_rubric_improvements_have_false_positive_guards() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Probe.
+pub fn tls() {
+    let _dangerous = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true);
+    let _safe = reqwest::Client::builder()
+        .danger_accept_invalid_certs(false);
+}
+"#,
+    );
+    write_config(
+        dir.path(),
+        r#"
+paths:
+  ignore:
+    - .github/**
+    - target/**
+"#,
+    );
+    fs::create_dir_all(dir.path().join(".github/workflows")).expect("workflow dir");
+    fs::write(
+        dir.path().join(".github/workflows/ci.yml"),
+        "name: ci\njobs:\n  test:\n    steps:\n      - run: echo '${{ github.event.pull_request.title }}'\n      - run: echo '${{ github.ref }}'\n",
+    )
+    .expect("workflow write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let tls_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.tls-verification-disabled")
+        .count();
+    let config_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "config.security-blind-ignore")
+        .count();
+    let ci_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "ci.github-event-shell-interpolation")
+        .count();
+
+    assert_eq!(
+        tls_count,
+        1,
+        "TLS guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+    assert_eq!(
+        config_count,
+        1,
+        "config ignore guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+    assert_eq!(
+        ci_count,
+        1,
+        "CI interpolation guard count drifted: {:?}",
+        rule_ids(&report)
+    );
 }
 
 /// Proves that `sensitive-data.hardcoded-env-value` still catches

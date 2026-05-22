@@ -72,6 +72,7 @@ pub(crate) struct DependencySummary {
     pub(crate) requirement: Option<String>,
     pub(crate) path: Option<String>,
     pub(crate) git: Option<String>,
+    pub(crate) rev: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

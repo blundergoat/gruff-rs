@@ -3,6 +3,7 @@ use super::*;
 static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
+static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
@@ -201,6 +202,38 @@ pub(crate) fn analyse_process_commands(
                         line_index
                     ),
                 }),
+            }));
+        }
+    }
+}
+
+pub(crate) fn analyse_tls_verification_disabled(
+    file: &SourceFile,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let regex = static_regex(
+        &TLS_VERIFICATION_DISABLED_REGEX,
+        r"\.(?:danger_accept_invalid_certs|accept_invalid_hostnames)\s*\(\s*true\s*\)",
+    );
+    for (line_index, line) in searchable.lines().enumerate() {
+        if regex.is_match(line) {
+            findings.push(Finding::new(FindingDescriptor {
+                rule_id: "security.tls-verification-disabled".to_string(),
+                message: "TLS certificate or hostname verification is explicitly disabled."
+                    .to_string(),
+                file_path: file.display_path.clone(),
+                line: Some(line_index + 1),
+                severity: Severity::Warning,
+                pillar: Pillar::Security,
+                confidence: Confidence::High,
+                symbol: None,
+                remediation: Some(
+                    "Remove the TLS verification bypass or gate it behind non-production test code."
+                        .to_string(),
+                ),
+                metadata: json!({}),
             }));
         }
     }
