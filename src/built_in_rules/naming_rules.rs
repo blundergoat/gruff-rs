@@ -95,8 +95,7 @@ impl NamingPatternVisitor<'_> {
     }
 
     fn name_is_too_short(&self, name: &str) -> bool {
-        name.len() <= 2
-            && !matches!(name, "i" | "j" | "k")
+        name.len() == 2
             && !name.starts_with('_')
             && !self
                 .config

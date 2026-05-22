@@ -208,16 +208,18 @@ pub(crate) fn analyse_public_module_item(
     item_mod: &syn::ItemMod,
     findings: &mut Vec<Finding>,
 ) {
-    analyse_public_named_item_doc(
-        file,
-        PublicItemDoc {
-            visibility: &item_mod.vis,
-            attrs: &item_mod.attrs,
-            name: item_mod.ident.to_string(),
-            span: item_mod.ident.span(),
-        },
-        findings,
-    );
+    if item_mod.content.is_some() {
+        analyse_public_named_item_doc(
+            file,
+            PublicItemDoc {
+                visibility: &item_mod.vis,
+                attrs: &item_mod.attrs,
+                name: item_mod.ident.to_string(),
+                span: item_mod.ident.span(),
+            },
+            findings,
+        );
+    }
     if let Some((_, items)) = &item_mod.content {
         for nested in items {
             analyse_public_item(file, nested, findings);
@@ -240,11 +242,40 @@ pub(crate) fn analyse_public_struct_item(
         },
         findings,
     );
+    if is_serde_data_struct(item_struct) {
+        return;
+    }
     for field in &item_struct.fields {
         if is_externally_public(&field.vis) {
             push_public_field_finding(file, field.span(), findings);
         }
     }
+}
+
+fn is_serde_data_struct(item_struct: &syn::ItemStruct) -> bool {
+    has_serde_contract_attr(&item_struct.attrs)
+        || item_struct
+            .fields
+            .iter()
+            .any(|field| has_serde_contract_attr(&field.attrs))
+}
+
+fn has_serde_contract_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        if attr.path().is_ident("serde") {
+            return true;
+        }
+        if !attr.path().is_ident("derive") {
+            return false;
+        }
+        match &attr.meta {
+            syn::Meta::List(list) => {
+                let tokens = list.tokens.to_string();
+                tokens.contains("Serialize") || tokens.contains("Deserialize")
+            }
+            _ => false,
+        }
+    })
 }
 
 pub(crate) struct PublicItemDoc<'a> {

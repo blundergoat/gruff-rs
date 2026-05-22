@@ -1,6 +1,6 @@
 ---
 category: naming
-last_reviewed: 2026-05-21
+last_reviewed: 2026-05-23
 ---
 
 ## Lesson: Never Name Files or Folders After Milestones (M33, M35, etc.)
@@ -14,7 +14,7 @@ Do not encode milestone identifiers (`M01`, `M33`, `M37`, etc.) — or any task/
 - Milestones don't compose. A file named `m33_regressions.rs` is the wrong home for the next M40 regression on the same false-positive class. You then either pollute the file (the M33 prefix lies) or create `m40_regressions.rs` (now you have two files for the same concern).
 - Renaming later loses git blame continuity for the same reason avoiding `*_new`, `*_v2`, `*_backup` suffixes does (see `CLAUDE.md` Hard Rules). Get the name right when you create the file.
 
-**Concrete example (this repo, 2026-05-21):** During the M41 test split, the regression tests added during M33, M35, M37, and M38 were grouped into `src/tests/m33_regressions.rs` and `src/tests/m35_m37_m38_regressions.rs`. The user flagged this immediately and required a rename. The semantic rename was `src/tests/{false_positive_guards,idiom_and_option_regressions}.rs` — grouped by what the tests *guard against*, not by which milestone introduced them.
+**Concrete example (this repo, 2026-05-21):** During the M41 test split, the regression tests added during M33, M35, M37, and M38 were grouped into milestone-named files. The user flagged this immediately and required a rename. The semantic home is now `src/tests/rule_behaviours/false_positive_guards.rs` and `src/tests/rule_behaviours/idiomatic_handling.rs` — grouped by what the tests *guard against*, not by which milestone introduced them.
 
 **How to apply:**
 - Before naming a new file/folder/module, ask: "What does this file contain?" — not "When was it added?" or "Which ticket motivated it?"

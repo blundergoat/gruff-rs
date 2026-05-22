@@ -33,6 +33,7 @@ static MAP_COLLECT_REGEX: OnceLock<Regex> = OnceLock::new();
 static MAP_CLOSURE_LINE_REGEX: OnceLock<Regex> = OnceLock::new();
 static LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
 static MULTILINE_CHAIN_REGEX: OnceLock<Regex> = OnceLock::new();
+static STANDALONE_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const CLONE_OWNERSHIP_PATTERNS: &[CloneOwnershipPattern] = &[
     CloneOwnershipPattern {
@@ -62,6 +63,10 @@ const CLONE_OWNERSHIP_PATTERNS: &[CloneOwnershipPattern] = &[
     CloneOwnershipPattern {
         cell: &LET_BINDING_REGEX,
         pattern: r"^\s*let\s+(?:mut\s+)?[A-Za-z_][A-Za-z0-9_]*(?:\s*:\s*[^=]+)?\s*=\s*[^=;]+\.clone\(\)\s*;\s*$",
+    },
+    CloneOwnershipPattern {
+        cell: &STANDALONE_ARGUMENT_REGEX,
+        pattern: r"^\s*[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.clone\(\)\s*,\s*$",
     },
     CloneOwnershipPattern {
         cell: &MULTILINE_CHAIN_REGEX,

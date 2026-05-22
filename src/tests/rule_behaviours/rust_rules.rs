@@ -227,6 +227,14 @@ pub async fn drops_before_await(lock: &std::sync::Mutex<String>) {
     async_step().await;
 }
 
+pub async fn scoped_before_await(lock: &std::sync::RwLock<String>) {
+    {
+        let mut state = lock.write().unwrap();
+        state.push_str("ready");
+    }
+    async_step().await;
+}
+
 pub fn bounded_channel() {
     let (_tx, _rx) = tokio::sync::mpsc::channel::<String>(16);
 }

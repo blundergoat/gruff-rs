@@ -24,7 +24,7 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     RegexRule {
         rule_id: "sensitive-data.private-key",
         regex: &PRIVATE_KEY_REGEX,
-        pattern: r"BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY",
+        pattern: r"(?s)-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{16,}\s+-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----",
         message: "Private key block detected.",
     },
     RegexRule {
@@ -55,6 +55,7 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
 
 pub(crate) static ENV_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static STRUCTURED_CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) fn analyse_sensitive_data(
@@ -101,16 +102,43 @@ pub(crate) fn analyse_env_like_secrets(
     if unit.file.is_rust {
         let env_regex = static_regex(
             &ENV_LIKE_SECRET_REGEX,
-            r#"(?i)(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*=\s*["']?([^"'\s,}]+)"#,
+            r#"(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*=\s*["']?([^"'\s,}]+)"#,
         );
         push_env_like_secret_matches(unit, config, findings, env_regex, &test_ranges);
     } else {
-        let config_regex = static_regex(
-            &CONFIG_LIKE_SECRET_REGEX,
-            r#"(?i)(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*(?:=|:)\s*["']?([^"'\s,}]+)"#,
-        );
+        let config_regex = config_like_secret_regex(unit.file);
         push_env_like_secret_matches(unit, config, findings, config_regex, &test_ranges);
     }
+}
+
+fn config_like_secret_regex(file: &SourceFile) -> &'static Regex {
+    if allows_lowercase_secret_keys(&file.display_path) {
+        return static_regex(
+            &STRUCTURED_CONFIG_LIKE_SECRET_REGEX,
+            r#"(?i)(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*(?:=|:)\s*["']?([^"'\s,}]+)"#,
+        );
+    }
+    static_regex(
+        &CONFIG_LIKE_SECRET_REGEX,
+        r#"(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*(?:=|:)\s*["']?([^"'\s,}]+)"#,
+    )
+}
+
+fn allows_lowercase_secret_keys(display_path: &str) -> bool {
+    let normalized = display_path.replace('\\', "/");
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    if file_name.starts_with(".env") {
+        return true;
+    }
+    matches!(
+        std::path::Path::new(file_name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "env" | "ini" | "json" | "properties" | "tf" | "tfvars" | "toml" | "yaml" | "yml"
+    )
 }
 
 fn push_env_like_secret_matches(
@@ -121,20 +149,10 @@ fn push_env_like_secret_matches(
     test_ranges: &[(usize, usize)],
 ) {
     for captures in regex.captures_iter(unit.source) {
-        let Some(full_match) = captures.get(0) else {
+        let Some((line, preview)) = env_like_secret_match(unit, config, &captures, test_ranges)
+        else {
             continue;
         };
-        let Some(key) = captures.get(1) else {
-            continue;
-        };
-        let line = byte_line_from_starts(unit.line_starts(), key.start());
-        if line_in_ranges(line, test_ranges) {
-            continue;
-        }
-        let preview = redact(full_match.as_str());
-        if config.secret_previews.contains(&preview) {
-            continue;
-        }
         findings.push(Finding::new(FindingDescriptor {
             rule_id: "sensitive-data.hardcoded-env-value".to_string(),
             message: "Hardcoded environment-style secret assignment detected.".to_string(),
@@ -150,6 +168,67 @@ fn push_env_like_secret_matches(
             metadata: json!({ "preview": preview }),
         }));
     }
+}
+
+fn env_like_secret_match(
+    unit: &SourceUnit<'_>,
+    config: &Config,
+    captures: &regex::Captures<'_>,
+    test_ranges: &[(usize, usize)],
+) -> Option<(usize, String)> {
+    let full_match = captures.get(0)?;
+    let key = captures.get(1)?;
+    let value = captures.get(2)?;
+    let line = byte_line_from_starts(unit.line_starts(), key.start());
+    if line_in_ranges(line, test_ranges) || !is_credible_secret_assignment_value(value.as_str()) {
+        return None;
+    }
+    let preview = redact(full_match.as_str());
+    (!config.secret_previews.contains(&preview)).then_some((line, preview))
+}
+
+fn is_credible_secret_assignment_value(value: &str) -> bool {
+    let value = clean_secret_assignment_value(value);
+    if value.len() < 8 || is_secret_reference(value) || is_secret_placeholder(value) {
+        return false;
+    }
+    has_secret_value_shape(value)
+}
+
+fn clean_secret_assignment_value(value: &str) -> &str {
+    value.trim().trim_matches('"').trim_matches('\'')
+}
+
+fn is_secret_reference(value: &str) -> bool {
+    value.starts_with("${{") || value.starts_with('$')
+}
+
+fn is_secret_placeholder(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("your_")
+        || lower.contains("_here")
+        || lower.contains("<your")
+        || lower.contains("placeholder")
+        || lower.contains("example")
+        || lower.contains("redacted")
+        || lower.contains("changeme")
+        || lower.starts_with("arn:aws:secretsmanager:")
+    {
+        return true;
+    }
+    value
+        .chars()
+        .all(|character| matches!(character, '*' | 'x' | 'X'))
+}
+
+fn has_secret_value_shape(value: &str) -> bool {
+    let has_letter = value
+        .chars()
+        .any(|character| character.is_ascii_alphabetic());
+    let has_digit_or_symbol = value
+        .chars()
+        .any(|character| character.is_ascii_digit() || !character.is_ascii_alphanumeric());
+    has_letter && has_digit_or_symbol
 }
 
 /// Recognises subresource-integrity hash literals (`sha256-...`,

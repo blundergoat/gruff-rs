@@ -47,20 +47,29 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = Vec::with_capacity(8);
     analyse_text_rules(unit, config, &mut findings);
     if let Some(ast) = unit.rust_ast {
-        let blocks = rust_function_blocks(ast, unit.source);
-        analyse_blocks(unit.file, &blocks, config, &mut findings);
-        analyse_process_commands(unit.file, unit.source, &mut findings);
-        analyse_sql_dynamic_query(unit.file, unit.source, &mut findings);
-        analyse_tls_verification_disabled(unit.file, unit.source, &mut findings);
-        analyse_weak_crypto(unit.file, unit.source, &mut findings);
-        analyse_line_rules(unit.file, unit.source, &blocks, &mut findings);
-        analyse_item_rules(unit.file, ast, &mut findings);
-        analyse_dead_code(unit.file, ast, unit.source, &mut findings);
-        analyse_comment_rules(unit.file, unit.source, &mut findings);
-        analyse_naming_patterns(unit.file, ast, config, &mut findings);
+        analyse_rust_rules(unit, ast, config, &mut findings);
     }
     findings
         .into_iter()
         .filter(|finding| config.is_rule_enabled(&finding.rule_id))
         .collect()
+}
+
+fn analyse_rust_rules(
+    unit: &SourceUnit<'_>,
+    ast: &syn::File,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let blocks = rust_function_blocks(ast, unit.source);
+    analyse_blocks(unit.file, &blocks, config, findings);
+    analyse_process_commands(unit.file, unit.source, findings);
+    analyse_sql_dynamic_query(unit.file, unit.source, findings);
+    analyse_tls_verification_disabled(unit.file, unit.source, findings);
+    analyse_weak_crypto(unit.file, unit.source, findings);
+    analyse_line_rules(unit.file, unit.source, &blocks, findings);
+    analyse_item_rules(unit.file, ast, findings);
+    analyse_dead_code(unit.file, ast, unit.source, findings);
+    analyse_comment_rules(unit.file, unit.source, findings);
+    analyse_naming_patterns(unit.file, ast, config, findings);
 }

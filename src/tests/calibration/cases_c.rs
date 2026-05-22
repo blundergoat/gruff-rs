@@ -327,7 +327,16 @@ paths:
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Probe.\npub fn entry() { let _ = \"-----BEGIN RSA PRIVATE KEY-----\"; }\n",
+                    concat!(
+                        "/// Probe.\n",
+                        "pub fn entry() {\n",
+                        "    let _ = \"-----BEGIN RSA ",
+                        "PRIVATE KEY-----\n",
+                        "MIIEowIBAAKCAQEAwvR2b2d1c2ZpeHR1cmV2YWx1ZQ==\n",
+                        "-----END RSA ",
+                        "PRIVATE KEY-----\";\n",
+                        "}\n",
+                    ),
                 )
             }),
             Box::new(|root| {

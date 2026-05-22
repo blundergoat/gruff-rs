@@ -6,9 +6,10 @@ pub(crate) fn analyse_performance_block(
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    let code_only_body = strip_rust_comments_after_string_mask(searchable_body);
     for check in PERFORMANCE_CHECKS {
         let regex = static_regex(check.regex, check.pattern);
-        let occurrences = loop_pattern_count_filtered(searchable_body, regex, |line| {
+        let occurrences = loop_pattern_count_filtered(&code_only_body, regex, |line| {
             should_count_perf_line(check.rule_id, line)
         });
         if occurrences > 0 {

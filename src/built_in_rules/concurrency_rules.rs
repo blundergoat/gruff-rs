@@ -99,7 +99,10 @@ fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
         &LOCK_BINDING_REGEX,
         r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*\.(?:lock|read|write)\s*\([^;]*;",
     );
+    let mut depth = 0usize;
     for (line_index, line) in lines.iter().enumerate() {
+        let depth_before_line = depth;
+        depth = brace_depth_after_line(depth, line);
         let Some(captures) = lock_binding.captures(line) else {
             continue;
         };
@@ -108,25 +111,44 @@ fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
             .map(|guard| guard.as_str())
             .unwrap_or("guard");
         let later_lines = &lines[line_index + 1..];
-        if is_guard_held_across_await(later_lines, guard) {
+        if is_guard_held_across_await(later_lines, guard, depth_before_line, depth) {
             return Some(guard.to_string());
         }
     }
     None
 }
 
-fn is_guard_held_across_await(later_lines: &[&str], guard: &str) -> bool {
-    let any_await = later_lines
-        .iter()
-        .any(|candidate| candidate.contains(".await"));
-    if !any_await {
-        return false;
+fn is_guard_held_across_await(
+    later_lines: &[&str],
+    guard: &str,
+    scope_depth: usize,
+    mut depth: usize,
+) -> bool {
+    let drop_call = format!("drop({guard})");
+    for line in later_lines {
+        if line.contains(&drop_call) {
+            return false;
+        }
+        if line.contains(".await") {
+            return depth >= scope_depth;
+        }
+        depth = brace_depth_after_line(depth, line);
+        if depth < scope_depth {
+            return false;
+        }
     }
-    let dropped_before_await = later_lines
-        .iter()
-        .take_while(|candidate| !candidate.contains(".await"))
-        .any(|candidate| candidate.contains(&format!("drop({guard})")));
-    !dropped_before_await
+    false
+}
+
+fn brace_depth_after_line(mut depth: usize, line: &str) -> usize {
+    for character in line.chars() {
+        match character {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth
 }
 
 fn lock_across_await_finding(file: &SourceFile, block: &FunctionBlock, guard: &str) -> Finding {

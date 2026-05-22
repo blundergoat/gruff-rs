@@ -17,6 +17,9 @@ fn analyse_file_length(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
+    if is_dependency_lockfile(&file.display_path) {
+        return;
+    }
     let line_count = source.lines().count();
     let rule_id = "size.file-length";
     let threshold = config.threshold(rule_id, 600.0) as usize;
@@ -30,6 +33,19 @@ fn analyse_file_length(
             pillar: Pillar::Size,
         }));
     }
+}
+
+fn is_dependency_lockfile(display_path: &str) -> bool {
+    let normalized = display_path.replace('\\', "/");
+    let file_name = normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(&normalized)
+        .to_ascii_lowercase();
+    matches!(
+        file_name.as_str(),
+        "cargo.lock" | "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml"
+    ) || file_name.ends_with(".lock")
 }
 
 fn analyse_config_security_blind_ignores(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
@@ -73,16 +89,16 @@ impl IgnoreListState {
         }
 
         let indent = line_indent(line);
-        if self.handle_top_level_header(indent, trimmed) {
+        if self.consume_top_level_header_if_matches(indent, trimmed) {
             return None;
         }
-        if self.handle_ignore_header(indent, trimmed) {
+        if self.consume_ignore_header_if_matches(indent, trimmed) {
             return None;
         }
         self.ignore_item_pattern(indent, trimmed)
     }
 
-    fn handle_top_level_header(&mut self, indent: usize, trimmed: &str) -> bool {
+    fn consume_top_level_header_if_matches(&mut self, indent: usize, trimmed: &str) -> bool {
         if indent != 0 || !trimmed.ends_with(':') {
             return false;
         }
@@ -92,7 +108,7 @@ impl IgnoreListState {
         true
     }
 
-    fn handle_ignore_header(&mut self, indent: usize, trimmed: &str) -> bool {
+    fn consume_ignore_header_if_matches(&mut self, indent: usize, trimmed: &str) -> bool {
         if !self.in_paths || trimmed != "ignore:" {
             return false;
         }
@@ -126,7 +142,7 @@ impl RunBlockState {
         let trimmed = line.trim();
         self.close_completed_block(line_indent(line), trimmed);
         if let Some(after_run) = workflow_run_value(trimmed) {
-            return self.observe_run_value(line_indent(line), after_run);
+            return self.run_value_contains_event_shell_interpolation(line_indent(line), after_run);
         }
 
         self.in_run_block && trimmed.contains("github.event.")
@@ -138,7 +154,11 @@ impl RunBlockState {
         }
     }
 
-    fn observe_run_value(&mut self, indent: usize, after_run: &str) -> bool {
+    fn run_value_contains_event_shell_interpolation(
+        &mut self,
+        indent: usize,
+        after_run: &str,
+    ) -> bool {
         self.run_indent = indent;
         let value = after_run.trim();
         self.in_run_block = value.is_empty() || is_yaml_block_scalar(value);

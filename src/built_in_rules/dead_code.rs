@@ -54,6 +54,9 @@ pub(crate) fn analyse_dead_impl(
     test_context: bool,
     findings: &mut Vec<Finding>,
 ) {
+    if item_impl.trait_.is_some() {
+        return;
+    }
     for impl_item in &item_impl.items {
         if let ImplItem::Fn(method) = impl_item {
             analyse_dead_impl_method(file, method, source, test_context, findings);
@@ -122,7 +125,7 @@ pub(crate) fn analyse_dead_function(
     if is_public(visibility) || name == "main" || has_test_attr(attrs) || test_context {
         return;
     }
-    if function_call_count(source, &name) == 0 {
+    if function_reference_count(source, &name) == 0 {
         findings.push(Finding::new(FindingDescriptor {
             rule_id: "dead-code.unused-private-function".to_string(),
             message: format!("Private function `{name}` appears to be unused in this file."),
@@ -138,29 +141,27 @@ pub(crate) fn analyse_dead_function(
     }
 }
 
-pub(crate) fn function_call_count(source: &str, name: &str) -> usize {
+pub(crate) fn function_reference_count(source: &str, name: &str) -> usize {
     static CACHE: OnceLock<Mutex<HashMap<String, (Regex, Regex)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let (call_regex, simple_definition_regex) = {
-        let mut guard = cache.lock().expect("function call regex cache");
+    let (identifier_regex, definition_regex) = {
+        let mut guard = cache.lock().expect("function reference regex cache");
         guard
             .entry(name.to_string())
             .or_insert_with(|| {
                 let escaped = regex::escape(name);
-                let call = Regex::new(&format!(r"\b{escaped}\s*(?:::\s*<[^>]+>)?\s*\("))
-                    .expect("generated function-call regex compiles");
+                let identifier = Regex::new(&format!(r"\b{escaped}\b"))
+                    .expect("generated function-reference regex compiles");
                 let definition = Regex::new(&format!(r"\bfn\s+{escaped}\s*\("))
                     .expect("generated function-definition regex compiles");
-                (call, definition)
+                (identifier, definition)
             })
             .clone()
     };
-    let count = call_regex.find_iter(source).count();
-    if simple_definition_regex.is_match(source) {
-        count.saturating_sub(1)
-    } else {
-        count
-    }
+    identifier_regex
+        .find_iter(source)
+        .count()
+        .saturating_sub(definition_regex.find_iter(source).count())
 }
 
 pub(crate) fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {

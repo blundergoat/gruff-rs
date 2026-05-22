@@ -58,7 +58,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        19
+        12
     );
 
     let expected = [
@@ -111,54 +111,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "ec04a7b3fcf15f6d",
         ),
         (
-            "naming.short-variable",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("a"),
-            "774487e8965bb4e2",
-        ),
-        (
-            "naming.short-variable",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("b"),
-            "450fd3ea76dd5ea3",
-        ),
-        (
-            "naming.short-variable",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("c"),
-            "5ac981000ba83401",
-        ),
-        (
-            "naming.short-variable",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("d"),
-            "e52f3842e9612076",
-        ),
-        (
-            "naming.short-variable",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("e"),
-            "8f6d56dc5dbd2e25",
-        ),
-        (
-            "naming.short-variable",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("f"),
-            "2febe2864706223f",
-        ),
-        (
             "security.process-command",
             Severity::Warning,
             "fixtures/sample.rs",
@@ -181,14 +133,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(16),
             None,
             "1aae444024c630df",
-        ),
-        (
-            "sensitive-data.hardcoded-env-value",
-            Severity::Error,
-            "fixtures/sample.rs",
-            Some(16),
-            None,
-            "71395459c781d45e",
         ),
         (
             "sensitive-data.database-url-password",

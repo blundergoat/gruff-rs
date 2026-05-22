@@ -21,6 +21,23 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Tightened noisy rubrics so default-on findings remain suitable for
+  enforceable/100%-compliance projects: env-style secret detection now skips
+  placeholders, GitHub secret references, dependency names, runtime variable
+  handling, and detector tables while preserving structured config coverage.
+- `sensitive-data.private-key` now requires a private-key block instead of a
+  standalone marker string.
+- `modernisation.public-field` now skips serde transport/config structs where
+  public fields are the serialization contract.
+- `dead-code.unused-private-function` now recognises bare function references
+  such as function pointers, macro registrations, and serde default strings,
+  and skips trait-implementation methods.
+- `concurrency.lock-across-await` now respects lexical block scopes before
+  reporting a lock guard across `.await`.
+- `size.file-length` now skips dependency lockfiles such as `Cargo.lock` and
+  `package-lock.json`.
+- `naming.short-variable` now skips single-letter bindings so idiomatic
+  closure/error names are not treated as enforceable findings.
 - Narrowed `sensitive-data.database-url-password` to database and message-bus
   style URL schemes so generic HTTP(S) credentials are reported by
   `sensitive-data.url-embedded-credentials` without double-counting.

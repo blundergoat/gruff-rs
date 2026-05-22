@@ -259,33 +259,47 @@ pub(crate) fn analyse_insecure_rng_for_secrets(
         r"\brand\s*::\s*(?P<call>thread_rng|random)\s*(?:::<[^>\n]+>)?\s*\(",
     );
     for (line_offset, line) in code_only.lines().enumerate() {
-        let Some(captures) = regex.captures(line) else {
+        let Some(call) = insecure_rng_call(line, regex) else {
             continue;
         };
-        let call = captures
-            .name("call")
-            .map(|call| call.as_str())
-            .unwrap_or("rand");
-        findings.push(Finding::new(FindingDescriptor {
-            rule_id: "security.insecure-rng-for-secrets".to_string(),
-            message: format!(
-                "Function `{}` appears to generate secret material with non-cryptographic rand.",
-                block.name
-            ),
-            file_path: file.display_path.clone(),
-            line: Some(block.start_line + line_offset),
-            severity: Severity::Warning,
-            pillar: Pillar::Security,
-            confidence: Confidence::Medium,
-            symbol: Some(block.name.clone()),
-            remediation: Some(
-                "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords."
-                    .to_string(),
-            ),
-            metadata: json!({ "function": block.name, "call": format!("rand::{call}") }),
-        }));
+        findings.push(insecure_rng_for_secrets_finding(
+            file,
+            block,
+            line_offset,
+            call,
+        ));
         return;
     }
+}
+
+fn insecure_rng_call<'a>(line: &'a str, regex: &Regex) -> Option<&'a str> {
+    regex.captures(line)?.name("call").map(|call| call.as_str())
+}
+
+fn insecure_rng_for_secrets_finding(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    line_offset: usize,
+    call: &str,
+) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: "security.insecure-rng-for-secrets".to_string(),
+        message: format!(
+            "Function `{}` appears to generate secret material with non-cryptographic rand.",
+            block.name
+        ),
+        file_path: file.display_path.clone(),
+        line: Some(block.start_line + line_offset),
+        severity: Severity::Warning,
+        pillar: Pillar::Security,
+        confidence: Confidence::Medium,
+        symbol: Some(block.name.clone()),
+        remediation: Some(
+            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords."
+                .to_string(),
+        ),
+        metadata: json!({ "function": block.name, "call": format!("rand::{call}") }),
+    })
 }
 
 fn is_secret_like_rng_function_name(name: &str) -> bool {
