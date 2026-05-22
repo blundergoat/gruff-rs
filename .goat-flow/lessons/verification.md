@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-22
+last_reviewed: 2026-05-23
 ---
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
@@ -86,3 +86,18 @@ new discovery glob test made `src/tests/scenarios/smoke.rs` exceed the
 Prefer a focused scenario module such as `src/tests/scenarios/discovery.rs`
 when new coverage is cohesive. Then rerun `bash scripts/preflight-checks.sh` so
 the dogfood scan proves the repository still clears its own quality gate.
+
+## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
+
+**Created:** 2026-05-23
+
+When adding analyzer rules, run a focused dogfood scan before final preflight if
+the implementation introduces new helpers in `src/built_in_rules/` (search:
+`analyse_weak_crypto`). In M55, Rust tests and calibration passed, but
+`cargo run --quiet -- analyse . --format json --fail-on none --no-baseline`
+reported a new `size.parameter-count` warning for a helper that threaded file,
+line-start, findings, dedupe, primitive, and byte-index parameters separately.
+
+Prefer a small context/reporter struct for repeated finding construction, then
+rerun the dogfood scan at the same threshold before treating the verification
+failure as closed.

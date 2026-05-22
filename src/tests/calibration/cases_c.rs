@@ -19,6 +19,29 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
         ),
         case(
+            "security.sql-dynamic-query",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn load(tenant: &str) {
+    let _ = sqlx::query(format!("select * from users_{tenant}"));
+}
+"#,
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn load() {
+    let _ = sqlx::query("select * from users");
+}
+"#,
+                )
+            }),
+        ),
+        case(
             "security.unsafe-block",
             Box::new(|root| {
                 baseline_with_lib(
@@ -30,7 +53,34 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 baseline_with_lib(
                         root,
                         "/// Probe.\npub fn entry(p: *const u8) -> u8 {\n    // SAFETY: caller validated pointer.\n    unsafe { *p }\n}\n",
-                    )
+                )
+            }),
+        ),
+        case(
+            "security.weak-crypto",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"use md5::Md5;
+
+/// Probe.
+pub fn digest() {
+    let _ = Md5::new();
+}
+"#,
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"use sha2::Sha256;
+
+/// Probe.
+pub fn digest() {
+    let _ = Sha256::new();
+}
+"#,
+                )
             }),
         ),
         case(
@@ -186,6 +236,21 @@ paths:
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() { let _ = \"postgres://db/app\"; }\n",
+                )
+            }),
+        ),
+        case(
+            "sensitive-data.url-embedded-credentials",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() { let _ = \"https://user:secret@example.invalid/path\"; }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() { let _ = \"https://example.invalid/path\"; }\n",
                 )
             }),
         ),

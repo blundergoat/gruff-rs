@@ -24,6 +24,7 @@ allowlists:
     - "ghp_...aaaa (redacted, 26 chars)"
     - "AKIA...MNOP (redacted, 20 chars)"
     - "post...ret@ (redacted, 23 chars)"
+    - "http...ret@ (redacted, 20 chars)"
     - "eyJh...sw5c (redacted, 85 chars)"
     - "BEGI... KEY (redacted, 21 chars)"
     - "sk_t...aaaa (redacted, 32 chars)"
@@ -183,11 +184,17 @@ rules:
   # Flags process command construction for manual argument validation.
   security.process-command:
     enabled: true
+  # Flags direct dynamic SQL query arguments such as query(format!(...)).
+  security.sql-dynamic-query:
+    enabled: true
   # Flags explicit TLS certificate or hostname verification bypasses.
   security.tls-verification-disabled:
     enabled: true
   # Flags unsafe blocks without a nearby SAFETY rationale.
   security.unsafe-block:
+    enabled: true
+  # Flags explicit weak cryptographic primitive imports or constructors for review.
+  security.weak-crypto:
     enabled: true
   # Flags common API key patterns.
   sensitive-data.api-key-pattern:
@@ -209,6 +216,9 @@ rules:
     enabled: true
   # Flags private key block markers.
   sensitive-data.private-key:
+    enabled: true
+  # Flags HTTP(S) URLs that include embedded username and password credentials.
+  sensitive-data.url-embedded-credentials:
     enabled: true
   # Flags files over the configured line-count threshold.
   size.file-length:

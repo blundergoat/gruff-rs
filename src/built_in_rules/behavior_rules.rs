@@ -3,7 +3,10 @@ use super::*;
 static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
+static SQL_DYNAMIC_QUERY_REGEX: OnceLock<Regex> = OnceLock::new();
 static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
+static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
+static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
@@ -236,6 +239,121 @@ pub(crate) fn analyse_tls_verification_disabled(
                 metadata: json!({}),
             }));
         }
+    }
+}
+
+pub(crate) fn analyse_sql_dynamic_query(
+    file: &SourceFile,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let regex = static_regex(
+        &SQL_DYNAMIC_QUERY_REGEX,
+        r"(?:^|[^\w])(?P<method>query|execute|prepare)\s*\(\s*&?\s*format!\s*\(",
+    );
+    let starts = line_starts(source);
+    for captures in regex.captures_iter(&searchable) {
+        let Some(full_match) = captures.get(0) else {
+            continue;
+        };
+        let method = captures
+            .name("method")
+            .map(|method| method.as_str())
+            .unwrap_or("query");
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "security.sql-dynamic-query".to_string(),
+            message: format!(
+                "Direct dynamic SQL argument passed to `{method}(...)`; review query construction."
+            ),
+            file_path: file.display_path.clone(),
+            line: Some(byte_line_from_starts(&starts, full_match.start())),
+            severity: Severity::Warning,
+            pillar: Pillar::Security,
+            confidence: Confidence::High,
+            symbol: Some(method.to_string()),
+            remediation: Some(
+                "Use static SQL with bind parameters instead of formatting query text.".to_string(),
+            ),
+            metadata: json!({ "method": method }),
+        }));
+    }
+}
+
+pub(crate) fn analyse_weak_crypto(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
+    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let starts = line_starts(source);
+    let mut reporter = WeakCryptoReporter {
+        file,
+        line_starts: &starts,
+        findings,
+        emitted: std::collections::BTreeSet::new(),
+    };
+
+    let import_regex = static_regex(
+        &WEAK_CRYPTO_IMPORT_REGEX,
+        r"(?m)^\s*use\s+(?P<primitive>md5|md_5|sha1|sha_1|rc4|des)(?:::|\s*;)",
+    );
+    for captures in import_regex.captures_iter(&searchable) {
+        let Some(primitive) = captures.name("primitive") else {
+            continue;
+        };
+        reporter.push(primitive.as_str(), primitive.start());
+    }
+
+    let constructor_regex = static_regex(
+        &WEAK_CRYPTO_CONSTRUCTOR_REGEX,
+        r"\b(?P<primitive>Md5|Sha1|Rc4|Des)::new\s*\(",
+    );
+    for captures in constructor_regex.captures_iter(&searchable) {
+        let Some(primitive) = captures.name("primitive") else {
+            continue;
+        };
+        reporter.push(primitive.as_str(), primitive.start());
+    }
+}
+
+struct WeakCryptoReporter<'a, 'b> {
+    file: &'a SourceFile,
+    line_starts: &'a [usize],
+    findings: &'b mut Vec<Finding>,
+    emitted: std::collections::BTreeSet<String>,
+}
+
+impl WeakCryptoReporter<'_, '_> {
+    fn push(&mut self, primitive: &str, byte_index: usize) {
+        let normalized = normalize_weak_crypto_primitive(primitive);
+        if !self.emitted.insert(normalized.to_string()) {
+            return;
+        }
+
+        self.findings.push(Finding::new(FindingDescriptor {
+            rule_id: "security.weak-crypto".to_string(),
+            message: format!(
+                "Weak cryptographic primitive `{primitive}` is referenced; review cryptographic use."
+            ),
+            file_path: self.file.display_path.clone(),
+            line: Some(byte_line_from_starts(self.line_starts, byte_index)),
+            severity: Severity::Warning,
+            pillar: Pillar::Security,
+            confidence: Confidence::Medium,
+            symbol: Some(primitive.to_string()),
+            remediation: Some(
+                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses."
+                    .to_string(),
+            ),
+            metadata: json!({ "primitive": primitive }),
+        }));
+    }
+}
+
+fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
+    match primitive {
+        "md5" | "md_5" | "Md5" => "md5",
+        "sha1" | "sha_1" | "Sha1" => "sha1",
+        "rc4" | "Rc4" => "rc4",
+        "des" | "Des" => "des",
+        _ => "unknown",
     }
 }
 

@@ -50,7 +50,9 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
         let blocks = rust_function_blocks(ast, unit.source);
         analyse_blocks(unit.file, &blocks, config, &mut findings);
         analyse_process_commands(unit.file, unit.source, &mut findings);
+        analyse_sql_dynamic_query(unit.file, unit.source, &mut findings);
         analyse_tls_verification_disabled(unit.file, unit.source, &mut findings);
+        analyse_weak_crypto(unit.file, unit.source, &mut findings);
         analyse_line_rules(unit.file, unit.source, &blocks, &mut findings);
         analyse_item_rules(unit.file, ast, &mut findings);
         analyse_dead_code(unit.file, ast, unit.source, &mut findings);

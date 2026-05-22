@@ -11,6 +11,7 @@ pub(crate) static AWS_ACCESS_KEY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PRIVATE_KEY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static JWT_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static DATABASE_URL_PASSWORD_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static URL_EMBEDDED_CREDENTIALS_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static API_KEY_PATTERN_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
@@ -35,8 +36,14 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     RegexRule {
         rule_id: "sensitive-data.database-url-password",
         regex: &DATABASE_URL_PASSWORD_REGEX,
-        pattern: r"[a-z]+://[^:\s]+:[^@\s]+@",
+        pattern: r"(?:postgres|postgresql|mysql|mariadb|mongodb|redis|rediss|amqp|amqps)://[^:\s]+:[^@\s]+@",
         message: "Database URL appears to include a password.",
+    },
+    RegexRule {
+        rule_id: "sensitive-data.url-embedded-credentials",
+        regex: &URL_EMBEDDED_CREDENTIALS_REGEX,
+        pattern: r"https?://[^/\s:@]+:[^/\s:@]+@",
+        message: "HTTP(S) URL appears to include embedded credentials.",
     },
     RegexRule {
         rule_id: "sensitive-data.api-key-pattern",

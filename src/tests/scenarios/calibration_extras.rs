@@ -416,6 +416,86 @@ paths:
     );
 }
 
+#[test]
+pub(crate) fn calibration_narrow_security_rules_have_false_positive_guards() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use md5::Md5;
+use sha2::Sha256;
+
+/// Probe.
+pub fn entry(tenant: &str) {
+    let _dynamic = sqlx::query(format!("select * from users_{tenant}"));
+    let _static = sqlx::query("select * from users");
+    let _weak = Md5::new();
+    let _strong = Sha256::new();
+    let _http_credential = "https://user:secret@example.invalid/path";
+    let _plain_http = "https://example.invalid/path";
+    let _db_credential = "postgres://user:secret@db/app";
+}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let sql_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.sql-dynamic-query")
+        .count();
+    let weak_crypto_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.weak-crypto")
+        .count();
+    let url_credential_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.url-embedded-credentials")
+        .count();
+    let database_url_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.database-url-password")
+        .count();
+
+    assert_eq!(
+        sql_count,
+        1,
+        "SQL dynamic-query guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+    assert_eq!(
+        weak_crypto_count,
+        1,
+        "weak-crypto guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+    assert_eq!(
+        url_credential_count,
+        1,
+        "URL credential guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+    assert_eq!(
+        database_url_count,
+        1,
+        "database URL guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+}
+
 /// Proves that `sensitive-data.hardcoded-env-value` still catches
 /// production Rust literals but ignores fixture strings in test context.
 #[test]

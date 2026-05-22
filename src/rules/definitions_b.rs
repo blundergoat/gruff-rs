@@ -175,6 +175,16 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         "Flags process command construction for manual argument validation.",
     ),
     rule_definition!(
+        "security.sql-dynamic-query",
+        "Dynamic SQL query argument",
+        Pillar::Security,
+        RuleKind::Rust,
+        Severity::Warning,
+        Confidence::High,
+        None,
+        "Flags direct dynamic SQL query arguments such as query(format!(...)).",
+    ),
+    rule_definition!(
         "security.tls-verification-disabled",
         "TLS verification disabled",
         Pillar::Security,
@@ -193,6 +203,16 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags unsafe blocks without a nearby SAFETY rationale.",
+    ),
+    rule_definition!(
+        "security.weak-crypto",
+        "Weak cryptographic primitive",
+        Pillar::Security,
+        RuleKind::Rust,
+        Severity::Warning,
+        Confidence::Medium,
+        None,
+        "Flags explicit weak cryptographic primitive imports or constructors for review.",
     ),
 ];
 
@@ -266,6 +286,16 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags private key block markers.",
+    ),
+    rule_definition!(
+        "sensitive-data.url-embedded-credentials",
+        "URL embedded credentials",
+        Pillar::SensitiveData,
+        RuleKind::Text,
+        Severity::Error,
+        Confidence::High,
+        None,
+        "Flags HTTP(S) URLs that include embedded username and password credentials.",
     ),
 ];
 

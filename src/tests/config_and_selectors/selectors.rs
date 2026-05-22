@@ -158,8 +158,35 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "dependency.path-source",
             "dependency.wildcard-version",
             "security.process-command",
+            "security.sql-dynamic-query",
             "security.tls-verification-disabled",
-            "security.unsafe-block"
+            "security.unsafe-block",
+            "security.weak-crypto"
+        ]
+    );
+
+    let sensitive_text = render_rule_list(
+        Path::new("."),
+        &ListRulesArgs {
+            format: RuleListFormat::Text,
+            selector: Some("sensitive-data".to_string()),
+            config: None,
+            no_config: true,
+        },
+    )
+    .expect("sensitive-data selector preview");
+    let sensitive_lines: Vec<&str> = sensitive_text.lines().collect();
+    assert_eq!(
+        sensitive_lines,
+        vec![
+            "sensitive-data.api-key-pattern",
+            "sensitive-data.aws-access-key",
+            "sensitive-data.database-url-password",
+            "sensitive-data.hardcoded-env-value",
+            "sensitive-data.high-entropy-string",
+            "sensitive-data.jwt-token",
+            "sensitive-data.private-key",
+            "sensitive-data.url-embedded-credentials"
         ]
     );
 
