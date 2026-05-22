@@ -3,6 +3,7 @@ use super::*;
 static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
+static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
 static SQL_DYNAMIC_QUERY_REGEX: OnceLock<Regex> = OnceLock::new();
 static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -240,6 +241,73 @@ pub(crate) fn analyse_tls_verification_disabled(
             }));
         }
     }
+}
+
+pub(crate) fn analyse_insecure_rng_for_secrets(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    if !is_secret_like_rng_function_name(&block.name) {
+        return;
+    }
+
+    let code_only = strip_rust_comments_after_string_mask(searchable_body);
+    let regex = static_regex(
+        &INSECURE_RNG_FOR_SECRETS_REGEX,
+        r"\brand\s*::\s*(?P<call>thread_rng|random)\s*(?:::<[^>\n]+>)?\s*\(",
+    );
+    for (line_offset, line) in code_only.lines().enumerate() {
+        let Some(captures) = regex.captures(line) else {
+            continue;
+        };
+        let call = captures
+            .name("call")
+            .map(|call| call.as_str())
+            .unwrap_or("rand");
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "security.insecure-rng-for-secrets".to_string(),
+            message: format!(
+                "Function `{}` appears to generate secret material with non-cryptographic rand.",
+                block.name
+            ),
+            file_path: file.display_path.clone(),
+            line: Some(block.start_line + line_offset),
+            severity: Severity::Warning,
+            pillar: Pillar::Security,
+            confidence: Confidence::Medium,
+            symbol: Some(block.name.clone()),
+            remediation: Some(
+                "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords."
+                    .to_string(),
+            ),
+            metadata: json!({ "function": block.name, "call": format!("rand::{call}") }),
+        }));
+        return;
+    }
+}
+
+fn is_secret_like_rng_function_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .split(|character: char| character == '_' || !character.is_ascii_alphanumeric())
+        .any(|segment| {
+            matches!(
+                segment,
+                "token"
+                    | "tokens"
+                    | "secret"
+                    | "secrets"
+                    | "key"
+                    | "keys"
+                    | "password"
+                    | "passwords"
+                    | "nonce"
+                    | "nonces"
+                    | "salt"
+                    | "salts"
+            )
+        })
 }
 
 pub(crate) fn analyse_sql_dynamic_query(

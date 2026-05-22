@@ -44,6 +44,7 @@ pub(crate) fn analyse_block(
     analyse_missing_errors_section(file, block, findings);
     analyse_error_handling_block(file, block, &searchable_body, findings);
     analyse_concurrency_block(file, block, &searchable_body, findings);
+    analyse_insecure_rng_for_secrets(file, block, &searchable_body, findings);
 }
 
 pub(crate) fn analyse_block_size(

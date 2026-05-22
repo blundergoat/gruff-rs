@@ -184,6 +184,9 @@ rules:
   # Flags process command construction for manual argument validation.
   security.process-command:
     enabled: true
+  # Flags non-cryptographic rand calls inside secret-like generation functions.
+  security.insecure-rng-for-secrets:
+    enabled: true
   # Flags direct dynamic SQL query arguments such as query(format!(...)).
   security.sql-dynamic-query:
     enabled: true

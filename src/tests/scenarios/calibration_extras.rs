@@ -496,6 +496,58 @@ pub fn entry(tenant: &str) {
     );
 }
 
+#[test]
+pub(crate) fn calibration_secret_rng_rule_has_false_positive_guards() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Probe.
+pub fn generate_token() {
+    let _ = rand::thread_rng();
+}
+
+pub fn build_nonce() {
+    let _: u64 = rand::random();
+}
+
+pub fn choose_backoff() {
+    let _ = rand::thread_rng();
+}
+
+#[cfg(test)]
+mod tests {
+    pub fn generate_secret_for_fixture() {
+        let _ = rand::thread_rng();
+    }
+}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let rng_count = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.insecure-rng-for-secrets")
+        .count();
+    assert_eq!(
+        rng_count,
+        2,
+        "secret RNG guard count drifted: {:?}",
+        rule_ids(&report)
+    );
+}
+
 /// Proves that `sensitive-data.hardcoded-env-value` still catches
 /// production Rust literals but ignores fixture strings in test context.
 #[test]

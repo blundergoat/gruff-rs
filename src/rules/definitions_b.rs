@@ -175,6 +175,16 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         "Flags process command construction for manual argument validation.",
     ),
     rule_definition!(
+        "security.insecure-rng-for-secrets",
+        "Insecure RNG for secret material",
+        Pillar::Security,
+        RuleKind::Rust,
+        Severity::Warning,
+        Confidence::Medium,
+        None,
+        "Flags non-cryptographic rand calls inside secret-like generation functions.",
+    ),
+    rule_definition!(
         "security.sql-dynamic-query",
         "Dynamic SQL query argument",
         Pillar::Security,

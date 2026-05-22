@@ -19,6 +19,29 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
         ),
         case(
+            "security.insecure-rng-for-secrets",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn generate_token() {
+    let _ = rand::thread_rng();
+}
+"#,
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn choose_backoff() {
+    let _ = rand::thread_rng();
+}
+"#,
+                )
+            }),
+        ),
+        case(
             "security.sql-dynamic-query",
             Box::new(|root| {
                 baseline_with_lib(
