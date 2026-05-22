@@ -70,11 +70,13 @@ const PERF_CLONE_STRUCTURAL_PATTERNS: &[CloneOwnershipPattern] = &[
 /// Returns true when a `format!()` call sits in a position whose caller
 /// requires an owned `String` (struct field initialiser, error message
 /// returned via `Err(format!(...))`, `return` expression, or
-/// `String::push_str(&format!())` text-buffer growth). These uses are
+/// `String::push_str(&format!())` text-buffer growth). It also skips
+/// standalone multi-line `format!` arguments and match arms used to
+/// assemble labels/messages for report output. These uses are
 /// not avoidable: each iteration legitimately produces a distinct owned
 /// string and there is no shared buffer to hoist into. Note that
-/// `Vec::push(format!())` IS still flagged — that pattern usually
-/// signals collecting per-item strings that could be hoisted to
+/// same-line `Vec::push(format!())` IS still flagged — that pattern
+/// usually signals collecting per-item strings that could be hoisted to
 /// `.iter().map(...).collect()`.
 fn format_is_owned_value(line: &str) -> bool {
     FORMAT_OWNED_VALUE_PATTERNS
@@ -86,6 +88,9 @@ static FORMAT_FIELD_REGEX: OnceLock<Regex> = OnceLock::new();
 static FORMAT_ERR_REGEX: OnceLock<Regex> = OnceLock::new();
 static FORMAT_RETURN_REGEX: OnceLock<Regex> = OnceLock::new();
 static FORMAT_PUSH_STR_REGEX: OnceLock<Regex> = OnceLock::new();
+static FORMAT_STANDALONE_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
+static FORMAT_MATCH_ARM_REGEX: OnceLock<Regex> = OnceLock::new();
+static FORMAT_LABEL_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const FORMAT_OWNED_VALUE_PATTERNS: &[CloneOwnershipPattern] = &[
     CloneOwnershipPattern {
@@ -103,6 +108,18 @@ const FORMAT_OWNED_VALUE_PATTERNS: &[CloneOwnershipPattern] = &[
     CloneOwnershipPattern {
         cell: &FORMAT_PUSH_STR_REGEX,
         pattern: r"\.(?:push_str|insert_str|write_str|write_all|write_fmt)\s*\(\s*&?\s*format!\s*\(",
+    },
+    CloneOwnershipPattern {
+        cell: &FORMAT_STANDALONE_ARGUMENT_REGEX,
+        pattern: r"^\s*&?format!\s*\(",
+    },
+    CloneOwnershipPattern {
+        cell: &FORMAT_MATCH_ARM_REGEX,
+        pattern: r"^\s*[^=;]+=>\s*&?format!\s*\(",
+    },
+    CloneOwnershipPattern {
+        cell: &FORMAT_LABEL_BINDING_REGEX,
+        pattern: r"^\s*let\s+[A-Za-z_][A-Za-z0-9_]*(?:label|message|desc|summary|title|name)[A-Za-z0-9_]*\s*=\s*&?format!\s*\(",
     },
 ];
 

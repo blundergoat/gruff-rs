@@ -240,7 +240,7 @@ where
 pub(crate) struct LoopPatternState {
     depth: usize,
     loop_depths: Vec<usize>,
-    pending_loop: bool,
+    pending_loop_ignored: Option<bool>,
     occurrences: usize,
 }
 
@@ -260,7 +260,7 @@ impl LoopPatternState {
         };
         let mut next_match = 0usize;
         if loop_start.is_match(line) {
-            self.pending_loop = true;
+            self.pending_loop_ignored = Some(loop_header_is_static_bounded(line));
         }
         for (byte_index, character) in line.char_indices() {
             next_match = self.count_matches_until(&matches, next_match, byte_index);
@@ -305,9 +305,10 @@ impl LoopPatternState {
 
     fn enter_scope(&mut self) {
         self.depth += 1;
-        if self.pending_loop {
-            self.loop_depths.push(self.depth);
-            self.pending_loop = false;
+        if let Some(ignored) = self.pending_loop_ignored.take() {
+            if !ignored {
+                self.loop_depths.push(self.depth);
+            }
         }
     }
 
@@ -316,4 +317,13 @@ impl LoopPatternState {
             .retain(|loop_depth| *loop_depth < self.depth);
         self.depth = self.depth.saturating_sub(1);
     }
+}
+
+fn loop_header_is_static_bounded(line: &str) -> bool {
+    static STATIC_FOR_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &STATIC_FOR_LOOP_REGEX,
+        r"\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+&?[A-Z][A-Z0-9_]*(?:\s*\.iter\(\))?\s*\{?",
+    )
+    .is_match(line)
 }

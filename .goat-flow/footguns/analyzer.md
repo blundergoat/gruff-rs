@@ -63,6 +63,14 @@ The non-obvious failure mode is globally removing `(?i)` to fix false positives,
 
 The non-obvious failure mode is masking strings but not comments for loop-scoped performance checks. That keeps line/token patterns visible enough to match `format!`, while doc text such as "Load favorites for a workspace" flips the loop state. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `performance_loop_rules_ignore_loop_words_in_comments`).
 
+## Footgun: Assertion Unwrap Exemptions Need Receiver Context
+
+**Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
+
+`src/built_in_rules/test_rules.rs` (search: `fn body_contains_only_assertion_subject_unwraps`) exempts `test-quality.unwrap-in-test` only when every `.unwrap()` is inside an assertion macro and the unwrap receiver is a call result. A broad "inside assert macro" exemption hides setup variables such as `assert_eq!(v.unwrap(), 2)`, which existing regression coverage expects to remain visible.
+
+The non-obvious failure mode is treating all assertion unwraps as equivalent. Unwrapping a direct function call in an assertion can be the subject under test; unwrapping a local variable inside an assertion can still hide setup intent. Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (search: `unwrap_expect_skips_cfg_test_module`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap`).
+
 ## Resolved Entries
 
 ## Footgun: Report Exclusions Are Not Discovery Ignores

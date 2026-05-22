@@ -307,6 +307,93 @@ pub fn forge_cancel(current_distro: Option<String>) -> Option<String> {
 }
 
 #[test]
+pub(crate) fn format_in_loop_skips_static_probe_and_report_message_construction() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"const AI_TOOL_SPECS: &[&str] = &["claude", "codex"];
+
+/// Build a bounded probe script from known tool specs.
+pub fn build_wsl_batch_probe_script() -> String {
+    let mut lines = vec!["set -e".to_string()];
+    for spec in AI_TOOL_SPECS {
+        lines.push(format!("check_tool {}", spec));
+    }
+    lines.join("\n")
+}
+
+/// Build user-facing security group findings.
+pub fn scan_security_groups(rules: &[(i32, i32)]) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (from_port, to_port) in rules {
+        let port_desc = if from_port == to_port {
+            from_port.to_string()
+        } else {
+            format!("{from_port}-{to_port}")
+        };
+        let port_label = match *from_port {
+            22 => format!("{port_desc} (SSH)"),
+            3389 => format!("{port_desc} (RDP)"),
+            _ => port_desc,
+        };
+        findings.push(
+            format!("Port {port_label} open to 0.0.0.0/0"),
+        );
+    }
+    findings
+}
+
+/// Build dynamic per-item output.
+pub fn dynamic_format_loop(values: &[String]) -> Vec<String> {
+    let mut output = Vec::new();
+    for value in values {
+        output.push(format!("{}", value));
+    }
+    output
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    for symbol in ["build_wsl_batch_probe_script", "scan_security_groups"] {
+        assert!(
+            !report.findings.iter().any(|finding| {
+                finding.rule_id == "performance.format-in-loop"
+                    && finding.symbol.as_deref() == Some(symbol)
+            }),
+            "bounded static probes and report message construction must stay silent for `{symbol}`; findings={:?}",
+            report
+                .findings
+                .iter()
+                .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
+                .collect::<Vec<_>>()
+        );
+    }
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.rule_id == "performance.format-in-loop"
+                && finding.symbol.as_deref() == Some("dynamic_format_loop")
+        }),
+        "dynamic same-line push(format!(...)) loops must still be reported; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 pub(crate) fn external_public_module_declaration_uses_module_file_docs() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -385,6 +472,74 @@ pub fn start_chat(session_id: String) -> String {
             .iter()
             .any(|finding| finding.rule_id == "waste.unnecessary-clone-candidate"),
         "standalone clone arguments in multi-line calls require ownership context; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+pub(crate) fn unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Normalize a shell profile id.
+pub fn normalize_shell_profile_id(value: Option<String>) -> Result<Option<String>, String> {
+    Ok(value.map(|id| if id == "windows" { "powershell".to_string() } else { id }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assertion_subject_unwrap() {
+        assert_eq!(
+            normalize_shell_profile_id(Some("windows".to_string())).unwrap(),
+            Some("powershell".to_string())
+        );
+    }
+
+    #[test]
+    fn setup_unwrap_still_reports() {
+        let value = normalize_shell_profile_id(Some("windows".to_string())).unwrap();
+        assert_eq!(value, Some("powershell".to_string()));
+    }
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert!(
+        !report.findings.iter().any(|finding| {
+            finding.rule_id == "test-quality.unwrap-in-test"
+                && finding.symbol.as_deref() == Some("assertion_subject_unwrap")
+        }),
+        "unwrap used as the asserted subject should stay silent; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.rule_id == "test-quality.unwrap-in-test"
+                && finding.symbol.as_deref() == Some("setup_unwrap_still_reports")
+        }),
+        "setup unwraps must still be reported; findings={:?}",
         report
             .findings
             .iter()

@@ -5,6 +5,7 @@ static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static LOOP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
 static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
+static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const TEST_CHECKS: &[RegexRule] = &[
     RegexRule {
@@ -157,11 +158,14 @@ pub(crate) fn analyse_test_regex_checks(
 /// the matched pattern is a recognised idiom. Today: `loop-in-test`
 /// skips table-driven iteration over array literals, ranges, and
 /// `cases()`-style functions; `conditional-logic` skips `cfg!(...)`
-/// platform branches.
+/// platform branches; `unwrap-in-test` skips unwraps that are directly
+/// inside assertion macro calls, where the unwrapped value is the subject
+/// under test rather than hidden setup.
 fn is_test_rule_exempt(rule_id: &str, body: &str) -> bool {
     match rule_id {
         "test-quality.loop-in-test" => loop_is_table_driven(body),
         "test-quality.conditional-logic" => conditional_is_platform_gate(body),
+        "test-quality.unwrap-in-test" => body_contains_only_assertion_subject_unwraps(body),
         _ => false,
     }
 }
@@ -225,4 +229,68 @@ fn conditional_is_platform_gate(body: &str) -> bool {
     static CFG_GATE_REGEX: OnceLock<Regex> = OnceLock::new();
     let cfg_gate = static_regex(&CFG_GATE_REGEX, r"\bif\s+cfg!\s*\(");
     cfg_gate.is_match(body)
+}
+
+fn body_contains_only_assertion_subject_unwraps(body: &str) -> bool {
+    let unwrap_call = static_regex(&UNWRAP_IN_TEST_REGEX, r"\.unwrap\(\)");
+    let unwrap_positions: Vec<usize> = unwrap_call
+        .find_iter(body)
+        .map(|found| found.start())
+        .collect();
+    if unwrap_positions.is_empty() {
+        return false;
+    }
+
+    let assertion_ranges = assertion_macro_ranges(body);
+    !assertion_ranges.is_empty()
+        && unwrap_positions.iter().all(|unwrap_position| {
+            assertion_ranges
+                .iter()
+                .any(|(start, end)| *start <= *unwrap_position && *unwrap_position <= *end)
+                && unwrap_receiver_is_call_result(body, *unwrap_position)
+        })
+}
+
+fn unwrap_receiver_is_call_result(body: &str, unwrap_position: usize) -> bool {
+    body[..unwrap_position]
+        .chars()
+        .rev()
+        .find(|character| !character.is_whitespace())
+        == Some(')')
+}
+
+fn assertion_macro_ranges(body: &str) -> Vec<(usize, usize)> {
+    let assertion_start = static_regex(
+        &ASSERTION_MACRO_START_REGEX,
+        r"\b(?:assert|assert_eq|assert_ne|matches|assert_matches|assert_[A-Za-z0-9_]*)!\s*\(",
+    );
+    assertion_start
+        .find_iter(body)
+        .filter_map(|found| {
+            let open_index = body[..found.end()].rfind('(')?;
+            let close_index = matching_close_paren(body, open_index)?;
+            Some((found.start(), close_index))
+        })
+        .collect()
+}
+
+fn matching_close_paren(body: &str, open_index: usize) -> Option<usize> {
+    let bytes = body.as_bytes();
+    if bytes.get(open_index) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 1usize;
+    for (offset, byte) in bytes[open_index + 1..].iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(open_index + offset + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
