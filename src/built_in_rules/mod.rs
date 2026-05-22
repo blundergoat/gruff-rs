@@ -44,8 +44,8 @@ pub(crate) static SAME_LITERAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run enabled text and Rust rules for one parsed source unit.
 pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    analyse_text_rules(unit.file, unit.source, unit.rust_ast, config, &mut findings);
+    let mut findings = Vec::with_capacity(8);
+    analyse_text_rules(unit, config, &mut findings);
     if let Some(ast) = unit.rust_ast {
         let blocks = rust_function_blocks(ast, unit.source);
         analyse_blocks(unit.file, &blocks, config, &mut findings);

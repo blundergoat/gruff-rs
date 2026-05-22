@@ -11,6 +11,7 @@ pub(crate) struct SourceUnit<'a> {
     pub(crate) file: &'a SourceFile,
     pub(crate) source: &'a str,
     pub(crate) rust_ast: Option<&'a syn::File>,
+    line_starts: &'a OnceLock<Vec<usize>>,
 }
 
 pub(crate) struct ParsedSource {
@@ -18,6 +19,7 @@ pub(crate) struct ParsedSource {
     pub(crate) source: String,
     pub(crate) rust_ast: Option<syn::File>,
     pub(crate) diagnostics: Vec<RunDiagnostic>,
+    pub(crate) line_starts: OnceLock<Vec<usize>>,
 }
 
 impl ParsedSource {
@@ -26,7 +28,16 @@ impl ParsedSource {
             file: &self.file,
             source: &self.source,
             rust_ast: self.rust_ast.as_ref(),
+            line_starts: &self.line_starts,
         }
+    }
+}
+
+impl SourceUnit<'_> {
+    pub(crate) fn line_starts(&self) -> &[usize] {
+        self.line_starts
+            .get_or_init(|| crate::line_starts(self.source))
+            .as_slice()
     }
 }
 
@@ -36,6 +47,7 @@ pub(crate) struct ProjectContext {
     pub(crate) manifest: Option<ManifestSummary>,
     pub(crate) lockfile: Option<LockfileSummary>,
     pub(crate) rust_sources: Vec<RustSourceSummary>,
+    pub(crate) identifier_counts: BTreeMap<String, usize>,
     pub(crate) modules: Vec<ModuleSummary>,
     pub(crate) items: Vec<ItemSummary>,
     pub(crate) call_names: Vec<CallNameSummary>,

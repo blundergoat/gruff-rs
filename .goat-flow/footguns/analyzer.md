@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-21
+last_reviewed: 2026-05-22
 ---
 
 ## Footgun: Fixture Findings Are Intentional
@@ -30,6 +30,14 @@ Without that split, self-scan can report rule examples embedded inside unit-test
 The non-obvious failure mode is that adding a NEW line rule to `analyse_waste_line` (or any future "per-rule branch under one wrapper" file-scan helper) inherits NOTHING from its neighbours — every branch must restate its own test-context, comment-mask, and consumer-exemption guards. There is no compiler signal when a guard goes missing; only a self-scan delta against test-context lines surfaces it.
 
 Regression coverage: `src/tests/regression_milestones.rs` (search: `m38_unnecessary_clone_candidate_skips_test_context`). When adding a new sibling rule under `analyse_waste_line` or any analogous dispatcher, copy the guard list from the most-restrictive existing branch and add a per-rule negative test that probes a `.clone()`-shaped pattern inside both a `#[test]` fn and a non-`#[test]` helper fn inside `#[cfg(test)] mod tests`.
+
+## Footgun: Same-Line Findings Can Dedupe Together
+
+**Status:** active | **Created:** 2026-05-22 | **Evidence:** OBSERVED
+
+`src/report.rs` (search: `hasher.update(symbol.clone().unwrap_or_default().as_bytes())`) derives finding fingerprints from rule id, file path, line, and symbol. `sensitive-data.hardcoded-env-value` findings in `src/built_in_rules/secret_rules.rs` (search: `analyse_env_like_secrets`) currently carry `symbol: None`, so two env-style secret matches for the same file and line collapse during `sort_and_dedupe_findings`.
+
+The non-obvious failure mode is testing multi-secret JSON on one physical line and expecting one finding per key. Unless a rule intentionally changes symbol/fingerprint identity, put multi-match regression fixtures on separate lines or assert at least one same-line finding rather than exact per-key cardinality.
 
 ## Resolved Entries
 

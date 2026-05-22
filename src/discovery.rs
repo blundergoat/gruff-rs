@@ -199,9 +199,9 @@ pub(crate) fn record_ignored_path(ignored_paths: &Mutex<BTreeSet<String>>, path:
 pub(crate) fn path_is_project_ignored(project_root: &Path, path: &Path, config: &Config) -> bool {
     let relative = display_path(project_root, path);
     config
-        .ignored_paths
+        .ignored_path_matchers
         .iter()
-        .any(|pattern| path_matches(pattern, &relative))
+        .any(|matcher| matcher.matches(&relative))
 }
 
 pub(crate) fn is_default_ignored_dir(relative: &str) -> bool {
@@ -240,24 +240,9 @@ pub(crate) fn push_source_file(project_root: &Path, path: &Path, files: &mut Vec
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    let is_rust = extension.eq_ignore_ascii_case("rs");
-    let is_text = matches!(
-        extension,
-        "bash"
-            | "conf"
-            | "config"
-            | "env"
-            | "ini"
-            | "json"
-            | "md"
-            | "markdown"
-            | "sh"
-            | "toml"
-            | "txt"
-            | "xml"
-            | "yaml"
-            | "yml"
-    ) || file_name.starts_with(".env");
+    let extension = extension.to_ascii_lowercase();
+    let is_rust = extension == "rs";
+    let is_text = is_supported_text_file(&extension, file_name);
 
     if is_rust || is_text {
         files.push(SourceFile {
@@ -266,4 +251,52 @@ pub(crate) fn push_source_file(project_root: &Path, path: &Path, files: &mut Vec
             is_rust,
         });
     }
+}
+
+fn is_supported_text_file(extension: &str, file_name: &str) -> bool {
+    matches!(
+        extension,
+        "bash"
+            | "conf"
+            | "config"
+            | "crt"
+            | "env"
+            | "gradle"
+            | "ini"
+            | "json"
+            | "key"
+            | "lock"
+            | "md"
+            | "markdown"
+            | "pem"
+            | "properties"
+            | "sh"
+            | "tf"
+            | "tfvars"
+            | "toml"
+            | "txt"
+            | "xml"
+            | "yaml"
+            | "yml"
+    ) || is_security_relevant_text_name(file_name)
+}
+
+fn is_security_relevant_text_name(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    lower.starts_with(".env")
+        || matches!(
+            lower.as_str(),
+            ".dockerignore"
+                | ".netrc"
+                | ".npmrc"
+                | ".pypirc"
+                | ".yarnrc"
+                | "config"
+                | "containerfile"
+                | "dockerfile"
+                | "gnumakefile"
+                | "justfile"
+                | "makefile"
+                | "procfile"
+        )
 }

@@ -53,20 +53,13 @@ pub(crate) fn item_symbol(item: &ItemSummary) -> String {
     }
 }
 
-pub(crate) fn rust_identifier_occurrences(context: &ProjectContext, name: &str) -> usize {
-    context
-        .rust_sources
-        .iter()
-        .map(|source| identifier_occurrences(&source.source, name))
-        .sum()
-}
-
-pub(crate) fn identifier_occurrences(source: &str, name: &str) -> usize {
-    let pattern = format!(r"\b{}\b", regex::escape(name));
-    Regex::new(&pattern)
-        .expect("escaped identifier regex compiles")
-        .find_iter(source)
-        .count()
+impl ProjectContext {
+    pub(crate) fn identifier_count(&self, name: &str) -> usize {
+        self.identifier_counts
+            .get(name)
+            .copied()
+            .unwrap_or_default()
+    }
 }
 
 pub(crate) fn is_missing_text(value: Option<&str>) -> bool {

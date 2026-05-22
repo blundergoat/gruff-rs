@@ -92,6 +92,7 @@ pub(crate) fn apply_paths_section(paths_value: &Value, config: &mut Config) -> R
     reject_unknown_keys(paths, &["ignore"], "config key `paths`")?;
     if let Some(ignore) = paths.get("ignore") {
         config.ignored_paths = string_array(ignore, "paths.ignore")?;
+        config.ignored_path_matchers = compile_path_matchers(&config.ignored_paths);
     }
     Ok(())
 }

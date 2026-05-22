@@ -10,15 +10,23 @@ pub(crate) use items::{
 pub(crate) use lockfile::read_lockfile_summary;
 pub(crate) use manifest::read_manifest_summary;
 
+#[cfg(test)]
 pub(crate) fn read_and_parse_sources(
     files: &[SourceFile],
 ) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
-    let mut parsed_sources = Vec::new();
+    read_and_parse_sources_with_options(files, true)
+}
+
+pub(crate) fn read_and_parse_sources_with_options(
+    files: &[SourceFile],
+    parse_rust: bool,
+) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
+    let mut parsed_sources = Vec::with_capacity(files.len());
     let mut diagnostics = Vec::new();
 
     for source_file in files {
         match fs::read_to_string(&source_file.absolute_path) {
-            Ok(source) => parsed_sources.push(parse_source_file(source_file, source)),
+            Ok(source) => parsed_sources.push(parse_source_file(source_file, source, parse_rust)),
             Err(error) => diagnostics.push(RunDiagnostic {
                 diagnostic_type: "read-error".to_string(),
                 message: format!("Unable to read file: {error}"),
@@ -31,14 +39,19 @@ pub(crate) fn read_and_parse_sources(
     (parsed_sources, diagnostics)
 }
 
-pub(crate) fn parse_source_file(file: &SourceFile, source: String) -> ParsedSource {
+pub(crate) fn parse_source_file(
+    file: &SourceFile,
+    source: String,
+    parse_rust: bool,
+) -> ParsedSource {
     let file_owned = file.clone();
-    if !file_owned.is_rust {
+    if !parse_rust || !file_owned.is_rust {
         return ParsedSource {
             file: file_owned,
             source,
             rust_ast: None,
             diagnostics: Vec::new(),
+            line_starts: OnceLock::new(),
         };
     }
 
@@ -48,6 +61,7 @@ pub(crate) fn parse_source_file(file: &SourceFile, source: String) -> ParsedSour
             source,
             rust_ast: Some(ast),
             diagnostics: Vec::new(),
+            line_starts: OnceLock::new(),
         },
         Err(error) => {
             let display_path = file_owned.display_path.clone();
@@ -61,6 +75,7 @@ pub(crate) fn parse_source_file(file: &SourceFile, source: String) -> ParsedSour
                     file_path: Some(display_path),
                     line: Some(line_from_span(error.span().start())),
                 }],
+                line_starts: OnceLock::new(),
             }
         }
     }
@@ -85,6 +100,7 @@ pub(crate) fn build_project_context(
         manifest,
         lockfile,
         rust_sources: index.rust_sources,
+        identifier_counts: index.identifier_counts,
         modules: index.modules,
         items: index.items,
         call_names: index.call_names,
@@ -94,19 +110,22 @@ pub(crate) fn build_project_context(
 
 pub(crate) struct ProjectIndex {
     rust_sources: Vec<RustSourceSummary>,
+    identifier_counts: BTreeMap<String, usize>,
     modules: Vec<ModuleSummary>,
     items: Vec<ItemSummary>,
     call_names: Vec<CallNameSummary>,
 }
 
 pub(crate) fn project_index(sources: &[ParsedSource]) -> ProjectIndex {
-    let mut rust_sources = Vec::new();
-    let mut modules = Vec::new();
-    let mut items = Vec::new();
-    let mut call_names = Vec::new();
+    let mut rust_sources = Vec::with_capacity(sources.len());
+    let mut identifier_counts = BTreeMap::new();
+    let mut modules = Vec::with_capacity(sources.len());
+    let mut items = Vec::with_capacity(sources.len().saturating_mul(4));
+    let mut call_names = Vec::with_capacity(sources.len().saturating_mul(8));
 
     for source in sources {
         if let Some(ast) = &source.rust_ast {
+            count_rust_identifiers(&source.source, &mut identifier_counts);
             rust_sources.push(RustSourceSummary {
                 file_path: source.file.display_path.clone(),
                 source: source.source.clone(),
@@ -127,6 +146,7 @@ pub(crate) fn project_index(sources: &[ParsedSource]) -> ProjectIndex {
     }
     ProjectIndex {
         rust_sources,
+        identifier_counts,
         modules,
         items,
         call_names,
@@ -147,6 +167,14 @@ pub(crate) fn sort_project_index(index: &mut ProjectIndex) {
     index
         .rust_sources
         .sort_by(|left, right| left.file_path.cmp(&right.file_path));
+}
+
+pub(crate) fn count_rust_identifiers(source: &str, counts: &mut BTreeMap<String, usize>) {
+    static IDENTIFIER_REGEX: OnceLock<Regex> = OnceLock::new();
+    let identifier_regex = static_regex(&IDENTIFIER_REGEX, r"\b[A-Za-z_][A-Za-z0-9_]*\b");
+    for found in identifier_regex.find_iter(source) {
+        *counts.entry(found.as_str().to_string()).or_default() += 1;
+    }
 }
 
 pub(crate) fn sort_project_modules(modules: &mut [ModuleSummary]) {

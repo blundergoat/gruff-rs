@@ -425,6 +425,7 @@ pub fn entry() {
     assert!(candidate.message.contains("candidate"));
     assert!(matches!(candidate.confidence, Confidence::Medium));
     assert_eq!(candidate.metadata["candidate"], json!(true));
+    assert_eq!(candidate.fingerprint, "395572648fc5a9b0");
 
     let negative_dir = tempdir().expect("tempdir");
     fs::create_dir_all(negative_dir.path().join("src")).expect("src dir");

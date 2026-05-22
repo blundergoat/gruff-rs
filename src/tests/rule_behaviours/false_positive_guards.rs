@@ -432,3 +432,44 @@ mod tests {
             "expected exactly one clone finding (the production one in `pub fn entry`); findings={clones:?}"
         );
 }
+
+/// Negative: `sensitive-data.high-entropy-string` must skip subresource
+/// integrity hashes (`sha256-...`, `sha512-...`, etc.) committed in
+/// lockfiles, integrity manifests, and HTML `integrity` attributes. The
+/// rule must still fire on a real high-entropy string literal in the
+/// same fixture so the skip is provably scoped to the prefix.
+#[test]
+pub(crate) fn high_entropy_string_skips_integrity_hashes() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry() {
+    let _sri_256 = "sha256-pDhVbGGHEIRHH5vpSIdcFkMAjiIIyqatK7tGw30sPmoGlSN7";
+    let _sri_512 = "sha512-pDhVbGGHEIRHH5vpSIdcFkMAjiIIyqatK7tGw30sPmoGlSN7+/ls0rb2R/x42DYbwli3ZokMiTyJFhGQBdJCpg==";
+    let _bare_secret = "Q7m2P9x8R4s6T1v3W5y7Z0a2B4c6D8e0";
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .collect();
+    assert_eq!(
+        entropy_findings.len(),
+        1,
+        "expected exactly one entropy finding (the bare secret); findings={entropy_findings:?}"
+    );
+}

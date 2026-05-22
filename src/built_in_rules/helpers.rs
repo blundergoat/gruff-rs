@@ -153,14 +153,6 @@ pub(crate) fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
         .find_map(|(index, line)| line.contains(needle).then_some(index + 1))
 }
 
-pub(crate) fn byte_line(source: &str, byte_index: usize) -> usize {
-    source[..byte_index.min(source.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1
-}
-
 pub(crate) fn redact(value: &str) -> String {
     let char_count = value.chars().count();
     if char_count <= 8 {

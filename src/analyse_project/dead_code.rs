@@ -15,7 +15,7 @@ pub(crate) fn analyse_project_dead_code_rules(
         .iter()
         .filter(|item| is_private_item_candidate(item))
     {
-        if rust_identifier_occurrences(context, &item.name) > 1 {
+        if context.identifier_count(&item.name) > 1 {
             continue;
         }
         findings.push(unused_private_item_finding(rule_id, item));

@@ -1,14 +1,12 @@
 use super::*;
 
 pub(crate) fn analyse_text_rules(
-    file: &SourceFile,
-    source: &str,
-    rust_ast: Option<&syn::File>,
+    unit: &SourceUnit<'_>,
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    analyse_file_length(file, source, config, findings);
-    analyse_sensitive_data(file, source, rust_ast, config, findings);
+    analyse_file_length(unit.file, unit.source, config, findings);
+    analyse_sensitive_data(unit, config, findings);
 }
 
 fn analyse_file_length(

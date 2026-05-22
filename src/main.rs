@@ -42,9 +42,10 @@ pub(crate) use parser::{
     byte_line_from_starts, extract_rust_comments, line_starts, static_regex,
     strip_rust_comments_after_string_mask, strip_rust_string_literals, RustComment,
 };
+#[cfg(test)]
+pub(crate) use project::read_and_parse_sources;
 pub(crate) use project::{
     build_project_context, has_cfg_test_attr, has_test_attr, is_test_module, line_from_span,
-    read_and_parse_sources,
 };
 
 pub(crate) use analyse_project::analyse_project;
@@ -59,8 +60,8 @@ use cli::{
     SummaryFormat,
 };
 use config::{
-    AnalysisOptions, Config, CustomRule, CustomRuleScope, DiffSelection, ExclusionRule, ListedRule,
-    RequestedScope, RuleSetting, SelectorSet,
+    compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DiffSelection,
+    ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting, SelectorSet,
 };
 #[cfg(test)]
 use config_loader::expand_rule_selector;
@@ -458,24 +459,6 @@ pub(crate) fn display_path(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
         .trim_start_matches("./")
         .to_string()
-}
-
-pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
-    if pattern == path {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix("/**") {
-        return path == prefix || path.starts_with(&format!("{prefix}/"));
-    }
-    if pattern.contains('*') {
-        let escaped = regex::escape(pattern)
-            .replace("\\*\\*", ".*")
-            .replace("\\*", "[^/]*");
-        return Regex::new(&format!("^{escaped}$"))
-            .map(|regex| regex.is_match(path))
-            .unwrap_or(false);
-    }
-    path.starts_with(pattern.trim_end_matches('/'))
 }
 
 #[cfg(test)]

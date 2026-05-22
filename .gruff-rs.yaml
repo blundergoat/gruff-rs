@@ -1,6 +1,7 @@
 paths:
   ignore:
     - .agents/**
+    - .antigravitycli/**
     - .claude/**
     - .codex/**
     - .github/**
@@ -8,6 +9,9 @@ paths:
     - target/**
     - fixtures/**
     - tests/fixtures/**
+    - "**/package-lock.json"
+    - "**/yarn.lock"
+    - "**/pnpm-lock.yaml"
 allowlists:
   acceptedAbbreviations:
     - id
@@ -30,6 +34,7 @@ allowlists:
     - "Endp...aaaa (redacted, 140 chars)"
     - "DATA...-123 (redacted, 39 chars)"
     - "DATA...-123 (redacted, 43 chars)"
+    - "Q7m2...D8e0 (redacted, 32 chars)"
 rules:
   # Flags modules with more indexed items than the configured threshold.
   architecture.large-module:

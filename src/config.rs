@@ -54,6 +54,7 @@ impl RequestedScope {
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
     pub(crate) ignored_paths: Vec<String>,
+    pub(crate) ignored_path_matchers: Vec<PathMatcher>,
     pub(crate) accepted_abbreviations: BTreeSet<String>,
     pub(crate) secret_previews: BTreeSet<String>,
     pub(crate) selectors: SelectorSet,
@@ -96,9 +97,91 @@ pub(crate) struct CustomRule {
     pub(crate) scope: CustomRuleScope,
     pub(crate) pattern: String,
     pub(crate) compiled_pattern: Regex,
-    pub(crate) include_paths: Vec<String>,
-    pub(crate) exclude_paths: Vec<String>,
+    pub(crate) include_path_matchers: Vec<PathMatcher>,
+    pub(crate) exclude_path_matchers: Vec<PathMatcher>,
     pub(crate) remediation: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PathMatcher {
+    pattern: String,
+    kind: PathMatcherKind,
+}
+
+#[derive(Debug, Clone)]
+enum PathMatcherKind {
+    TreePrefix(String),
+    Prefix(String),
+    Wildcard(Regex),
+}
+
+impl PathMatcher {
+    pub(crate) fn new(pattern: &str) -> Self {
+        let pattern = normalize_report_path(pattern);
+        let kind = if let Some(prefix) = pattern
+            .strip_suffix("/**")
+            .filter(|prefix| !prefix.contains('*'))
+        {
+            PathMatcherKind::TreePrefix(prefix.to_string())
+        } else if pattern.contains('*') {
+            PathMatcherKind::Wildcard(wildcard_regex(&pattern))
+        } else {
+            PathMatcherKind::Prefix(pattern.trim_end_matches('/').to_string())
+        };
+        Self { pattern, kind }
+    }
+
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        let path = normalize_report_path(path);
+        if self.pattern == path {
+            return true;
+        }
+        match &self.kind {
+            PathMatcherKind::TreePrefix(prefix) => {
+                path == *prefix || path.starts_with(&format!("{prefix}/"))
+            }
+            PathMatcherKind::Prefix(prefix) => path.starts_with(prefix),
+            PathMatcherKind::Wildcard(regex) => regex.is_match(&path),
+        }
+    }
+}
+
+pub(crate) fn compile_path_matchers(patterns: &[String]) -> Vec<PathMatcher> {
+    patterns
+        .iter()
+        .map(|pattern| PathMatcher::new(pattern))
+        .collect()
+}
+
+fn wildcard_regex(pattern: &str) -> Regex {
+    let tree_suffix = pattern.ends_with("/**");
+    let pattern = if tree_suffix {
+        &pattern[..pattern.len() - 3]
+    } else {
+        pattern
+    };
+    let mut regex = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '*' && chars.peek() == Some(&'*') {
+            chars.next();
+            if regex == "^" && chars.peek() == Some(&'/') {
+                chars.next();
+                regex.push_str("(?:.*/)?");
+            } else {
+                regex.push_str(".*");
+            }
+        } else if character == '*' {
+            regex.push_str("[^/]*");
+        } else {
+            regex.push_str(&regex::escape(&character.to_string()));
+        }
+    }
+    if tree_suffix {
+        regex.push_str("(?:/.*)?");
+    }
+    regex.push('$');
+    Regex::new(&regex).expect("generated path matcher regex compiles")
 }
 
 #[derive(Debug, Serialize)]
@@ -143,6 +226,7 @@ impl Config {
     pub(crate) fn default() -> Self {
         Self {
             ignored_paths: Vec::new(),
+            ignored_path_matchers: Vec::new(),
             accepted_abbreviations: ["id", "db", "io", "ui", "tx", "rx"]
                 .into_iter()
                 .map(String::from)

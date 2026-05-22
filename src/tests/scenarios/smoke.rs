@@ -58,7 +58,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        18
+        19
     );
 
     let expected = [
@@ -181,6 +181,14 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(16),
             None,
             "1aae444024c630df",
+        ),
+        (
+            "sensitive-data.hardcoded-env-value",
+            Severity::Error,
+            "fixtures/sample.rs",
+            Some(16),
+            None,
+            "71395459c781d45e",
         ),
         (
             "sensitive-data.database-url-password",

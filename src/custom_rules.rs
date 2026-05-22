@@ -3,7 +3,6 @@ use std::borrow::Cow;
 
 pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let line_offsets = line_starts(unit.source);
     for rule in &config.custom_rules {
         if !config.is_rule_enabled(&rule.id) || !custom_rule_matches_path(rule, unit.file) {
             continue;
@@ -15,7 +14,7 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
             unit,
             rule,
             scope_source.as_ref(),
-            &line_offsets,
+            unit.line_starts(),
         ));
     }
     findings
@@ -68,15 +67,15 @@ fn finding_line_for_match(source: &str, line_starts: &[usize], start: usize, end
 
 fn custom_rule_matches_path(rule: &CustomRule, file: &SourceFile) -> bool {
     let path = normalize_report_path(&file.display_path);
-    (rule.include_paths.is_empty()
+    (rule.include_path_matchers.is_empty()
         || rule
-            .include_paths
+            .include_path_matchers
             .iter()
-            .any(|pattern| path_matches(pattern, &path)))
+            .any(|pattern| pattern.matches(&path)))
         && !rule
-            .exclude_paths
+            .exclude_path_matchers
             .iter()
-            .any(|pattern| path_matches(pattern, &path))
+            .any(|pattern| pattern.matches(&path))
 }
 
 fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option<Cow<'a, str>> {

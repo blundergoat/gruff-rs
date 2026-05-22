@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn render_text(report: &AnalysisReport) -> String {
-    let mut output = String::new();
+    let mut output = String::with_capacity(256 + report.findings.len().saturating_mul(160));
     render_text_header(&mut output, report);
     render_text_diagnostics(&mut output, report);
     render_text_findings(&mut output, report);

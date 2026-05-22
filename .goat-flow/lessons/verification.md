@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-21
+last_reviewed: 2026-05-22
 ---
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
@@ -73,3 +73,16 @@ uses `match.start()` directly.
 For source diagnostics, compute the displayed line from the first
 non-whitespace byte inside the match when that exists, then rerun the focused
 scope test before continuing with broader gates.
+
+## Lesson: New Scenario Tests Can Trip Dogfood File-Length Gates
+
+**Created:** 2026-05-22
+
+When adding scenario coverage to an already large test module, check the
+project dogfood thresholds before assuming the full suite is enough. In M52, a
+new discovery glob test made `src/tests/scenarios/smoke.rs` exceed the
+`size.file-length` warning threshold even though the Rust tests passed.
+
+Prefer a focused scenario module such as `src/tests/scenarios/discovery.rs`
+when new coverage is cohesive. Then rerun `bash scripts/preflight-checks.sh` so
+the dogfood scan proves the repository still clears its own quality gate.

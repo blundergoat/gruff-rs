@@ -65,8 +65,8 @@ pub(crate) fn parse_custom_rule(
         scope: pattern.scope,
         pattern: pattern.pattern,
         compiled_pattern: pattern.compiled_pattern,
-        include_paths: paths_and_doc.include_paths,
-        exclude_paths: paths_and_doc.exclude_paths,
+        include_path_matchers: compile_path_matchers(&paths_and_doc.include_paths),
+        exclude_path_matchers: compile_path_matchers(&paths_and_doc.exclude_paths),
         remediation: paths_and_doc.remediation,
     })
 }

@@ -179,3 +179,68 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
         ]
     );
 }
+
+#[test]
+pub(crate) fn selected_text_only_rules_skip_rust_parse_work() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn broken( {\nlet value = 1;\n",
+    )
+    .expect("lib write");
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["size.file-length"]
+"#,
+    );
+
+    let report = run_project_analysis(dir.path(), default_test_options())
+        .expect("selected size analysis succeeds");
+
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_missing_rule(&report, "docs.missing-readme");
+}
+
+#[test]
+pub(crate) fn selected_rules_keep_rust_parse_when_rule_needs_ast() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn broken( {\nlet value = 1;\n",
+    )
+    .expect("lib write");
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["complexity.cyclomatic"]
+"#,
+    );
+    let rust_report = run_project_analysis(dir.path(), default_test_options())
+        .expect("selected rust analysis succeeds");
+    assert!(rust_report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.diagnostic_type == "parse-error"));
+
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["SensitiveData"]
+"#,
+    );
+    let sensitive_report = run_project_analysis(dir.path(), default_test_options())
+        .expect("selected sensitive-data analysis succeeds");
+    assert!(sensitive_report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.diagnostic_type == "parse-error"));
+}

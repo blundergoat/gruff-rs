@@ -1,5 +1,9 @@
 use super::*;
 
+static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
+
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
     source: &str,
@@ -171,16 +175,81 @@ pub(crate) fn analyse_process_commands(
         r"(std::process::Command|Command)::new\s*\(",
     );
     let searchable = strip_rust_string_literals(source);
-    for (line_index, line) in searchable.lines().enumerate() {
+    let searchable_lines: Vec<&str> = searchable.lines().collect();
+    let source_lines: Vec<&str> = source.lines().collect();
+    for (line_index, line) in searchable_lines.iter().enumerate() {
         if command_regex.is_match(line) {
-            findings.push(finding(SimpleFindingDescriptor {
-                    rule_id: "security.process-command",
-                    message: "Process command execution is used; validate command arguments are not user-controlled.".into(),
-                    file,
-                    line: Some(line_index + 1),
-                    severity: Severity::Warning,
-                    pillar: Pillar::Security,
-                }));
+            findings.push(Finding::new(FindingDescriptor {
+                rule_id: "security.process-command".to_string(),
+                message:
+                    "Process command execution is used; validate command arguments are not user-controlled."
+                        .to_string(),
+                file_path: file.display_path.clone(),
+                line: Some(line_index + 1),
+                severity: Severity::Warning,
+                pillar: Pillar::Security,
+                confidence: Confidence::High,
+                symbol: None,
+                remediation: Some(
+                    "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs."
+                        .to_string(),
+                ),
+                metadata: json!({
+                    "riskSignals": process_command_risk_signals(
+                        &source_lines,
+                        &searchable_lines,
+                        line_index
+                    ),
+                }),
+            }));
         }
     }
+}
+
+fn process_command_risk_signals(
+    source_lines: &[&str],
+    searchable_lines: &[&str],
+    line_index: usize,
+) -> Vec<&'static str> {
+    let raw_window = line_window(source_lines, line_index);
+    let searchable_window = line_window(searchable_lines, line_index);
+    let mut signals = Vec::new();
+
+    if static_regex(
+        &PROCESS_SHELL_INTERPRETER_REGEX,
+        r#"(?i)(std::process::Command|Command)::new\s*\(\s*"(?:sh|bash|dash|zsh|cmd|powershell|pwsh)"\s*\)"#,
+    )
+    .is_match(&raw_window)
+    {
+        signals.push("shell-interpreter");
+    }
+    if static_regex(
+        &PROCESS_SHELL_ARG_REGEX,
+        r#"\.(?:arg|args)\s*\([^)]*"(?:-c|/C)""#,
+    )
+    .is_match(&raw_window)
+    {
+        signals.push("shell-command-argument");
+    }
+    if static_regex(
+        &PROCESS_DYNAMIC_EXECUTABLE_REGEX,
+        r"(std::process::Command|Command)::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_:]*::)",
+    )
+    .is_match(&searchable_window)
+    {
+        signals.push("dynamic-executable");
+    }
+    if raw_window.contains(".env(") || raw_window.contains(".envs(") {
+        signals.push("custom-environment");
+    }
+    if raw_window.contains(".current_dir(") {
+        signals.push("custom-working-directory");
+    }
+
+    signals
+}
+
+fn line_window(lines: &[&str], line_index: usize) -> String {
+    let end = usize::min(line_index + 5, lines.len());
+    lines[line_index..end].join("\n")
 }

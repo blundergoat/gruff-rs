@@ -132,13 +132,19 @@ fn partition_excluded_findings(
     exclusions: &[ExclusionRule],
     summaries: &mut [SuppressionSummary],
 ) -> (Vec<Finding>, Vec<SuppressedFinding>) {
-    let mut kept = Vec::new();
+    let mut kept = Vec::with_capacity(findings.len());
     let mut suppressed = Vec::new();
+    let path_matchers: Vec<Vec<PathMatcher>> = exclusions
+        .iter()
+        .map(|exclusion| compile_path_matchers(&exclusion.paths))
+        .collect();
     for finding in findings {
         match exclusions
             .iter()
-            .position(|exclusion| exclusion_matches_finding(exclusion, &finding))
-        {
+            .enumerate()
+            .position(|(index, exclusion)| {
+                exclusion_matches_finding_with_paths(exclusion, &path_matchers[index], &finding)
+            }) {
             Some(index) => {
                 summaries[index].suppressed += 1;
                 suppressed.push(SuppressedFinding {
@@ -152,16 +158,19 @@ fn partition_excluded_findings(
     (kept, suppressed)
 }
 
-pub(crate) fn exclusion_matches_finding(exclusion: &ExclusionRule, finding: &Finding) -> bool {
+fn exclusion_matches_finding_with_paths(
+    exclusion: &ExclusionRule,
+    path_matchers: &[PathMatcher],
+    finding: &Finding,
+) -> bool {
     if !exclusion.rule_ids.contains(&finding.rule_id) {
         return false;
     }
-    if !exclusion.paths.is_empty() {
+    if !path_matchers.is_empty() {
         let file_path = normalize_report_path(&finding.file_path);
-        if !exclusion
-            .paths
+        if !path_matchers
             .iter()
-            .any(|pattern| path_matches(pattern, &file_path))
+            .any(|matcher| matcher.matches(&file_path))
         {
             return false;
         }
@@ -242,18 +251,81 @@ pub(crate) fn analyse_discovered_sources(
     config: &Config,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> Vec<Finding> {
-    let (parsed_sources, read_diagnostics) = read_and_parse_sources(files);
+    let capabilities = AnalysisCapabilities::from_config(config);
+    let (parsed_sources, read_diagnostics) =
+        crate::project::read_and_parse_sources_with_options(files, capabilities.parse_rust);
     diagnostics.extend(read_diagnostics);
 
-    let project_context = build_project_context(project_root, &parsed_sources);
-    diagnostics.extend(project_context.diagnostics.iter().cloned());
-
-    let mut findings = analyse_project(&project_context, config);
+    let mut findings = if capabilities.project_context {
+        let project_context = build_project_context(project_root, &parsed_sources);
+        diagnostics.extend(project_context.diagnostics.iter().cloned());
+        analyse_project(&project_context, config)
+    } else {
+        Vec::new()
+    };
     for parsed_source in &parsed_sources {
         findings.extend(analyse_source(&parsed_source.as_source_unit(), config));
         diagnostics.extend(parsed_source.diagnostics.iter().cloned());
     }
     findings
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AnalysisCapabilities {
+    parse_rust: bool,
+    project_context: bool,
+}
+
+impl AnalysisCapabilities {
+    pub(crate) fn from_config(config: &Config) -> Self {
+        let registry = rules::builtin_registry();
+        let mut capabilities = Self {
+            parse_rust: false,
+            project_context: false,
+        };
+
+        for definition in registry.definitions() {
+            if !config.is_rule_enabled(definition.id) {
+                continue;
+            }
+            capabilities.include_builtin_rule(definition);
+        }
+
+        for rule in &config.custom_rules {
+            if config.is_rule_enabled(&rule.id) {
+                capabilities.include_custom_rule(rule);
+            }
+        }
+
+        capabilities
+    }
+
+    fn include_builtin_rule(&mut self, definition: &rules::RuleDefinition) {
+        match definition.kind {
+            rules::RuleKind::Project => {
+                self.project_context = true;
+                self.parse_rust = true;
+            }
+            rules::RuleKind::Rust => {
+                self.parse_rust = true;
+            }
+            rules::RuleKind::Text => {
+                if text_rule_needs_rust_ast(definition.id) {
+                    self.parse_rust = true;
+                }
+            }
+        }
+    }
+
+    fn include_custom_rule(&mut self, rule: &CustomRule) {
+        match rule.scope {
+            CustomRuleScope::Text | CustomRuleScope::RustCode | CustomRuleScope::Comments => {}
+        }
+    }
+}
+
+fn text_rule_needs_rust_ast(rule_id: &str) -> bool {
+    rule_id == "sensitive-data.hardcoded-env-value"
 }
 
 pub(crate) fn apply_diff_selection(

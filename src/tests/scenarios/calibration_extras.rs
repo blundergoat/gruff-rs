@@ -200,19 +200,31 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
 pub(crate) fn calibration_api_key_pattern_detects_common_formats() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
+    let github_fine_grained = concat!("github_", "pat_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let gitlab_token = concat!("gl", "pat-", "aaaaaaaaaaaaaaaaaaaaaaaa");
+    let npm_token = concat!("npm_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let azure_storage = concat!(
+        "DefaultEndpointsProtocol=https;AccountName=acct;",
+        "AccountKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
+        "EndpointSuffix=core.windows.net"
+    );
+    let body = format!(
         r#"/// Probe.
-pub fn entry() {
+pub fn entry() {{
     let _stripe_test = "sk_test_aaaaaaaaaaaaaaaaaaaaaaaa";
     let _stripe_pub = "pk_live_aaaaaaaaaaaaaaaaaaaaaaaa";
     let _github_oauth = "gho_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let _github_fine_grained = "{github_fine_grained}";
+    let _gitlab_token = "{gitlab_token}";
+    let _npm_token = "{npm_token}";
     let _openai_legacy = "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let _google_api = "AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let _azure_bus = "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-}
-"#,
+    let _azure_storage = "{azure_storage}";
+}}
+"#
     );
+    baseline_with_lib(dir.path(), &body);
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -230,10 +242,99 @@ pub fn entry() {
         .count();
     assert_eq!(
         api_key_findings,
-        6,
+        10,
         "calibration expected all common synthetic API-key formats to fire; findings={:?}",
         rule_ids(&report)
     );
+}
+
+#[test]
+pub(crate) fn calibration_hardcoded_env_value_detects_structured_config_keys() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("secrets.yaml"),
+        "database_password: yaml-secret-123\napi_token: yaml-token-456\n",
+    )
+    .expect("yaml write");
+    fs::write(
+        dir.path().join("settings.json"),
+        "{\n  \"database_url\":\"postgres://user:secret@db/app\",\n  \"service-token\":\"json-secret-123\"\n}\n",
+    )
+    .expect("json write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let hardcoded_env_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.hardcoded-env-value")
+        .collect();
+    assert_eq!(
+        hardcoded_env_findings.len(),
+        4,
+        "expected YAML/JSON secret-like assignments to fire; findings={hardcoded_env_findings:?}"
+    );
+}
+
+#[test]
+pub(crate) fn calibration_process_command_records_risk_signals() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Probe.
+pub fn run(command: &str, path: &str, dir: &std::path::Path) {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .env("PATH", path)
+        .current_dir(dir);
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "security.process-command")
+        .expect("process-command finding");
+    let signals: BTreeSet<&str> = finding
+        .metadata
+        .get("riskSignals")
+        .and_then(Value::as_array)
+        .expect("riskSignals array")
+        .iter()
+        .map(|signal| signal.as_str().expect("signal string"))
+        .collect();
+    for expected in [
+        "shell-interpreter",
+        "shell-command-argument",
+        "custom-environment",
+        "custom-working-directory",
+    ] {
+        assert!(
+            signals.contains(expected),
+            "missing `{expected}` from risk signals: {signals:?}"
+        );
+    }
 }
 
 /// Proves that `sensitive-data.hardcoded-env-value` still catches
