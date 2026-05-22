@@ -30,6 +30,7 @@ settings with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT`.
 
 - [Rust rubric](docs/rust-rubric.md) describes the v0.1 rule families, limits,
   and deferred checks.
+- [Changelog](CHANGELOG.md) records unreleased rule and contract changes.
 - [Architecture](.goat-flow/architecture.md) describes analysis flow, trust
   boundaries, report contracts, and non-obvious constraints.
 - [Code map](.goat-flow/code-map.md) maps source, fixtures, scripts, and local
@@ -211,6 +212,17 @@ the discovered Rust sources and phrase cross-file unused private items as
 candidates because the scanner does not run rustc type resolution.
 Performance and metric checks use syntactic source patterns and deterministic
 token counts, not benchmarks or runtime profiling.
+
+Security checks are also local-only static signals. The current default security
+surface includes process command construction, direct `format!` SQL query
+arguments, TLS verification bypasses, weak cryptographic primitive references,
+non-cryptographic `rand::` calls in secret-like generation functions, unsafe
+blocks without nearby `SAFETY:` rationales, unpinned git dependencies,
+security-blind config ignores, and GitHub event values interpolated into
+workflow shell steps. Sensitive-data checks include provider-shaped API keys,
+JWT-looking tokens, private-key markers, database URLs with passwords, HTTP(S)
+URLs with embedded credentials, hardcoded secret-like assignments, and
+high-entropy strings.
 
 ## Interpreting Findings And Exits
 
