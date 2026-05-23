@@ -83,10 +83,8 @@ full contract and what may change with deprecation.
 - [Rust rubric](docs/rust-rubric.md) describes the v0.1 rule families, limits,
   and deferred checks.
 - [Changelog](CHANGELOG.md) records 0.1.0 release changes.
-- [Architecture](.goat-flow/architecture.md) describes analysis flow, trust
-  boundaries, report contracts, and non-obvious constraints.
-- [Code map](.goat-flow/code-map.md) maps source, fixtures, scripts, and local
-  goat-flow memory.
+- Architecture, code map, and ADRs live under `.goat-flow/` in the source
+  repository at <https://github.com/blundergoat/gruff-rs/tree/main/.goat-flow>.
 
 ## Config
 
@@ -347,7 +345,7 @@ applies report-level exclusions, then filters the report. The JSON/SARIF/text di
 `patch-filter` summary with kept and suppressed finding counts. The older
 Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe` and
 should be treated as an explicit trust-boundary opt-in. This follows
-[ADR-009](.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md).
+[ADR-009](https://github.com/blundergoat/gruff-rs/blob/main/.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md).
 
 ## Report Contract
 

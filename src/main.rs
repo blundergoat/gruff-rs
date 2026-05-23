@@ -91,7 +91,7 @@ use source::{
     RustSourceSummary, SourceFile, SourceUnit,
 };
 
-const VERSION: &str = "0.1.0-dev";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff-rs.yaml"];
 

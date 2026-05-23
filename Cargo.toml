@@ -30,7 +30,7 @@ exclude = [
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"
-pkg-fmt = "tgz"
+pkg-fmt = "tar.gz"
 bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
