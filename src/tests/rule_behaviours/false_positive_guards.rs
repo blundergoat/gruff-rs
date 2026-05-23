@@ -1,6 +1,6 @@
 use super::*;
 
-/// M33 negative: `waste.unnecessary-clone-candidate` must skip clones
+/// Regression guard: `waste.unnecessary-clone-candidate` must skip clones
 /// whose result is immediately consumed by ownership-taking calls
 /// (`unwrap_or_else`, `unwrap_or`, `unwrap_or_default`, `into`, `into_iter`,
 /// `collect`, `?` propagation), struct-field initialisation, or
@@ -52,7 +52,7 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
     );
 }
 
-/// M33 negative: `metrics.halstead-volume` must not count string-literal
+/// Regression guard: `metrics.halstead-volume` must not count string-literal
 /// content as tokens. A long `format!(concat!(...))` HTML template with
 /// dense string fragments inside should still stay below the threshold —
 /// only the wrapping `format`, `concat`, punctuation, and `{}` placeholder
@@ -91,7 +91,7 @@ pub(crate) fn halstead_volume_skips_string_literal_tokens() {
     );
 }
 
-/// M33 negative: `size.function-length` must skip a function whose body is
+/// Regression guard: `size.function-length` must skip a function whose body is
 /// a single declarative literal (here, a 70-entry `vec![...]`). Function
 /// length is intended to flag logic, not table-data registries.
 #[test]
@@ -125,7 +125,7 @@ pub(crate) fn function_length_skips_declarative_vec_body() {
     );
 }
 
-/// M33 negative: `waste.unwrap-expect` must skip test code (functions
+/// Regression guard: `waste.unwrap-expect` must skip test code (functions
 /// annotated with `#[test]` and any function inside a `#[cfg(test)]`
 /// module). The dedicated `test-quality.unwrap-in-test` rule covers the
 /// test-side concern.
@@ -259,7 +259,7 @@ fn mixed_cfg_helper() {}
     }));
 }
 
-/// M33 negative: prove the literal mask handles Rust character literals
+/// Regression guard: prove the literal mask handles Rust character literals
 /// such as `trim_matches('"')`. Without char-literal awareness, the `"`
 /// inside `'"'` flips the masker into string mode and every later string
 /// in the file is masked one off, leaking later `Command::new` text inside
@@ -317,7 +317,7 @@ pub(crate) fn rust_masking_preserves_non_ascii_byte_offsets_and_nested_comments(
     );
 }
 
-/// M35 negative: prose inside Rust comments must not trigger code-pattern
+/// Regression guard: prose inside Rust comments must not trigger code-pattern
 /// line rules. `naming.short-variable`, `naming.placeholder-identifier`,
 /// `waste.unwrap-expect`, and `waste.unnecessary-clone-candidate` all run
 /// off the code-only line view that masks comments to spaces. The
@@ -377,7 +377,7 @@ pub fn well_documented(name: String) -> String {
     }
 }
 
-/// M35 negative: external-public-API rules must not fire on `pub(crate)`,
+/// Regression guard: external-public-API rules must not fire on `pub(crate)`,
 /// `pub(super)`, or `pub(in path)` items. Those are crate-visible (so
 /// dead-code / reachability rules still see them as reachable) but they
 /// are NOT part of the external API surface, so reportable rules stay
@@ -444,9 +444,8 @@ pub(crate) fn entry_n() {}
                 .collect::<Vec<_>>()
         );
     }
-    // The broader (non-public-API) unwrap rule SHOULD still fire on the
-    // production unwrap inside `maybe_one`, even though the public-API
-    // rule does not.
+    // Visibility only affects public-API rules; production unwrap checks
+    // still apply inside crate-visible functions.
     assert!(
         report
             .findings
@@ -456,7 +455,7 @@ pub(crate) fn entry_n() {}
     );
 }
 
-/// M38 negative: `waste.unnecessary-clone-candidate` must skip clones
+/// Regression guard: `waste.unnecessary-clone-candidate` must skip clones
 /// inside `#[test]` fns and any fn inside a `#[cfg(test)]` module, so the
 /// rule stays symmetric with `waste.unwrap-expect`, whose
 /// `analyse_waste_line` branch already applies

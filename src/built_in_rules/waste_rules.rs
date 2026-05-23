@@ -1,7 +1,7 @@
 use super::*;
 
 /// Returns true when the line contains a `.clone()` whose result is
-/// immediately consumed by an ownership-taking method (M33 exemptions:
+/// immediately consumed by an ownership-taking method (known exemptions:
 /// `unwrap_or*`, `into*`, `collect*`, `?` propagation) or is being used
 /// in a position where the surrounding code requires owned data (struct
 /// field initialisation, `Some(_)` field wrap, `Entry::*` insertion,

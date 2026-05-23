@@ -1,6 +1,6 @@
 use super::*;
 
-/// M35 calibration: `naming.boolean-prefix` accepts idiomatic Rust
+/// Calibration guard: `naming.boolean-prefix` accepts idiomatic Rust
 /// predicate names (subject-predicate form, common predicate verbs) while
 /// keeping passive shapes like `triggered_by` flagged.
 #[test]
@@ -72,8 +72,8 @@ pub fn triggered_by() -> bool { true }
     }
 }
 
-/// M35 negative: `security.unsafe-block` must STILL find nearby `SAFETY:`
-/// rationale comments after the M35 raw/code-only split. The unsafe-block
+/// Regression guard: `security.unsafe-block` must still find nearby `SAFETY:`
+/// rationale comments after the raw/code-only split. The unsafe-block
 /// rule uses the raw (comment-preserved) line view so it can read the
 /// `SAFETY:` marker.
 #[test]
@@ -84,7 +84,7 @@ pub(crate) fn unsafe_block_still_sees_safety_rationale_comment() {
         dir.path(),
         r##"/// Probe.
 pub fn explained() {
-    // SAFETY: this is a synthetic fixture, no actual unsafety.
+    // SAFETY: this block constructs a raw pointer but never dereferences it.
     unsafe {
         std::ptr::null::<i32>();
     }
@@ -120,7 +120,7 @@ pub fn unexplained() {
         );
 }
 
-/// M37 calibration: the three new naming options
+/// Config round-trip guard: the three naming options
 /// (`predicatePrefixes`, `extraPlaceholders`, `extraGenericNames`) plumb
 /// through the typed-option config and influence rule dispatch. Wrong
 /// shapes (a non-array value) are rejected with the expected error
@@ -165,7 +165,7 @@ rules:
     )
     .expect("analysis succeeds");
 
-    // predicatePrefixes accepts `requires_init` → no boolean-prefix finding for that fn
+    // Custom predicate prefixes extend the built-in boolean-name allowlist.
     assert!(
         !report.findings.iter().any(|finding| {
             finding.rule_id == "naming.boolean-prefix"
@@ -179,7 +179,7 @@ rules:
             .collect::<Vec<_>>()
     );
 
-    // extraPlaceholders catches `tmp`
+    // Extra placeholders are additive, so project-local throwaway names can fail.
     assert!(
         report.findings.iter().any(|finding| {
             finding.rule_id == "naming.placeholder-identifier"
@@ -193,7 +193,7 @@ rules:
             .collect::<Vec<_>>()
     );
 
-    // extraGenericNames catches `do_stuff`
+    // Extra generic names are additive, so project-local vague verbs can fail.
     assert!(
         report.findings.iter().any(|finding| {
             finding.rule_id == "naming.generic-function"
@@ -207,7 +207,7 @@ rules:
             .collect::<Vec<_>>()
     );
 
-    // Wrong shape: predicatePrefixes is a number, not an array
+    // Typed options reject scalar values before rule dispatch reads them.
     write_config(
         dir.path(),
         r##"
@@ -225,7 +225,7 @@ rules:
         "unexpected error: {error}"
     );
 
-    // Wrong rule: predicatePrefixes on naming.placeholder-identifier
+    // Options are valid only for the rule definition that declares them.
     write_config(
         dir.path(),
         r##"

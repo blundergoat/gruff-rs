@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/test-performance.sh — end-to-end performance harness for gruff-rs.
-# See `--help` for usage and `.goat-flow/tasks/0.1/M34-performance-test-script.md`
-# for the design rationale.
+# See `--help` for usage.
 
 set -euo pipefail
 
@@ -287,11 +286,9 @@ run_once() {
 stats() {
     awk -v values="$*" 'BEGIN {
         n = split(values, arr, " ")
-        # filter empties
         m = 0
         for (i = 1; i <= n; i++) { if (arr[i] != "") { samples[++m] = arr[i] + 0 } }
         if (m == 0) { print "0 0 0 0"; exit }
-        # sort
         for (i = 1; i <= m; i++) {
             for (j = i + 1; j <= m; j++) {
                 if (samples[j] < samples[i]) {

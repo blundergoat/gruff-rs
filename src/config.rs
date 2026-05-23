@@ -270,7 +270,7 @@ impl Config {
 
     /// Returns the configured string-array option value for a rule, or `&[]`
     /// when no option is set. Used by naming dispatchers to union built-in
-    /// allowlists with user-provided extras (M37 typed options).
+    /// allowlists with user-provided typed options.
     pub(crate) fn string_array_option(&self, rule_id: &str, option: &str) -> &[String] {
         self.rule_settings
             .get(rule_id)

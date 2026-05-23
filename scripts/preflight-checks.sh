@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/preflight-checks.sh - run the local verification gates for gruff-rs.
+# Local release gate: shell checks, Rust checks, CLI smokes, and dogfood scan.
 
 set -u
 set -o pipefail
