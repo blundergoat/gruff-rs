@@ -95,14 +95,26 @@ impl NamingPatternVisitor<'_> {
     }
 
     fn name_is_too_short(&self, name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
         name.len() == 2
             && !name.starts_with('_')
-            && !self
-                .config
-                .accepted_abbreviations
-                .contains(&name.to_ascii_lowercase())
+            && !self.config.accepted_abbreviations.contains(&lower)
+            && !self.file_context_has_accepted_abbreviation(&lower)
+    }
+
+    fn file_context_has_accepted_abbreviation(&self, name: &str) -> bool {
+        let normalized = self.file.display_path.replace('\\', "/");
+        if normalized.contains("/aws/") || normalized.ends_with("/aws.rs") {
+            return AWS_CONTEXT_ABBREVIATIONS.contains(&name);
+        }
+        false
     }
 }
+
+const AWS_CONTEXT_ABBREVIATIONS: &[&str] = &[
+    "ca", "ce", "cn", "cw", "dp", "dt", "gb", "gw", "lb", "pm", "py", "sa", "sg", "sn", "td", "tg",
+    "tp", "ym",
+];
 
 struct IdentifierShadow {
     binding: String,

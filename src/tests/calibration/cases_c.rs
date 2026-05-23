@@ -8,7 +8,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Probe.\npub fn entry() { let _ = std::process::Command::new(\"ls\"); }\n",
+                    "/// Probe.\npub fn entry(argument: &str) { let _ = std::process::Command::new(\"sh\").args([\"-c\", argument]).spawn(); }\n",
                 )
             }),
             Box::new(|root| {

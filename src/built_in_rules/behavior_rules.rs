@@ -3,6 +3,7 @@ use super::*;
 static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_DYNAMIC_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
 static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
 static SQL_DYNAMIC_QUERY_REGEX: OnceLock<Regex> = OnceLock::new();
 static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -184,29 +185,18 @@ pub(crate) fn analyse_process_commands(
     let source_lines: Vec<&str> = source.lines().collect();
     for (line_index, line) in searchable_lines.iter().enumerate() {
         if command_regex.is_match(line) {
-            findings.push(Finding::new(FindingDescriptor {
-                rule_id: "security.process-command".to_string(),
-                message:
-                    "Process command execution is used; validate command arguments are not user-controlled."
-                        .to_string(),
-                file_path: file.display_path.clone(),
-                line: Some(line_index + 1),
-                severity: Severity::Warning,
-                pillar: Pillar::Security,
-                confidence: Confidence::High,
-                symbol: None,
-                remediation: Some(
-                    "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs."
-                        .to_string(),
-                ),
-                metadata: json!({
-                    "riskSignals": process_command_risk_signals(
-                        &source_lines,
-                        &searchable_lines,
-                        line_index
-                    ),
-                }),
-            }));
+            let raw_window = line_window(&source_lines, line_index);
+            let searchable_window = line_window(&searchable_lines, line_index);
+            if process_command_is_returned_builder(&source_lines, line_index)
+                || process_command_is_fixed_taskkill_cleanup(&raw_window)
+            {
+                continue;
+            }
+            let risk_signals = process_command_risk_signals(&raw_window, &searchable_window);
+            if risk_signals.is_empty() {
+                continue;
+            }
+            push_process_command_finding(file, line_index + 1, risk_signals, findings);
         }
     }
 }
@@ -439,20 +429,14 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
-fn process_command_risk_signals(
-    source_lines: &[&str],
-    searchable_lines: &[&str],
-    line_index: usize,
-) -> Vec<&'static str> {
-    let raw_window = line_window(source_lines, line_index);
-    let searchable_window = line_window(searchable_lines, line_index);
+fn process_command_risk_signals(raw_window: &str, searchable_window: &str) -> Vec<&'static str> {
     let mut signals = Vec::new();
 
     if static_regex(
         &PROCESS_SHELL_INTERPRETER_REGEX,
         r#"(?i)(std::process::Command|Command)::new\s*\(\s*"(?:sh|bash|dash|zsh|cmd|powershell|pwsh)"\s*\)"#,
     )
-    .is_match(&raw_window)
+    .is_match(raw_window)
     {
         signals.push("shell-interpreter");
     }
@@ -460,7 +444,7 @@ fn process_command_risk_signals(
         &PROCESS_SHELL_ARG_REGEX,
         r#"\.(?:arg|args)\s*\([^)]*"(?:-c|/C)""#,
     )
-    .is_match(&raw_window)
+    .is_match(raw_window)
     {
         signals.push("shell-command-argument");
     }
@@ -468,9 +452,17 @@ fn process_command_risk_signals(
         &PROCESS_DYNAMIC_EXECUTABLE_REGEX,
         r"(std::process::Command|Command)::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_:]*::)",
     )
-    .is_match(&searchable_window)
+    .is_match(searchable_window)
     {
         signals.push("dynamic-executable");
+    }
+    if static_regex(
+        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
+        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
+    )
+    .is_match(searchable_window)
+    {
+        signals.push("dynamic-arguments");
     }
     if raw_window.contains(".env(") || raw_window.contains(".envs(") {
         signals.push("custom-environment");
@@ -483,6 +475,62 @@ fn process_command_risk_signals(
 }
 
 fn line_window(lines: &[&str], line_index: usize) -> String {
-    let end = usize::min(line_index + 5, lines.len());
+    let end = usize::min(line_index + 8, lines.len());
     lines[line_index..end].join("\n")
+}
+
+fn process_command_is_returned_builder(source_lines: &[&str], line_index: usize) -> bool {
+    let Some(function_line_index) = (0..=line_index)
+        .rev()
+        .take(24)
+        .find(|index| source_lines[*index].contains("fn "))
+    else {
+        return false;
+    };
+    let signature = source_lines[function_line_index..=line_index].join(" ");
+    static COMMAND_RETURN_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(&COMMAND_RETURN_REGEX, r"->\s*(?:std::process::)?Command\b").is_match(&signature)
+        && !process_command_has_execution_sink(&line_window(source_lines, line_index))
+}
+
+fn process_command_has_execution_sink(raw_window: &str) -> bool {
+    static COMMAND_EXECUTION_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &COMMAND_EXECUTION_REGEX,
+        r"\.(?:spawn|output|status|wait_with_output)\s*\(",
+    )
+    .is_match(raw_window)
+}
+
+fn push_process_command_finding(
+    file: &SourceFile,
+    line: usize,
+    risk_signals: Vec<&'static str>,
+    findings: &mut Vec<Finding>,
+) {
+    findings.push(Finding::new(FindingDescriptor {
+        rule_id: "security.process-command".to_string(),
+        message: "Process command execution is used; validate command arguments are not user-controlled."
+            .to_string(),
+        file_path: file.display_path.clone(),
+        line: Some(line),
+        severity: Severity::Warning,
+        pillar: Pillar::Security,
+        confidence: Confidence::High,
+        symbol: None,
+        remediation: Some(
+            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs."
+                .to_string(),
+        ),
+        metadata: json!({ "riskSignals": risk_signals }),
+    }));
+}
+
+fn process_command_is_fixed_taskkill_cleanup(raw_window: &str) -> bool {
+    static TASKKILL_PID_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &TASKKILL_PID_REGEX,
+        r#"Command::new\s*\(\s*"taskkill"\s*\)[\s\S]*\.args\s*\(\s*\[\s*"/PID"\s*,\s*&?[A-Za-z_][A-Za-z0-9_]*\.to_string\(\)\s*,\s*"/F"\s*,\s*"/T"\s*\]"#,
+    )
+    .is_match(raw_window)
 }

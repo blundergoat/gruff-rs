@@ -114,9 +114,10 @@ pub(crate) fn calibration_security_process_command_detects_code_not_fixture_text
     baseline_with_lib(
         dir.path(),
         r##"/// Probe.
-pub fn live_command() {
+pub fn live_command(user_arg: &str) {
     let mut command = std::process::Command::new("git");
-    command.arg("status");
+    command.arg(user_arg);
+    let _ = command.status();
 }
 
 /// Probe.

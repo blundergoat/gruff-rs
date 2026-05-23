@@ -17,7 +17,7 @@ fn analyse_file_length(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    if is_dependency_lockfile(&file.display_path) {
+    if file_length_is_exempt(&file.display_path) {
         return;
     }
     let line_count = source.lines().count();
@@ -35,17 +35,23 @@ fn analyse_file_length(
     }
 }
 
-fn is_dependency_lockfile(display_path: &str) -> bool {
+fn file_length_is_exempt(display_path: &str) -> bool {
     let normalized = display_path.replace('\\', "/");
     let file_name = normalized
         .rsplit('/')
         .next()
         .unwrap_or(&normalized)
         .to_ascii_lowercase();
-    matches!(
+    let lockfile = matches!(
         file_name.as_str(),
         "cargo.lock" | "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml"
-    ) || file_name.ends_with(".lock")
+    ) || file_name.ends_with(".lock");
+    let markdown = file_name.ends_with(".md") || file_name.ends_with(".markdown");
+    let agent_hook = normalized.contains("/.codex/hooks/")
+        || normalized.contains("/.claude/hooks/")
+        || normalized.starts_with(".codex/hooks/")
+        || normalized.starts_with(".claude/hooks/");
+    lockfile || markdown || agent_hook
 }
 
 fn analyse_config_security_blind_ignores(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
