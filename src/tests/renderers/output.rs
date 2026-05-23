@@ -75,6 +75,32 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
 }
 
 #[test]
+pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
+    let mut report = sample_report();
+    report.paths.ignored_paths = vec!["target".to_string(), "node_modules".to_string()];
+
+    let text = render_report(&report, OutputFormat::Text);
+    assert!(text.contains("ignored: 2"));
+    assert!(text.contains("pass --include-ignored"));
+
+    let summary = crate::summary::render(&report, 10, SummaryFormat::Text, 1);
+    assert!(summary.contains("ignored: 2"));
+    assert!(summary.contains("pass --include-ignored"));
+    assert!(summary.contains("gruff-rs analyse --generate-baseline"));
+
+    report.baseline = Some(BaselineReport {
+        path: "gruff-baseline.json".to_string(),
+        source: "default".to_string(),
+        suppressed: 1,
+        generated: false,
+    });
+    let baseline_summary = crate::summary::render(&report, 10, SummaryFormat::Text, 1);
+    assert!(baseline_summary.contains("baseline: 1 suppressed"));
+    assert!(baseline_summary.contains("gruff-rs analyse --no-baseline"));
+    assert!(!baseline_summary.contains("gruff-rs analyse --generate-baseline"));
+}
+
+#[test]
 pub(crate) fn github_renderer_escapes_annotation_properties() {
     let report = sample_report_with(
         vec![Finding::new(FindingDescriptor {

@@ -29,8 +29,10 @@ After install, `gruff-rs` is on your `PATH`.
 ## Quickstart
 
 ```bash
+gruff-rs init
 gruff-rs analyse . --format text --fail-on warning
 gruff-rs analyse . --format json --fail-on none
+gruff-rs analyse . --format json --fail-on none --generate-baseline
 gruff-rs analyse . --format sarif --fail-on none
 gruff-rs report . --format html --output gruff-report.html
 gruff-rs list-rules --format text
@@ -39,7 +41,8 @@ gruff-rs list-rules --selector Security
 
 Report formats for `analyse` are `text`, `json`, `sarif`, `html`, `markdown`,
 `github`, and `hotspot`. The `report` command supports static `html` and `json`
-output.
+output. For existing projects, `gruff-rs analyse --generate-baseline` saves
+today's findings as the starting point.
 
 ## GitHub Actions
 
@@ -124,6 +127,9 @@ strict 100% compliance can gate with `--fail-on advisory`.
 
 ```yaml
 paths:
+  # Discovery-time do-not-read patterns. Use this for generated build/vendor
+  # artifacts; use gruff-rs analyse --generate-baseline or top-level exclude
+  # entries for accepted findings.
   ignore:
     - target/**
     - fixtures/**

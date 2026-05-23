@@ -39,3 +39,12 @@ pub(crate) fn default_config_emits_every_built_in_rule() {
         );
     }
 }
+
+#[test]
+pub(crate) fn default_config_explains_ignores_and_baseline_starting_point() {
+    let body = render_default_config(&rules::builtin_registry());
+
+    assert!(body.contains("Discovery-time do-not-read patterns"));
+    assert!(body.contains("gruff-rs analyse --generate-baseline"));
+    assert!(body.contains("top-level `exclude` entries"));
+}

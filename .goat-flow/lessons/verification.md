@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-23
+last_reviewed: 2026-05-24
 ---
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
@@ -101,3 +101,26 @@ line-start, findings, dedupe, primitive, and byte-index parameters separately.
 Prefer a small context/reporter struct for repeated finding construction, then
 rerun the dogfood scan at the same threshold before treating the verification
 failure as closed.
+
+## Lesson: Cargo Test Accepts One Name Filter Before Harness Args
+
+**Created:** 2026-05-24
+
+When running multiple focused Rust tests, do not pass several test names to one
+`cargo test` command. Cargo accepts a single test-name filter before `--`; an
+extra name is parsed as an unexpected argument and does not run either intended
+set.
+
+Run separate focused commands, use a shared substring filter, or run the module
+or full suite when the desired tests do not share a stable name prefix.
+
+## Lesson: Keep JSON Smoke Assertions One File At A Time
+
+**Created:** 2026-05-24
+
+When verifying CLI JSON round trips, avoid clever `jq input` pipelines across
+several files. It is easy to consume the wrong stream position and turn a valid
+product check into a jq error.
+
+Assign each expected value from a separate `jq -r` read, then use shell `test`
+assertions before printing the compact summary.

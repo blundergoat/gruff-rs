@@ -19,6 +19,7 @@ pub(crate) struct AnalyseArgs {
     pub(crate) format: OutputFormat,
     #[arg(long, default_value = "error")]
     pub(crate) fail_on: FailThreshold,
+    /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
     #[arg(long, value_name = "MODE", requires = "diff_git_unsafe")]
@@ -29,10 +30,13 @@ pub(crate) struct AnalyseArgs {
     pub(crate) diff_git_unsafe: bool,
     #[arg(long)]
     pub(crate) history_file: Option<PathBuf>,
+    /// Apply a baseline file, defaulting to gruff-baseline.json when no path is provided.
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_BASELINE)]
     pub(crate) baseline: Option<PathBuf>,
+    /// Write current findings to a baseline file, defaulting to gruff-baseline.json.
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_BASELINE)]
     pub(crate) generate_baseline: Option<PathBuf>,
+    /// Do not apply the default gruff-baseline.json file even when it exists.
     #[arg(long)]
     pub(crate) no_baseline: bool,
 }
@@ -53,8 +57,10 @@ pub(crate) struct ReportArgs {
     pub(crate) no_config: bool,
     #[arg(long, default_value = "none")]
     pub(crate) fail_on: FailThreshold,
+    /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
+    /// Do not apply the default gruff-baseline.json file even when it exists.
     #[arg(long)]
     pub(crate) no_baseline: bool,
 }
@@ -99,6 +105,7 @@ pub(crate) struct SummaryArgs {
     /// How many top rules and file offenders to list.
     #[arg(long, default_value_t = 10)]
     pub(crate) top: usize,
+    /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
 }

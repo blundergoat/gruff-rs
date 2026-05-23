@@ -16,6 +16,9 @@ const HEADER: &str = "\
 # Per-rule thresholds and severities can be tuned in place; see the
 # README for the full configuration shape (paths, allowlists, rules,
 # custom_rules, exclude).
+#
+# For an existing project, run `gruff-rs analyse --generate-baseline`
+# to accept today's findings as the starting point.
 ";
 
 const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
@@ -51,7 +54,10 @@ pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    writer.emit_unconditional(&format!("Wrote default config to {}", output.display()));
+    writer.emit_unconditional(&format!(
+        "Wrote default config to {}\nRun `gruff-rs analyse --generate-baseline` to accept today's findings as the starting point.",
+        output.display()
+    ));
     ExitCode::SUCCESS
 }
 
@@ -125,6 +131,10 @@ fn write_default_config_at(target: &Path) {
     match fs::write(target, render_default_config(&builtin_registry())) {
         Ok(()) => {
             let _ = writeln!(stderr, "Wrote {}", target.display());
+            let _ = writeln!(
+                stderr,
+                "Run `gruff-rs analyse --generate-baseline` to accept today's findings as the starting point."
+            );
         }
         Err(error) => {
             let _ = writeln!(
@@ -141,7 +151,11 @@ pub(crate) fn render_default_config(registry: &RuleRegistry) -> String {
     out.push_str(HEADER);
     out.push('\n');
 
-    out.push_str("paths:\n  ignore:\n");
+    out.push_str("paths:\n");
+    out.push_str("  # Discovery-time do-not-read patterns. Use this for generated\n");
+    out.push_str("  # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`\n");
+    out.push_str("  # or top-level `exclude` entries for accepted findings.\n");
+    out.push_str("  ignore:\n");
     for pattern in DEFAULT_IGNORE_PATTERNS {
         out.push_str(&format!("    - {}\n", yaml_string(pattern)));
     }
