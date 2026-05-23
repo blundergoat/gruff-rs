@@ -70,6 +70,35 @@ demand. It binds to `127.0.0.1:8766` by default, has **no authentication**,
 and must not be exposed to untrusted networks. Override the bind address with
 `--host` / `--port` only inside a trusted local environment.
 
+## How gruff-rs compares
+
+`gruff-rs` is meant to sit alongside the tools you already run, not replace
+them. It covers the gap between "the compiler accepts this" and "we'd ship
+this":
+
+- **vs Clippy** - Clippy is the canonical Rust lint pass and gruff-rs does
+  not try to replicate it. Clippy is type-aware and built into the
+  compiler; gruff-rs runs syntactic and project-wide rules on top of the
+  AST (dead-code candidates, complexity, architecture limits, secrets,
+  test-quality, baselines, SARIF). Run both.
+- **vs cargo-audit / cargo-deny** - those query a vulnerability feed and
+  enforce license/dependency policy. gruff-rs has no network access by
+  default and emits no vulnerability data; it reports static signals such
+  as git dependencies without a pinned `rev`. Run gruff-rs in addition to
+  `cargo audit`.
+- **vs rustfmt** - rustfmt formats; gruff-rs does not. Format with
+  rustfmt, then gate with gruff-rs.
+- **vs rust-analyzer** - rust-analyzer is an IDE language server.
+  gruff-rs is a CI/CLI gate that produces deterministic, fingerprintable
+  reports and exits non-zero on threshold breaches.
+- **vs PHPStan / ESLint / Pylint** - same shape, different language.
+  `gruff-rs analyse .` with `--fail-on warning` in CI is the equivalent
+  of `phpstan analyse src/` or `eslint .` in a polyglot stack.
+
+The unique pieces are the SARIF 2.1.0 contract, finding fingerprints,
+exact-match baselines for incremental adoption, and a schema-versioned
+JSON report so downstream consumers stay stable across `0.1.x`.
+
 ## Stability
 
 `0.1.x` is the "mostly stable, with caveats" line. Rule ids, finding

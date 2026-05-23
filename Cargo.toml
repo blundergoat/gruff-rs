@@ -3,14 +3,18 @@ name = "gruff-rs"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Deterministic, schema-versioned quality analyzer for Rust projects: lint, dead-code, complexity, secrets, and architecture rules with SARIF, JSON, HTML, and CI-ready outputs."
+description = "Rust static analyzer and quality linter for CI: dead-code, complexity, security, secrets, and architecture rules with deterministic SARIF/JSON output and baseline support."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/blundergoat/gruff-rs"
 homepage = "https://github.com/blundergoat/gruff-rs"
 documentation = "https://docs.rs/gruff-rs"
 readme = "README.md"
 keywords = ["lint", "static-analysis", "code-quality", "sarif", "cli"]
-categories = ["development-tools", "command-line-utilities"]
+categories = [
+    "development-tools",
+    "command-line-utilities",
+    "development-tools::testing",
+]
 exclude = [
     ".agents/",
     ".claude/",
