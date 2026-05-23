@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "@blundergoat/goat-flow": "^1.7.0"
+  }
+}

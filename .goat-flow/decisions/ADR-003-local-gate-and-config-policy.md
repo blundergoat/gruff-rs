@@ -5,9 +5,9 @@
 
 ## Decision
 
-The default project config is `.gruff.yaml`, with `.gruff.yml` and explicit `.gruff.json` support retained. Config validation is strict: unknown root keys, rule ids, threshold names, option names, and unsupported value shapes are command errors. A `threshold` shorthand is allowed only for rules with exactly one threshold.
+The default project config is `.gruff-rs.yaml`. Other gruff config names and non-YAML config files are intentionally unsupported before public release. Config validation is strict: unknown root keys, rule ids, option names, and unsupported value shapes are command errors. Thresholded rules use a single `threshold` plus one fixed `severity`; warning/error threshold maps are intentionally unsupported.
 
-Local and CI verification use `bash scripts/check.sh`. The script runs formatting, Clippy, unit tests, `list-rules`, fixture scan, and self-scan diagnostics smoke checks. Self-scan diagnostics fail the gate; self-scan findings are allowed under `--fail-on none` until a baseline or score threshold policy is chosen.
+Local and CI verification use `bash scripts/preflight-checks.sh`. The script runs shell syntax/lint checks, formatting, Clippy, unit tests, `list-rules`, fixture scan, scanner feature smokes, and a dogfood `src/` scan. The dogfood scan defaults to `--fail-on warning` so warning-level analyzer debt fails the gate; advisory findings remain visible without failing unless `GRUFF_RS_FAIL_ON=advisory` is set.
 
 ## Context
 
@@ -20,8 +20,8 @@ The project needs a checked-in analyzer config shape that humans can copy and mo
 | Keep JSON-only default config | Diverges from the intended project config workflow | Rejected; YAML is the default human-edited config. |
 | Accept unknown config keys | Typos silently disable intended policy | Rejected; strict config failures are safer for gates. |
 | Split scanner smokes into optional deep checks | Developers may skip scanner health checks | Rejected for now because measured runtime is still fast. |
-| Fail on self-scan findings | Current analyzer work would block on accepted debt before baseline policy exists | Deferred; diagnostics fail, findings are visible but allowed. |
+| Fail on warning-level self-scan findings | Large structural debt can otherwise pass while being reported by the analyzer | Accepted; the default dogfood threshold is `warning`, while advisory findings stay non-blocking by default. |
 
 ## Reversibility
 
-The fast gate can be split into a deep mode if `bash scripts/check.sh` becomes slow enough to discourage use. Config compatibility changes must keep `.gruff.yaml` documented or provide a migration path.
+The fast gate can be split into a deep mode if `bash scripts/preflight-checks.sh` becomes slow enough to discourage use. The dogfood threshold can be temporarily relaxed with `GRUFF_RS_FAIL_ON=error` for transitional runs, but the default gate should remain warning-gated. Config compatibility changes can still add migration paths after a public release creates external users.

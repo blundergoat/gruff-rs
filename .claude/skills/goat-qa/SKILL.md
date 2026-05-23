@@ -1,7 +1,7 @@
 ---
 name: goat-qa
 description: "Use when evaluating test coverage gaps, planning test strategy, or assessing testing risk for code changes."
-goat-flow-skill-version: "1.6.4"
+goat-flow-skill-version: "1.7.0"
 ---
 # /goat-qa
 
@@ -25,7 +25,7 @@ Output: prioritized "must test / safe to skip / should test" guidance.
 - You want to find manual testing gaps before a release
 - You need a QA handoff artifact (flow diagram, risk matrix, manual test plan)
 
-**NOT this skill:** Running tests, "test this", "test X" → just run them (action request, not gap analysis). Debugging test failures → /goat-debug. Code quality → /goat-review. Planning milestones → /goat-plan. Feature briefs → dispatcher Planning Route. Verifying a bug fix → /goat-debug. Verifying a diff/PR before merge → /goat-review. Certifying that work is complete → the Proof Gate in `skill-preamble.md`, applied by whoever makes the claim.
+**NOT this skill:** Running tests, "test this", "test X" → just run them (action request, not gap analysis). Debugging test failures → /goat-debug. Code quality → /goat-review. Planning milestones → /goat-plan. Feature briefs → dispatcher Route Map. Verifying a bug fix → /goat-debug. Verifying a diff/PR before merge → /goat-review. Certifying that work is complete → the Proof Gate in `skill-preamble.md`, applied by whoever makes the claim.
 
 | Excuse | Reality |
 |--------|---------|
@@ -55,7 +55,7 @@ Canonical vocabulary for classifying test coverage. Used by Standard mode (Phase
 
 **Depth mapping:** Standard mode = quick (analyse changed files). Audit mode = full (analyse a codebase area). If arriving from the dispatcher with depth pre-selected: quick → Standard, full → Audit.
 
-Confirm: "Running [mode] on [scope]. Correct?"
+If mode and scope are clear, state "Running [mode] on [scope]." and proceed. Ask only on ambiguity.
 
 **Gather:** changed scope, existing test plan (if any), audience. Check the instruction file's Essential Commands section or `package.json` scripts for test/lint commands.
 
@@ -67,7 +67,7 @@ If arriving from the dispatcher with context already gathered, confirm and proce
 
 **No existing tests detected:** If the project has no test files, the risk analysis still applies. Flag coverage as "NONE" for all files. Note: "This project has no automated tests. All verification falls to human and AI reviewers."
 
-**CHECKPOINT:** "Analysing [N] changed files against [existing test plan / no test plan]. Audience: [dev/tester/both]. Proceed?"
+**CHECKPOINT:** "Analysing [N] changed files against [existing test plan / no test plan]. Audience: [dev/tester/both]." Proceed unless scope, audience, or test plan is ambiguous.
 
 ## Phase 1 - Change Risk Analysis
 

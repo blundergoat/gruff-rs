@@ -1,0 +1,72 @@
+name: gruff-rs
+description: Run the gruff-rs quality analyzer on a Rust project.
+author: gruff-rs contributors
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  version:
+    description: |
+      Version of gruff-rs to install. Defaults to the version matching the
+      action tag (e.g. `v0.1.0` -> `0.1.0`). Pass `latest` to install the
+      newest published release.
+    required: false
+    default: ""
+  args:
+    description: |
+      Arguments passed to gruff-rs. Defaults to a SARIF scan of the working
+      directory that fails on warnings or errors.
+    required: false
+    default: analyse . --format sarif --fail-on warning --no-baseline
+  working-directory:
+    description: Directory the analyzer is invoked from.
+    required: false
+    default: ""
+  output-file:
+    description: |
+      Optional path to write the analyzer stdout to. When set the action
+      redirects stdout to this file (useful for piping SARIF to a follow-up
+      `upload-sarif` step).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: version
+      shell: bash
+      run: |
+        requested="${{ inputs.version }}"
+        if [ -z "$requested" ]; then
+          ref="${{ github.action_ref }}"
+          if [ -n "$ref" ] && [[ "$ref" == v* ]]; then
+            requested="${ref#v}"
+          else
+            requested="latest"
+          fi
+        fi
+        echo "value=$requested" >> "$GITHUB_OUTPUT"
+
+    - name: Install cargo-binstall
+      uses: cargo-bins/cargo-binstall@main
+
+    - name: Install gruff-rs
+      shell: bash
+      run: |
+        if [ "${{ steps.version.outputs.value }}" = "latest" ]; then
+          cargo binstall -y --force gruff-rs
+        else
+          cargo binstall -y --force --version "${{ steps.version.outputs.value }}" gruff-rs
+        fi
+
+    - name: Run gruff-rs
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ -n "${{ inputs.output-file }}" ]; then
+          gruff-rs ${{ inputs.args }} > "${{ inputs.output-file }}"
+        else
+          gruff-rs ${{ inputs.args }}
+        fi

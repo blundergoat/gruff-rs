@@ -16,38 +16,8 @@ hooks = true
 
 [permissions.goat-flow.filesystem]
 glob_scan_max_depth = 3
-
-[permissions.goat-flow.filesystem.":project_roots"]
-"." = "write"
-# Codex read rules must be exact paths or trailing "/**" subtrees.
-".env.example" = "read"
-".env" = "none"
-"**/.env" = "none"
-".env.*" = "none"
-"**/.env.*" = "none"
-".envrc" = "none"
-"**/.envrc" = "none"
-"secrets/**" = "none"
-"**/secrets/**" = "none"
-"*.pem" = "none"
-"**/*.pem" = "none"
-"*.key" = "none"
-"**/*.key" = "none"
-"*.pfx" = "none"
-"**/*.pfx" = "none"
-"credentials*" = "none"
-"**/credentials*" = "none"
-".ssh/**" = "none"
-"**/.ssh/**" = "none"
-".aws/**" = "none"
-"**/.aws/**" = "none"
-".docker/config.json" = "none"
-"**/.docker/config.json" = "none"
-".gnupg/**" = "none"
-"**/.gnupg/**" = "none"
-".npmrc" = "none"
-"**/.npmrc" = "none"
-".pypirc" = "none"
-"**/.pypirc" = "none"
-".kube/config" = "none"
-"**/.kube/config" = "none"
+# Codex 0.131 accepts exact paths and trailing "/**" subtrees here.
+# Exact entries must point at files that exist in the target checkout; absent
+# exact paths can make Codex fail before shell startup. Filename globs such as
+# "*.key" are covered by .codex/hooks/deny-dangerous.sh.
+":workspace_roots" = { "." = "write", "secrets/**" = "none", ".ssh/**" = "none", ".aws/**" = "none", ".docker/**" = "none", ".gnupg/**" = "none", ".kube/**" = "none" }

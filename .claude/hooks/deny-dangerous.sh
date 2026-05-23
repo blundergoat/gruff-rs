@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # deny-dangerous.sh - PreToolUse hook: blocks dangerous commands before execution
-# goat-flow-hook-version: 1.5.2
+# goat-flow-hook-version: 1.5.3
 # =============================================================================
 # Event:  PreToolUse / equivalent pre-command hook for the current runtime
 # Match:  Bash tool calls
@@ -414,6 +414,64 @@ check_command_segments() {
   done
 }
 
+heredoc_opener_executes_shell() {
+  local opener="$1"
+  local before_heredoc="${opener%%<<*}"
+  local normalized
+  local first_word
+  local pipe_shell_re
+
+  normalized=$(normalize_command_candidate "$before_heredoc")
+  first_word=$(first_word_base "$normalized")
+  case "$first_word" in
+    bash|sh|dash|zsh|ksh|fish|pwsh|powershell|cmd)
+      return 0 ;;
+  esac
+
+  pipe_shell_re='[|][[:space:]]*(env[[:space:]]+)?([^[:space:]/]+/)*(bash|sh|dash|zsh|ksh|fish|pwsh|powershell|cmd)([[:space:]]|$)'
+  [[ "$opener" =~ $pipe_shell_re ]]
+}
+
+mask_safe_quoted_heredoc_bodies() {
+  local input="$1"
+  local output=""
+  local line=""
+  local delimiter=""
+  local in_body=0
+  local mask_body=0
+  local single_quoted_re="<<-?[[:space:]]*'([^']+)'"
+  local double_quoted_re='<<-?[[:space:]]*"([^"]+)"'
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if (( in_body )); then
+      if [[ "$line" == "$delimiter" ]]; then
+        output+="$line"$'\n'
+        in_body=0
+        mask_body=0
+        delimiter=""
+      elif (( mask_body )); then
+        output+="__goat_quoted_heredoc_body__"$'\n'
+      else
+        output+="$line"$'\n'
+      fi
+      continue
+    fi
+
+    output+="$line"$'\n'
+    if [[ "$line" =~ $single_quoted_re ]] || [[ "$line" =~ $double_quoted_re ]]; then
+      delimiter="${BASH_REMATCH[1]}"
+      if heredoc_opener_executes_shell "$line"; then
+        mask_body=0
+      else
+        mask_body=1
+      fi
+      in_body=1
+    fi
+  done <<< "$input"
+
+  printf '%s' "${output%$'\n'}"
+}
+
 check_command_substitutions() {
   local remaining="$1"
   local depth="$2"
@@ -718,6 +776,31 @@ is_git_destructive() {
     return 0
   fi
   return 1
+}
+
+is_git_ls_files() {
+  __goat_git_strip_globals "$1" || return 1
+  [[ "$__goat_git_rest" =~ ^ls-files([[:space:]]|$) ]]
+}
+
+is_find_read_only() {
+  local c="$1"
+  ! [[ "$c" =~ (^|[[:space:]])-(delete|exec|execdir|ok|okdir)([[:space:]]|$) ]]
+}
+
+is_env_example_pipe_consumer_read_only() {
+  local c
+  c=$(normalize_command_candidate "$1")
+  local verb="${c%%[[:space:]]*}"
+  verb="${verb##*/}"
+  case "$verb" in
+    grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|wc|file|diff|printf|echo|read|ls|stat|test)
+      return 0 ;;
+    sed)
+      ! [[ "$c" =~ sed[[:space:]]+-[a-zA-Z]*i || "$c" =~ sed[[:space:]]+--in-place ]]
+      return $? ;;
+    *) return 1 ;;
+  esac
 }
 
 strip_one_assignment_prefix() {
@@ -1093,6 +1176,210 @@ split_shell_words_into() {
   fi
 }
 
+is_gh_api_write() {
+  local -n __goat_gh_words_ref__="$1"
+  local start_index="$2"
+  local method=""
+  local has_body_fields=0
+  local i="$start_index"
+  local word=""
+  local word_lc=""
+
+  while [[ "$i" -lt "${#__goat_gh_words_ref__[@]}" ]]; do
+    word="${__goat_gh_words_ref__[$i]}"
+    word_lc="${word,,}"
+
+    case "$word_lc" in
+      -x|--method)
+        i=$((i + 1))
+        method="${__goat_gh_words_ref__[$i]:-}"
+        method="${method,,}"
+        ;;
+      -x*)
+        method="${word_lc#-x}"
+        ;;
+      --method=*)
+        method="${word_lc#--method=}"
+        ;;
+      -f|-F|--field|--raw-field|--input)
+        has_body_fields=1
+        i=$((i + 1))
+        ;;
+      -f?*|-F?*|--field=*|--raw-field=*|--input=*)
+        has_body_fields=1
+        ;;
+    esac
+
+    i=$((i + 1))
+  done
+
+  case "$method" in
+    "" )
+      [[ "$has_body_fields" -eq 1 ]]
+      return $?
+      ;;
+    get|head)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+gh_skip_options_index() {
+  local -n __goat_gh_skip_words_ref__="$1"
+  local i="$2"
+  local word=""
+
+  while [[ "$i" -lt "${#__goat_gh_skip_words_ref__[@]}" ]]; do
+    word="${__goat_gh_skip_words_ref__[$i]}"
+    case "$word" in
+      --)
+        i=$((i + 1))
+        break
+        ;;
+      --repo|--hostname|--cwd|--config-dir|--jq|--template|--cache|-R|-H|-q)
+        i=$((i + 2))
+        continue
+        ;;
+      --repo=*|--hostname=*|--cwd=*|--config-dir=*|--jq=*|--template=*|--cache=*|-R?*|-H?*|-q?*)
+        i=$((i + 1))
+        continue
+        ;;
+      --paginate|--no-pager|--help|-h)
+        i=$((i + 1))
+        continue
+        ;;
+      -*)
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    break
+  done
+
+  printf '%s' "$i"
+}
+
+strip_xargs_prefix() {
+  local c="$1"
+  local -a xargs_words=()
+  split_shell_words_into xargs_words "$c"
+  [[ "${#xargs_words[@]}" -eq 0 ]] && return 1
+
+  local command_word="${xargs_words[0]##*/}"
+  [[ "$command_word" == "xargs" ]] || return 1
+
+  local i=1
+  local word=""
+  while [[ "$i" -lt "${#xargs_words[@]}" ]]; do
+    word="${xargs_words[$i]}"
+    case "$word" in
+      --)
+        i=$((i + 1))
+        break
+        ;;
+      -0|--null|-r|--no-run-if-empty|-t|--verbose|-p|--interactive)
+        i=$((i + 1))
+        continue
+        ;;
+      -I|-i|-L|-l|-n|-P|-s|-E|-e|-d|--replace|--max-lines|--max-args|--max-procs|--max-chars|--eof|--delimiter)
+        i=$((i + 2))
+        continue
+        ;;
+      -I?*|-i?*|-L?*|-l?*|-n?*|-P?*|-s?*|-E?*|-e?*|-d?*|--replace=*|--max-lines=*|--max-args=*|--max-procs=*|--max-chars=*|--eof=*|--delimiter=*)
+        i=$((i + 1))
+        continue
+        ;;
+      -*)
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    break
+  done
+
+  [[ "$i" -lt "${#xargs_words[@]}" ]] || return 1
+
+  local rest=""
+  while [[ "$i" -lt "${#xargs_words[@]}" ]]; do
+    rest+="${xargs_words[$i]} "
+    i=$((i + 1))
+  done
+  printf '%s' "${rest% }"
+}
+
+is_gh_write_operation() {
+  local c
+  c=$(normalize_command_candidate "$1")
+
+  local xargs_rest=""
+  if xargs_rest=$(strip_xargs_prefix "$c"); then
+    c="$xargs_rest"
+  fi
+
+  local -a words=()
+  split_shell_words_into words "$c"
+  [[ "${#words[@]}" -eq 0 ]] && return 1
+
+  local gh_word="${words[0]##*/}"
+  [[ "$gh_word" == "gh" ]] || return 1
+
+  local i
+  i=$(gh_skip_options_index words 1)
+
+  local topic="${words[$i]:-}"
+  [[ -z "$topic" || "$topic" == -* ]] && return 1
+  topic="${topic,,}"
+
+  if [[ "$topic" == "api" ]]; then
+    is_gh_api_write words $((i + 1))
+    return $?
+  fi
+
+  local subcommand_index
+  subcommand_index=$(gh_skip_options_index words $((i + 1)))
+  local subcommand="${words[$subcommand_index]:-}"
+  subcommand="${subcommand,,}"
+  case "$topic:$subcommand" in
+    issue:create|issue:comment|issue:close|issue:reopen|issue:edit|issue:delete|issue:lock|issue:unlock|issue:pin|issue:unpin|issue:transfer|issue:develop)
+      return 0 ;;
+    pr:create|pr:comment|pr:review|pr:merge|pr:close|pr:reopen|pr:edit|pr:ready|pr:update-branch)
+      return 0 ;;
+    release:create|release:upload|release:delete|release:edit)
+      return 0 ;;
+    repo:create|repo:delete|repo:edit|repo:fork|repo:rename|repo:archive|repo:unarchive|repo:sync|repo:set-default)
+      return 0 ;;
+    label:create|label:delete|label:edit|label:clone)
+      return 0 ;;
+    workflow:run|workflow:disable|workflow:enable)
+      return 0 ;;
+    run:rerun|run:cancel|run:delete)
+      return 0 ;;
+    gist:create|gist:edit|gist:delete)
+      return 0 ;;
+    secret:set|secret:remove|secret:delete)
+      return 0 ;;
+    variable:set|variable:delete)
+      return 0 ;;
+    ssh-key:add|ssh-key:delete|gpg-key:add|gpg-key:delete)
+      return 0 ;;
+    auth:login|auth:logout|auth:refresh|auth:setup-git)
+      return 0 ;;
+    codespace:create|codespace:delete|codespace:edit)
+      return 0 ;;
+    extension:install|extension:remove|extension:upgrade)
+      return 0 ;;
+    project:create|project:delete|project:edit|project:close|project:copy|project:link|project:unlink|project:mark-template|project:field-create|project:field-delete|project:field-update|project:item-add|project:item-archive|project:item-create|project:item-delete|project:item-edit)
+      return 0 ;;
+    cache:delete)
+      return 0 ;;
+  esac
+
+  return 1
+}
+
 strip_sql_literals_inside_double_quotes() {
   local input="$1"
   local out=""
@@ -1341,18 +1628,35 @@ check_segment() {
   if [[ "$touches_env_example" -eq 1 ]]; then
     local env_example_read_only=0
     case "$cmd_verb" in
-      grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|wc|file|diff|printf|echo|read)
+      grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|wc|file|diff|printf|echo|read|ls|stat|test)
         env_example_read_only=1 ;;
+      find)
+        if is_find_read_only "$cmd"; then
+          env_example_read_only=1
+        fi ;;
+      git)
+        if is_git_ls_files "$cmd"; then
+          env_example_read_only=1
+        fi ;;
       sed)
         if ! [[ "$cmd" =~ sed[[:space:]]+-[a-zA-Z]*i || "$cmd" =~ sed[[:space:]]+--in-place ]]; then
           env_example_read_only=1
         fi ;;
     esac
-    if [[ "$cmd" =~ (\>|\>\>|\>\|)[[:space:]]*[\'\"[:space:]]*\.env\.example([\'\"[:space:]]|$) ]]; then
+    if [[ "$has_redirect" -eq 1 ]]; then
       env_example_read_only=0
     fi
-    if [[ "$has_pipe" -eq 1 && "$cmd_unquoted" =~ \|[[:space:]]*(tee|dd|cp|mv|sponge)[[:space:]] ]]; then
-      env_example_read_only=0
+    if [[ "$has_pipe" -eq 1 ]]; then
+      local env_pipe_scan="${cmd_unquoted//||/__GOAT_OR__}"
+      local -a env_pipeline_parts
+      local env_pipe_index
+      IFS='|' read -ra env_pipeline_parts <<< "$env_pipe_scan"
+      for ((env_pipe_index = 1; env_pipe_index < ${#env_pipeline_parts[@]}; env_pipe_index++)); do
+        if ! is_env_example_pipe_consumer_read_only "${env_pipeline_parts[$env_pipe_index]}"; then
+          env_example_read_only=0
+          break
+        fi
+      done
     fi
     if [[ "$env_example_read_only" -eq 0 ]]; then
       block ".env.example is allowed for read-only inspection only. Use an explicit file-edit approval path for changes." || return $?
@@ -1360,7 +1664,7 @@ check_segment() {
   fi
   if [[ "$has_redirect" -eq 0 && "$has_pipe" -eq 0 && "$touches_secret" -eq 0 ]]; then
     case "$cmd_verb" in
-      grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|wc|file|diff|printf|echo|read)
+      grep|egrep|fgrep|rg|ag|ack|cat|head|tail|less|more|wc|file|diff|printf|echo|read|ls|stat|test)
         return 0 ;;
       sed)
         # sed without -i/--in-place is read-only; sed -i or --in-place is a write operation
@@ -1396,6 +1700,19 @@ check_segment() {
     cmd_for_push=$(normalize_git_push_candidate "$pipe_part")
     if is_git_push "$cmd_for_push"; then
       block "git push is not allowed. Ask the user to push manually." || return $?
+    fi
+  done
+
+  # 3b. GitHub writes through gh (comments, issue/PR mutations, releases,
+  # workflow runs, secrets/variables, and gh api write methods). Read-only gh
+  # commands such as issue/pr view/list/diff/checks and explicit gh api GET are
+  # allowed.
+  local gh_scan="${cmd//||/__GOAT_OR__}"
+  local -a gh_pipe_parts
+  IFS='|' read -ra gh_pipe_parts <<< "$gh_scan"
+  for pipe_part in "${gh_pipe_parts[@]}"; do
+    if is_gh_write_operation "$pipe_part"; then
+      block "GitHub write via gh is not allowed. Draft the content or command and wait for explicit user approval." || return $?
     fi
   done
 
@@ -1654,14 +1971,16 @@ fi
 # always either a benchmark or a payload trying to exhaust the parser.
 # Uses the same quote-aware splitter the rule checks use, so semicolons
 # inside quoted strings (`echo 'a;b;c;...'`) don't trip the cap.
+COMMAND_POLICY=$(mask_safe_quoted_heredoc_bodies "$COMMAND")
+
 declare -a _goat_chain_segments=()
-split_command_segments_into _goat_chain_segments "$COMMAND"
+split_command_segments_into _goat_chain_segments "$COMMAND_POLICY"
 if (( ${#_goat_chain_segments[@]} > 50 )); then
   block "Command has more than 50 chained segments; review and run manually if intended."
 fi
 unset _goat_chain_segments
 
-check_command_segments "$COMMAND" 0
+check_command_segments "$COMMAND_POLICY" 0
 
 # --- Default: allow -----------------------------------------------------------
 exit 0

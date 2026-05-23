@@ -1,21 +1,21 @@
 # Rust Rubric
 
-`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings.
+`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
 
 ## Pillars
 
 | Pillar | Current scope |
 | --- | --- |
-| Size | File length, function length, and parameter-count thresholds. |
+| Size | File length, function length, and parameter-count thresholds. File-length skips dependency lockfiles, Markdown docs, and Codex/Claude hook scripts because those surfaces are governed by different review contracts. |
 | Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, conservative NPath approximation, Halstead-style token volume, and maintainability pressure. |
 | Dead code | Private functions with no same-file call sites, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
 | Waste | Unwrap/expect, clone candidates, unreachable statements, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
-| Naming | Generic function names, short variables, bool predicate prefixes, and placeholder identifiers. |
-| Documentation | Public Rust API documentation, TODO/FIXME density, root README presence, and package metadata presence. |
-| Modernisation | Public struct fields that expose representation. |
-| Security | Process command construction, unsafe blocks without a nearby `SAFETY:` rationale, and local-only dependency posture checks for git/path sources, wildcard requirements, and duplicate lockfile versions. |
-| Sensitive data | Common API keys, AWS keys, JWT-looking tokens, database URLs with passwords, private-key markers, environment-style secret assignments, and high-entropy string literals. |
-| Test quality | Missing assertions, sleeps, loops, conditionals, unwrap/expect, ignored tests without reasons, long tests, and trivial assertions. |
+| Naming | Generic function names, cryptic two-character variables (including fn parameters, closure parameters, and destructured bindings), bool predicate prefixes, placeholder identifiers, and `let X = X(...)` shadows of same-file free functions. Single-letter bindings are allowed because they are common in small closures and parser/math code. Common AWS/cloud abbreviations are accepted in AWS-context files where the abbreviation is part of the domain model. The boolean-prefix, placeholder-identifier, and generic-function rules accept user-supplied allowlists via the `predicatePrefixes`, `extraPlaceholders`, and `extraGenericNames` string-array options. |
+| Documentation | Public Rust API documentation, root README presence, package metadata presence, stale TODO markers without an owner/issue/reason, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, and externally public `Result`-returning functions missing a `# Errors` rustdoc section. |
+| Modernisation | Public struct fields that expose representation, excluding serde transport/config structs where public fields are the serialization contract. |
+| Security | Process command uses with concrete risk signals, direct dynamic SQL query arguments, explicit TLS verification bypasses, weak cryptographic primitive review signals, non-cryptographic RNG use inside secret-like generation functions, unsafe blocks without a nearby `SAFETY:` rationale, local-only dependency posture checks for git/path sources, unpinned git revisions, wildcard requirements, and duplicate lockfile versions, plus narrow config/CI checks for security-blind ignores and GitHub event interpolation into shell steps. |
+| Sensitive data | Common API keys, AWS keys, JWT-looking tokens, database URLs with passwords, HTTP(S) URLs with embedded credentials, private-key blocks, environment-style secret assignments, and high-entropy string literals. The common API-key pattern includes provider-prefixed tokens such as GitHub, GitLab, npm, Slack, Stripe, Google, Anthropic-style, and common cloud connection strings. |
+| Test quality | Missing assertions, sleeps, loops, conditionals, unwrap/expect that hides setup or fixture failures, ignored tests without reasons, long tests, and trivial assertions. |
 | Design | God-function composite when size and complexity overlap on the same function, plus project-level module fan-out, large-module, and public API surface checks. |
 
 ## Rule Selection
@@ -28,16 +28,72 @@ Project-level architecture rules report structural facts from the read-only proj
 
 Error-handling and concurrency rules are deliberately syntactic. Production panic and placeholder findings skip test functions and helpers inside `tests` modules; public API unwrap findings add API-context signal on top of the broader unwrap/expect rule. Async/concurrency findings use medium confidence unless the scanner has only a narrow source pattern such as an async function calling `std::thread::sleep`, a lock binding that appears to cross `.await`, or an unbounded channel constructor. These checks complement Clippy by making the patterns visible in Gruff reports and scoring; they do not claim runtime deadlock certainty or type-aware error taxonomy.
 
-Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside loop bodies. They are reported as waste because the current report schema does not define a separate performance pillar.
+Security rules are deliberately narrow static signals. `security.process-command` only reports command construction/execution when the local source shows a concrete risk shape such as shell execution, a dynamic executable or argument, custom environment values, or a custom working directory. `security.sql-dynamic-query` only reports direct dynamic SQL arguments such as `query(format!(...))`, `execute(format!(...))`, and `prepare(format!(...))`; it does not follow values through variables. `security.weak-crypto` reports explicit weak primitive imports or constructors for review and does not claim every checksum use is exploitable. `security.insecure-rng-for-secrets` requires both a secret-like production function name and an explicit `rand::thread_rng()` or `rand::random()` call. `config.security-blind-ignore` reports discovery-time blind spots rather than applying suppressions; reviewed suppressions belong under top-level `exclude`.
 
-Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default `volume` threshold of `900`. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default `minimum` threshold of `45`. Config may use the `threshold` shorthand for these single-threshold rules; the canonical threshold names are `volume` and `minimum`. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+Sensitive-data rules report likely secret material directly from text. `sensitive-data.database-url-password` is scoped to database and message-bus URL schemes, while `sensitive-data.url-embedded-credentials` covers generic HTTP(S) `user:password@host` URLs. Provider-prefixed token coverage stays under `sensitive-data.api-key-pattern` unless a separate rule ID adds distinct user-facing value.
+
+Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside real loop bodies. They ignore loop words in comments/strings, bounded static inventory loops, and user-facing output assembly where the allocation is not meaningful performance debt. They are reported as waste because the current report schema does not define a separate performance pillar.
+
+`test-quality.unwrap-in-test` allows a direct call result unwrapped inside an assertion expression when that call is the subject under test. It still reports setup/local unwraps that feed assertions because those can hide fixture failures behind a panic.
+
+Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default threshold of `1500` with advisory severity. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default threshold of `45` with advisory severity. Config uses `threshold` plus `severity` for thresholded rules. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+
+## Threshold calibration
+
+Threshold defaults are anchored to documented peer analyzers where one exists, and called out as gruff-specific where no peer ships a comparable numeric default. Peer references come from the M19-M22 neighbor study notes under `.goat-flow/scratchpad/related-projects/`.
+
+| Rule | Default | Peer anchor | Note |
+| --- | --- | --- | --- |
+| `complexity.cognitive` | 15 | Detekt CognitiveComplexMethod 15, PMD CognitiveComplexity 15 | Matches the Detekt/PMD consensus. |
+| `complexity.cyclomatic` | 10 | PMD CyclomaticComplexity 10 | Between Detekt (14) and RuboCop (7). |
+| `complexity.nesting-depth` | 4 | RuboCop Metrics/BlockNesting 3 | One step looser than RuboCop's Ruby default. |
+| `complexity.npath` | 100 | PMD NPathComplexity 200 | Stricter than PMD; gruff treats Rust expression branches as denser than Java method bodies. |
+| `metrics.halstead-volume` | 1500 | none | Gruff-specific; no major peer ships Halstead as a default-on lint. Calibrated against self-scan distribution where real outliers cluster above 1500. |
+| `metrics.maintainability-pressure` | 45 | SonarQube maintainability index (concept-only) | Gruff-specific composite of token volume, cyclomatic, and Halstead volume. |
+| `architecture.large-module` | 25 items | Detekt LargeClass 600 lines (different unit) | Gruff measures public-or-visible item count per module, not raw lines; not directly comparable. |
+| `architecture.module-fan-out` | 8 | none | Gruff-specific; PMD CouplingBetweenObjects exists but its threshold is not documented in the neighbor studies. |
+| `architecture.public-api-surface` | 12 items | none | Gruff-specific external-public count; PMD TooManyMethods is the nearest peer concept. |
+| `dependency.duplicate-locked-version` | 1 | none | Cargo-specific; no peer analyzer ships this check. |
+| `docs.todo-density` | 4 per file | none (peers use binary presence) | Gruff counts TODO/FIXME comments per file rather than firing on first occurrence. |
+| `size.file-length` | 600 | Detekt LargeClass 600 | Matches Detekt exactly; PMD uses 1500 NCSS, RuboCop uses 250 lines. |
+| `size.function-length` | 50 | Detekt LongMethod 60, PMD NcssCount 60 | Slightly stricter than Detekt/PMD; far looser than RuboCop's 10-line Ruby default. |
+| `size.parameter-count` | 5 | Detekt 5-6, RuboCop 5 | Matches Detekt and RuboCop. |
+| `test-quality.long-test` | 80 | RuboCop RSpec/ExampleLength 25 (unit only) | Gruff-specific; RuboCop's peer rule is unit-spec scoped, so it does not apply to integration tests with realistic fixtures. |
 
 ## Deferred
 
-- Type-aware unused symbol and call-graph dead-code certainty.
-- Module cycle, coupling, and crate-graph rules that need a reliable import graph.
+- Type-aware unused symbol and call-graph dead-code certainty. Peer unlocks:
+  rust-analyzer HIR/Semantics APIs and Clippy late-pass boundaries, but ADR-008
+  requires no-execute default analysis.
+- Module cycle, coupling, and crate-graph rules that need a reliable import
+  graph. Peer unlocks: rust-analyzer crate graphs and semantic databases;
+  default gruff scans still avoid Cargo/build-script execution.
 - Vulnerability advisory, package freshness, and license policy checks that need live external data or organization-specific policy.
-- Framework-specific test rules for mocking, fixtures, async runtimes, and data providers.
-- Broad error swallowing, excessive task spawning, runtime deadlock detection, and type-aware error taxonomy.
-- Type-aware allocation analysis, needless collection-before-iteration claims, large-literal allocation claims, benchmarks, and runtime profiling ingestion.
-- Automatic fixes.
+- Framework-specific test rules for mocking, fixtures, async runtimes, and data
+  providers. Peer unlocks: rust-analyzer path/type resolution can identify
+  framework APIs, but framework policy remains external.
+- Broad error swallowing, excessive task spawning, runtime deadlock detection,
+  and type-aware error taxonomy. Peer unlocks: rust-analyzer type/method
+  resolution and Clippy late lint passes; runtime certainty remains out of
+  static-scan scope.
+- Type-aware allocation analysis, needless collection-before-iteration claims,
+  large-literal allocation claims, benchmarks, and runtime profiling ingestion.
+  Peer unlocks: rust-analyzer type inference and Clippy performance lint
+  structure; profiling remains external data.
+- Automatic fixes. Peer unlocks: Ruff, Biome, Clippy, rust-analyzer, and
+  RuboCop all separate fix safety from severity; ADR-007 requires explicit
+  safe/unsafe metadata before any gruff fix mode.
+- Additional dedicated CI renderers such as Checkstyle XML and Code Climate
+  JSON. Peer unlocks: Detekt, PMD, Semgrep, and golangci-lint; ADR-006 keeps
+  these as renderers over `gruff.analysis.v1`. SARIF is the first implemented
+  CI renderer.
+- User-defined rules. Peer unlocks: SwiftLint regex rules, Semgrep pattern
+  rules, and PMD XPath rules; ADR-010 limits the first gruff custom-rule surface
+  to config-only regex rules with reserved `custom.*` ids.
+- Diff/new-code-only reporting. Peer unlocks: Semgrep baseline-by-ref and
+  golangci-lint line-level new-code filters; ADR-009 requires patch-input
+  filtering before direct Git/ref modes.
+- Count baselines, report-level exclusions, and source suppressions. Peer
+  unlocks: SwiftLint count-like baselines, Detekt source suppressions, RuboCop
+  TODO config, and golangci-lint exclusions; ADR-009 keeps exact baselines first
+  and discovery ignores separate from report suppressions.

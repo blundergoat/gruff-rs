@@ -1,7 +1,7 @@
 ---
 name: goat-plan
 description: "Use when starting a non-trivial implementation that needs structured task breakdown with progress tracking."
-goat-flow-skill-version: "1.6.4"
+goat-flow-skill-version: "1.7.0"
 ---
 # /goat-plan
 
@@ -124,7 +124,7 @@ User explicitly asked to edit an existing plan file. Path-only references do not
 - Preserve title/status metadata unless the change requires updating them.
 - Present updated content or concise delta. Ask if scope spills beyond named file.
 
-### Mode 2: Strict No-Write Analysis (no files)
+### Mode 2: Read-Only Analysis (no files)
 
 Analysis signals triggered this mode.
 
@@ -177,13 +177,13 @@ If updates are needed mid-flight, follow the milestone retrospective protocol in
 
 ## Phase 4 - Plan Complete
 
-When all milestones reach `complete` status, the plan enters the completion protocol. Both gates must pass before the plan is considered finished.
+When all milestones reach `complete` or `human-verification-pending`, the plan enters Phase 4. Both gates must pass before the plan is considered finished.
 
 ### AI Verification Gate
 
 Before presenting completion, verify:
 
-1. Every milestone status shows `complete`
+1. Every milestone status shows `complete` or `human-verification-pending`
 2. Every task checkbox ticked `[x]` across all milestone files
 3. Every exit criterion met with evidence cited in this session
 4. Every testing gate passed with proof (not recollection)

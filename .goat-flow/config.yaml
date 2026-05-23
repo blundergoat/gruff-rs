@@ -1,8 +1,4 @@
-version: "1.6.4"
-
-agents:
-  - codex
-  - claude
+version: "1.7.0"
 
 skills:
   install: all

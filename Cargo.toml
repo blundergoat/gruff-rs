@@ -2,13 +2,52 @@
 name = "gruff-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Rust project quality analyzer."
-license = "proprietary"
+rust-version = "1.82"
+description = "Rust static analyzer and quality linter for CI: dead-code, complexity, security, secrets, and architecture rules with deterministic SARIF/JSON output and baseline support."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/blundergoat/gruff-rs"
+homepage = "https://github.com/blundergoat/gruff-rs"
+documentation = "https://docs.rs/gruff-rs"
+readme = "README.md"
+keywords = ["lint", "static-analysis", "code-quality", "sarif", "cli"]
+categories = [
+    "development-tools",
+    "command-line-utilities",
+    "development-tools::testing",
+]
+exclude = [
+    ".agents/",
+    ".claude/",
+    ".codex/",
+    ".github/",
+    ".goat-flow/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "bin/",
+    "docs/coding-standards/",
+    "package.json",
+    "package-lock.json",
+    "scripts/start-dev.sh",
+    "scripts/test-performance.sh",
+    "scripts/preflight-checks.sh",
+]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"
+pkg-fmt = "tar.gz"
+bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
+ignore = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,7 +55,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 toml = "0.8"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
 walkdir = "2"
 
 [dev-dependencies]
