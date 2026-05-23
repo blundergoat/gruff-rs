@@ -110,3 +110,17 @@ pub(crate) struct CompletionArgs {
     #[arg(long, default_value = "bash")]
     pub(crate) shell: Shell,
 }
+
+#[derive(Args, Clone)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
+pub(crate) struct InitArgs {
+    /// Where to write the generated config. Defaults to .gruff-rs.yaml in the current directory.
+    #[arg(long, default_value = ".gruff-rs.yaml")]
+    pub(crate) output: PathBuf,
+    /// Overwrite the output file if it already exists.
+    #[arg(long)]
+    pub(crate) force: bool,
+    /// Print the generated config to stdout instead of writing to a file.
+    #[arg(long, conflicts_with_all = ["output", "force"])]
+    pub(crate) stdout: bool,
+}
