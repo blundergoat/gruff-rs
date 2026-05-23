@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/test-performance.sh — end-to-end performance harness for gruff-rs.
+# scripts/test-performance.sh - end-to-end performance harness for gruff-rs.
 # See `--help` for usage.
 
 set -euo pipefail
@@ -62,7 +62,7 @@ require_tool() {
 
 usage() {
     cat <<'USAGE'
-scripts/test-performance.sh — gruff-rs performance harness
+scripts/test-performance.sh - gruff-rs performance harness
 
 Usage:
   scripts/test-performance.sh [--check | --update-baseline] [--baseline PATH] [--force] [--help]

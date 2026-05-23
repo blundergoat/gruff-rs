@@ -1,38 +1,82 @@
 # gruff-rs
 
-Rust project quality analyzer with deterministic, schema-versioned reports. The
-0.1.0 release is built for local CLI and CI gating of Rust repositories plus
-committed text/config security surfaces.
+[![Crates.io](https://img.shields.io/crates/v/gruff-rs.svg)](https://crates.io/crates/gruff-rs)
+[![Docs.rs](https://img.shields.io/docsrs/gruff-rs)](https://docs.rs/gruff-rs)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
+Deterministic, schema-versioned quality analyzer for Rust projects. Drop the
+single-binary CLI into CI like `phpstan analyse src/`: outputs JSON, SARIF,
+HTML, Markdown, and GitHub annotations, with built-in scoring and baselines
+for incremental adoption. Configuration lives in `.gruff-rs.yaml`; rule ids
+and fingerprints follow a stability contract so downstream baselines stay
+trustworthy across versions.
+
+## Install
+
+```bash
+# From crates.io (builds from source, ~30s on first install)
+cargo install gruff-rs --locked
+
+# Prebuilt binaries (needs cargo-binstall)
+cargo binstall gruff-rs
+
+# From a source checkout
+cargo install --path . --locked
+```
+
+After install, `gruff-rs` is on your `PATH`.
 
 ## Quickstart
 
 ```bash
-./bin/gruff-rs analyse . --format text --fail-on warning
-./bin/gruff-rs analyse . --format json --fail-on none
-./bin/gruff-rs analyse . --format sarif --fail-on none
-./bin/gruff-rs report . --format html --output gruff-report.html
-./bin/gruff-rs list-rules --format text
-./bin/gruff-rs list-rules --format json
-bash scripts/start-dev.sh
-```
-
-From a source checkout, `bin/gruff-rs` resolves this repository's Cargo manifest
-and forwards arguments to the Rust CLI.
-
-For a local PATH install from a release checkout:
-
-```bash
-cargo install --path . --locked
+gruff-rs analyse . --format text --fail-on warning
+gruff-rs analyse . --format json --fail-on none
+gruff-rs analyse . --format sarif --fail-on none
+gruff-rs report . --format html --output gruff-report.html
+gruff-rs list-rules --format text
+gruff-rs list-rules --selector Security
 ```
 
 Report formats for `analyse` are `text`, `json`, `sarif`, `html`, `markdown`,
 `github`, and `hotspot`. The `report` command supports static `html` and `json`
 output.
 
-`scripts/start-dev.sh` starts the dashboard on `127.0.0.1:8766` by default. The
-dashboard has no authentication; bind it to a non-loopback host only for a trusted
-local network or another explicitly controlled environment. Override dashboard
-settings with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT`.
+## GitHub Actions
+
+The repo ships a composite action so you can use `gruff-rs` from CI in three
+lines - the phpstan-equivalent install-and-run step:
+
+```yaml
+# .github/workflows/quality.yml
+jobs:
+  gruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: blundergoat/gruff-rs@v0.1.0
+        with:
+          args: analyse . --format sarif --fail-on warning --no-baseline
+```
+
+The action installs the matching binary via `cargo-binstall` (no Rust toolchain
+required on the runner) and runs `gruff-rs` with the supplied args. Pin to a
+tag (`@v0.1.0`) for reproducibility. See [`action.yml`](action.yml) for the
+full input list.
+
+## Dashboard (local only)
+
+`gruff-rs dashboard` starts an HTTP server that renders the HTML report on
+demand. It binds to `127.0.0.1:8766` by default, has **no authentication**,
+and must not be exposed to untrusted networks. Override the bind address with
+`--host` / `--port` only inside a trusted local environment.
+
+## Stability
+
+`0.1.x` is the "mostly stable, with caveats" line. Rule ids, finding
+fingerprints, baseline identity, JSON schema version `gruff.analysis.v1`, and
+the SARIF surface are compatibility-sensitive - breaking changes to those
+ship as `0.2.0`, never inside `0.1.x`. See [UPGRADING.md](UPGRADING.md) for the
+full contract and what may change with deprecation.
 
 ## More Docs
 
@@ -140,8 +184,8 @@ not warning/error ranges. They do not rename rule ids or change fingerprints.
 Preview a selector with:
 
 ```bash
-./bin/gruff-rs list-rules --selector Security
-./bin/gruff-rs list-rules --selector performance.* --format json
+gruff-rs list-rules --selector Security
+gruff-rs list-rules --selector performance.* --format json
 ```
 
 Use `--no-config` to ignore project config.
@@ -275,13 +319,13 @@ framework-specific, and runtime checks.
 Generate a baseline from the current findings:
 
 ```bash
-./bin/gruff-rs analyse src --format json --fail-on none --generate-baseline
+gruff-rs analyse src --format json --fail-on none --generate-baseline
 ```
 
 Apply the default `gruff-baseline.json` when present:
 
 ```bash
-./bin/gruff-rs analyse src --format json --fail-on none --baseline
+gruff-rs analyse src --format json --fail-on none --baseline
 ```
 
 Baseline suppression is exact on fingerprint, rule id, and file path. Message text,
@@ -294,7 +338,7 @@ findings whose file and line fall inside the patch's new-side hunk ranges:
 
 ```bash
 git diff --no-ext-diff > /tmp/gruff.patch
-./bin/gruff-rs analyse . --diff-patch /tmp/gruff.patch --format json --fail-on none
+gruff-rs analyse . --diff-patch /tmp/gruff.patch --format json --fail-on none
 ```
 
 Pass `--diff-patch -` to read the patch from stdin. This mode does not execute
@@ -325,7 +369,7 @@ analysis report. It does not change `gruff.analysis.v1`, rule ids, finding
 fingerprints, baselines, scoring, or fail-on behavior.
 
 ```bash
-./bin/gruff-rs analyse fixtures --format sarif --fail-on none
+gruff-rs analyse fixtures --format sarif --fail-on none
 ```
 
 SARIF driver rules come from the sorted built-in rule registry and include
@@ -349,12 +393,12 @@ default gate does not require a networked SARIF schema validator.
 
 ```bash
 bash scripts/preflight-checks.sh
-./bin/gruff-rs analyse fixtures --format json --fail-on none
-./bin/gruff-rs analyse fixtures --format sarif --fail-on none
-./bin/gruff-rs analyse fixtures --diff-patch /tmp/gruff.patch --format json --fail-on none
-./bin/gruff-rs analyse src --format json --fail-on warning --no-baseline
-./bin/gruff-rs list-rules --format json
-./bin/gruff-rs list-rules --selector Security
+gruff-rs analyse fixtures --format json --fail-on none
+gruff-rs analyse fixtures --format sarif --fail-on none
+gruff-rs analyse fixtures --diff-patch /tmp/gruff.patch --format json --fail-on none
+gruff-rs analyse src --format json --fail-on warning --no-baseline
+gruff-rs list-rules --format json
+gruff-rs list-rules --selector Security
 ```
 
 `scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and
@@ -397,7 +441,7 @@ Run an explicit fixture command when verifying fixture coverage.
 
 ## Troubleshooting
 
-- Parse diagnostics: run `./bin/gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`, or use SARIF invocation notifications from `./bin/gruff-rs analyse <path> --format sarif --fail-on none`; Rust AST rules are skipped for parse-failed files while text rules still run.
+- Parse diagnostics: run `gruff-rs analyse <path> --format json --fail-on none` and inspect `diagnostics`, or use SARIF invocation notifications from `gruff-rs analyse <path> --format sarif --fail-on none`; Rust AST rules are skipped for parse-failed files while text rules still run.
 - Config errors: check unknown root keys, unknown rule ids, unsupported threshold shapes, and invalid value shapes in `.gruff-rs.yaml`.
 - Baselines: regenerate only after confirming the current findings are intentionally accepted.
 - Intentional fixture findings: use `fixtures/README.md` and `tests/fixtures/README.md` to confirm whether a noisy file is a test input.

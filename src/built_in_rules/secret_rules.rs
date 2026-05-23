@@ -266,7 +266,7 @@ pub(crate) fn analyse_high_entropy_strings(
 }
 
 /// Returns the redacted preview for `value` if the high-entropy rule
-/// should fire — or `None` when the value is below the entropy bar, is
+/// should fire - or `None` when the value is below the entropy bar, is
 /// a recognised integrity-hash literal, or matches the configured
 /// `secret_previews` allowlist. Centralising the skip logic keeps the
 /// outer loop body terse.

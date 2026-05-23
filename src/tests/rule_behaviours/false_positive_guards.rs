@@ -54,7 +54,7 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
 
 /// Regression guard: `metrics.halstead-volume` must not count string-literal
 /// content as tokens. A long `format!(concat!(...))` HTML template with
-/// dense string fragments inside should still stay below the threshold —
+/// dense string fragments inside should still stay below the threshold -
 /// only the wrapping `format`, `concat`, punctuation, and `{}` placeholder
 /// tokens count.
 #[test]

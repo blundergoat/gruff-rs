@@ -4,7 +4,7 @@ pub(crate) fn is_public(visibility: &Visibility) -> bool {
     !matches!(visibility, Visibility::Inherited)
 }
 
-/// Strict counterpart to `is_public` — see `visibility_is_externally_public`.
+/// Strict counterpart to `is_public` - see `visibility_is_externally_public`.
 pub(crate) fn is_externally_public(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Public(_))
 }

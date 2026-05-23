@@ -53,7 +53,7 @@ pub(crate) fn analyse_public_function_doc(
 /// Externally-public functions returning syntactic `Result<...>` should
 /// document the error contract. The rule fires when the preceding rustdoc
 /// (if any) does not contain `# Errors` or `## Errors`. Type-alias `Result`
-/// shapes are intentionally not detected — see `fn returns_result`.
+/// shapes are intentionally not detected - see `fn returns_result`.
 pub(crate) fn analyse_missing_errors_section(
     file: &SourceFile,
     block: &FunctionBlock,

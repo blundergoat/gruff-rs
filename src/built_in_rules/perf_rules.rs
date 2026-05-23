@@ -35,7 +35,7 @@ fn should_count_perf_line(rule_id: &str, line: &str) -> bool {
 
 /// Narrower clone exemption for `performance.clone-in-loop`. Only the
 /// strictly structural patterns (struct field, `Some()` wrap, hashmap
-/// key, multi-line method-chain continuation) are skipped — let-bindings
+/// key, multi-line method-chain continuation) are skipped - let-bindings
 /// and standalone clones in the loop body still fire.
 fn clone_is_structural_in_loop(line: &str) -> bool {
     PERF_CLONE_STRUCTURAL_PATTERNS
@@ -75,7 +75,7 @@ const PERF_CLONE_STRUCTURAL_PATTERNS: &[CloneOwnershipPattern] = &[
 /// assemble labels/messages for report output. These uses are
 /// not avoidable: each iteration legitimately produces a distinct owned
 /// string and there is no shared buffer to hoist into. Note that
-/// same-line `Vec::push(format!())` IS still flagged — that pattern
+/// same-line `Vec::push(format!())` IS still flagged - that pattern
 /// usually signals collecting per-item strings that could be hoisted to
 /// `.iter().map(...).collect()`.
 fn format_is_owned_value(line: &str) -> bool {
