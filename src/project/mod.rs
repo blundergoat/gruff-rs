@@ -125,7 +125,8 @@ pub(crate) fn project_index(sources: &[ParsedSource]) -> ProjectIndex {
 
     for source in sources {
         if let Some(ast) = &source.rust_ast {
-            count_rust_identifiers(&source.source, &mut identifier_counts);
+            let reference_source = rust_code_reference_source(&source.source);
+            count_rust_identifiers(&reference_source, &mut identifier_counts);
             rust_sources.push(RustSourceSummary {
                 file_path: source.file.display_path.clone(),
                 source: source.source.clone(),
@@ -220,9 +221,7 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
 }
 
 pub(crate) fn has_cfg_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs
-        .iter()
-        .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
+    attrs.iter().any(|attr| attr.path().is_ident("cfg"))
 }
 
 pub(crate) fn has_cfg_test_attr(attrs: &[syn::Attribute]) -> bool {
@@ -234,17 +233,34 @@ pub(crate) fn has_cfg_test_attr(attrs: &[syn::Attribute]) -> bool {
         let syn::Meta::List(list) = &attr.meta else {
             return false;
         };
-        let compact_tokens = list.tokens.to_string().replace(' ', "");
-        if compact_tokens.contains("not(test)") {
-            return false;
-        }
-        compact_tokens == "test"
-            || compact_tokens.starts_with("test,")
-            || compact_tokens.contains("any(test")
-            || compact_tokens.contains("all(test")
-            || compact_tokens.contains(",test")
-            || compact_tokens.ends_with(",test)")
+        cfg_tokens_are_test_only(list.tokens.clone())
     })
+}
+
+pub(crate) fn cfg_tokens_are_test_only(tokens: proc_macro2::TokenStream) -> bool {
+    syn::parse2::<syn::Meta>(tokens)
+        .ok()
+        .is_some_and(|meta| cfg_meta_is_test_only(&meta))
+}
+
+pub(crate) fn cfg_meta_is_test_only(meta: &syn::Meta) -> bool {
+    if meta.path().is_ident("test") {
+        return true;
+    }
+    let syn::Meta::List(list) = meta else {
+        return false;
+    };
+    let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
+    let Ok(nested) = syn::parse::Parser::parse2(parser, list.tokens.clone()) else {
+        return false;
+    };
+    if list.path.is_ident("all") {
+        return nested.iter().any(cfg_meta_is_test_only);
+    }
+    if list.path.is_ident("any") {
+        return !nested.is_empty() && nested.iter().all(cfg_meta_is_test_only);
+    }
+    false
 }
 
 pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {

@@ -39,6 +39,24 @@ readonly EXIT_RUN_FAILURE=3
 log() { printf '[perf] %s\n' "$*" >&2; }
 die() { printf '[perf] error: %s\n' "$*" >&2; exit "${EXIT_RUN_FAILURE}"; }
 
+now_seconds() {
+    local value
+    value="$(date +%s.%N 2>/dev/null || true)"
+    if [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ && "$value" != *N* ]]; then
+        printf '%s\n' "$value"
+        return
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import time; print(f"{time.time():.9f}")'
+        return
+    fi
+    if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf "%.9f\n", time'
+        return
+    fi
+    die "no portable high-resolution timer found (need GNU date, python3, or perl)"
+}
+
 require_tool() {
     command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"
 }
@@ -155,9 +173,9 @@ fi
 # ---------------------------------------------------------------------------
 
 log "Building release binary..."
-build_start="$(date +%s.%N)"
+build_start="$(now_seconds)"
 (cd "${REPO_ROOT}" && cargo build --release --quiet) || die "cargo build --release failed"
-build_end="$(date +%s.%N)"
+build_end="$(now_seconds)"
 BUILD_SECONDS="$(awk -v s="${build_start}" -v e="${build_end}" 'BEGIN { printf "%.3f", e - s }')"
 [[ -x "${BIN}" ]] || die "binary not found at ${BIN}"
 
@@ -168,26 +186,51 @@ VERSION="$("${BIN}" --version 2>/dev/null | awk '{print $2}')"
 # Scenarios
 # ---------------------------------------------------------------------------
 #
-# Scenarios are declared as parallel arrays: name + argv (as a single
-# string parsed by `eval` into an array, since some args contain `=`).
+# Scenarios are declared as parallel arrays: name + argv encoded with an
+# internal unit separator so paths with spaces stay one argument.
 # Setup commands are dispatched by scenario name.
 
 declare -a SCENARIO_NAMES SCENARIO_CMDS
 
-add_scenario() { SCENARIO_NAMES+=("$1"); SCENARIO_CMDS+=("$2"); }
+encode_argv() {
+    local arg
+    for arg in "$@"; do
+        printf '%s\x1f' "$arg"
+    done
+}
 
-add_scenario "fixtures.text"      "analyse fixtures --format text --fail-on none --no-baseline"
-add_scenario "fixtures.json"      "analyse fixtures --format json --fail-on none --no-baseline"
-add_scenario "fixtures.sarif"     "analyse fixtures --format sarif --fail-on none --no-baseline"
-add_scenario "fixtures.html"      "analyse fixtures --format html --fail-on none --no-baseline"
-add_scenario "src.json"           "analyse src --format json --fail-on none --no-baseline"
-add_scenario "src.with-baseline"  "analyse src --format json --fail-on none --baseline ${SCRATCH_BASELINE}"
-add_scenario "src.with-history"   "analyse src --format json --fail-on none --no-baseline --history-file ${SCRATCH_HISTORY}"
-add_scenario "src.diff-empty"     "analyse src --format json --fail-on none --no-baseline --diff-patch ${SCRATCH_PATCH}"
-add_scenario "list-rules.json"    "list-rules --format json"
+DECODED_ARGV=()
+
+decode_argv() {
+    local encoded="$1"
+    local IFS=$'\x1f'
+    read -r -a DECODED_ARGV <<< "$encoded"
+}
+
+format_argv() {
+    decode_argv "$1"
+    printf ' %q' "${DECODED_ARGV[@]}"
+}
+
+add_scenario() {
+    local name="$1"
+    shift
+    SCENARIO_NAMES+=("$name")
+    SCENARIO_CMDS+=("$(encode_argv "$@")")
+}
+
+add_scenario "fixtures.text"      analyse fixtures --format text --fail-on none --no-baseline
+add_scenario "fixtures.json"      analyse fixtures --format json --fail-on none --no-baseline
+add_scenario "fixtures.sarif"     analyse fixtures --format sarif --fail-on none --no-baseline
+add_scenario "fixtures.html"      analyse fixtures --format html --fail-on none --no-baseline
+add_scenario "src.json"           analyse src --format json --fail-on none --no-baseline
+add_scenario "src.with-baseline"  analyse src --format json --fail-on none --baseline "${SCRATCH_BASELINE}"
+add_scenario "src.with-history"   analyse src --format json --fail-on none --no-baseline --history-file "${SCRATCH_HISTORY}"
+add_scenario "src.diff-empty"     analyse src --format json --fail-on none --no-baseline --diff-patch "${SCRATCH_PATCH}"
+add_scenario "list-rules.json"    list-rules --format json
 if [[ -n "${LARGE_CORPUS}" ]]; then
     [[ -d "${LARGE_CORPUS}" ]] || die "GRUFF_PERF_LARGE_CORPUS does not exist: ${LARGE_CORPUS}"
-    add_scenario "large-corpus.json" "analyse ${LARGE_CORPUS} --format json --fail-on none --no-baseline"
+    add_scenario "large-corpus.json" analyse "${LARGE_CORPUS}" --format json --fail-on none --no-baseline
 fi
 
 setup_scenario() {
@@ -211,28 +254,30 @@ setup_scenario() {
 # Measurement
 # ---------------------------------------------------------------------------
 
-# run_once <argv-string> -> emits "wall_seconds peak_rss_bytes_or_empty".
-# Wall-clock comes from date +%s.%N (nanosecond precision); GNU time's %e is
-# centisecond-precise which is too coarse for sub-10ms scenarios. RSS still
-# comes from GNU time when available.
+# run_once <encoded-argv> -> emits "wall_seconds peak_rss_bytes_or_empty".
+# Wall-clock comes from now_seconds (nanosecond precision when available);
+# GNU time's %e is centisecond-precise which is too coarse for sub-10ms
+# scenarios. RSS still comes from GNU time when available.
 run_once() {
-    local argv_str="$1"
-    # shellcheck disable=SC2206
-    local argv=(${argv_str})
+    local argv_encoded="$1"
+    decode_argv "${argv_encoded}"
+    local argv=("${DECODED_ARGV[@]}")
+    local argv_label
+    argv_label="$(format_argv "${argv_encoded}")"
     rm -f "${TIME_LOG}"
     local t0 t1 wall rss_bytes=""
     if [[ -n "${TIME_BIN}" ]]; then
-        t0="$(date +%s.%N)"
+        t0="$(now_seconds)"
         "${TIME_BIN}" -f '%M' -o "${TIME_LOG}" "${BIN}" "${argv[@]}" >/dev/null \
-            || die "scenario invocation failed: ${argv_str}"
-        t1="$(date +%s.%N)"
+            || die "scenario invocation failed:${argv_label}"
+        t1="$(now_seconds)"
         local rss_kb
         read -r rss_kb < "${TIME_LOG}"
         rss_bytes=$(( rss_kb * 1024 ))
     else
-        t0="$(date +%s.%N)"
-        "${BIN}" "${argv[@]}" >/dev/null || die "scenario invocation failed: ${argv_str}"
-        t1="$(date +%s.%N)"
+        t0="$(now_seconds)"
+        "${BIN}" "${argv[@]}" >/dev/null || die "scenario invocation failed:${argv_label}"
+        t1="$(now_seconds)"
     fi
     wall="$(awk -v s="${t0}" -v e="${t1}" 'BEGIN { printf "%.6f", e - s }')"
     printf '%s %s\n' "${wall}" "${rss_bytes}"
@@ -269,7 +314,7 @@ stats() {
 
 # Run one scenario and emit its JSON object to stdout.
 run_scenario() {
-    local name="$1" argv_str="$2"
+    local name="$1" argv_encoded="$2"
     log "Scenario: ${name}"
     setup_scenario "${name}"
 
@@ -277,7 +322,7 @@ run_scenario() {
     local i=0
     while (( i < ITERS )); do
         local sample
-        sample="$(run_once "${argv_str}")"
+        sample="$(run_once "${argv_encoded}")"
         local wall rss
         wall="$(awk '{print $1}' <<< "${sample}")"
         rss="$(awk '{print $2}' <<< "${sample}")"
@@ -318,7 +363,7 @@ run_scenario() {
 
     jq -nc \
         --arg name "${name}" \
-        --arg command "gruff-rs ${argv_str}" \
+        --arg command "gruff-rs$(format_argv "${argv_encoded}")" \
         --argjson iterations "${iter_pairs}" \
         --argjson median "${wall_median}" \
         --argjson min "${wall_min}" \

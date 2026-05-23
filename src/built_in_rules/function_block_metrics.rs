@@ -39,6 +39,7 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         .max(start);
     let body = line_slice(parts.lines, start, end);
     let is_test = has_test_attr(parts.attrs);
+    let test_context = parts.test_context || has_cfg_test_attr(parts.attrs);
 
     FunctionBlock {
         name: parts.name,
@@ -48,7 +49,7 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         body,
         is_externally_public: is_externally_public(parts.visibility),
         is_test,
-        test_context: parts.test_context,
+        test_context,
         is_async: parts.is_async,
         returns_bool: parts.returns_bool,
         returns_result: parts.returns_result,

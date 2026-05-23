@@ -41,11 +41,53 @@ pub(crate) fn strip_rust_string_literals(source: &str) -> String {
             continue;
         }
 
-        output.push(bytes[index] as char);
-        index += 1;
+        index = push_original_char(source, index, &mut output);
     }
 
     output
+}
+
+pub(crate) fn push_original_char(source: &str, index: usize, output: &mut String) -> usize {
+    let character = source[index..]
+        .chars()
+        .next()
+        .expect("index is on a UTF-8 boundary");
+    output.push(character);
+    index + character.len_utf8()
+}
+
+pub(crate) fn rust_code_reference_source(source: &str) -> String {
+    let masked_source = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let mut reference_source = String::with_capacity(masked_source.len() + 64);
+    reference_source.push_str(&masked_source);
+    append_serde_default_references(source, &mut reference_source);
+    reference_source
+}
+
+fn append_serde_default_references(source: &str, output: &mut String) {
+    static SERDE_ATTRIBUTE_REGEX: OnceLock<Regex> = OnceLock::new();
+    static DEFAULT_REFERENCE_REGEX: OnceLock<Regex> = OnceLock::new();
+    let serde_attribute = static_regex(
+        &SERDE_ATTRIBUTE_REGEX,
+        r#"(?s)#\s*\[\s*serde\s*\((.*?)\)\s*\]"#,
+    );
+    let default_reference = static_regex(
+        &DEFAULT_REFERENCE_REGEX,
+        r#"\bdefault\s*=\s*"([A-Za-z_][A-Za-z0-9_:]*)""#,
+    );
+
+    for attribute in serde_attribute.captures_iter(source) {
+        let Some(body) = attribute.get(1) else {
+            continue;
+        };
+        for reference in default_reference.captures_iter(body.as_str()) {
+            let Some(path) = reference.get(1) else {
+                continue;
+            };
+            output.push(' ');
+            output.push_str(path.as_str());
+        }
+    }
 }
 
 /// Masks a `"..."` Rust string literal starting at the opening quote at
@@ -135,8 +177,7 @@ pub(crate) fn strip_rust_comments_after_string_mask(input: &str) -> String {
             index = mask_block_comment(bytes, index, &mut output);
             continue;
         }
-        output.push(bytes[index] as char);
-        index += 1;
+        index = push_original_char(input, index, &mut output);
     }
     output
 }
@@ -159,11 +200,24 @@ fn mask_block_comment(bytes: &[u8], start: usize, output: &mut String) -> usize 
     output.push(' ');
     output.push(' ');
     let mut index = start + 2;
+    let mut depth = 1usize;
     while index < bytes.len() {
+        if starts_with_two(bytes, index, b'/', b'*') {
+            output.push(' ');
+            output.push(' ');
+            depth += 1;
+            index += 2;
+            continue;
+        }
         if starts_with_two(bytes, index, b'*', b'/') {
             output.push(' ');
             output.push(' ');
-            return index + 2;
+            depth = depth.saturating_sub(1);
+            index += 2;
+            if depth == 0 {
+                return index;
+            }
+            continue;
         }
         let byte = bytes[index];
         if byte == b'\n' {
@@ -325,14 +379,45 @@ fn consume_block_comment(bytes: &[u8], index: usize, line: usize) -> (RustCommen
 fn scan_block_comment_body(bytes: &[u8], text_start: usize, line: usize) -> (usize, usize) {
     let mut end = text_start;
     let mut current_line = line;
+    let mut depth = 1usize;
     while end + 1 < bytes.len() {
-        if bytes[end] == b'*' && bytes[end + 1] == b'/' {
-            return (end, current_line);
+        match block_comment_token(bytes, end) {
+            BlockCommentToken::Open => {
+                depth += 1;
+                end += 2;
+            }
+            BlockCommentToken::Close => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return (end, current_line);
+                }
+                end += 2;
+            }
+            BlockCommentToken::Newline => {
+                current_line += 1;
+                end += 1;
+            }
+            BlockCommentToken::Other => end += 1,
         }
-        if bytes[end] == b'\n' {
-            current_line += 1;
-        }
-        end += 1;
     }
     (end, current_line)
+}
+
+enum BlockCommentToken {
+    Open,
+    Close,
+    Newline,
+    Other,
+}
+
+fn block_comment_token(bytes: &[u8], index: usize) -> BlockCommentToken {
+    if starts_with_two(bytes, index, b'/', b'*') {
+        BlockCommentToken::Open
+    } else if starts_with_two(bytes, index, b'*', b'/') {
+        BlockCommentToken::Close
+    } else if bytes[index] == b'\n' {
+        BlockCommentToken::Newline
+    } else {
+        BlockCommentToken::Other
+    }
 }

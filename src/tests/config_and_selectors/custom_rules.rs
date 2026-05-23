@@ -66,14 +66,20 @@ custom_rules:
 }
 
 #[test]
-pub(crate) fn custom_rule_rust_code_scope_masks_string_literals_and_text_scope_does_not() {
+pub(crate) fn custom_rule_rust_code_scope_masks_strings_and_comments() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     fs::create_dir_all(dir.path().join("src")).expect("src dir");
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
     fs::write(
         dir.path().join("src/lib.rs"),
-        "fn string_only() {\n    let marker = \"HACK\";\n}\n",
+        concat!(
+            "fn string_only() {\n",
+            "    // unsafe should stay comment-only\n",
+            "    let marker = \"HACK\";\n",
+            "    unsafe { std::ptr::read(&marker); }\n",
+            "}\n",
+        ),
     )
     .expect("fixture write");
     write_config(
@@ -92,6 +98,12 @@ custom_rules:
     message: Text marker
     scope: text
     pattern: HACK
+  - id: custom.unsafe-code
+    pillar: Security
+    severity: warning
+    message: Unsafe code marker
+    scope: rust-code
+    pattern: '\bunsafe\b'
 rules:
   select: ["custom.*"]
 "#,
@@ -109,6 +121,14 @@ rules:
 
     assert_has_rule(&report, "custom.hack-text");
     assert_missing_rule(&report, "custom.hack-code");
+    let findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "custom.unsafe-code")
+        .collect();
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].line, Some(4));
 }
 
 #[test]
@@ -159,6 +179,45 @@ rules:
 
     assert_eq!(comment_findings.len(), 1);
     assert_eq!(comment_findings[0].line, Some(4));
+}
+
+#[test]
+pub(crate) fn custom_rule_comments_scope_handles_nested_block_comments() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn comments() {}\n/* outer /* inner */ HACK still outer */\n",
+    )
+    .expect("fixture write");
+    write_config(
+        dir.path(),
+        r#"
+custom_rules:
+  - id: custom.nested-comment
+    pillar: Documentation
+    severity: warning
+    message: Nested comment marker
+    scope: comments
+    pattern: 'HACK still outer'
+rules:
+  select: ["custom.*"]
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("src/lib.rs")],
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_has_rule(&report, "custom.nested-comment");
 }
 
 #[test]

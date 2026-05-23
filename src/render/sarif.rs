@@ -1,25 +1,44 @@
 use super::*;
 
 pub(super) fn render_sarif(report: &AnalysisReport) -> String {
-    let registry = rules::builtin_registry();
-    let rule_indices = sarif_rule_indices(&registry);
-    let rules: Vec<Value> = registry.definitions().iter().map(sarif_rule).collect();
+    let (rules, rule_indices) = sarif_rules_and_indices(report);
     let results = sarif_results(report, &rule_indices);
 
     serde_json::to_string_pretty(&sarif_document(report, &rules, &results))
         .expect("sarif serializes")
 }
 
-fn sarif_rule_indices(registry: &rules::RuleRegistry) -> HashMap<&str, usize> {
-    registry
+fn sarif_rules_and_indices(report: &AnalysisReport) -> (Vec<Value>, HashMap<String, usize>) {
+    let registry = rules::builtin_registry();
+    let mut rules: Vec<Value> = registry.definitions().iter().map(sarif_rule).collect();
+    let mut indices: HashMap<String, usize> = registry
         .definitions()
         .iter()
         .enumerate()
-        .map(|(index, definition)| (definition.id, index))
-        .collect()
+        .map(|(index, definition)| (definition.id.to_string(), index))
+        .collect();
+    let mut custom_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .chain(
+            report
+                .suppressed_findings
+                .iter()
+                .map(|suppressed| &suppressed.finding),
+        )
+        .filter(|finding| !indices.contains_key(&finding.rule_id))
+        .collect();
+    custom_findings.sort_by(|left, right| left.rule_id.cmp(&right.rule_id));
+    custom_findings.dedup_by(|left, right| left.rule_id == right.rule_id);
+    for finding in custom_findings {
+        let index = rules.len();
+        indices.insert(finding.rule_id.clone(), index);
+        rules.push(sarif_rule_from_finding(finding));
+    }
+    (rules, indices)
 }
 
-fn sarif_results(report: &AnalysisReport, rule_indices: &HashMap<&str, usize>) -> Vec<Value> {
+fn sarif_results(report: &AnalysisReport, rule_indices: &HashMap<String, usize>) -> Vec<Value> {
     let mut results: Vec<Value> = report
         .findings
         .iter()
@@ -165,7 +184,7 @@ fn sarif_diagnostic_locations(diagnostic: &RunDiagnostic) -> Option<Value> {
     })
 }
 
-fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value {
+fn sarif_result(finding: &Finding, rule_indices: &HashMap<String, usize>) -> Value {
     let mut result = json!({
         "ruleId": &finding.rule_id,
         "level": sarif_level(finding.severity),
@@ -186,7 +205,7 @@ fn sarif_result(finding: &Finding, rule_indices: &HashMap<&str, usize>) -> Value
 
 fn sarif_suppressed_result(
     suppressed: &SuppressedFinding,
-    rule_indices: &HashMap<&str, usize>,
+    rule_indices: &HashMap<String, usize>,
 ) -> Value {
     let mut result = sarif_result(&suppressed.finding, rule_indices);
     if let Value::Object(result_object) = &mut result {
@@ -194,13 +213,40 @@ fn sarif_suppressed_result(
             "suppressions".to_string(),
             json!([
                 {
-                    "kind": "inSource",
+                    "kind": "external",
                     "justification": &suppressed.suppression.reason,
                 },
             ]),
         );
     }
     result
+}
+
+fn sarif_rule_from_finding(finding: &Finding) -> Value {
+    json!({
+        "id": &finding.rule_id,
+        "name": &finding.rule_id,
+        "shortDescription": {
+            "text": &finding.rule_id,
+        },
+        "fullDescription": {
+            "text": &finding.message,
+        },
+        "help": {
+            "text": &finding.message,
+        },
+        "defaultConfiguration": {
+            "level": sarif_level(finding.severity),
+        },
+        "properties": {
+            "pillar": finding.pillar,
+            "tier": &finding.tier,
+            "kind": "custom",
+            "defaultSeverity": finding.severity,
+            "confidence": finding.confidence,
+            "defaultEnabled": true,
+        },
+    })
 }
 
 fn sarif_result_locations(finding: &Finding) -> Value {

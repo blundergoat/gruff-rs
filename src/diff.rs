@@ -3,6 +3,7 @@ use super::*;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct DiffPatchLineMap {
     pub(crate) lines_by_file: BTreeMap<String, BTreeSet<usize>>,
+    pub(crate) saw_hunk: bool,
 }
 
 impl DiffPatchLineMap {
@@ -31,7 +32,8 @@ pub(crate) struct DiffPatchState {
 }
 
 pub(crate) enum DiffHunkLineKind {
-    NewSide,
+    Added,
+    Context,
     OldSideOnly,
     NoNewlineMarker,
     OutsideHunk,
@@ -43,6 +45,10 @@ pub(crate) fn parse_unified_diff(patch: &str) -> DiffPatchLineMap {
 
     for raw_line in patch.lines() {
         let line = raw_line.trim_end_matches('\r');
+        if state.current_new_line.is_some() && diff_hunk_line_kind(line).is_inside_hunk() {
+            record_diff_hunk_line(line, &mut state, &mut line_map);
+            continue;
+        }
         if should_handle_diff_header(line, &mut state, &mut line_map) {
             continue;
         }
@@ -75,6 +81,9 @@ pub(crate) fn should_handle_diff_header(
     if line.starts_with("@@") {
         state.current_new_line = parse_hunk_new_start(line);
         ensure_diff_file_entry(line_map, &state.current_file);
+        if state.current_new_line.is_some() {
+            line_map.saw_hunk = true;
+        }
         return true;
     }
 
@@ -103,12 +112,15 @@ pub(crate) fn record_diff_hunk_line(
     };
 
     match diff_hunk_line_kind(line) {
-        DiffHunkLineKind::NewSide => {
+        DiffHunkLineKind::Added => {
             line_map
                 .lines_by_file
                 .entry(file.clone())
                 .or_default()
                 .insert(*new_line);
+            *new_line += 1;
+        }
+        DiffHunkLineKind::Context => {
             *new_line += 1;
         }
         DiffHunkLineKind::OldSideOnly | DiffHunkLineKind::NoNewlineMarker => {}
@@ -121,18 +133,32 @@ pub(crate) fn diff_hunk_line_kind(line: &str) -> DiffHunkLineKind {
         DiffHunkLineKind::NoNewlineMarker
     } else if line.starts_with('-') {
         DiffHunkLineKind::OldSideOnly
-    } else if line.starts_with('+') || line.starts_with(' ') {
-        DiffHunkLineKind::NewSide
+    } else if line.starts_with('+') {
+        DiffHunkLineKind::Added
+    } else if line.starts_with(' ') {
+        DiffHunkLineKind::Context
     } else {
         DiffHunkLineKind::OutsideHunk
     }
 }
 
+impl DiffHunkLineKind {
+    fn is_inside_hunk(&self) -> bool {
+        matches!(
+            self,
+            Self::Added | Self::Context | Self::OldSideOnly | Self::NoNewlineMarker
+        )
+    }
+}
+
 pub(crate) fn parse_diff_path(raw_path: &str) -> Option<String> {
-    let path = raw_path
+    let unquoted = unquote_git_path(raw_path);
+    let path = unquoted
+        .as_deref()
+        .unwrap_or(raw_path)
         .split_once('\t')
         .map(|(path, _)| path)
-        .unwrap_or(raw_path)
+        .unwrap_or_else(|| unquoted.as_deref().unwrap_or(raw_path))
         .trim();
     if path == "/dev/null" {
         return None;
@@ -143,6 +169,72 @@ pub(crate) fn parse_diff_path(raw_path: &str) -> Option<String> {
         .unwrap_or(path);
     let normalized = normalize_report_path(unprefixed);
     (!normalized.is_empty()).then_some(normalized)
+}
+
+pub(crate) fn unquote_git_path(raw_path: &str) -> Option<String> {
+    let trimmed = raw_path.trim();
+    if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2) {
+        return None;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let inner_bytes = inner.as_bytes();
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut index = 0usize;
+    while index < inner_bytes.len() {
+        index = push_unquoted_git_path_byte(inner_bytes, index, &mut bytes);
+    }
+    Some(String::from_utf8_lossy(&bytes).to_string())
+}
+
+fn push_unquoted_git_path_byte(bytes: &[u8], index: usize, output: &mut Vec<u8>) -> usize {
+    if bytes[index] != b'\\' {
+        output.push(bytes[index]);
+        return index + 1;
+    }
+
+    let escape_start = index + 1;
+    if let Some((value, next_index)) = read_git_octal_escape(bytes, escape_start) {
+        output.push(value);
+        return next_index;
+    }
+
+    match bytes.get(escape_start).copied() {
+        Some(escaped) => {
+            output.push(git_escaped_byte(escaped));
+            escape_start + 1
+        }
+        None => {
+            output.push(b'\\');
+            escape_start
+        }
+    }
+}
+
+fn read_git_octal_escape(bytes: &[u8], start: usize) -> Option<(u8, usize)> {
+    bytes.get(start).copied().filter(|byte| is_octal(*byte))?;
+    let mut value = 0u8;
+    let mut index = start;
+    for _ in 0..3 {
+        let Some(octal) = bytes.get(index).copied().filter(|byte| is_octal(*byte)) else {
+            break;
+        };
+        value = value.saturating_mul(8).saturating_add(octal - b'0');
+        index += 1;
+    }
+    Some((value, index))
+}
+
+fn is_octal(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'7')
+}
+
+fn git_escaped_byte(byte: u8) -> u8 {
+    match byte {
+        b'n' => b'\n',
+        b'r' => b'\r',
+        b't' => b'\t',
+        other => other,
+    }
 }
 
 pub(crate) fn parse_hunk_new_start(line: &str) -> Option<usize> {

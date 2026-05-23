@@ -6,8 +6,9 @@ pub(crate) fn analyse_dead_code(
     source: &str,
     findings: &mut Vec<Finding>,
 ) {
+    let code_only_source = rust_code_reference_source(source);
     for item in &ast.items {
-        analyse_dead_code_item(file, item, source, false, findings);
+        analyse_dead_code_item(file, item, &code_only_source, false, findings);
     }
 }
 
@@ -57,9 +58,11 @@ pub(crate) fn analyse_dead_impl(
     if item_impl.trait_.is_some() {
         return;
     }
+    let impl_test_context =
+        test_context || has_test_attr(&item_impl.attrs) || has_cfg_test_attr(&item_impl.attrs);
     for impl_item in &item_impl.items {
         if let ImplItem::Fn(method) = impl_item {
-            analyse_dead_impl_method(file, method, source, test_context, findings);
+            analyse_dead_impl_method(file, method, source, impl_test_context, findings);
         }
     }
 }
@@ -122,7 +125,12 @@ pub(crate) fn analyse_dead_function(
         span,
         test_context,
     } = candidate;
-    if is_public(visibility) || name == "main" || has_test_attr(attrs) || test_context {
+    if is_public(visibility)
+        || name == "main"
+        || has_test_attr(attrs)
+        || has_cfg_test_attr(attrs)
+        || test_context
+    {
         return;
     }
     if function_reference_count(source, &name) == 0 {

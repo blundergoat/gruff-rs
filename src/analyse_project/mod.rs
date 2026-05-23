@@ -11,9 +11,7 @@ pub(crate) use dependencies::analyse_dependency_rules;
 pub(crate) fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    if !context.root_path.join("README.md").exists()
-        && config.is_rule_enabled("docs.missing-readme")
-    {
+    if !project_has_readme(&context.root_path) && config.is_rule_enabled("docs.missing-readme") {
         findings.push(Finding::new(FindingDescriptor {
             rule_id: "docs.missing-readme".to_string(),
             message: "Project root does not contain a README.md file.".to_string(),
@@ -35,6 +33,19 @@ pub(crate) fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<
     analyse_project_dead_code_rules(context, config, &mut findings);
 
     findings
+}
+
+pub(crate) fn project_has_readme(root_path: &Path) -> bool {
+    fs::read_dir(root_path)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case("README.md"))
+        })
 }
 
 pub(crate) fn module_label(file_path: &str, module_path: &str) -> String {

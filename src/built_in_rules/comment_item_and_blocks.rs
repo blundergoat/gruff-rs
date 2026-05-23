@@ -387,9 +387,11 @@ pub(crate) fn push_impl_function_blocks(
     test_context: bool,
     blocks: &mut Vec<FunctionBlock>,
 ) {
+    let impl_test_context =
+        test_context || has_test_attr(&item_impl.attrs) || has_cfg_test_attr(&item_impl.attrs);
     for impl_item in &item_impl.items {
         if let ImplItem::Fn(method) = impl_item {
-            push_impl_method_function_block(method, lines, test_context, blocks);
+            push_impl_method_function_block(method, lines, impl_test_context, blocks);
         }
     }
 }

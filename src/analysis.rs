@@ -340,6 +340,12 @@ pub(crate) fn apply_diff_selection(
 
     let patch_text = read_diff_patch(project_root, path)?;
     let patch = parse_unified_diff(&patch_text);
+    if !patch_text.trim().is_empty() && !patch.saw_hunk {
+        return Err(
+            "--diff-patch input is not a parseable unified diff; refusing to suppress findings."
+                .to_string(),
+        );
+    }
     Ok(apply_diff_patch_filter(report, &patch, analysed_paths))
 }
 

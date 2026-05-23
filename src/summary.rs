@@ -1,4 +1,6 @@
-use crate::{grade, AnalysisReport, Pillar, Severity, SummaryFormat};
+use crate::{
+    grade, scoring::top_file_scores_with_limit, AnalysisReport, Pillar, Severity, SummaryFormat,
+};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -105,11 +107,8 @@ fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
 }
 
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
-    report
-        .score
-        .top_offenders
+    top_file_scores_with_limit(&report.findings, top)
         .iter()
-        .take(top)
         .map(|file| FileDigest {
             file_path: file.file_path.to_string(),
             findings: file.findings,

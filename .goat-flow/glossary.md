@@ -36,7 +36,7 @@ Hotspot output = Compact `gruff.hotspot.v1` JSON view containing the overall sco
 
 GitHub output = Annotation format built from findings so CI logs can expose notices, warnings, and errors.
 
-SARIF output = SARIF 2.1.0 JSON document covering tool metadata, rule metadata, results with partial fingerprints, run diagnostics as invocation notifications, and in-source suppressions for report-level exclusions. Implemented in `src/render/sarif.rs`.
+SARIF output = SARIF 2.1.0 JSON document covering tool metadata, rule metadata, results with partial fingerprints, run diagnostics as invocation notifications, and external suppressions for report-level exclusions. Implemented in `src/render/sarif.rs`.
 
 ## Project Artifacts
 

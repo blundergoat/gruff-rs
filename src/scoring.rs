@@ -74,6 +74,10 @@ pub(crate) fn composite_score(pillars: &[PillarScore]) -> f64 {
 }
 
 pub(crate) fn top_file_scores(findings: &[Finding]) -> Vec<FileScore> {
+    top_file_scores_with_limit(findings, 10)
+}
+
+pub(crate) fn top_file_scores_with_limit(findings: &[Finding], limit: usize) -> Vec<FileScore> {
     let mut file_counts: BTreeMap<String, (usize, f64)> = BTreeMap::new();
     for finding in findings {
         let entry = file_counts
@@ -96,7 +100,7 @@ pub(crate) fn top_file_scores(findings: &[Finding]) -> Vec<FileScore> {
             .then_with(|| right.findings.cmp(&left.findings))
             .then_with(|| left.file_path.cmp(&right.file_path))
     });
-    top_offenders.truncate(10);
+    top_offenders.truncate(limit);
     top_offenders
 }
 

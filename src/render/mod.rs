@@ -58,6 +58,12 @@ pub(super) fn escape_command(value: &str) -> String {
         .replace('\r', "%0D")
 }
 
+pub(super) fn escape_command_property(value: &str) -> String {
+    escape_command(value)
+        .replace(':', "%3A")
+        .replace(',', "%2C")
+}
+
 pub(crate) fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")

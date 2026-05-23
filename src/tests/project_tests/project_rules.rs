@@ -109,6 +109,52 @@ version = "3.0.0"
 }
 
 #[test]
+pub(crate) fn dependency_rules_scan_target_specific_manifest_tables() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "target-dependency-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(unix)'.dependencies]
+targetwild = "*"
+targetgit = { git = "https://example.invalid/target.git" }
+"#,
+    )
+    .expect("manifest write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let wildcard = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "dependency.wildcard-version")
+        .expect("target wildcard finding");
+    assert_eq!(wildcard.symbol.as_deref(), Some("targetwild"));
+    assert_eq!(wildcard.line, Some(7));
+    let unpinned = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "dependency.git-unpinned-revision")
+        .expect("target git finding");
+    assert_eq!(unpinned.symbol.as_deref(), Some("targetgit"));
+    assert_eq!(unpinned.line, Some(8));
+}
+
+#[test]
 pub(crate) fn dependency_rules_accept_clean_manifest_and_config_threshold() {
     let _guard = analysis_lock();
     let clean_dir = tempdir().expect("tempdir");
@@ -493,4 +539,62 @@ pub fn entry() {
     )
     .expect("dead-code negative analysis succeeds");
     assert_missing_rule(&negative, "dead-code.unused-private-item-candidate");
+}
+
+#[test]
+pub(crate) fn project_dead_code_ignores_comment_mentions_and_test_cfg_helpers() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"fn comment_only_reference() {}
+// comment_only_reference is only mentioned in prose.
+
+#[cfg(test)] fn cfg_test_helper() {}
+#[cfg_attr(test, allow(dead_code))] struct CfgAttrStillProduction;
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let has_dead_item = |symbol| {
+        report.findings.iter().any(|finding| {
+            finding.rule_id == "dead-code.unused-private-item-candidate"
+                && finding.symbol.as_deref() == Some(symbol)
+        })
+    };
+    assert!(has_dead_item("comment_only_reference"));
+    assert!(!has_dead_item("cfg_test_helper"));
+    assert!(has_dead_item("CfgAttrStillProduction"));
+}
+
+#[test]
+pub(crate) fn missing_readme_accepts_common_case_variants() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "pub fn entry() {}\n");
+    fs::remove_file(dir.path().join("README.md")).expect("remove readme");
+    fs::write(dir.path().join("readme.md"), "# Fixture\n").expect("readme write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_missing_rule(&report, "docs.missing-readme");
 }

@@ -81,21 +81,16 @@ fn not_found_response() -> DashboardResponse {
 
 fn scan_response(query: &str, default_root: &Path) -> DashboardResponse {
     let params = parse_query(query);
-    let root = params
-        .get("projectRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_root.to_path_buf());
-    let scan_path = params
-        .get("path")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    if !root.is_dir() {
-        return DashboardResponse {
-            status: "400 Bad Request",
-            content_type: "text/plain; charset=utf-8",
-            body: "invalid projectRoot".to_string(),
-        };
-    }
+    let (root, scan_path) = match dashboard_scan_target(&params, default_root) {
+        Ok(target) => target,
+        Err(message) => {
+            return DashboardResponse {
+                status: "400 Bad Request",
+                content_type: "text/plain; charset=utf-8",
+                body: message,
+            };
+        }
+    };
     let options = dashboard_scan_options(scan_path);
     let scope = RequestedScope::from_options(&options);
     let body = run_analysis_in_project(&root, &options)
@@ -106,6 +101,67 @@ fn scan_response(query: &str, default_root: &Path) -> DashboardResponse {
         content_type: "text/html; charset=utf-8",
         body,
     }
+}
+
+fn dashboard_scan_target(
+    params: &HashMap<String, String>,
+    default_root: &Path,
+) -> Result<(PathBuf, PathBuf), String> {
+    let default_root = default_root
+        .canonicalize()
+        .map_err(|_| "invalid projectRoot".to_string())?;
+    let root = params
+        .get("projectRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_root.clone());
+    let root = if root.is_absolute() {
+        root
+    } else {
+        default_root.join(root)
+    };
+    let root = root
+        .canonicalize()
+        .map_err(|_| "invalid projectRoot".to_string())?;
+    if !root.starts_with(&default_root) || !root.is_dir() {
+        return Err("projectRoot must stay inside the dashboard root".to_string());
+    }
+
+    let scan_path = params
+        .get("path")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    if scan_path.is_absolute() {
+        return Err("path must be relative to projectRoot".to_string());
+    }
+    if !path_stays_within_root(&root, &scan_path) {
+        return Err("path must stay inside projectRoot".to_string());
+    }
+    Ok((root, scan_path))
+}
+
+fn path_stays_within_root(root: &Path, relative_path: &Path) -> bool {
+    let candidate = root.join(relative_path);
+    if candidate.exists() {
+        return candidate
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path.starts_with(root));
+    }
+    let mut depth = 0isize;
+    for component in relative_path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
@@ -198,7 +254,7 @@ fn percent_decode(value: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
+            if let Some(hex) = percent_hex(bytes[index + 1], bytes[index + 2]) {
                 output.push(hex);
                 index += 3;
                 continue;
@@ -212,4 +268,17 @@ fn percent_decode(value: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&output).to_string()
+}
+
+fn percent_hex(high: u8, low: u8) -> Option<u8> {
+    Some(hex_nibble(high)? * 16 + hex_nibble(low)?)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }

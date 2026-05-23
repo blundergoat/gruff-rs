@@ -66,8 +66,8 @@ configure.
 
 ## Consequences
 
-- `size.file-length` uses `threshold: 400` and `severity: warning`.
-- `size.function-length` uses `threshold: 30` and `severity: warning`.
+- `size.file-length` uses `threshold: 600` and `severity: warning`.
+- `size.function-length` uses `threshold: 50` and `severity: warning`.
 - Complexity, architecture, metrics, dependency, TODO-density, parameter-count,
   and long-test thresholded rubrics follow the same one-value plus one-severity
   shape.

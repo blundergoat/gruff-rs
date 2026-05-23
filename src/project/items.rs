@@ -73,7 +73,9 @@ pub(crate) fn collect_project_function(
             public: visibility_is_public(&item_fn.vis),
             externally_public: visibility_is_externally_public(&item_fn.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_fn.attrs),
-            test_context: scope.test_context || has_test_attr(&item_fn.attrs),
+            test_context: scope.test_context
+                || has_test_attr(&item_fn.attrs)
+                || has_cfg_test_attr(&item_fn.attrs),
         },
     ));
 }
@@ -92,7 +94,7 @@ pub(crate) fn collect_project_struct(
             public: visibility_is_public(&item_struct.vis),
             externally_public: visibility_is_externally_public(&item_struct.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_struct.attrs),
-            test_context: scope.test_context,
+            test_context: scope.test_context || has_cfg_test_attr(&item_struct.attrs),
         },
     ));
 }
@@ -111,7 +113,7 @@ pub(crate) fn collect_project_enum(
             public: visibility_is_public(&item_enum.vis),
             externally_public: visibility_is_externally_public(&item_enum.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_enum.attrs),
-            test_context: scope.test_context,
+            test_context: scope.test_context || has_cfg_test_attr(&item_enum.attrs),
         },
     ));
 }
@@ -130,7 +132,7 @@ pub(crate) fn collect_project_trait(
             public: visibility_is_public(&item_trait.vis),
             externally_public: visibility_is_externally_public(&item_trait.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_trait.attrs),
-            test_context: scope.test_context,
+            test_context: scope.test_context || has_cfg_test_attr(&item_trait.attrs),
         },
     ));
 }
@@ -164,7 +166,11 @@ pub(crate) fn collect_project_method(
             cfg_gated: scope.cfg_context
                 || has_cfg_attr(&item_impl.attrs)
                 || has_cfg_attr(&method.attrs),
-            test_context: scope.test_context || has_test_attr(&method.attrs),
+            test_context: scope.test_context
+                || has_test_attr(&item_impl.attrs)
+                || has_cfg_test_attr(&item_impl.attrs)
+                || has_test_attr(&method.attrs)
+                || has_cfg_test_attr(&method.attrs),
         },
     ));
 }

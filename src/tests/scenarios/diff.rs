@@ -29,14 +29,36 @@ pub(crate) fn diff_patch_parser_maps_new_side_lines_for_renames_crlf_and_deletio
 
     assert_eq!(
         parsed.lines_by_file.get("src/new.rs"),
-        Some(&BTreeSet::from([10, 11, 12, 13]))
+        Some(&BTreeSet::from([11, 13]))
     );
+    assert!(parsed.saw_hunk);
     assert_eq!(
         parsed.lines_by_file.get("src/delete.rs"),
         Some(&BTreeSet::new())
     );
     assert!(!parsed.lines_by_file.contains_key("bin.dat"));
     assert!(parse_unified_diff("").lines_by_file.is_empty());
+    assert!(!parse_unified_diff("").saw_hunk);
+}
+
+#[test]
+pub(crate) fn diff_patch_parser_handles_quoted_paths_and_plus_content_lines() {
+    let patch = concat!(
+        "diff --git \"a/src/\\303\\251.rs\" \"b/src/\\303\\251.rs\"\n",
+        "--- \"a/src/\\303\\251.rs\"\n",
+        "+++ \"b/src/\\303\\251.rs\"\n",
+        "@@ -1,2 +1,3 @@\n",
+        " context\n",
+        "+++ not a file header\n",
+        "+added\n",
+    );
+
+    let parsed = parse_unified_diff(patch);
+
+    assert_eq!(
+        parsed.lines_by_file.get("src/é.rs"),
+        Some(&BTreeSet::from([2, 3]))
+    );
 }
 
 #[test]
@@ -93,15 +115,6 @@ diff --git a/missing.rs b/missing.rs\n\
     let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
 
     let filtered = apply_diff_patch_filter(report, &patch, &analysed);
-    eprintln!(
-        "diff_patch kept rule ids: {:?}; suppressed count: {}",
-        filtered
-            .findings
-            .iter()
-            .map(|finding| finding.rule_id.as_str())
-            .collect::<Vec<_>>(),
-        2
-    );
 
     assert_eq!(filtered.findings.len(), 2);
     assert!(filtered
@@ -122,6 +135,71 @@ diff --git a/missing.rs b/missing.rs\n\
     assert!(filtered.diagnostics[0]
         .message
         .contains("Patch files not analysed: missing.rs"));
+}
+
+#[test]
+pub(crate) fn diff_patch_filter_excludes_context_lines() {
+    let report = sample_report_with(
+        vec![
+            test_finding(
+                "dead-code.unused-private-function",
+                "src/lib.rs",
+                1,
+                Severity::Advisory,
+                Pillar::DeadCode,
+            ),
+            test_finding(
+                "dead-code.unused-private-item-candidate",
+                "src/lib.rs",
+                2,
+                Severity::Advisory,
+                Pillar::DeadCode,
+            ),
+        ],
+        Vec::new(),
+    );
+    let patch = parse_unified_diff(concat!(
+        "diff --git a/src/lib.rs b/src/lib.rs\n",
+        "--- a/src/lib.rs\n",
+        "+++ b/src/lib.rs\n",
+        "@@ -1,2 +1,2 @@\n",
+        " fn context() {}\n",
+        "-fn old() {}\n",
+        "+fn changed() {}\n",
+    ));
+    let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
+
+    let filtered = apply_diff_patch_filter(report, &patch, &analysed);
+
+    assert_eq!(filtered.findings.len(), 1);
+    assert_eq!(filtered.findings[0].line, Some(2));
+}
+
+#[test]
+pub(crate) fn diff_patch_rejects_non_unified_input_before_suppressing_findings() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(dir.path().join("src/lib.rs"), "fn unused() {}\n").expect("lib write");
+    fs::write(dir.path().join("names.patch"), "src/lib.rs\n").expect("patch write");
+
+    let error = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            diff: Some(DiffSelection::Patch(PathBuf::from("names.patch"))),
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect_err("non-unified diff rejected");
+
+    assert!(
+        error.contains("not a parseable unified diff"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

@@ -333,7 +333,7 @@ native metadata such as pillar, tier, kind, default severity, confidence, a
 single threshold when the rule is thresholded, and options. Results carry the
 native rule id, SARIF severity level, message, URI-safe artifact path, region
 data when available, and `partialFingerprints.gruffFingerprint`. Results hidden
-by report-level exclusions are emitted with `suppressions[].kind = "inSource"`
+by report-level exclusions are emitted with `suppressions[].kind = "external"`
 and the configured reason as `justification`.
 
 Fatal diagnostics still fail analysis with exit code 2. In SARIF output all run

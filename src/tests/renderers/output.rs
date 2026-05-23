@@ -75,6 +75,32 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
 }
 
 #[test]
+pub(crate) fn github_renderer_escapes_annotation_properties() {
+    let report = sample_report_with(
+        vec![Finding::new(FindingDescriptor {
+            rule_id: "custom.rule:id".to_string(),
+            message: "Message with 100% and\nnewline".to_string(),
+            file_path: "src/weird,path:100%.rs".to_string(),
+            line: Some(3),
+            severity: Severity::Warning,
+            pillar: Pillar::Documentation,
+            confidence: Confidence::High,
+            symbol: None,
+            remediation: None,
+            metadata: json!({}),
+        })],
+        Vec::new(),
+    );
+
+    let github = render_report(&report, OutputFormat::Github);
+
+    assert!(github.starts_with(
+        "::warning file=src/weird%2Cpath%3A100%25.rs,line=3,title=custom.rule%3Aid::"
+    ));
+    assert!(github.ends_with("Message with 100%25 and%0Anewline"));
+}
+
+#[test]
 pub(crate) fn report_json_keeps_deterministic_finding_order() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -102,6 +128,27 @@ pub(crate) fn report_json_keeps_deterministic_finding_order() {
 }
 
 #[test]
+pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
+    let findings: Vec<Finding> = (0..12)
+        .map(|index| {
+            test_finding(
+                "docs.todo-density",
+                &format!("src/file_{index}.rs"),
+                1,
+                Severity::Advisory,
+                Pillar::Documentation,
+            )
+        })
+        .collect();
+    let report = sample_report_with(findings, Vec::new());
+
+    let json_output = crate::summary::render(&report, 12, SummaryFormat::Json, 1);
+    let decoded: Value = serde_json::from_str(&json_output).expect("summary json");
+
+    assert_eq!(decoded["topFiles"].as_array().expect("top files").len(), 12);
+}
+
+#[test]
 pub(crate) fn dashboard_scan_preserves_cwd_and_report_paths() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -113,7 +160,7 @@ pub(crate) fn dashboard_scan_preserves_cwd_and_report_paths() {
         dir.path().to_string_lossy()
     );
 
-    let response = dashboard_response("/scan", &query, Path::new("."));
+    let response = dashboard_response("/scan", &query, dir.path());
 
     assert_eq!(response.status, "200 OK");
     assert_eq!(std::env::current_dir().expect("cwd"), cwd_before);
@@ -122,4 +169,26 @@ pub(crate) fn dashboard_scan_preserves_cwd_and_report_paths() {
     assert!(!response
         .body
         .contains(&dir.path().join("sample.rs").display().to_string()));
+}
+
+#[test]
+pub(crate) fn dashboard_scan_rejects_absolute_or_escaping_paths() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(dir.path().join("sample.rs"), "pub fn process() {}\n").expect("sample write");
+
+    let outside_root = dashboard_response("/scan", "projectRoot=/&path=.", dir.path());
+    assert_eq!(outside_root.status, "400 Bad Request");
+    assert!(outside_root.body.contains("projectRoot must stay inside"));
+
+    let absolute_path = dashboard_response("/scan", "path=/etc", dir.path());
+    assert_eq!(absolute_path.status, "400 Bad Request");
+    assert!(absolute_path.body.contains("path must be relative"));
+
+    let parent_escape = dashboard_response("/scan", "path=../", dir.path());
+    assert_eq!(parent_escape.status, "400 Bad Request");
+    assert!(parent_escape.body.contains("path must stay inside"));
+
+    let malformed_percent = dashboard_response("/scan", "path=%E2%82%AC&bad=%€", dir.path());
+    assert_eq!(malformed_percent.status, "200 OK");
 }

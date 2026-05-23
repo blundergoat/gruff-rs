@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-pub(crate) fn sarif_suppression_results_carry_in_source_justification() {
+pub(crate) fn sarif_suppression_results_carry_external_justification() {
     let registry = rules::builtin_registry();
     let finding = test_finding(
         "security.process-command",
@@ -30,7 +30,7 @@ pub(crate) fn sarif_suppression_results_carry_in_source_justification() {
     let sarif = sample_sarif(&report);
     let result = &sarif["runs"][0]["results"][0];
     assert_eq!(result["ruleId"], "security.process-command");
-    assert_eq!(result["suppressions"][0]["kind"], "inSource");
+    assert_eq!(result["suppressions"][0]["kind"], "external");
     assert_eq!(
         result["suppressions"][0]["justification"],
         "test-only synthetic command"
@@ -128,7 +128,8 @@ pub(crate) fn sarif_contract_covers_rules_locations_levels_and_metadata() {
 
     assert_eq!(results[2]["level"], "warning");
     assert_eq!(results[2]["ruleId"], "custom.example");
-    assert!(results[2]["ruleIndex"].is_null());
+    assert!(results[2]["ruleIndex"].is_number());
+    assert!(rules.iter().any(|rule| rule["id"] == "custom.example"));
     assert_eq!(
         results[2]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
         "src/q%3Fpercent%25.rs"

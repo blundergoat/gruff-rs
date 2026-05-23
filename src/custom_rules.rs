@@ -81,10 +81,11 @@ fn custom_rule_matches_path(rule: &CustomRule, file: &SourceFile) -> bool {
 fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option<Cow<'a, str>> {
     match scope {
         CustomRuleScope::Text => Some(Cow::Borrowed(unit.source)),
-        CustomRuleScope::RustCode => unit
-            .file
-            .is_rust
-            .then(|| Cow::Owned(crate::parser::strip_rust_string_literals(unit.source))),
+        CustomRuleScope::RustCode => unit.file.is_rust.then(|| {
+            Cow::Owned(crate::parser::strip_rust_comments_after_string_mask(
+                &crate::parser::strip_rust_string_literals(unit.source),
+            ))
+        }),
         CustomRuleScope::Comments => unit
             .file
             .is_rust
@@ -156,11 +157,25 @@ fn copy_line_comment(bytes: &[u8], output: &mut [u8], start: usize) -> usize {
 
 fn copy_block_comment(bytes: &[u8], output: &mut [u8], start: usize) -> usize {
     let mut index = start;
+    let mut depth = 0usize;
     while index < bytes.len() {
         output[index] = bytes[index];
-        if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+        if starts_with_pair(bytes, index, b'/', b'*') {
+            if let Some(next) = bytes.get(index + 1) {
+                output[index + 1] = *next;
+            }
+            depth += 1;
+            index += 2;
+            continue;
+        }
+        if starts_with_pair(bytes, index, b'*', b'/') {
             output[index + 1] = bytes[index + 1];
-            return index + 2;
+            depth = depth.saturating_sub(1);
+            index += 2;
+            if depth == 0 {
+                return index;
+            }
+            continue;
         }
         index += 1;
     }

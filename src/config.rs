@@ -140,7 +140,9 @@ impl PathMatcher {
             PathMatcherKind::TreePrefix(prefix) => {
                 path == *prefix || path.starts_with(&format!("{prefix}/"))
             }
-            PathMatcherKind::Prefix(prefix) => path.starts_with(prefix),
+            PathMatcherKind::Prefix(prefix) => {
+                path == *prefix || path.starts_with(&format!("{prefix}/"))
+            }
             PathMatcherKind::Wildcard(regex) => regex.is_match(&path),
         }
     }

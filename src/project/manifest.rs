@@ -73,11 +73,34 @@ pub(crate) fn manifest_dependencies(value: &toml::Value, raw: &str) -> Vec<Depen
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
         collect_manifest_dependencies(value, section, &dependency_lines, &mut dependencies);
     }
+    collect_target_manifest_dependencies(value, &dependency_lines, &mut dependencies);
     dependencies.sort_by(|left, right| {
         (left.section.as_str(), left.name.as_str())
             .cmp(&(right.section.as_str(), right.name.as_str()))
     });
     dependencies
+}
+
+pub(crate) fn collect_target_manifest_dependencies(
+    value: &toml::Value,
+    dependency_lines: &HashMap<(String, String), usize>,
+    dependencies: &mut Vec<DependencySummary>,
+) {
+    let Some(targets) = value.get("target").and_then(toml::Value::as_table) else {
+        return;
+    };
+    for (target, target_value) in targets {
+        let Some(target_table) = target_value.as_table() else {
+            continue;
+        };
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let Some(table) = target_table.get(section).and_then(toml::Value::as_table) else {
+                continue;
+            };
+            let section_name = format!("target.{target}.{section}");
+            collect_manifest_dependency_table(table, &section_name, dependency_lines, dependencies);
+        }
+    }
 }
 
 pub(crate) fn collect_manifest_dependencies(
@@ -89,7 +112,15 @@ pub(crate) fn collect_manifest_dependencies(
     let Some(table) = value.get(section).and_then(toml::Value::as_table) else {
         return;
     };
+    collect_manifest_dependency_table(table, section, dependency_lines, dependencies);
+}
 
+pub(crate) fn collect_manifest_dependency_table(
+    table: &toml::value::Table,
+    section: &str,
+    dependency_lines: &HashMap<(String, String), usize>,
+    dependencies: &mut Vec<DependencySummary>,
+) {
     for (name, dependency) in table {
         dependencies.push(build_dependency_summary(
             name,
@@ -164,12 +195,8 @@ pub(crate) fn manifest_dependency_lines(raw: &str) -> HashMap<(String, String), 
     for (index, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let section = trimmed.trim_matches(&['[', ']'][..]).to_string();
-            current_section = matches!(
-                section.as_str(),
-                "dependencies" | "dev-dependencies" | "build-dependencies"
-            )
-            .then_some(section);
+            let section = normalize_manifest_section(trimmed.trim_matches(&['[', ']'][..]));
+            current_section = is_dependency_section(&section).then_some(section);
             continue;
         }
 
@@ -186,4 +213,17 @@ pub(crate) fn manifest_dependency_lines(raw: &str) -> HashMap<(String, String), 
     }
 
     lines
+}
+
+fn normalize_manifest_section(section: &str) -> String {
+    section.replace(['"', '\''], "")
+}
+
+fn is_dependency_section(section: &str) -> bool {
+    matches!(
+        section,
+        "dependencies" | "dev-dependencies" | "build-dependencies"
+    ) || section.ends_with(".dependencies")
+        || section.ends_with(".dev-dependencies")
+        || section.ends_with(".build-dependencies")
 }

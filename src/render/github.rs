@@ -8,9 +8,9 @@ pub(super) fn render_github(report: &AnalysisReport) -> String {
             format!(
                 "::{} file={},line={},title={}::{}",
                 github_level(finding.severity),
-                finding.file_path,
+                escape_command_property(&finding.file_path),
                 finding.line.unwrap_or(1),
-                escape_command(&finding.rule_id),
+                escape_command_property(&finding.rule_id),
                 escape_command(&finding.message)
             )
         })

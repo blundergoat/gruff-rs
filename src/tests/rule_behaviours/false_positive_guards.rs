@@ -191,6 +191,74 @@ mod tests {
     );
 }
 
+#[test]
+pub(crate) fn cfg_test_items_are_test_context_but_cfg_attr_is_not_a_gate() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+#[cfg(test)]
+fn cfg_test_helper() {
+    let value: Option<i32> = Some(1);
+    value.unwrap();
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn cfg_attr_still_production() {}
+"##,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert!(!report.findings.iter().any(|finding| {
+        finding.symbol.as_deref() == Some("cfg_test_helper")
+            && finding.rule_id == "dead-code.unused-private-function"
+    }));
+    assert!(report.findings.iter().any(|finding| {
+        finding.symbol.as_deref() == Some("cfg_attr_still_production")
+            && finding.rule_id == "dead-code.unused-private-function"
+    }));
+}
+
+#[test]
+pub(crate) fn mixed_cfg_any_test_feature_stays_production_reachable() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+#[cfg(any(test, feature = "bench"))]
+fn mixed_cfg_helper() {}
+"##,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert!(report.findings.iter().any(|finding| {
+        finding.symbol.as_deref() == Some("mixed_cfg_helper")
+            && finding.rule_id == "dead-code.unused-private-function"
+    }));
+}
+
 /// M33 negative: prove the literal mask handles Rust character literals
 /// such as `trim_matches('"')`. Without char-literal awareness, the `"`
 /// inside `'"'` flips the masker into string mode and every later string
@@ -213,6 +281,18 @@ pub fn fixture(name: &str) -> String {
         "}\n"
     );
     format!("{trimmed} {body}")
+}
+
+#[test]
+pub(crate) fn rust_masking_preserves_non_ascii_byte_offsets_and_nested_comments() {
+    let source = "éé\nlet sql = format!(\"SELECT {}\", name);\n/* outer /* inner */ still outer */\nlet done = true;\n";
+    let masked_strings = strip_rust_string_literals(source);
+    assert_eq!(masked_strings.len(), source.len());
+    let masked_comments = strip_rust_comments_after_string_mask(&masked_strings);
+    assert_eq!(masked_comments.len(), source.len());
+    assert!(!masked_comments.contains("still outer"));
+    let format_offset = masked_comments.find("format!").expect("format offset");
+    assert_eq!(byte_line_from_starts(&line_starts(source), format_offset), 2);
 }
 "##,
     );

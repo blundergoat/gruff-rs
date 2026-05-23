@@ -40,8 +40,8 @@ mod source;
 mod summary;
 
 pub(crate) use parser::{
-    byte_line_from_starts, extract_rust_comments, line_starts, static_regex,
-    strip_rust_comments_after_string_mask, strip_rust_string_literals, RustComment,
+    byte_line_from_starts, extract_rust_comments, line_starts, rust_code_reference_source,
+    static_regex, strip_rust_comments_after_string_mask, strip_rust_string_literals, RustComment,
 };
 #[cfg(test)]
 pub(crate) use project::read_and_parse_sources;
@@ -433,7 +433,7 @@ mod custom_rules;
 
 pub(crate) fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
     let mut command = std::process::Command::new("git");
-    command.arg("diff").arg("--name-only");
+    command.arg("diff").arg("--name-only").arg("-z");
     match mode {
         "working-tree" | "unstaged" => {}
         "staged" => {
@@ -449,9 +449,11 @@ pub(crate) fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| line.replace('\\', "/"))
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| String::from_utf8_lossy(entry).replace('\\', "/"))
         .collect())
 }
 

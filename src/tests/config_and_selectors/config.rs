@@ -121,6 +121,16 @@ rules:
 }
 
 #[test]
+pub(crate) fn plain_path_patterns_match_segment_boundaries() {
+    let matcher = PathMatcher::new("src/gen");
+
+    assert!(matcher.matches("src/gen"));
+    assert!(matcher.matches("src/gen/lib.rs"));
+    assert!(!matcher.matches("src/generated/lib.rs"));
+    assert!(!matcher.matches("src/generated2/lib.rs"));
+}
+
+#[test]
 pub(crate) fn unsupported_config_extensions_are_rejected() {
     let dir = tempdir().expect("tempdir");
     fs::write(dir.path().join("config.json"), "{}").expect("unsupported config write");

@@ -47,6 +47,14 @@ The non-obvious failure mode is testing multi-secret JSON on one physical line a
 
 M54 calibration first caught this as `ci.github-event-shell-interpolation: positive=MISS negative=silent`. Regression coverage now lives in `src/tests/calibration/cases_c.rs` (search: `ci.github-event-shell-interpolation`) and `src/tests/scenarios/calibration_extras.rs` (search: `calibration_security_rubric_improvements_have_false_positive_guards`). When adding workflow text rules without a YAML parser, include both `run:` and `- run:` positive/negative fixtures, plus a block scalar case if continuation lines matter.
 
+## Footgun: Dead-Code Reference Masking Must Preserve Structured Attribute References
+
+**Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
+
+`src/parser.rs` (search: `fn rust_code_reference_source`) masks arbitrary comments and strings before dead-code reference counting, then appends only structured references such as `serde(default = "function_name")`. Comments and ordinary prose strings should not keep private functions alive, but serde default function strings are real call sites from generated deserialization code.
+
+The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/project_rules.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
+
 ## Footgun: Secret-Key Case Sensitivity Depends On File Kind
 
 **Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
