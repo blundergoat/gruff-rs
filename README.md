@@ -1,21 +1,29 @@
 # gruff-rs
 
-Rust project quality analyzer with deterministic, schema-versioned reports.
+Rust project quality analyzer with deterministic, schema-versioned reports. The
+0.1.0 release is built for local CLI and CI gating of Rust repositories plus
+committed text/config security surfaces.
 
-## Commands
+## Quickstart
 
 ```bash
-./bin/gruff-rs analyse fixtures --format json --fail-on none
-./bin/gruff-rs analyse src --format sarif --fail-on none
-./bin/gruff-rs analyse src --format text --fail-on none
+./bin/gruff-rs analyse . --format text --fail-on warning
+./bin/gruff-rs analyse . --format json --fail-on none
+./bin/gruff-rs analyse . --format sarif --fail-on none
+./bin/gruff-rs report . --format html --output gruff-report.html
 ./bin/gruff-rs list-rules --format text
 ./bin/gruff-rs list-rules --format json
-./bin/gruff-rs report src --format html --output gruff-report.html
 bash scripts/start-dev.sh
 ```
 
 From a source checkout, `bin/gruff-rs` resolves this repository's Cargo manifest
 and forwards arguments to the Rust CLI.
+
+For a local PATH install from a release checkout:
+
+```bash
+cargo install --path . --locked
+```
 
 Report formats for `analyse` are `text`, `json`, `sarif`, `html`, `markdown`,
 `github`, and `hotspot`. The `report` command supports static `html` and `json`
@@ -30,7 +38,7 @@ settings with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT`.
 
 - [Rust rubric](docs/rust-rubric.md) describes the v0.1 rule families, limits,
   and deferred checks.
-- [Changelog](CHANGELOG.md) records unreleased rule and contract changes.
+- [Changelog](CHANGELOG.md) records 0.1.0 release changes.
 - [Architecture](.goat-flow/architecture.md) describes analysis flow, trust
   boundaries, report contracts, and non-obvious constraints.
 - [Code map](.goat-flow/code-map.md) maps source, fixtures, scripts, and local
@@ -40,6 +48,8 @@ settings with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT`.
 
 `gruff-rs` reads `.gruff-rs.yaml` by default. Use `--config` to pass another YAML config path.
 Unknown keys, unknown rule ids, and unknown selectors are rejected.
+Advisory findings are low severity, not optional advice; projects that want
+strict 100% compliance can gate with `--fail-on advisory`.
 
 ```yaml
 paths:
@@ -131,7 +141,7 @@ Preview a selector with:
 
 ```bash
 ./bin/gruff-rs list-rules --selector Security
-./bin/gruff-rs rules --selector performance.* --format json
+./bin/gruff-rs list-rules --selector performance.* --format json
 ```
 
 Use `--no-config` to ignore project config.
@@ -214,15 +224,33 @@ Performance and metric checks use syntactic source patterns and deterministic
 token counts, not benchmarks or runtime profiling.
 
 Security checks are also local-only static signals. The current default security
-surface includes process command construction, direct `format!` SQL query
-arguments, TLS verification bypasses, weak cryptographic primitive references,
-non-cryptographic `rand::` calls in secret-like generation functions, unsafe
-blocks without nearby `SAFETY:` rationales, unpinned git dependencies,
-security-blind config ignores, and GitHub event values interpolated into
+surface includes process command uses with concrete risk signals such as shell
+execution, dynamic executables or arguments, custom environment values, or
+custom working directories; direct `format!` SQL query arguments; TLS
+verification bypasses; weak cryptographic primitive references;
+non-cryptographic `rand::` calls in secret-like generation functions; unsafe
+blocks without nearby `SAFETY:` rationales; unpinned git dependencies;
+security-blind config ignores; and GitHub event values interpolated into
 workflow shell steps. Sensitive-data checks include provider-shaped API keys,
-JWT-looking tokens, private-key markers, database URLs with passwords, HTTP(S)
+JWT-looking tokens, private-key blocks, database URLs with passwords, HTTP(S)
 URLs with embedded credentials, hardcoded secret-like assignments, and
 high-entropy strings.
+
+## 0.1.0 Contract
+
+Default scans are source-only and local-only: gruff-rs does not execute target
+code, run Cargo build scripts, call Git unless an unsafe Git diff mode is
+explicitly requested, query registries, or read vulnerability feeds. The
+dashboard binds to loopback by default and has no authentication.
+
+Native JSON uses `schemaVersion: "gruff.analysis.v1"`. Rule ids, finding
+fingerprints, baseline identity, and renderer behavior are compatibility
+sensitive. Config validation is strict so unsupported rule ids, selectors,
+threshold shapes, and unknown keys fail closed before analysis.
+
+Gruff-rs complements Clippy, `cargo audit`, dependency policy, code review, and
+tests. Candidate wording means the analyzer found a deterministic static signal,
+not type-aware or runtime certainty.
 
 ## Interpreting Findings And Exits
 
