@@ -38,7 +38,7 @@ pub(crate) fn analyse_line_rules(
         context.analyse_line(line_index, findings);
     }
 
-    analyse_unreachable(file, &searchable_source, findings);
+    analyse_unreachable(file, &code_only_source, findings);
 }
 
 pub(crate) struct LineRuleContext<'a> {

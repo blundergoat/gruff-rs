@@ -9,15 +9,32 @@ pub(super) fn render_sarif(report: &AnalysisReport) -> String {
 }
 
 fn sarif_rules_and_indices(report: &AnalysisReport) -> (Vec<Value>, HashMap<String, usize>) {
+    let (mut rules, mut indices) = sarif_builtin_rules_and_indices();
+    for finding in unique_custom_findings(report, &indices) {
+        let index = rules.len();
+        indices.insert(finding.rule_id.clone(), index);
+        rules.push(sarif_rule_from_finding(finding));
+    }
+    (rules, indices)
+}
+
+fn sarif_builtin_rules_and_indices() -> (Vec<Value>, HashMap<String, usize>) {
     let registry = rules::builtin_registry();
-    let mut rules: Vec<Value> = registry.definitions().iter().map(sarif_rule).collect();
-    let mut indices: HashMap<String, usize> = registry
+    let rules: Vec<Value> = registry.definitions().iter().map(sarif_rule).collect();
+    let indices: HashMap<String, usize> = registry
         .definitions()
         .iter()
         .enumerate()
         .map(|(index, definition)| (definition.id.to_string(), index))
         .collect();
-    let mut custom_findings: Vec<&Finding> = report
+    (rules, indices)
+}
+
+fn unique_custom_findings<'a>(
+    report: &'a AnalysisReport,
+    indices: &HashMap<String, usize>,
+) -> Vec<&'a Finding> {
+    let mut findings: Vec<&Finding> = report
         .findings
         .iter()
         .chain(
@@ -28,14 +45,9 @@ fn sarif_rules_and_indices(report: &AnalysisReport) -> (Vec<Value>, HashMap<Stri
         )
         .filter(|finding| !indices.contains_key(&finding.rule_id))
         .collect();
-    custom_findings.sort_by(|left, right| left.rule_id.cmp(&right.rule_id));
-    custom_findings.dedup_by(|left, right| left.rule_id == right.rule_id);
-    for finding in custom_findings {
-        let index = rules.len();
-        indices.insert(finding.rule_id.clone(), index);
-        rules.push(sarif_rule_from_finding(finding));
-    }
-    (rules, indices)
+    findings.sort_by(|left, right| left.rule_id.cmp(&right.rule_id));
+    findings.dedup_by(|left, right| left.rule_id == right.rule_id);
+    findings
 }
 
 fn sarif_results(report: &AnalysisReport, rule_indices: &HashMap<String, usize>) -> Vec<Value> {

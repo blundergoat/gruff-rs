@@ -110,22 +110,37 @@ fn dashboard_scan_target(
     let default_root = default_root
         .canonicalize()
         .map_err(|_| "invalid projectRoot".to_string())?;
-    let root = params
+    let root = resolve_dashboard_root(params, &default_root)?;
+    let scan_path = resolve_dashboard_scan_path(params, &root)?;
+    Ok((root, scan_path))
+}
+
+fn resolve_dashboard_root(
+    params: &HashMap<String, String>,
+    default_root: &Path,
+) -> Result<PathBuf, String> {
+    let requested = params
         .get("projectRoot")
         .map(PathBuf::from)
-        .unwrap_or_else(|| default_root.clone());
-    let root = if root.is_absolute() {
-        root
+        .unwrap_or_else(|| default_root.to_path_buf());
+    let candidate = if requested.is_absolute() {
+        requested
     } else {
-        default_root.join(root)
+        default_root.join(requested)
     };
-    let root = root
+    let root = candidate
         .canonicalize()
         .map_err(|_| "invalid projectRoot".to_string())?;
-    if !root.starts_with(&default_root) || !root.is_dir() {
+    if !root.starts_with(default_root) || !root.is_dir() {
         return Err("projectRoot must stay inside the dashboard root".to_string());
     }
+    Ok(root)
+}
 
+fn resolve_dashboard_scan_path(
+    params: &HashMap<String, String>,
+    root: &Path,
+) -> Result<PathBuf, String> {
     let scan_path = params
         .get("path")
         .map(PathBuf::from)
@@ -133,35 +148,20 @@ fn dashboard_scan_target(
     if scan_path.is_absolute() {
         return Err("path must be relative to projectRoot".to_string());
     }
-    if !path_stays_within_root(&root, &scan_path) {
+    if scan_path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("path must not contain '..'".to_string());
+    }
+    let canonical_scan = root
+        .join(&scan_path)
+        .canonicalize()
+        .map_err(|_| "path does not exist within projectRoot".to_string())?;
+    if !canonical_scan.starts_with(root) {
         return Err("path must stay inside projectRoot".to_string());
     }
-    Ok((root, scan_path))
-}
-
-fn path_stays_within_root(root: &Path, relative_path: &Path) -> bool {
-    let candidate = root.join(relative_path);
-    if candidate.exists() {
-        return candidate
-            .canonicalize()
-            .ok()
-            .is_some_and(|path| path.starts_with(root));
-    }
-    let mut depth = 0isize;
-    for component in relative_path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::Normal(_) => depth += 1,
-            std::path::Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
-                    return false;
-                }
-            }
-            std::path::Component::RootDir | std::path::Component::Prefix(_) => return false,
-        }
-    }
-    true
+    Ok(scan_path)
 }
 
 fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {

@@ -229,18 +229,14 @@ pub(crate) fn has_cfg_test_attr(attrs: &[syn::Attribute]) -> bool {
         if !attr.path().is_ident("cfg") {
             return false;
         }
-
         let syn::Meta::List(list) = &attr.meta else {
             return false;
         };
-        cfg_tokens_are_test_only(list.tokens.clone())
+        let tokens = list.tokens.clone();
+        syn::parse2::<syn::Meta>(tokens)
+            .ok()
+            .is_some_and(|meta| cfg_meta_is_test_only(&meta))
     })
-}
-
-pub(crate) fn cfg_tokens_are_test_only(tokens: proc_macro2::TokenStream) -> bool {
-    syn::parse2::<syn::Meta>(tokens)
-        .ok()
-        .is_some_and(|meta| cfg_meta_is_test_only(&meta))
 }
 
 pub(crate) fn cfg_meta_is_test_only(meta: &syn::Meta) -> bool {
@@ -251,7 +247,8 @@ pub(crate) fn cfg_meta_is_test_only(meta: &syn::Meta) -> bool {
         return false;
     };
     let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-    let Ok(nested) = syn::parse::Parser::parse2(parser, list.tokens.clone()) else {
+    let tokens = list.tokens.clone();
+    let Ok(nested) = syn::parse::Parser::parse2(parser, tokens) else {
         return false;
     };
     if list.path.is_ident("all") {

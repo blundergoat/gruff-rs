@@ -6,7 +6,7 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-GRUFF_RS_FAIL_ON="${GRUFF_RS_FAIL_ON:-warning}"
+GRUFF_RS_FAIL_ON="${GRUFF_RS_FAIL_ON:-advisory}"
 WORK_DIR=""
 
 TOTAL=0
@@ -52,11 +52,11 @@ Runs the local gruff-rs preflight suite:
 
 Options:
   --fail-on LEVEL  Fail dogfood analysis at none, advisory, warning, or error.
-                   Defaults to GRUFF_RS_FAIL_ON, or warning when unset.
+                   Defaults to GRUFF_RS_FAIL_ON, or advisory when unset.
   -h, --help       Show this help.
 
 Environment:
-  GRUFF_RS_FAIL_ON  Dogfood scan threshold (default: warning).
+  GRUFF_RS_FAIL_ON  Dogfood scan threshold (default: advisory).
 USAGE
 }
 

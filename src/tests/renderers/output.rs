@@ -187,8 +187,32 @@ pub(crate) fn dashboard_scan_rejects_absolute_or_escaping_paths() {
 
     let parent_escape = dashboard_response("/scan", "path=../", dir.path());
     assert_eq!(parent_escape.status, "400 Bad Request");
-    assert!(parent_escape.body.contains("path must stay inside"));
+    assert!(parent_escape.body.contains("'..'"));
+
+    let nested_parent_escape =
+        dashboard_response("/scan", "path=subdir/../../README.md", dir.path());
+    assert_eq!(nested_parent_escape.status, "400 Bad Request");
+    assert!(nested_parent_escape.body.contains("'..'"));
+
+    let missing_path = dashboard_response("/scan", "path=does-not-exist", dir.path());
+    assert_eq!(missing_path.status, "400 Bad Request");
+    assert!(missing_path.body.contains("does not exist"));
 
     let malformed_percent = dashboard_response("/scan", "path=%E2%82%AC&bad=%€", dir.path());
-    assert_eq!(malformed_percent.status, "200 OK");
+    assert_eq!(malformed_percent.status, "400 Bad Request");
+}
+
+#[cfg(unix)]
+#[test]
+pub(crate) fn dashboard_scan_rejects_symlink_pointing_outside_root() {
+    use std::os::unix::fs::symlink;
+    let dir = tempdir().expect("tempdir");
+    let outside = tempdir().expect("outside tempdir");
+    fs::write(outside.path().join("secret.rs"), "// outside\n").expect("outside write");
+    symlink(outside.path(), dir.path().join("escape")).expect("symlink");
+
+    let response = dashboard_response("/scan", "path=escape", dir.path());
+
+    assert_eq!(response.status, "400 Bad Request");
+    assert!(response.body.contains("path must stay inside"));
 }
