@@ -38,14 +38,15 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
 const DEFAULT_ABBREVIATIONS: &[&str] = &["id", "db", "io", "ui", "tx", "rx"];
 
 pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
-    let body = render_default_config(&builtin_registry());
+    let output = &args.output;
+    let preserved = read_existing_ignore_patterns(output);
+    let body = render_default_config(&builtin_registry(), &preserved);
 
     if args.stdout {
         writer.emit_unconditional(&body);
         return ExitCode::SUCCESS;
     }
 
-    let output = &args.output;
     if !args.force && output.exists() {
         eprintln!(
             "gruff-rs: refusing to overwrite existing {}; pass --force to replace it",
@@ -133,7 +134,11 @@ fn should_write_default_config(project_root: &Path) -> bool {
 
 fn write_default_config_at(target: &Path) {
     let mut stderr = std::io::stderr();
-    match fs::write(target, render_default_config(&builtin_registry())) {
+    let preserved = read_existing_ignore_patterns(target);
+    match fs::write(
+        target,
+        render_default_config(&builtin_registry(), &preserved),
+    ) {
         Ok(()) => {
             let _ = writeln!(stderr, "Wrote {}", target.display());
             let _ = writeln!(
@@ -151,7 +156,7 @@ fn write_default_config_at(target: &Path) {
     }
 }
 
-pub(crate) fn render_default_config(registry: &RuleRegistry) -> String {
+pub(crate) fn render_default_config(registry: &RuleRegistry, extra_ignores: &[String]) -> String {
     let mut out = String::new();
     out.push_str(HEADER);
     out.push('\n');
@@ -161,8 +166,20 @@ pub(crate) fn render_default_config(registry: &RuleRegistry) -> String {
     out.push_str("  # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`\n");
     out.push_str("  # or top-level `exclude` entries for accepted findings.\n");
     out.push_str("  ignore:\n");
+    let mut emitted: Vec<&str> =
+        Vec::with_capacity(DEFAULT_IGNORE_PATTERNS.len() + extra_ignores.len());
     for pattern in DEFAULT_IGNORE_PATTERNS {
-        out.push_str(&format!("    - {}\n", yaml_string(pattern)));
+        if !emitted.contains(pattern) {
+            emitted.push(pattern);
+            out.push_str(&format!("    - {}\n", yaml_string(pattern)));
+        }
+    }
+    for pattern in extra_ignores {
+        let entry = pattern.as_str();
+        if !emitted.contains(&entry) {
+            emitted.push(entry);
+            out.push_str(&format!("    - {}\n", yaml_string(entry)));
+        }
     }
     out.push('\n');
 
@@ -242,4 +259,39 @@ fn needs_quoting(value: &str) -> bool {
         .next()
         .is_some_and(|first| YAML_LEADING_INDICATORS.contains(&first));
     starts_with_indicator || value.contains(": ") || value.contains(" #")
+}
+
+// Preserve user-customized `paths.ignore` entries when `gruff-rs init` regenerates
+// an existing config. Returns the existing entries as-is so the renderer can union
+// them with `DEFAULT_IGNORE_PATTERNS`. Missing file, unreadable file, malformed
+// YAML, or a missing `paths.ignore` key all degrade silently to an empty list -
+// `--force` must still be able to repair a broken config.
+pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let value: serde_yaml::Value = match serde_yaml::from_str(&content) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "gruff-rs: could not parse existing {} for ignore preservation ({error}); proceeding with default ignores only",
+                path.display()
+            );
+            return Vec::new();
+        }
+    };
+    value
+        .get("paths")
+        .and_then(|paths| paths.get("ignore"))
+        .and_then(|ignore| ignore.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
