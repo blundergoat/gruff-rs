@@ -122,11 +122,23 @@ rules:
   # Flags externally public functions returning Result without a # Errors rustdoc section.
   docs.missing-errors-section:
     enabled: true
+  # Flags public functions containing panic!/unwrap/expect without a # Panics rustdoc section.
+  docs.missing-panics-section:
+    enabled: true
+  # Flags public functions whose rustdoc lacks per-parameter documentation.
+  docs.missing-param-doc:
+    enabled: true
   # Flags public Rust API items without doc comments.
   docs.missing-public-doc:
     enabled: true
   # Flags projects without a root README file.
   docs.missing-readme:
+    enabled: true
+  # Flags public functions returning a value whose rustdoc lacks a Returns description.
+  docs.missing-return-doc:
+    enabled: true
+  # Flags public `unsafe fn` / `unsafe trait` items without a # Safety rustdoc section.
+  docs.missing-safety-section:
     enabled: true
   # Flags TODO/FIXME/HACK/XXX comments without an owner, issue reference, or reason.
   docs.stale-todo:
@@ -153,6 +165,18 @@ rules:
     enabled: true
     threshold: 45
     severity: advisory
+  # Flags `iter().any(|x| *x == y)` patterns that should use `.contains(&y)`.
+  modernisation.manual-contains:
+    enabled: true
+  # Flags `len() == 0` and `len() != 0` comparisons that should use `is_empty()`.
+  modernisation.manual-is-empty:
+    enabled: true
+  # Flags `if s.starts_with(p) { &s[p.len()..] }` shapes that should use `strip_prefix`.
+  modernisation.manual-strip-prefix:
+    enabled: true
+  # Flags `match opt { Some(v) => v, None => Default::default() }` shapes that should use `unwrap_or_default()`.
+  modernisation.manual-unwrap-or-default:
+    enabled: true
   # Flags public struct fields that expose representation.
   modernisation.public-field:
     enabled: true
@@ -182,6 +206,9 @@ rules:
     enabled: true
   # Flags non-cryptographic rand calls inside secret-like generation functions.
   security.insecure-rng-for-secrets:
+    enabled: true
+  # Flags filesystem path construction where externally-derived input is joined without normalisation.
+  security.path-traversal-candidate:
     enabled: true
   # Flags process command construction for manual argument validation.
   security.process-command:
@@ -250,6 +277,9 @@ rules:
     severity: advisory
   # Flags tests that do not appear to assert behavior.
   test-quality.no-assertions:
+    enabled: true
+  # Flags `#[should_panic]` attributes without an `expected = "..."` clause.
+  test-quality.should-panic-without-expected:
     enabled: true
   # Flags tests that sleep instead of synchronizing on behavior.
   test-quality.sleep-in-test:

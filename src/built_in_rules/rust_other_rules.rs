@@ -12,6 +12,8 @@ mod comment_item_and_blocks;
 mod concurrency_rules;
 #[path = "dead_code.rs"]
 mod dead_code;
+#[path = "modernisation_rules.rs"]
+mod modernisation_rules;
 #[path = "perf_rules.rs"]
 mod perf_rules;
 #[path = "waste_rules.rs"]
@@ -21,5 +23,6 @@ pub(crate) use behavior_rules::*;
 pub(crate) use comment_item_and_blocks::*;
 pub(crate) use concurrency_rules::*;
 pub(crate) use dead_code::*;
+pub(crate) use modernisation_rules::*;
 pub(crate) use perf_rules::*;
 pub(crate) use waste_rules::*;

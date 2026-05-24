@@ -9,6 +9,8 @@ static SQL_DYNAMIC_QUERY_REGEX: OnceLock<Regex> = OnceLock::new();
 static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
+static PATH_TRAVERSAL_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
+static PATH_TRAVERSAL_JOIN_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
@@ -199,6 +201,109 @@ pub(crate) fn analyse_process_commands(
             push_process_command_finding(file, line_index + 1, risk_signals, findings);
         }
     }
+}
+
+/// `security.path-traversal-candidate` — flags filesystem path
+/// construction where the input is a bare identifier (likely a function
+/// parameter or runtime value) rather than a static literal. Two shapes:
+/// `Path::new(var)` / `PathBuf::from(var)` and `base.join(var)`. As a
+/// `-candidate` rule the message is hedged; the goal is to surface
+/// review-worthy joins, not to claim a proven traversal bug.
+pub(crate) fn analyse_path_traversal_candidate(
+    file: &SourceFile,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let starts = line_starts(&searchable);
+    let mut emitted = std::collections::BTreeSet::new();
+
+    let constructor_regex = static_regex(
+        &PATH_TRAVERSAL_CONSTRUCTOR_REGEX,
+        r"\b(?:Path|PathBuf)\s*::\s*(?:new|from)\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
+    );
+    for captures in constructor_regex.captures_iter(&searchable) {
+        let Some(arg) = captures.name("arg") else {
+            continue;
+        };
+        if path_traversal_arg_is_safe(arg.as_str()) {
+            continue;
+        }
+        let Some(full) = captures.get(0) else {
+            continue;
+        };
+        let line = byte_line_from_starts(&starts, full.start());
+        if !emitted.insert(line) {
+            continue;
+        }
+        push_path_traversal_candidate_finding(file, line, arg.as_str(), findings);
+    }
+
+    let join_regex = static_regex(
+        &PATH_TRAVERSAL_JOIN_REGEX,
+        r"\.join\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
+    );
+    for captures in join_regex.captures_iter(&searchable) {
+        let Some(arg) = captures.name("arg") else {
+            continue;
+        };
+        if path_traversal_arg_is_safe(arg.as_str()) {
+            continue;
+        }
+        let Some(full) = captures.get(0) else {
+            continue;
+        };
+        let line = byte_line_from_starts(&starts, full.start());
+        if !emitted.insert(line) {
+            continue;
+        }
+        push_path_traversal_candidate_finding(file, line, arg.as_str(), findings);
+    }
+}
+
+fn path_traversal_arg_is_safe(arg: &str) -> bool {
+    matches!(
+        arg,
+        "self"
+            | "root"
+            | "cwd"
+            | "tmp"
+            | "tempdir"
+            | "temp_dir"
+            | "out"
+            | "out_dir"
+            | "outdir"
+            | "dir"
+            | "parent"
+            | "manifest_dir"
+            | "target"
+            | "prefix"
+    )
+}
+
+fn push_path_traversal_candidate_finding(
+    file: &SourceFile,
+    line: usize,
+    arg: &str,
+    findings: &mut Vec<Finding>,
+) {
+    findings.push(Finding::new(FindingDescriptor {
+        rule_id: "security.path-traversal-candidate".to_string(),
+        message: format!(
+            "Filesystem path constructed from `{arg}`; review whether the value can escape the intended directory."
+        ),
+        file_path: file.display_path.clone(),
+        line: Some(line),
+        severity: Severity::Warning,
+        pillar: Pillar::Security,
+        confidence: Confidence::Medium,
+        symbol: None,
+        remediation: Some(
+            "Validate the segment with `Path::components`, reject `..` and absolute paths, or canonicalise and re-check the prefix."
+                .to_string(),
+        ),
+        metadata: json!({ "argument": arg }),
+    }));
 }
 
 pub(crate) fn analyse_tls_verification_disabled(

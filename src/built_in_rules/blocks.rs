@@ -42,6 +42,10 @@ pub(crate) fn analyse_block(
     analyse_block_naming(file, block, config, findings);
     analyse_public_function_doc(file, block, findings);
     analyse_missing_errors_section(file, block, findings);
+    analyse_missing_panics_section(file, block, findings);
+    analyse_missing_safety_section(file, block, findings);
+    analyse_missing_param_doc(file, block, findings);
+    analyse_missing_return_doc(file, block, findings);
     analyse_error_handling_block(file, block, &searchable_body, findings);
     analyse_concurrency_block(file, block, &searchable_body, findings);
     analyse_insecure_rng_for_secrets(file, block, &searchable_body, findings);

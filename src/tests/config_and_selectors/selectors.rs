@@ -157,6 +157,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "dependency.path-source",
             "dependency.wildcard-version",
             "security.insecure-rng-for-secrets",
+            "security.path-traversal-candidate",
             "security.process-command",
             "security.sql-dynamic-query",
             "security.tls-verification-disabled",

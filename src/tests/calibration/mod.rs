@@ -160,11 +160,13 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
 mod cases_a;
 mod cases_b;
 mod cases_c;
+mod cases_pillar_expansion;
 
 pub(crate) fn calibration_cases() -> Vec<CalibrationCase> {
     let mut cases = cases_a::cases();
     cases.extend(cases_b::cases());
     cases.extend(cases_c::cases());
+    cases.extend(cases_pillar_expansion::cases());
     cases
 }
 
