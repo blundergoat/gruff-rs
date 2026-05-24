@@ -17,6 +17,7 @@ Use these docs with the top-level README for the stable user-facing surface.
 
 ## Shared Contract
 
-Cross-language naming and CLI expectations live in
-[`../../CONTRACT.md`](../../CONTRACT.md). Rust keeps documented extensions for
-patch-based diffing, explicit unsafe Git diff opt-in, and `init --stdout`.
+Cross-language naming and CLI expectations live in the workspace-level
+`CONTRACT.md` (at the gruff workspace root, sibling to this crate). Rust keeps
+documented extensions for patch-based diffing, explicit unsafe Git diff opt-in,
+and `init --stdout`.

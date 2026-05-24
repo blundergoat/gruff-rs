@@ -58,8 +58,9 @@ pub(crate) fn analyse_should_panic_without_expected(
     if !block.is_test {
         return;
     }
+    let code = body_without_doc_comments(&block.body);
     let has_should_panic =
-        static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(&block.body);
+        static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(&code);
     if !has_should_panic {
         return;
     }
@@ -67,7 +68,7 @@ pub(crate) fn analyse_should_panic_without_expected(
         &SHOULD_PANIC_EXPECTED_REGEX,
         r"#\s*\[\s*should_panic\s*\([^)]*\bexpected\s*=",
     )
-    .is_match(&block.body);
+    .is_match(&code);
     if has_expected {
         return;
     }

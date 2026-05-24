@@ -94,11 +94,22 @@ pub(crate) fn analyse_pii_test_fixture(unit: &SourceUnit<'_>, findings: &mut Vec
 }
 
 fn path_is_test_fixture(display_path: &str) -> bool {
+    const FIXTURE_DIR_NAMES: &[&str] = &[
+        "fixture",
+        "fixtures",
+        "sample",
+        "samples",
+        "seed",
+        "seeds",
+        "mock",
+        "mocks",
+        "testdata",
+        "test_data",
+    ];
     let normalized = display_path.to_ascii_lowercase().replace('\\', "/");
-    normalized.contains("fixture")
-        || normalized.contains("sample")
-        || normalized.contains("/seed")
-        || normalized.contains("/mock")
+    normalized
+        .split('/')
+        .any(|segment| FIXTURE_DIR_NAMES.contains(&segment))
 }
 
 fn push_pii_email_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {

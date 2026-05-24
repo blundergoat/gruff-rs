@@ -127,8 +127,9 @@ pub(crate) fn analyse_missing_safety_section(
     if !block.is_externally_public {
         return;
     }
+    let code = body_without_doc_comments(&block.body);
     let is_unsafe_fn =
-        static_regex(&UNSAFE_FN_SIGNATURE_REGEX, r"\bunsafe\s+fn\s+").is_match(&block.body);
+        static_regex(&UNSAFE_FN_SIGNATURE_REGEX, r"\bunsafe\s+fn\s+").is_match(&code);
     if !is_unsafe_fn {
         return;
     }

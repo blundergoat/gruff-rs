@@ -34,7 +34,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 Install into a repository-local tool directory:
 
 ```bash
-cargo install gruff-rs --locked --version 0.1.0 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 0.1.1 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```

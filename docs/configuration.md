@@ -69,6 +69,7 @@ exclude:
 
 ## Compatibility
 
-The shared cross-language config expectations are documented in
-[`../../CONTRACT.md`](../../CONTRACT.md). Rust intentionally keeps YAML-only
-config loading and Rust-specific `custom_rules` / `exclude` sections.
+The shared cross-language config expectations are documented in the
+workspace-level `CONTRACT.md` (at the gruff workspace root, sibling to this
+crate). Rust intentionally keeps YAML-only config loading and Rust-specific
+`custom_rules` / `exclude` sections.

@@ -15,38 +15,37 @@ pub(crate) fn analyse_path_traversal_candidate(
     if path_is_test_infrastructure(&file.display_path) {
         return;
     }
-    PathTraversalScan::from(file, source).emit_findings(findings);
+    PathTraversalScan::new(file, source).emit_findings(findings);
 }
 
 struct PathTraversalScan<'a> {
     file: &'a SourceFile,
     searchable: String,
-    lines: Vec<&'a str>,
     starts: Vec<usize>,
 }
 
 impl<'a> PathTraversalScan<'a> {
-    fn from(file: &'a SourceFile, source: &'a str) -> Self {
+    fn new(file: &'a SourceFile, source: &str) -> Self {
         let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
-        let lines: Vec<&'a str> = source.lines().collect();
         let starts = line_starts(&searchable);
         Self {
             file,
             searchable,
-            lines,
             starts,
         }
     }
 
     fn emit_findings(&self, findings: &mut Vec<Finding>) {
+        let lines: Vec<&str> = self.searchable.lines().collect();
         let mut emitted = std::collections::BTreeSet::new();
-        self.scan_with(constructor_regex(), &mut emitted, findings);
-        self.scan_with(join_regex(), &mut emitted, findings);
+        self.scan_with(constructor_regex(), &lines, &mut emitted, findings);
+        self.scan_with(join_regex(), &lines, &mut emitted, findings);
     }
 
     fn scan_with(
         &self,
         compiled: &Regex,
+        lines: &[&str],
         emitted: &mut std::collections::BTreeSet<usize>,
         findings: &mut Vec<Finding>,
     ) {
@@ -58,7 +57,7 @@ impl<'a> PathTraversalScan<'a> {
                 continue;
             };
             let line = byte_line_from_starts(&self.starts, full.start());
-            if path_traversal_finding_is_suppressed(arg.as_str(), &self.lines, line) {
+            if path_traversal_finding_is_suppressed(arg.as_str(), lines, line) {
                 continue;
             }
             if !emitted.insert(line) {

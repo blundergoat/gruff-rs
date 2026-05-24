@@ -1,15 +1,37 @@
 use super::*;
 
 /// True iff the function signature in `body` includes a `-> <type>` clause
-/// (other than implicit unit). Used by `docs.missing-return-doc` to skip
-/// fns that have no return value to describe.
+/// (other than implicit unit). Strips rustdoc/comment lines first so doc
+/// examples containing `fn foo() -> T {}` cannot trigger a false positive
+/// on a fn whose real signature is `fn bar()`.
 pub(crate) fn signature_has_return_type(body: &str) -> bool {
     static SIG_RETURN_REGEX: OnceLock<Regex> = OnceLock::new();
+    let code = body_without_doc_comments(body);
     static_regex(
         &SIG_RETURN_REGEX,
         r"fn\s+[A-Za-z_][A-Za-z0-9_]*[^{;]*->\s*[^{;]+\{",
     )
-    .is_match(body)
+    .is_match(&code)
+}
+
+/// Returns `body` with `///`, `//!`, and `//` lines removed. Used by
+/// signature-region regexes that would otherwise match patterns inside
+/// rustdoc examples (e.g. `/// fn example(arg: i32) -> Result<()>`).
+/// Preserves line count so any caller relying on line offsets stays
+/// aligned.
+pub(crate) fn body_without_doc_comments(body: &str) -> String {
+    body.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("///") || trimmed.starts_with("//!") || trimmed.starts_with("//")
+            {
+                ""
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// True iff `body` carries a macro attribute that marks the function as a
@@ -28,9 +50,12 @@ pub(crate) fn has_frontend_bridge_attr(body: &str) -> bool {
 /// Best-effort parameter-name extraction from the signature line of a
 /// function block. Source-only: parses the first `fn name(` ... `)` token
 /// stream, splits on top-level commas, and pulls the leftmost identifier
-/// before `:` in each chunk. Skips `self` receivers and bare `_`.
+/// before `:` in each chunk. Skips `self` receivers and bare `_`. Strips
+/// rustdoc/comment lines first so `/// fn example(unrelated: i32)` in
+/// docs cannot be picked up as the real signature.
 pub(crate) fn extract_param_names(body: &str) -> Vec<String> {
-    let Some(inside) = function_signature_params(body) else {
+    let code = body_without_doc_comments(body);
+    let Some(inside) = function_signature_params(&code) else {
         return Vec::new();
     };
     split_top_level_commas(inside)
