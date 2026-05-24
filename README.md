@@ -31,36 +31,49 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 
 ## Install
 
+Install into a repository-local tool directory:
+
 ```bash
-# From crates.io; builds from source.
-cargo install gruff-rs --locked
-
-# Prebuilt binary; requires cargo-binstall.
-cargo binstall gruff-rs
-
-# From a source checkout.
-cargo install --path . --locked
+cargo install gruff-rs --locked --version 0.1.0 --root ./.cargo-tools
+./.cargo-tools/bin/gruff-rs init
+./.cargo-tools/bin/gruff-rs summary .
 ```
 
-After install, `gruff-rs` is on your `PATH`.
+Prebuilt binary, also into a repository-local tool directory:
+
+```bash
+cargo binstall gruff-rs --root ./.cargo-tools
+./.cargo-tools/bin/gruff-rs init
+./.cargo-tools/bin/gruff-rs summary .
+```
+
+From a source checkout:
+
+```bash
+cargo install --path . --locked --root ./.cargo-tools
+./.cargo-tools/bin/gruff-rs --help
+```
 
 ## Quick Start
 
 ```bash
 # Create a starter config.
-gruff-rs init
+./.cargo-tools/bin/gruff-rs init
+
+# Review the current finding mix.
+./.cargo-tools/bin/gruff-rs summary .
 
 # Explore without failing because of findings.
-gruff-rs analyse . --fail-on none
+./.cargo-tools/bin/gruff-rs analyse . --fail-on none
 
 # Gate on warning and error findings.
-gruff-rs analyse . --fail-on warning
+./.cargo-tools/bin/gruff-rs analyse . --fail-on warning
 
 # Emit SARIF for code scanning.
-gruff-rs analyse . --format sarif --fail-on none > gruff-rs.sarif
+./.cargo-tools/bin/gruff-rs analyse . --format sarif --fail-on none > gruff-rs.sarif
 
 # Generate a fresh-start baseline.
-gruff-rs analyse . --generate-baseline --fail-on none
+./.cargo-tools/bin/gruff-rs analyse . --generate-baseline --fail-on none
 ```
 
 ## Commands
@@ -106,7 +119,7 @@ gruff-rs analyse . --generate-baseline --fail-on none
 Generic CI command:
 
 ```bash
-gruff-rs analyse . --format github --fail-on warning --no-baseline
+./.cargo-tools/bin/gruff-rs analyse . --format github --fail-on warning --no-baseline
 ```
 
 The repo ships a composite GitHub Action:
@@ -174,7 +187,7 @@ The v0.1 catalogue contains 69 rules:
 | `test-quality` | 8 |
 | `waste` | 12 |
 
-Use `gruff-rs list-rules --format json` for the exact rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
+Use `./.cargo-tools/bin/gruff-rs list-rules --format json` for the exact rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
 
 ## Custom Rules
 
@@ -197,16 +210,16 @@ Custom rules are intentionally regex-only in `0.1.x`; AST patterns, plugins, scr
 Baselines suppress reviewed findings by exact fingerprint, rule ID, and file path:
 
 ```bash
-gruff-rs analyse src --generate-baseline --fail-on none
-gruff-rs analyse src --baseline --fail-on warning
-gruff-rs analyse src --no-baseline --fail-on none
+./.cargo-tools/bin/gruff-rs analyse src --generate-baseline --fail-on none
+./.cargo-tools/bin/gruff-rs analyse src --baseline --fail-on warning
+./.cargo-tools/bin/gruff-rs analyse src --no-baseline --fail-on none
 ```
 
 Patch diff filtering treats a unified diff as data and does not execute Git:
 
 ```bash
 git diff --no-ext-diff > /tmp/gruff.patch
-gruff-rs analyse . --diff-patch /tmp/gruff.patch --format json --fail-on none
+./.cargo-tools/bin/gruff-rs analyse . --diff-patch /tmp/gruff.patch --format json --fail-on none
 ```
 
 Pass `--diff-patch -` to read a patch from stdin. The older Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe`.
@@ -214,10 +227,12 @@ Pass `--diff-patch -` to read a patch from stdin. The older Git-backed `--diff <
 ## Dashboard
 
 ```bash
-gruff-rs dashboard --host 127.0.0.1 --port 8766 --project-root .
+./.cargo-tools/bin/gruff-rs dashboard --host 127.0.0.1 --port 8766 --project-root .
 ```
 
 The dashboard renders HTML reports on demand. It has no authentication and must not be exposed to untrusted networks; keep the default loopback bind unless the environment is trusted.
+
+In polyglot repositories, `gruff-rs` defaults to port `8766` while `gruff-go`, `gruff-php`, and `gruff-py` default to `8765`; use `--port` when running multiple dashboards at the same time.
 
 ## Trust Boundary
 
@@ -243,7 +258,7 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 bash scripts/preflight-checks.sh
 cargo test
 cargo clippy --all-targets -- -D warnings
-gruff-rs analyse src --format json --fail-on warning --no-baseline
+cargo run -- analyse src --format json --fail-on warning --no-baseline
 ```
 
 `scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, and a dogfood scan of `src/`.
