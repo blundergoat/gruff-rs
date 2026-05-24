@@ -180,6 +180,9 @@ rules:
   # Flags public struct fields that expose representation.
   modernisation.public-field:
     enabled: true
+  # Flags manual `match`/`if let Err` Result-propagation shapes that should use `?`.
+  modernisation.question-mark-candidate:
+    enabled: true
   # Flags bool-returning functions whose names do not read like predicates.
   naming.boolean-prefix:
     enabled: true
@@ -203,6 +206,9 @@ rules:
     enabled: true
   # Flags Regex::new calls inside loop bodies.
   performance.regex-in-loop:
+    enabled: true
+  # Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.
+  security.hardcoded-bind-all-interfaces:
     enabled: true
   # Flags non-cryptographic rand calls inside secret-like generation functions.
   security.insecure-rng-for-secrets:
@@ -242,6 +248,9 @@ rules:
     enabled: true
   # Flags JWT-looking token strings.
   sensitive-data.jwt-token:
+    enabled: true
+  # Flags realistic emails, SSN-shaped strings, or US phone numbers in fixture or sample files.
+  sensitive-data.pii-test-fixture:
     enabled: true
   # Flags private key block markers.
   sensitive-data.private-key:

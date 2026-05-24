@@ -156,5 +156,59 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
+        // ----- modernisation: question-mark -----
+        case(
+            "modernisation.question-mark-candidate",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn propagate(input: Result<i32, String>) -> Result<i32, String> {\n    let value = match input { Ok(v) => v, Err(e) => return Err(e) };\n    Ok(value + 1)\n}\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn propagate(input: Result<i32, String>) -> Result<i32, String> {\n    let value = input?;\n    Ok(value + 1)\n}\n",
+                )
+            }),
+        ),
+        // ----- security: hardcoded-bind-all-interfaces -----
+        case(
+            "security.hardcoded-bind-all-interfaces",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn serve() -> &'static str { \"0.0.0.0:8080\" }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn serve() -> &'static str { \"127.0.0.1:8080\" }\n",
+                )
+            }),
+        ),
+        // ----- sensitive-data: pii-test-fixture -----
+        case(
+            "sensitive-data.pii-test-fixture",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join("tests/fixtures")).expect("fixture dir");
+                fs::write(
+                    root.join("tests/fixtures/sample_users.txt"),
+                    "alice.smith@gmail.com,415-555-0177,bob@yahoo.com,123-45-6789\n",
+                )
+                .expect("fixture data");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join("tests/fixtures")).expect("fixture dir");
+                fs::write(
+                    root.join("tests/fixtures/sample_users.txt"),
+                    "alice@example.com,555-555-0177,bob@test.org,000-00-0000\n",
+                )
+                .expect("fixture data");
+            }),
+        ),
     ]
 }

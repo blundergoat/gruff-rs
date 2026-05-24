@@ -156,6 +156,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "dependency.git-unpinned-revision",
             "dependency.path-source",
             "dependency.wildcard-version",
+            "security.hardcoded-bind-all-interfaces",
             "security.insecure-rng-for-secrets",
             "security.path-traversal-candidate",
             "security.process-command",
@@ -186,6 +187,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "sensitive-data.hardcoded-env-value",
             "sensitive-data.high-entropy-string",
             "sensitive-data.jwt-token",
+            "sensitive-data.pii-test-fixture",
             "sensitive-data.private-key",
             "sensitive-data.url-embedded-credentials"
         ]

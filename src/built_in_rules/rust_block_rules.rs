@@ -5,6 +5,8 @@ pub(crate) use super::*;
 
 #[path = "blocks.rs"]
 mod blocks;
+#[path = "dead_code.rs"]
+mod dead_code;
 #[path = "docs_rules.rs"]
 mod docs_rules;
 #[path = "function_block_metrics.rs"]
@@ -17,6 +19,7 @@ mod rustdoc_parsing;
 mod test_rules;
 
 pub(crate) use blocks::*;
+pub(crate) use dead_code::*;
 pub(crate) use docs_rules::*;
 pub(crate) use function_block_metrics::*;
 pub(crate) use function_block_rules::*;

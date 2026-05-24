@@ -14,7 +14,7 @@
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
-| Rule catalogue | 77 rules across 11 pillars |
+| Rule catalogue | 80 rules across 11 pillars |
 | Primary config | `.gruff-rs.yaml` |
 | Analysis schema | `gruff.analysis.v1` |
 | Baseline schema | `gruff.baseline.v1` |
@@ -171,7 +171,7 @@ Selectors can target exact rule IDs, dotted prefixes such as `security.*`, or pu
 
 ## Rules And Pillars
 
-The v0.1 catalogue contains 77 rules:
+The v0.1 catalogue contains 80 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -180,10 +180,10 @@ The v0.1 catalogue contains 77 rules:
 | `design` | 4 |
 | `documentation` | 11 |
 | `maintainability` | 12 |
-| `modernisation` | 5 |
+| `modernisation` | 6 |
 | `naming` | 5 |
-| `security` | 13 |
-| `sensitive-data` | 8 |
+| `security` | 14 |
+| `sensitive-data` | 9 |
 | `size` | 3 |
 | `test-quality` | 8 |
 

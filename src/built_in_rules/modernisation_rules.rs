@@ -4,10 +4,13 @@ pub(crate) static MANUAL_IS_EMPTY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static MANUAL_CONTAINS_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static MANUAL_STRIP_PREFIX_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static MANUAL_UNWRAP_OR_DEFAULT_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static QUESTION_MARK_MATCH_OK_FIRST_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static QUESTION_MARK_MATCH_ERR_FIRST_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static QUESTION_MARK_IF_LET_REGEX: OnceLock<Regex> = OnceLock::new();
 
-/// Entry point for the four `modernisation.manual-*` rules. Each rule
-/// scans the comment-stripped source to avoid matching inside string
-/// literals or doc comments.
+/// Entry point for the `modernisation.*` rules. Each rule scans the
+/// comment-stripped source to avoid matching inside string literals or
+/// doc comments.
 pub(crate) fn analyse_modernisation_rules(
     file: &SourceFile,
     source: &str,
@@ -18,6 +21,7 @@ pub(crate) fn analyse_modernisation_rules(
     analyse_manual_contains(file, &searchable, findings);
     analyse_manual_strip_prefix(file, &searchable, findings);
     analyse_manual_unwrap_or_default(file, &searchable, findings);
+    analyse_question_mark_candidate(file, &searchable, findings);
 }
 
 /// `coll.len() == 0`, `coll.len() != 0`, and the swapped forms should
@@ -127,6 +131,102 @@ pub(crate) fn analyse_manual_unwrap_or_default(
 fn manual_unwrap_or_default_match_is_valid(captures: &regex::Captures<'_>) -> bool {
     let arg = capture_named(captures, "arg");
     !arg.is_empty() && arg == capture_named(captures, "ret")
+}
+
+/// Three Result-propagation shapes that should use `?`:
+/// - `match res { Ok(v) => v, Err(e) => return Err(e) }`
+/// - `match res { Err(e) => return Err(e), Ok(v) => v }`
+/// - `if let Err(e) = f() { return Err(e); }`
+pub(crate) fn analyse_question_mark_candidate(
+    file: &SourceFile,
+    searchable: &str,
+    findings: &mut Vec<Finding>,
+) {
+    for check in question_mark_checks() {
+        scan_question_mark(check, searchable, file, findings);
+    }
+}
+
+fn question_mark_checks() -> [QuestionMarkCheck; 3] {
+    [
+        QuestionMarkCheck {
+            compiled: question_mark_ok_first_regex(),
+            is_valid: is_match_arm_balanced,
+        },
+        QuestionMarkCheck {
+            compiled: question_mark_err_first_regex(),
+            is_valid: is_match_arm_balanced,
+        },
+        QuestionMarkCheck {
+            compiled: question_mark_if_let_regex(),
+            is_valid: is_if_let_balanced,
+        },
+    ]
+}
+
+fn question_mark_ok_first_regex() -> &'static Regex {
+    static_regex(
+        &QUESTION_MARK_MATCH_OK_FIRST_REGEX,
+        r"match\s+[A-Za-z_][\w\.()]*\s*\{\s*Ok\s*\(\s*(?P<ok_a>[A-Za-z_]\w*)\s*\)\s*=>\s*(?P<ok_b>[A-Za-z_]\w*)\s*,\s*Err\s*\(\s*(?P<err_a>[A-Za-z_]\w*)\s*\)\s*=>\s*return\s+Err\s*\(\s*(?P<err_b>[A-Za-z_]\w*)\s*\)\s*,?\s*\}",
+    )
+}
+
+fn question_mark_err_first_regex() -> &'static Regex {
+    static_regex(
+        &QUESTION_MARK_MATCH_ERR_FIRST_REGEX,
+        r"match\s+[A-Za-z_][\w\.()]*\s*\{\s*Err\s*\(\s*(?P<err_a>[A-Za-z_]\w*)\s*\)\s*=>\s*return\s+Err\s*\(\s*(?P<err_b>[A-Za-z_]\w*)\s*\)\s*,\s*Ok\s*\(\s*(?P<ok_a>[A-Za-z_]\w*)\s*\)\s*=>\s*(?P<ok_b>[A-Za-z_]\w*)\s*,?\s*\}",
+    )
+}
+
+fn question_mark_if_let_regex() -> &'static Regex {
+    static_regex(
+        &QUESTION_MARK_IF_LET_REGEX,
+        r"if\s+let\s+Err\s*\(\s*(?P<e>[A-Za-z_]\w*)\s*\)\s*=\s*[^{;]+?\s*\{\s*return\s+Err\s*\(\s*(?P<e2>[A-Za-z_]\w*)\s*\)\s*;?\s*\}",
+    )
+}
+
+struct QuestionMarkCheck {
+    compiled: &'static Regex,
+    is_valid: fn(&regex::Captures<'_>) -> bool,
+}
+
+fn is_match_arm_balanced(captures: &regex::Captures<'_>) -> bool {
+    let ok_a = capture_named(captures, "ok_a");
+    let err_a = capture_named(captures, "err_a");
+    !ok_a.is_empty()
+        && !err_a.is_empty()
+        && ok_a == capture_named(captures, "ok_b")
+        && err_a == capture_named(captures, "err_b")
+}
+
+fn is_if_let_balanced(captures: &regex::Captures<'_>) -> bool {
+    let first = capture_named(captures, "e");
+    !first.is_empty() && first == capture_named(captures, "e2")
+}
+
+fn scan_question_mark(
+    check: QuestionMarkCheck,
+    searchable: &str,
+    file: &SourceFile,
+    findings: &mut Vec<Finding>,
+) {
+    let starts = line_starts(searchable);
+    for captures in check.compiled.captures_iter(searchable) {
+        if !(check.is_valid)(&captures) {
+            continue;
+        }
+        let Some(full) = captures.get(0) else {
+            continue;
+        };
+        let line = byte_line_from_starts(&starts, full.start());
+        push_modernisation_finding(
+            file,
+            line,
+            "modernisation.question-mark-candidate",
+            "Use `?` instead of a manual `match` / `if let Err` that returns the same error.",
+            findings,
+        );
+    }
 }
 
 struct ModernisationCheck {

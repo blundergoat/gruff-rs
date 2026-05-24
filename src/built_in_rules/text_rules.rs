@@ -8,6 +8,7 @@ pub(crate) fn analyse_text_rules(
     analyse_file_length(unit.file, unit.source, config, findings);
     analyse_ci_github_event_shell_interpolation(unit, findings);
     analyse_sensitive_data(unit, config, findings);
+    analyse_pii_test_fixture(unit, findings);
 }
 
 fn analyse_file_length(

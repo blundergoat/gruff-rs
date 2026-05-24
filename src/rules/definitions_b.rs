@@ -52,6 +52,16 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         "Flags `match opt { Some(v) => v, None => Default::default() }` shapes that should use `unwrap_or_default()`.",
     ),
     rule_definition!(
+        "modernisation.question-mark-candidate",
+        "Manual question-mark candidate",
+        Pillar::Modernisation,
+        RuleKind::Rust,
+        Severity::Advisory,
+        Confidence::Medium,
+        None,
+        "Flags manual `match`/`if let Err` Result-propagation shapes that should use `?`.",
+    ),
+    rule_definition!(
         "metrics.halstead-volume",
         "Halstead-style volume",
         Pillar::Complexity,
@@ -264,6 +274,16 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         None,
         "Flags filesystem path construction where externally-derived input is joined without normalisation.",
     ),
+    rule_definition!(
+        "security.hardcoded-bind-all-interfaces",
+        "Hardcoded bind to all interfaces",
+        Pillar::Security,
+        RuleKind::Rust,
+        Severity::Warning,
+        Confidence::High,
+        None,
+        "Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.",
+    ),
 ];
 
 pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
@@ -346,6 +366,16 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags HTTP(S) URLs that include embedded username and password credentials.",
+    ),
+    rule_definition!(
+        "sensitive-data.pii-test-fixture",
+        "PII in test fixture",
+        Pillar::SensitiveData,
+        RuleKind::Text,
+        Severity::Error,
+        Confidence::High,
+        None,
+        "Flags realistic emails, SSN-shaped strings, or US phone numbers in fixture or sample files.",
     ),
 ];
 

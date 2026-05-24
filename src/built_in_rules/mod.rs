@@ -67,6 +67,7 @@ fn analyse_rust_rules(
     analyse_sql_dynamic_query(unit.file, unit.source, findings);
     analyse_tls_verification_disabled(unit.file, unit.source, findings);
     analyse_weak_crypto(unit.file, unit.source, findings);
+    analyse_hardcoded_bind_all_interfaces(unit.file, unit.source, findings);
     analyse_path_traversal_candidate(unit.file, unit.source, findings);
     analyse_modernisation_rules(unit.file, unit.source, findings);
     analyse_line_rules(unit.file, unit.source, &blocks, findings);
