@@ -24,5 +24,8 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install dependency tools
+        run: bash scripts/dependency-install.sh
+
       - name: Run checks
         run: bash scripts/preflight-checks.sh

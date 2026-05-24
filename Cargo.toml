@@ -1,6 +1,6 @@
 [package]
 name = "gruff-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.82"
 description = "Rust static analyzer and quality linter for CI: dead-code, complexity, security, secrets, and architecture rules with deterministic SARIF/JSON output and baseline support."

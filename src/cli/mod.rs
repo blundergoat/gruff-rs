@@ -3,7 +3,7 @@ use super::*;
 mod args;
 
 pub(crate) use args::{
-    AnalyseArgs, CompletionArgs, DashboardArgs, ListRulesArgs, ReportArgs, SummaryArgs,
+    AnalyseArgs, CompletionArgs, DashboardArgs, InitArgs, ListRulesArgs, ReportArgs, SummaryArgs,
 };
 
 /// Symfony-Console-style colours for help output: yellow section headers,
@@ -92,6 +92,10 @@ impl GlobalOptions {
             quiet: self.quiet,
         }
     }
+
+    pub(crate) fn is_non_interactive(&self) -> bool {
+        self.no_interaction || self.silent
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -175,6 +179,8 @@ pub(crate) enum Commands {
     Summary(SummaryArgs),
     /// Dump the shell completion script.
     Completion(CompletionArgs),
+    /// Write a default `.gruff-rs.yaml` config derived from the built-in rule registry.
+    Init(InitArgs),
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, PartialEq, Eq)]

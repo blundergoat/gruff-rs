@@ -11,10 +11,11 @@ pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) ->
 
 fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms: Option<u128>) {
     let mut header = format!(
-        "gruff-rs {}  ·  project: {}  ·  files: {}",
+        "gruff-rs {}  ·  project: {}  ·  files: {}{}",
         report.tool.version,
         display_project_root(&report.run.project_root),
         report.paths.analysed_files,
+        ignored_count_label(report),
     );
     if let Some(ms) = duration_ms {
         header.push_str(&format!("  ·  duration: {}", format_duration(ms)));
@@ -30,6 +31,24 @@ fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms:
         report.summary.warning,
         report.summary.error
     ));
+    render_ignored_guidance(output, report);
+}
+
+fn ignored_count_label(report: &AnalysisReport) -> String {
+    if report.paths.ignored_paths.is_empty() {
+        String::new()
+    } else {
+        format!("  ·  ignored: {}", report.paths.ignored_paths.len())
+    }
+}
+
+fn render_ignored_guidance(output: &mut String, report: &AnalysisReport) {
+    if report.paths.ignored_paths.is_empty() {
+        return;
+    }
+    output.push_str(
+        "Ignored paths skipped by Git/config ignores; pass --include-ignored to scan them.\n",
+    );
 }
 
 fn format_duration(duration_ms: u128) -> String {

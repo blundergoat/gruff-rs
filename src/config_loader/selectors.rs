@@ -158,6 +158,7 @@ const PILLAR_SELECTOR_NAMES: &[(&str, Pillar)] = &[
     ("DeadCode", Pillar::DeadCode),
     ("Dead code", Pillar::DeadCode),
     ("Waste", Pillar::Waste),
+    ("Maintainability", Pillar::Maintainability),
     ("Naming", Pillar::Naming),
     ("Documentation", Pillar::Documentation),
     ("Modernisation", Pillar::Modernisation),

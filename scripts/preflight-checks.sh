@@ -7,6 +7,7 @@ set -o pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GRUFF_RS_FAIL_ON="${GRUFF_RS_FAIL_ON:-advisory}"
+GRUFF_RS_RELEASE_CHECK="${GRUFF_RS_RELEASE_CHECK:-0}"
 WORK_DIR=""
 
 TOTAL=0
@@ -47,16 +48,21 @@ Runs the local gruff-rs preflight suite:
   - bash syntax check for tracked and untracked shell scripts
   - shellcheck for shell scripts when shellcheck is installed
   - cargo fmt, clippy, and tests
+  - crate version consistency between Cargo.toml and Cargo.lock
+  - RustSec dependency audit, auto-installing cargo-audit when missing
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
   - gruff-rs dogfood scan of src/
 
 Options:
   --fail-on LEVEL  Fail dogfood analysis at none, advisory, warning, or error.
                    Defaults to GRUFF_RS_FAIL_ON, or advisory when unset.
+  --release-check  Also require the crate version to be newer than the latest
+                   local vX.Y.Z git tag and present in CHANGELOG.md.
   -h, --help       Show this help.
 
 Environment:
-  GRUFF_RS_FAIL_ON  Dogfood scan threshold (default: advisory).
+  GRUFF_RS_FAIL_ON        Dogfood scan threshold (default: advisory).
+  GRUFF_RS_RELEASE_CHECK  Set to 1/true/yes/on to enable --release-check.
 USAGE
 }
 
@@ -111,6 +117,8 @@ header() {
   printf '  %s%s%s\n' "$DIM" "$(date '+%Y-%m-%d %H:%M:%S')" "$RESET"
   printf '  %sroot:%s %s\n' "$DIM" "$RESET" "$REPO_ROOT"
   printf '  %sdogfood fail threshold:%s %s\n' "$DIM" "$RESET" "$GRUFF_RS_FAIL_ON"
+  printf '  %srelease version check:%s %s\n' "$DIM" "$RESET" "$(release_check_label)"
+  printf '  %sdependency audit:%s required (auto-install cargo-audit)\n' "$DIM" "$RESET"
   rule
   printf '\n'
 }
@@ -268,6 +276,163 @@ validate_fail_on() {
   esac
 }
 
+validate_release_check() {
+  case "$GRUFF_RS_RELEASE_CHECK" in
+    0|1|false|true|no|yes|off|on) ;;
+    *) die "invalid GRUFF_RS_RELEASE_CHECK value: $GRUFF_RS_RELEASE_CHECK" ;;
+  esac
+}
+
+release_check_enabled() {
+  case "$GRUFF_RS_RELEASE_CHECK" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+release_check_label() {
+  if release_check_enabled; then
+    printf 'on'
+  else
+    printf 'off'
+  fi
+}
+
+is_core_semver() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+cargo_toml_version() {
+  awk '
+    /^\[package\]/ { in_pkg = 1; next }
+    /^\[/          { in_pkg = 0 }
+    in_pkg && /^version[[:space:]]*=/ {
+      sub(/^version[[:space:]]*=[[:space:]]*"/, "")
+      sub(/".*$/, "")
+      print
+      exit
+    }
+  ' "$REPO_ROOT/Cargo.toml"
+}
+
+cargo_lock_version() {
+  awk -v package_name="gruff-rs" '
+    function maybe_print() {
+      if (name == package_name && version != "") {
+        print version
+        found = 1
+        exit
+      }
+    }
+    /^\[\[package\]\]/ {
+      maybe_print()
+      name = ""
+      version = ""
+      next
+    }
+    /^name[[:space:]]*=/ {
+      name = $0
+      sub(/^name[[:space:]]*=[[:space:]]*"/, "", name)
+      sub(/".*$/, "", name)
+      next
+    }
+    /^version[[:space:]]*=/ {
+      version = $0
+      sub(/^version[[:space:]]*=[[:space:]]*"/, "", version)
+      sub(/".*$/, "", version)
+      next
+    }
+    END {
+      if (!found && name == package_name && version != "") {
+        print version
+      }
+    }
+  ' "$REPO_ROOT/Cargo.lock"
+}
+
+latest_release_tag_version() {
+  local tag
+  local version
+
+  while IFS= read -r tag; do
+    version=${tag#v}
+    if is_core_semver "$version"; then
+      printf '%s\n' "$version"
+      return 0
+    fi
+  done < <(git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname)
+
+  return 1
+}
+
+semver_gt() {
+  local left=$1 right=$2
+  local left_major left_minor left_patch
+  local right_major right_minor right_patch
+
+  IFS=. read -r left_major left_minor left_patch <<<"$left"
+  IFS=. read -r right_major right_minor right_patch <<<"$right"
+
+  ((left_major > right_major)) && return 0
+  ((left_major < right_major)) && return 1
+  ((left_minor > right_minor)) && return 0
+  ((left_minor < right_minor)) && return 1
+  ((left_patch > right_patch))
+}
+
+version_metadata_check() {
+  local manifest_version
+  local lock_version
+  local latest_tag_version
+
+  manifest_version=$(cargo_toml_version)
+  if [[ -z "$manifest_version" ]]; then
+    printf 'could not read [package] version from Cargo.toml\n' >&2
+    return 1
+  fi
+  if ! is_core_semver "$manifest_version"; then
+    printf 'Cargo.toml version must look like X.Y.Z (got: %s)\n' "$manifest_version" >&2
+    return 1
+  fi
+
+  if [[ -f "$REPO_ROOT/Cargo.lock" ]]; then
+    lock_version=$(cargo_lock_version)
+    if [[ -z "$lock_version" ]]; then
+      printf 'could not read gruff-rs package version from Cargo.lock\n' >&2
+      return 1
+    fi
+    if [[ "$manifest_version" != "$lock_version" ]]; then
+      printf 'Cargo.toml version %s does not match Cargo.lock gruff-rs version %s\n' "$manifest_version" "$lock_version" >&2
+      return 1
+    fi
+  fi
+
+  if release_check_enabled; then
+    if ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf '%s\n' '--release-check requires a git worktree' >&2
+      return 1
+    fi
+
+    latest_tag_version=$(latest_release_tag_version || true)
+    if [[ -n "$latest_tag_version" ]] && ! semver_gt "$manifest_version" "$latest_tag_version"; then
+      printf 'Cargo.toml version %s must be greater than latest release tag v%s\n' "$manifest_version" "$latest_tag_version" >&2
+      return 1
+    fi
+
+    if [[ -f "$REPO_ROOT/CHANGELOG.md" ]] \
+      && ! grep -qE "^##[[:space:]]+${manifest_version}[[:space:]]+-[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" "$REPO_ROOT/CHANGELOG.md"; then
+      printf 'CHANGELOG.md is missing a release heading for %s\n' "$manifest_version" >&2
+      return 1
+    fi
+  fi
+
+  if release_check_enabled; then
+    printf 'Cargo.toml/Cargo.lock %s; release check on\n' "$manifest_version"
+  else
+    printf 'Cargo.toml/Cargo.lock %s\n' "$manifest_version"
+  fi
+}
+
 check_shell_syntax() {
   local files=()
   local existing_files=()
@@ -313,6 +478,62 @@ check_shellcheck() {
 
 require_cargo() {
   command -v cargo >/dev/null 2>&1 || die "cargo is not available on PATH"
+}
+
+cargo_install_root() {
+  if [[ -n "${CARGO_INSTALL_ROOT:-}" ]]; then
+    printf '%s\n' "$CARGO_INSTALL_ROOT"
+  elif [[ -n "${CARGO_HOME:-}" ]]; then
+    printf '%s\n' "$CARGO_HOME"
+  else
+    printf '%s\n' "$HOME/.cargo"
+  fi
+}
+
+resolve_cargo_audit() {
+  local install_root
+  local cargo_audit
+
+  if cargo_audit=$(command -v cargo-audit 2>/dev/null); then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  install_root=$(cargo_install_root)
+  cargo_audit="$install_root/bin/cargo-audit"
+  if [[ -x "$cargo_audit" ]]; then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_cargo_audit() {
+  local cargo_audit
+
+  if cargo_audit=$(resolve_cargo_audit); then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  printf 'cargo-audit is not installed; installing with cargo install cargo-audit --locked\n' >&2
+  cargo install cargo-audit --locked || return $?
+
+  if cargo_audit=$(resolve_cargo_audit); then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  printf 'cargo-audit installed but was not found at %s/bin/cargo-audit or on PATH\n' "$(cargo_install_root)" >&2
+  return 1
+}
+
+dependency_audit_check() {
+  local cargo_audit
+
+  cargo_audit=$(ensure_cargo_audit) || return $?
+  "$cargo_audit" audit
 }
 
 fixture_json_smoke() {
@@ -466,6 +687,10 @@ main() {
         GRUFF_RS_FAIL_ON="$2"
         shift 2
         ;;
+      --release-check)
+        GRUFF_RS_RELEASE_CHECK=1
+        shift
+        ;;
       -h|--help)
         usage
         return 0
@@ -477,6 +702,7 @@ main() {
   done
 
   validate_fail_on
+  validate_release_check
   require_cargo
   WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gruff-rs-preflight.XXXXXX")"
   trap cleanup EXIT
@@ -487,6 +713,8 @@ main() {
 
   run_step "shell syntax" check_shell_syntax
   run_step "shellcheck" check_shellcheck
+  run_step "version metadata" version_metadata_check
+  run_step "dependency audit" dependency_audit_check
   run_step "cargo fmt" cargo fmt --check
   run_step "cargo clippy" cargo clippy --all-targets -- -D warnings
   run_step "cargo test" cargo test

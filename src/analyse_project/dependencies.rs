@@ -200,7 +200,7 @@ pub(crate) fn analyse_lockfile_duplicates(
     if !config.is_rule_enabled(rule_id) {
         return;
     }
-    let allowed_versions = config.threshold(rule_id, 1.0) as usize;
+    let allowed_versions = config.threshold(rule_id, 2.0) as usize;
     let by_name = group_locked_packages_by_name(lockfile);
     for (name, packages) in by_name {
         let versions: Vec<&str> = packages

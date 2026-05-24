@@ -198,3 +198,40 @@ pub(crate) fn shannon_entropy(value: &str) -> f64 {
         })
         .sum()
 }
+
+/// Returns true when the file is part of the rule calibration harness.
+/// Calibration files exist to prove rules fire (positive cases) or stay
+/// silent (negative cases); they intentionally embed deliberately-bad
+/// patterns and would otherwise produce sensitive-data and metric noise.
+/// Path-based so the same skip applies regardless of file kind.
+pub(crate) fn path_is_calibration_fixture(display_path: &str) -> bool {
+    let normalized = display_path.replace('\\', "/");
+    if normalized.contains("/tests/calibration/") || normalized.starts_with("tests/calibration/") {
+        return true;
+    }
+    if normalized.ends_with("/calibration_extras.rs") || normalized == "calibration_extras.rs" {
+        return true;
+    }
+    false
+}
+
+/// Returns true when the file lives in Rust test infrastructure: anything
+/// under a `tests/` directory or a sibling `tests.rs` file. Rule scanners
+/// parse files individually and miss the parent-level `#[cfg(test)]`
+/// gating, so this path heuristic catches helpers that panic, unwrap, or
+/// otherwise behave in ways that would be production-bad but are normal
+/// for test scaffolding.
+///
+/// `**/fixtures/**` is explicitly excluded - those files are inputs that
+/// rules scan on purpose (e.g. `tests/fixtures/parser/invalid.rs` exists
+/// to prove the AWS access key rule fires).
+pub(crate) fn path_is_test_infrastructure(display_path: &str) -> bool {
+    let normalized = display_path.replace('\\', "/");
+    if normalized.contains("/fixtures/") || normalized.starts_with("fixtures/") {
+        return false;
+    }
+    normalized.contains("/tests/")
+        || normalized.starts_with("tests/")
+        || normalized.ends_with("/tests.rs")
+        || normalized == "tests.rs"
+}

@@ -1,6 +1,6 @@
 ---
 category: naming
-last_reviewed: 2026-05-23
+last_reviewed: 2026-05-24
 ---
 
 ## Lesson: Never Name Files or Folders After Milestones (M33, M35, etc.)
@@ -27,3 +27,27 @@ Do not encode milestone identifiers (`M01`, `M33`, `M37`, etc.) — or any task/
 **Why:** Encoding sequence identifiers in code paths creates dead context that future readers must decode before they can act, and traps new work into either misnamed homes or fragmented files.
 
 **How to apply:** Reject any proposed file/folder/module name that contains a task-ID-shaped token (`M<digits>`, `T<digits>`, `PR<digits>`, `sprint_*`, `<month>_refactor`, `phase_<n>`, etc.). Ask what behavior or concept the file owns and use that.
+
+## Lesson: Don't Extend Alphabet-Sequel File Series (cases_d.rs, helpers_b.rs)
+
+**Created:** 2026-05-24
+
+When adding a new file to an existing series whose existing members use opaque sequel suffixes (`cases_a.rs`, `cases_b.rs`, `cases_c.rs`), do NOT simply continue the alphabet (`cases_d.rs`). The next file is your chance to name by content; the existing weak names do not justify a new weak name. Continuing the sequel pattern doubles the dead context and signals that you copied the shape without thinking about what the new file actually owns.
+
+**Why:**
+- Alphabet sequels are the file-naming equivalent of milestone IDs (see lesson above): they encode arrival order, not domain. A reader who opens `cases_d.rs` has to read the file to learn what it tests.
+- The existing weak names (`cases_a/b/c.rs`) are legacy; treating them as a *naming convention* propagates the mistake into every subsequent file. A descriptive new name is a small step toward eventually splitting the legacy files by concept too.
+- When a future maintainer adds an 11th rule, they have to pick between `cases_e.rs` (continuing the pattern) and `cases_pillar_expansion.rs` (the new pattern). Establishing the descriptive precedent now ends the ambiguity.
+
+**Concrete example (this repo, 2026-05-24):** While adding calibration cases for 10 new default-on rules (modernisation idioms, rustdoc contracts, security candidate, test-attribute precision), the file was first created as `cases_d.rs` by continuing the existing `cases_a/b/c.rs` alphabet sequence. The user immediately flagged it. Renamed to `cases_pillar_expansion.rs` — describes the *intent* of the file (calibration for the second-wave rules added to fill thin pillars) rather than its position in an arrival queue.
+
+**How to apply:**
+- Before adding a file to an existing series, ask: "If the existing file names disappeared, would my new file's name still tell a future reader what it contains?" If the answer is no — because the name only makes sense as the next letter in a sequence — pick a descriptive name instead.
+- Acceptable names describe the domain the file owns: `cases_pillar_expansion.rs`, `cases_dependency_resolution.rs`, `cases_calibration_baselines.rs`.
+- Unacceptable names continue an opaque sequence: `cases_d.rs`, `cases_e.rs`, `helpers_b.rs`, `module_v3.rs`, `utils_extra.rs`.
+- The same rule applies inside `src/built_in_rules/` — a new file should match the existing `<concept>_rules.rs` pattern (e.g. `modernisation_rules.rs`) AND should not mix unrelated pillars (e.g. don't park a security rule inside `modernisation_rules.rs` even if it was implemented in the same batch).
+- If the existing weak-named series bothers you, the right fix is a separate rename PR for the legacy files — not perpetuating the weak names in new ones.
+
+**Why:** Alphabet sequels propagate dead context into every subsequent file in a series. Each new file is a chance to break the chain; passing on that chance commits the next maintainer to either continuing the weak pattern or having a mixed naming policy.
+
+**How to apply:** Reject any new file name whose only meaning is "the next one in the series" (`*_d.rs`, `*_b.rs`, `*_v2.rs`, `*_extra.rs`). The new file's name should describe what it contains so a fresh reader can navigate without opening it.

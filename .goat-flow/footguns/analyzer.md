@@ -1,7 +1,37 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-23
+last_reviewed: 2026-05-24
 ---
+
+## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/modernisation_rules.rs` (search: `fn analyse_manual_contains`) flags `iter().any(|x| x == y)` shapes that should use `.contains(&y)`. The shape that *looks* equivalent isn't always: when the iterator yields `&String` and the comparison target is `&str`, the closure compiles via `PartialEq<&str> for String`, but `[String]::contains` needs `&String` — `.contains(&y)` would not compile without an allocation.
+
+Concrete instances from 2026-05-24 self-scan:
+
+- `src/built_in_rules/naming_rules.rs` (search: `extra_placeholders.iter().any`) — `extra_placeholders: Vec<String>`, `name: &str`. The bare-bare shape is the only one the type system accepts cheaply.
+- `src/config_loader/mod.rs` (search: `allowed.iter().any`) — `allowed: &[&str]`, `key: &String`. Same cross-type compare problem.
+
+The non-obvious failure mode is matching every `iter().any(|x| ARG == OTHER)` shape and producing findings the user can't safely auto-fix. The rule was first written that way and flagged both type-compatible cases (where `.contains()` is a clean swap) and cross-type cases (where it isn't).
+
+Calibrate by requiring an explicit dereference or reference token: `iter().any(|x| *x == y)` (deref pattern, items are `&T` comparing to `T`) or `iter().any(|x| x == &y)` (RHS-ref pattern, items are `&T` comparing to `&T`). Bare `|x| x == y` stays silent because the only way that compiles is through `PartialEq` cross-type impls, where `.contains()` likely needs an allocation. Regression coverage: `src/tests/calibration/cases_pillar_expansion.rs` (search: `modernisation.manual-contains`) uses `*item == target` so the deref shape stays detected.
+
+## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/path_traversal_rules.rs` (search: `fn analyse_path_traversal_candidate`) flags filesystem path construction from non-literal identifiers. A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
+
+- **Path-typed parameters in utility helpers**: `fn absolutize(root: &Path, path: &Path) -> PathBuf { root.join(path) }`. The `path` argument cannot carry an unconstrained string segment — it was already path-typed upstream.
+- **Validate-then-trust pattern**: `default_root.join(requested).canonicalize()?` followed by `.starts_with(default_root)`. The join is dangerous in isolation but resolved and re-checked immediately after.
+- **Identifier names that signal validation**: `safe`, `sanitized`, `normalized`, `validated`, `file_name` — common in code that has just finished validating.
+- **Test infrastructure**: paths constructed inside `tests/` directories are not attack surfaces.
+
+The non-obvious failure mode is shipping a candidate rule whose recall is high but whose precision collapses on idiomatic Rust. Users either silence it project-wide or stop reading its findings.
+
+Calibrate with three guards before emitting the finding (kept in `path_traversal_finding_is_suppressed`): (1) safe-arg list restricted to validation-outcome and base-path-convention names (no slot-describing names like `dir`, `parent`, `target`); (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 25 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fires.
 
 ## Footgun: Fixture Findings Are Intentional
 
@@ -86,6 +116,43 @@ The non-obvious failure mode is masking strings but not comments for loop-scoped
 `src/built_in_rules/test_rules.rs` (search: `fn body_contains_only_assertion_subject_unwraps`) exempts `test-quality.unwrap-in-test` only when every `.unwrap()` is inside an assertion macro and the unwrap receiver is a call result. A broad "inside assert macro" exemption hides setup variables such as `assert_eq!(v.unwrap(), 2)`, which existing regression coverage expects to remain visible.
 
 The non-obvious failure mode is treating all assertion unwraps as equivalent. Unwrapping a direct function call in an assertion can be the subject under test; unwrapping a local variable inside an assertion can still hide setup intent. Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (search: `unwrap_expect_skips_cfg_test_module`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap`).
+
+## Footgun: Text-Pattern Rules Self-Fire On Their Own Sentinel Values
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+Rules that scan raw source text for literal patterns (`sensitive-data.*`, `security.hardcoded-bind-all-interfaces`, `security.weak-crypto`, etc.) cannot distinguish "this byte sequence appears in production source" from "this byte sequence appears in the rule's own implementation code." If the rule author writes a literal sentinel, default, or example value in the rule body, the dogfood scan will report the rule's own file as a finding.
+
+Concrete instance from 2026-05-24: `analyse_hardcoded_bind_all_interfaces` was first written with `let addr = capture.name("addr").map_or("", |m| m.as_str()).unwrap_or("0.0.0.0");` — the `.unwrap_or("0.0.0.0")` placed a literal `"0.0.0.0"` in the rule's source, exactly matching the rule's own quoted-IP regex. Dogfood scan flagged `src/built_in_rules/network_security_rules.rs` with `security.hardcoded-bind-all-interfaces`. Same trap nearly hit `sensitive-data.pii-test-fixture` — its placeholder list contained `"example.com"` etc. inside a `matches!` pattern; the strings were safe only because none contained `@` in source-line context, so the email regex didn't match them.
+
+The non-obvious failure mode is that the rule appears correct (calibration passes, external scan looks clean) until you scan the rule's own crate. By then the sentinel value is baked into a public API or fallback.
+
+**How to apply:**
+
+- Before writing a text-pattern rule, list every literal value that will appear in the rule body: regex patterns, fallback defaults, example strings in error messages, allowlist entries. Each one is a self-fire risk.
+- Prefer regex captures over literal fallbacks: if the named capture is guaranteed by the regex contract, early-return on `.name().is_none()` instead of using `.unwrap_or("sentinel")`.
+- For exemption lists in source: put the placeholder values in `matches!` patterns (where they appear as bare identifiers between `|` separators, not as quoted strings in context the regex sees), or load them from a non-source location.
+- After every new text-pattern rule, run `cargo run --quiet -- analyse src/built_in_rules/<new_rule_file>.rs --format json --fail-on none --no-baseline` as the first verification. If the rule fires on its own file, fix it before calibration.
+
+Regression coverage for this specific case: `src/tests/calibration/cases_pillar_expansion.rs` (search: `security.hardcoded-bind-all-interfaces`); the positive case is a Rust fn returning a `"0.0.0.0:8080"` literal, the negative returns `"127.0.0.1:8080"`. Calibration would not have caught the self-fire because calibration runs in a tempdir; only dogfood revealed it. Pairs with [[rule-precision]] for the broader candidate-rule defence pattern.
+
+## Footgun: Wrapper-Module Fan-Out Hits 8 When Adding New Rule Files
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/rust_block_rules.rs` and `src/built_in_rules/rust_other_rules.rs` are wrapper modules that mount per-rule sub-files via `#[path = "..."] mod ...;`. The `architecture.module-fan-out` rule fires on files declaring more than 8 child modules. As the rule catalogue grows past 80, adding a single new built-in rule file to one of these wrappers can push it from 8 → 9 child modules and break dogfood.
+
+Concrete instance from 2026-05-24: adding `network_security_rules.rs` to `rust_other_rules.rs` pushed its mount count to 9. Bumping the threshold would silence the rule everywhere; combining unrelated rules into one file (e.g. `network_security_rules` into `path_traversal_rules`) would create misleading file names. The right fix was moving an existing module (`dead_code`) from `rust_other_rules` to `rust_block_rules` — `dead_code` analysis operates per-item, not per-line, so it semantically fits the block-rules wrapper anyway.
+
+The non-obvious failure mode is treating the wrapper organisation as fixed. The split is: `rust_block_rules` for per-`FunctionBlock` analyzers, `rust_other_rules` for per-file / per-line analyzers. When fan-out tension appears, look for modules in the wrong wrapper before reaching for the threshold dial or for file-merging.
+
+**How to apply:**
+
+- Before adding a new built-in rule file, check `wc -l src/built_in_rules/rust_block_rules.rs src/built_in_rules/rust_other_rules.rs` and count the `#[path]` declarations. If the wrapper is already at 7 or 8, the next addition will break the rule.
+- Prefer re-classification (move a module to the wrapper that semantically fits) over threshold bumping or file merging.
+- The decision criterion: does the rule's analyzer operate on a `FunctionBlock` argument, or on `&SourceFile` + `&str source`? The former goes in `rust_block_rules`, the latter in `rust_other_rules`.
+
+Regression coverage: this footgun re-fires every time the catalogue grows and a new rule file lands. No dedicated regression test — dogfood scan catches it.
 
 ## Resolved Entries
 

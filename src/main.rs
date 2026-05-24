@@ -30,6 +30,7 @@ mod dashboard;
 mod diff;
 mod discovery;
 mod html_report;
+mod init;
 mod parser;
 mod project;
 mod render;
@@ -129,31 +130,61 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let global = cli.global;
     let writer = global.writer();
+    let no_interaction = global.is_non_interactive();
+    let project_root = std::env::current_dir().ok();
+    let root = project_root.as_deref();
     match cli.command {
-        Commands::Analyse(args) => {
-            let options = options_from_analyse(args);
-            let scope = RequestedScope::from_options(&options);
-            let started = Instant::now();
-            match run_analysis(&options) {
-                Ok(report) => {
-                    let duration_ms = Some(started.elapsed().as_millis());
-                    let outcome = RunOutcome::classify(&report, options.fail_on);
-                    let rendered =
-                        render_report_with_scope(&report, &scope, options.format, duration_ms);
-                    writer.emit(outcome, &rendered);
-                    outcome.exit_code()
-                }
-                Err(error) => {
-                    eprintln!("gruff-rs: {error}");
-                    ExitCode::from(2)
-                }
-            }
+        Commands::Analyse(args) => run_analyse_command(args, writer, root, no_interaction),
+        Commands::Report(args) => {
+            init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
+            run_report(args, writer)
         }
-        Commands::Report(args) => run_report(args, writer),
         Commands::ListRules(args) => run_list_rules(args, writer),
-        Commands::Dashboard(args) => run_dashboard(args),
-        Commands::Summary(args) => run_summary(args, writer),
+        Commands::Dashboard(args) => {
+            init::prompt_for_command(
+                Some(args.project_root.as_path()),
+                None,
+                false,
+                no_interaction,
+            );
+            run_dashboard(args)
+        }
+        Commands::Summary(args) => {
+            init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
+            run_summary(args, writer)
+        }
         Commands::Completion(args) => run_completion(args, writer),
+        Commands::Init(args) => init::run_init(args, writer),
+    }
+}
+
+fn run_analyse_command(
+    args: AnalyseArgs,
+    writer: OutputWriter,
+    project_root: Option<&Path>,
+    no_interaction: bool,
+) -> ExitCode {
+    init::prompt_for_command(
+        project_root,
+        args.config.as_deref(),
+        args.no_config,
+        no_interaction,
+    );
+    let options = options_from_analyse(args);
+    let scope = RequestedScope::from_options(&options);
+    let started = Instant::now();
+    match run_analysis(&options) {
+        Ok(report) => {
+            let duration_ms = Some(started.elapsed().as_millis());
+            let outcome = RunOutcome::classify(&report, options.fail_on);
+            let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
+            writer.emit(outcome, &rendered);
+            outcome.exit_code()
+        }
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            ExitCode::from(2)
+        }
     }
 }
 

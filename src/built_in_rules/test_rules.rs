@@ -2,10 +2,11 @@ use super::*;
 
 static TEST_ASSERTION_REGEX: OnceLock<Regex> = OnceLock::new();
 static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
-static LOOP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
 static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
+static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
+static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const TEST_CHECKS: &[RegexRule] = &[
     RegexRule {
@@ -13,12 +14,6 @@ const TEST_CHECKS: &[RegexRule] = &[
         regex: &SLEEP_IN_TEST_REGEX,
         pattern: r"(std::thread::sleep|tokio::time::sleep)",
         message: "Test sleeps instead of synchronising on behaviour.",
-    },
-    RegexRule {
-        rule_id: "test-quality.loop-in-test",
-        regex: &LOOP_IN_TEST_REGEX,
-        pattern: r"\b(for|while|loop)\b",
-        message: "Test contains loop logic.",
     },
     RegexRule {
         rule_id: "test-quality.conditional-logic",
@@ -40,11 +35,64 @@ pub(crate) fn analyse_test_block(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
+    if path_is_calibration_fixture(&file.display_path) {
+        return;
+    }
     analyse_ignored_test(file, block, findings);
     analyse_test_size(file, block, config, findings);
+    analyse_should_panic_without_expected(file, block, findings);
     let searchable_body = strip_rust_string_literals(&block.body);
     analyse_test_assertions(file, block, &searchable_body, findings);
     analyse_test_regex_checks(file, block, &searchable_body, findings);
+}
+
+/// Tests marked `#[should_panic]` without `expected = "..."` cannot
+/// distinguish the intended panic from an unrelated panic that masks a
+/// real bug. Fires only when the attribute appears without any
+/// `expected` arg.
+pub(crate) fn analyse_should_panic_without_expected(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    findings: &mut Vec<Finding>,
+) {
+    if !block.is_test {
+        return;
+    }
+    let code = body_without_doc_comments(&block.body);
+    let has_should_panic =
+        static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(&code);
+    if !has_should_panic {
+        return;
+    }
+    let has_expected = static_regex(
+        &SHOULD_PANIC_EXPECTED_REGEX,
+        r"#\s*\[\s*should_panic\s*\([^)]*\bexpected\s*=",
+    )
+    .is_match(&code);
+    if has_expected {
+        return;
+    }
+    findings.push(block_finding_with_extras(
+        BlockFindingDescriptor {
+            rule_id: "test-quality.should-panic-without-expected",
+            message: format!(
+                "Test `{}` uses #[should_panic] without an `expected = \"...\"` clause.",
+                block.name
+            ),
+            file,
+            block,
+            severity: Severity::Advisory,
+            pillar: Pillar::TestQuality,
+        },
+        BlockFindingExtras {
+            confidence: Confidence::High,
+            remediation: Some(
+                "Add `expected = \"message substring\"` so the test fails when an unrelated panic occurs."
+                    .to_string(),
+            ),
+            metadata: json!({}),
+        },
+    ));
 }
 
 pub(crate) fn analyse_ignored_test(
@@ -73,8 +121,11 @@ pub(crate) fn analyse_test_size(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
+    if path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
     let rule_id = "test-quality.long-test";
-    let threshold = config.threshold(rule_id, 80.0) as usize;
+    let threshold = config.threshold(rule_id, 120.0) as usize;
     if block.line_count > threshold {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {
@@ -155,74 +206,16 @@ pub(crate) fn analyse_test_regex_checks(
 }
 
 /// Returns true when a per-test regex rule should stay silent because
-/// the matched pattern is a recognised idiom. Today: `loop-in-test`
-/// skips table-driven iteration over array literals, ranges, and
-/// `cases()`-style functions; `conditional-logic` skips `cfg!(...)`
-/// platform branches; `unwrap-in-test` skips unwraps that are directly
-/// inside assertion macro calls, where the unwrapped value is the subject
-/// under test rather than hidden setup.
+/// the matched pattern is a recognised idiom. `conditional-logic` skips
+/// `cfg!(...)` platform branches; `unwrap-in-test` skips unwraps that
+/// are directly inside assertion macro calls, where the unwrapped value
+/// is the subject under test rather than hidden setup.
 fn is_test_rule_exempt(rule_id: &str, body: &str) -> bool {
     match rule_id {
-        "test-quality.loop-in-test" => loop_is_table_driven(body),
         "test-quality.conditional-logic" => conditional_is_platform_gate(body),
         "test-quality.unwrap-in-test" => body_contains_only_assertion_subject_unwraps(body),
         _ => false,
     }
-}
-
-fn loop_is_table_driven(body: &str) -> bool {
-    static LOGIC_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
-    let logic_loop = static_regex(&LOGIC_LOOP_REGEX, r"\b(while|loop)\b");
-    if logic_loop.is_match(body) {
-        return false;
-    }
-    static FOR_LOOP_OPEN_REGEX: OnceLock<Regex> = OnceLock::new();
-    let for_loop_open = static_regex(&FOR_LOOP_OPEN_REGEX, r"\bfor\s+[^{};]+\s+in\s+[^{};]+\s*\{");
-    for capture in for_loop_open.find_iter(body) {
-        let body_start = capture.end();
-        let Some(body_end) = matching_close_brace(body, body_start) else {
-            continue;
-        };
-        let loop_body = &body[body_start..body_end];
-        if !loop_body_is_assertions_only(loop_body) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Returns the byte index of the `}` that matches the `{` immediately
-/// before `start`. Treats `{` and `}` literally (the input is already
-/// string-stripped by upstream, so braces inside string literals do not
-/// appear here).
-fn matching_close_brace(body: &str, start: usize) -> Option<usize> {
-    let bytes = body.as_bytes();
-    let mut depth = 1usize;
-    for (offset, byte) in bytes[start..].iter().enumerate() {
-        depth = update_brace_depth(depth, *byte);
-        if depth == 0 {
-            return Some(start + offset);
-        }
-    }
-    None
-}
-
-fn update_brace_depth(depth: usize, byte: u8) -> usize {
-    match byte {
-        b'{' => depth + 1,
-        b'}' => depth.saturating_sub(1),
-        _ => depth,
-    }
-}
-
-fn loop_body_is_assertions_only(body: &str) -> bool {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    static ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
-    let assert_call = static_regex(&ASSERT_REGEX, r"\bassert[a-z_]*!\s*\(");
-    assert_call.is_match(trimmed)
 }
 
 fn conditional_is_platform_gate(body: &str) -> bool {

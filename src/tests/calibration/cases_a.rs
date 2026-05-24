@@ -262,6 +262,10 @@ version = "1.0.0"
 [[package]]
 name = "serde"
 version = "1.0.1"
+
+[[package]]
+name = "serde"
+version = "1.0.2"
 "#,
                 )
                 .expect("dup lock");

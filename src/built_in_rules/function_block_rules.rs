@@ -7,7 +7,7 @@ pub(crate) fn analyse_placeholder_block_name(
     findings: &mut Vec<Finding>,
 ) {
     let extras = config.string_array_option("naming.placeholder-identifier", "extraPlaceholders");
-    let extra_match = extras.iter().any(|name| name == &block.name);
+    let extra_match = extras.contains(&block.name);
     if is_placeholder_identifier(&block.name) || extra_match {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {
@@ -30,97 +30,6 @@ pub(crate) fn analyse_placeholder_block_name(
     }
 }
 
-pub(crate) fn analyse_public_function_doc(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    findings: &mut Vec<Finding>,
-) {
-    if block.is_externally_public && !has_doc_comment_before(&block.body) {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id: "docs.missing-public-doc",
-            message: format!(
-                "Public function `{}` is missing a Rust doc comment.",
-                block.name
-            ),
-            file,
-            block,
-            severity: Severity::Advisory,
-            pillar: Pillar::Documentation,
-        }));
-    }
-}
-
-/// Externally-public functions returning syntactic `Result<...>` should
-/// document the error contract. The rule fires when the preceding rustdoc
-/// (if any) does not contain `# Errors` or `## Errors`. Type-alias `Result`
-/// shapes are intentionally not detected - see `fn returns_result`.
-pub(crate) fn analyse_missing_errors_section(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    findings: &mut Vec<Finding>,
-) {
-    if !block.is_externally_public || !block.returns_result {
-        return;
-    }
-    if doc_comment_text(&block.body).contains_errors_section() {
-        return;
-    }
-    findings.push(block_finding_with_extras(
-        BlockFindingDescriptor {
-            rule_id: "docs.missing-errors-section",
-            message: format!(
-                "Public function `{}` returns Result but its rustdoc lacks a `# Errors` section.",
-                block.name
-            ),
-            file,
-            block,
-            severity: Severity::Advisory,
-            pillar: Pillar::Documentation,
-        },
-        BlockFindingExtras {
-            confidence: Confidence::High,
-            remediation: Some(
-                "Add a `# Errors` rustdoc section describing when this function returns Err."
-                    .to_string(),
-            ),
-            metadata: json!({}),
-        },
-    ));
-}
-
-/// Returns the concatenated text of `///` and `//!` doc-comment lines that
-/// appear before the `fn ` keyword in `block_body`, with the marker bytes
-/// stripped. Used to look for rustdoc sections like `# Errors`.
-pub(crate) fn doc_comment_text(block_body: &str) -> DocCommentText {
-    let mut text = String::new();
-    for line in block_body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("///") {
-            text.push_str(trimmed.trim_start_matches("///").trim());
-            text.push('\n');
-        } else if trimmed.starts_with("//!") {
-            text.push_str(trimmed.trim_start_matches("//!").trim());
-            text.push('\n');
-        } else if trimmed.contains("fn ") {
-            break;
-        }
-    }
-    DocCommentText(text)
-}
-
-pub(crate) struct DocCommentText(String);
-
-impl DocCommentText {
-    fn contains_errors_section(&self) -> bool {
-        self.0.lines().any(|line| {
-            let trimmed = line.trim();
-            trimmed.starts_with("# Errors")
-                || trimmed.starts_with("## Errors")
-                || trimmed.starts_with("### Errors")
-        })
-    }
-}
-
 pub(crate) fn analyse_error_handling_block(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -138,6 +47,9 @@ pub(crate) fn analyse_panic_block(
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    if block.is_test || block.test_context || path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
     let has_panic = static_regex(&PANIC_MACRO_REGEX, r"\bpanic!\s*\(").is_match(searchable_body);
     if has_panic && !has_nearby_invariant_comment(searchable_body) {
         findings.push(block_finding_with_extras(
@@ -147,7 +59,7 @@ pub(crate) fn analyse_panic_block(
                 file,
                 block,
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             },
             BlockFindingExtras {
                 confidence: Confidence::High,
@@ -180,7 +92,7 @@ pub(crate) fn analyse_placeholder_block(
                 file,
                 block,
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             },
             BlockFindingExtras {
                 confidence: Confidence::High,
@@ -213,7 +125,7 @@ pub(crate) fn analyse_public_unwrap_block(
                 file,
                 block,
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             },
             BlockFindingExtras {
                 confidence: Confidence::High,
@@ -232,6 +144,9 @@ pub(crate) fn analyse_metric_block(
     cyclomatic: usize,
     findings: &mut Vec<Finding>,
 ) {
+    if path_is_calibration_fixture(&ctx.file.display_path) {
+        return;
+    }
     let metrics = function_metrics(searchable_body, cyclomatic);
     analyse_halstead_volume(
         BlockAnalysisContext {
@@ -311,7 +226,7 @@ pub(crate) fn analyse_maintainability_pressure(
                     file: ctx.file,
                     block: ctx.block,
                     severity: ctx.config.severity(rule_id, Severity::Advisory),
-                    pillar: Pillar::Complexity,
+                    pillar: Pillar::Maintainability,
                 },
                 BlockFindingExtras {
                     confidence: Confidence::Medium,

@@ -140,7 +140,7 @@ pub(crate) fn push_performance_finding(
             file,
             block,
             severity: check.severity,
-            pillar: Pillar::Waste,
+            pillar: Pillar::Maintainability,
         },
         BlockFindingExtras {
             confidence: check.confidence,

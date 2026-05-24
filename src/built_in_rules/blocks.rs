@@ -42,6 +42,10 @@ pub(crate) fn analyse_block(
     analyse_block_naming(file, block, config, findings);
     analyse_public_function_doc(file, block, findings);
     analyse_missing_errors_section(file, block, findings);
+    analyse_missing_panics_section(file, block, findings);
+    analyse_missing_safety_section(file, block, findings);
+    analyse_missing_param_doc(file, block, findings);
+    analyse_missing_return_doc(file, block, findings);
     analyse_error_handling_block(file, block, &searchable_body, findings);
     analyse_concurrency_block(file, block, &searchable_body, findings);
     analyse_insecure_rng_for_secrets(file, block, &searchable_body, findings);
@@ -260,7 +264,7 @@ pub(crate) fn analyse_block_naming(
     findings: &mut Vec<Finding>,
 ) {
     let extra_generic = config.string_array_option("naming.generic-function", "extraGenericNames");
-    if is_generic_name(&block.name) || extra_generic.iter().any(|name| name == &block.name) {
+    if is_generic_name(&block.name) || extra_generic.contains(&block.name) {
         findings.push(block_finding(BlockFindingDescriptor {
             rule_id: "naming.generic-function",
             message: format!(

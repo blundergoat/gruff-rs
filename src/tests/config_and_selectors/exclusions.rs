@@ -23,7 +23,7 @@ pub(crate) fn exclusion_filter_counts_rule_path_message_and_unmatched_entries() 
             "src/lib.rs",
             5,
             Severity::Advisory,
-            Pillar::Waste,
+            Pillar::Maintainability,
         ),
         Finding::new(FindingDescriptor {
             rule_id: "size.parameter-count".to_string(),

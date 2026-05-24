@@ -133,11 +133,12 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
 fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128) {
     let _ = writeln!(
         out,
-        "{} {}  ·  project: {}  ·  files: {}  ·  duration: {}",
+        "{} {}  ·  project: {}  ·  files: {}{}  ·  duration: {}",
         report.tool.name,
         report.tool.version,
         display_project_root(&report.run.project_root),
         report.paths.analysed_files,
+        ignored_count_label(report),
         format_duration(duration_ms),
     );
 
@@ -168,6 +169,39 @@ fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128
     }
     out.push_str(&score_line);
     out.push('\n');
+    render_scan_guidance(out, report);
+}
+
+fn ignored_count_label(report: &AnalysisReport) -> String {
+    if report.paths.ignored_paths.is_empty() {
+        String::new()
+    } else {
+        format!("  ·  ignored: {}", report.paths.ignored_paths.len())
+    }
+}
+
+fn render_scan_guidance(out: &mut String, report: &AnalysisReport) {
+    if !report.paths.ignored_paths.is_empty() {
+        let _ = writeln!(
+            out,
+            "Ignored paths skipped by Git/config ignores; pass --include-ignored to scan them."
+        );
+    }
+    match &report.baseline {
+        Some(baseline) if baseline.suppressed > 0 => {
+            let _ = writeln!(
+                out,
+                "Unsuppressed view: run `gruff-rs analyse --no-baseline`."
+            );
+        }
+        None if report.summary.total > 0 => {
+            let _ = writeln!(
+                out,
+                "Tip: run `gruff-rs analyse --generate-baseline` to accept today's findings as the starting point."
+            );
+        }
+        _ => {}
+    }
 }
 
 fn format_duration(duration_ms: u128) -> String {
@@ -264,6 +298,7 @@ fn pillar_label(pillar: Pillar) -> &'static str {
         Pillar::Complexity => "complexity",
         Pillar::DeadCode => "dead-code",
         Pillar::Waste => "waste",
+        Pillar::Maintainability => "maintainability",
         Pillar::Naming => "naming",
         Pillar::Documentation => "documentation",
         Pillar::Modernisation => "modernisation",
