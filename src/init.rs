@@ -161,6 +161,18 @@ pub(crate) fn render_default_config(registry: &RuleRegistry, extra_ignores: &[St
     out.push_str(HEADER);
     out.push('\n');
 
+    append_paths_section(&mut out, extra_ignores);
+    append_allowlists_section(&mut out);
+
+    out.push_str("rules:\n");
+    for definition in registry.definitions() {
+        append_rule_entry(&mut out, definition);
+    }
+
+    out
+}
+
+fn append_paths_section(out: &mut String, extra_ignores: &[String]) {
     out.push_str("paths:\n");
     out.push_str("  # Discovery-time do-not-read patterns. Use this for generated\n");
     out.push_str("  # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`\n");
@@ -182,7 +194,9 @@ pub(crate) fn render_default_config(registry: &RuleRegistry, extra_ignores: &[St
         }
     }
     out.push('\n');
+}
 
+fn append_allowlists_section(out: &mut String) {
     out.push_str("allowlists:\n");
     out.push_str("  acceptedAbbreviations:\n");
     for abbreviation in DEFAULT_ABBREVIATIONS {
@@ -190,13 +204,6 @@ pub(crate) fn render_default_config(registry: &RuleRegistry, extra_ignores: &[St
     }
     out.push_str("  secretPreviews: []\n");
     out.push('\n');
-
-    out.push_str("rules:\n");
-    for definition in registry.definitions() {
-        append_rule_entry(&mut out, definition);
-    }
-
-    out
 }
 
 fn append_rule_entry(out: &mut String, definition: &RuleDefinition) {

@@ -151,7 +151,6 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
         lines,
         vec![
             "ci.github-event-shell-interpolation",
-            "config.security-blind-ignore",
             "dependency.duplicate-locked-version",
             "dependency.git-source",
             "dependency.git-unpinned-revision",

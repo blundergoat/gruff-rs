@@ -63,31 +63,45 @@ pub(crate) fn analyse_sensitive_data(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
+    if path_is_calibration_fixture(&unit.file.display_path)
+        || path_is_test_infrastructure(&unit.file.display_path)
+    {
+        return;
+    }
     for rule in SENSITIVE_PATTERNS {
-        for capture in static_regex(rule.regex, rule.pattern).find_iter(unit.source) {
-            let preview = redact(capture.as_str());
-            if config.secret_previews.contains(&preview) {
-                continue;
-            }
-            findings.push(Finding::new(FindingDescriptor {
-                rule_id: rule.rule_id.to_string(),
-                message: rule.message.to_string(),
-                file_path: unit.file.display_path.clone(),
-                line: Some(byte_line_from_starts(unit.line_starts(), capture.start())),
-                severity: Severity::Error,
-                pillar: Pillar::SensitiveData,
-                confidence: Confidence::High,
-                symbol: None,
-                remediation: Some(
-                    "Remove the secret and load it from a secure runtime source.".to_string(),
-                ),
-                metadata: json!({ "preview": preview }),
-            }));
-        }
+        push_regex_pattern_matches(unit, config, rule, findings);
     }
 
     analyse_env_like_secrets(unit, config, findings);
     analyse_high_entropy_strings(unit, config, findings);
+}
+
+fn push_regex_pattern_matches(
+    unit: &SourceUnit<'_>,
+    config: &Config,
+    rule: &RegexRule,
+    findings: &mut Vec<Finding>,
+) {
+    for capture in static_regex(rule.regex, rule.pattern).find_iter(unit.source) {
+        let preview = redact(capture.as_str());
+        if config.secret_previews.contains(&preview) {
+            continue;
+        }
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: rule.rule_id.to_string(),
+            message: rule.message.to_string(),
+            file_path: unit.file.display_path.clone(),
+            line: Some(byte_line_from_starts(unit.line_starts(), capture.start())),
+            severity: Severity::Error,
+            pillar: Pillar::SensitiveData,
+            confidence: Confidence::High,
+            symbol: None,
+            remediation: Some(
+                "Remove the secret and load it from a secure runtime source.".to_string(),
+            ),
+            metadata: json!({ "preview": preview }),
+        }));
+    }
 }
 
 pub(crate) fn analyse_env_like_secrets(

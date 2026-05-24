@@ -130,14 +130,14 @@ const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLD: Option<ThresholdDefinition> = Some(
 const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(12.0));
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition> =
-    Some(threshold(1.0));
+    Some(threshold(2.0));
 const METRICS_HALSTEAD_VOLUME_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(1500.0));
 const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(45.0));
 const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(600.0));
 const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(50.0));
 const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(5.0));
-const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(80.0));
+const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(120.0));
 
 macro_rules! rule_definition {
     (

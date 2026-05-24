@@ -22,12 +22,23 @@ pub(crate) fn analyse_module_fan_out(
     let threshold = config.threshold(rule_id, 8.0) as usize;
     let by_file = group_modules_by_file(context);
     for (file_path, modules) in by_file {
+        if is_binary_crate_root(file_path) {
+            continue;
+        }
         if modules.len() > threshold {
             findings.push(module_fan_out_finding(
                 rule_id, file_path, &modules, threshold, config,
             ));
         }
     }
+}
+
+// Binary crate roots (`main.rs`) wire every top-level module together,
+// so high fan-out is the norm there, not a smell. Library roots
+// (`lib.rs`) keep the fan-out check on - their job is composition.
+fn is_binary_crate_root(file_path: &str) -> bool {
+    let normalized = file_path.replace('\\', "/");
+    normalized.ends_with("/main.rs") || normalized == "main.rs"
 }
 
 fn group_modules_by_file(context: &ProjectContext) -> BTreeMap<&str, Vec<&ModuleSummary>> {

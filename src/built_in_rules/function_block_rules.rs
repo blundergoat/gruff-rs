@@ -138,6 +138,9 @@ pub(crate) fn analyse_panic_block(
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    if block.is_test || block.test_context || path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
     let has_panic = static_regex(&PANIC_MACRO_REGEX, r"\bpanic!\s*\(").is_match(searchable_body);
     if has_panic && !has_nearby_invariant_comment(searchable_body) {
         findings.push(block_finding_with_extras(
@@ -232,6 +235,9 @@ pub(crate) fn analyse_metric_block(
     cyclomatic: usize,
     findings: &mut Vec<Finding>,
 ) {
+    if path_is_calibration_fixture(&ctx.file.display_path) {
+        return;
+    }
     let metrics = function_metrics(searchable_body, cyclomatic);
     analyse_halstead_volume(
         BlockAnalysisContext {

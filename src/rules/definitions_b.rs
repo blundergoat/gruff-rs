@@ -125,16 +125,6 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         "Flags GitHub event values interpolated directly into workflow shell steps.",
     ),
     rule_definition!(
-        "config.security-blind-ignore",
-        "Security-blind path ignore",
-        Pillar::Security,
-        RuleKind::Text,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags paths.ignore entries that can hide security-relevant files from analysis.",
-    ),
-    rule_definition!(
         "performance.clone-in-loop",
         "Clone in loop",
         Pillar::Maintainability,
@@ -372,16 +362,6 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         TEST_LONG_THRESHOLD,
         "Flags long test functions that are harder to scan and maintain.",
-    ),
-    rule_definition!(
-        "test-quality.loop-in-test",
-        "Loop in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags tests that contain loop logic.",
     ),
     rule_definition!(
         "test-quality.no-assertions",

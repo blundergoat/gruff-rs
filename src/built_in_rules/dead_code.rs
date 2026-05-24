@@ -130,6 +130,7 @@ pub(crate) fn analyse_dead_function(
         || has_test_attr(attrs)
         || has_cfg_test_attr(attrs)
         || test_context
+        || is_parent_module_file(source)
     {
         return;
     }
@@ -147,6 +148,20 @@ pub(crate) fn analyse_dead_function(
             metadata: json!({}),
         }));
     }
+}
+
+// Rust submodules can call private items in their parent module, so a
+// file that declares `mod X;` is acting as a parent and its same-file
+// dead-code detection misses descendant call sites. Skip dead-code on
+// parents - the cost of a stale helper in a parent module is low,
+// and the false-positive rate without this skip is high.
+fn is_parent_module_file(source: &str) -> bool {
+    static SUBMODULE_DECL_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &SUBMODULE_DECL_REGEX,
+        r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;",
+    )
+    .is_match(source)
 }
 
 pub(crate) fn function_reference_count(source: &str, name: &str) -> usize {

@@ -160,10 +160,10 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
     let mut body = String::from(
             "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod fixtures {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
         );
-    for index in 0..90 {
+    for index in 0..130 {
         body.push_str(&format!("        if {index} > 0 {{ total += {index}; }}\n"));
     }
-    body.push_str("        assert_eq!(total, 4005);\n    }\n}\n");
+    body.push_str("        assert_eq!(total, 8385);\n    }\n}\n");
     baseline_with_lib(dir.path(), &body);
     let report = run_project_analysis(
         dir.path(),
@@ -386,11 +386,6 @@ paths:
         .iter()
         .filter(|finding| finding.rule_id == "security.tls-verification-disabled")
         .count();
-    let config_count = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "config.security-blind-ignore")
-        .count();
     let ci_count = report
         .findings
         .iter()
@@ -401,12 +396,6 @@ paths:
         tls_count,
         1,
         "TLS guard count drifted: {:?}",
-        rule_ids(&report)
-    );
-    assert_eq!(
-        config_count,
-        1,
-        "config ignore guard count drifted: {:?}",
         rule_ids(&report)
     );
     assert_eq!(

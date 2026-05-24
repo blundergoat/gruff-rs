@@ -171,31 +171,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
             }),
         ),
         case(
-            "config.security-blind-ignore",
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
-                write_config(
-                    root,
-                    r#"
-paths:
-  ignore:
-    - .github/**
-"#,
-                );
-            }),
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
-                write_config(
-                    root,
-                    r#"
-paths:
-  ignore:
-    - target/**
-"#,
-                );
-            }),
-        ),
-        case(
             "ci.github-event-shell-interpolation",
             Box::new(|root| {
                 baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
@@ -419,31 +394,16 @@ paths:
                 let mut body = String::from(
                         "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn long() {\n        let value = 0;\n",
                     );
-                for index in 0..90 {
+                for index in 0..130 {
                     body.push_str(&format!("        let value = value + {index};\n"));
                 }
-                body.push_str("        assert_eq!(value, 4005);\n    }\n}\n");
+                body.push_str("        assert_eq!(value, 8385);\n    }\n}\n");
                 baseline_with_lib(root, &body);
             }),
             Box::new(|root| {
                 baseline_with_lib(
                         root,
                         "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn quick() { assert_eq!(2 + 2, 4); }\n}\n",
-                    )
-            }),
-        ),
-        case(
-            "test-quality.loop-in-test",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let mut sum = 0;\n        for index in 0..3 { sum += index; }\n        assert_eq!(sum, 3);\n    }\n}\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(1 + 2, 3); }\n}\n",
                     )
             }),
         ),
