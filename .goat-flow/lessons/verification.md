@@ -124,3 +124,16 @@ product check into a jq error.
 
 Assign each expected value from a separate `jq -r` read, then use shell `test`
 assertions before printing the compact summary.
+
+## Lesson: Verify Cargo Subcommand Binaries Both Ways
+
+**Created:** 2026-05-24
+
+When a script resolves a Cargo subcommand binary path directly, test that direct
+binary invocation separately from `cargo <subcommand>`. `cargo audit` dispatches
+through Cargo, but the installed `cargo-audit` binary needs the explicit
+`audit` subcommand when invoked by path.
+
+For tool-root smoke tests, run the exact path form the script will use, such as
+`/tmp/tool-root/bin/cargo-audit audit`, before treating the Cargo-dispatched
+form as equivalent.

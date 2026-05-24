@@ -1,4 +1,4 @@
-# Rust Rubric
+# Rules
 
 `gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
 

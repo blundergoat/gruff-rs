@@ -127,11 +127,9 @@ update_cargo_toml() {
 }
 
 sync_cargo_lock() {
-  require_cmd cargo
   # --workspace refreshes lockfile entries for workspace members (just
   # gruff-rs here) without disturbing external dependency versions.
-  ( cd "$REPO_ROOT" && cargo update --workspace --quiet ) \
-    || die "cargo update --workspace failed; resolve and re-run"
+  ( cd "$REPO_ROOT" && cargo update --workspace --quiet )
 }
 
 prepend_changelog() {
@@ -173,6 +171,20 @@ prepend_changelog() {
   ' "$CHANGELOG" >"$tmp" || { rm -f "$tmp"; return 1; }
 
   mv "$tmp" "$CHANGELOG"
+}
+
+restore_file() {
+  local backup=$1 target=$2 label=$3
+
+  if [[ -f "$backup" ]]; then
+    cp -p "$backup" "$target" || warn "failed to restore $label from $backup"
+  fi
+}
+
+cleanup_dir() {
+  local dir=$1
+
+  [[ -n "$dir" && -d "$dir" ]] && rm -rf "$dir"
 }
 
 main() {
@@ -231,22 +243,66 @@ main() {
     return 0
   fi
 
-  update_cargo_toml "$new" || die "failed to update Cargo.toml"
-  ok "updated Cargo.toml"
+  local refresh_lock=0 backup_dir cargo_toml_backup cargo_lock_backup changelog_backup
+  backup_dir=""
+  cargo_lock_backup=""
+  changelog_backup=""
 
-  if ((SKIP_LOCK == 0)); then
-    if [[ -f "$CARGO_LOCK" ]]; then
-      sync_cargo_lock
+  if ((SKIP_LOCK == 0)) && [[ -f "$CARGO_LOCK" ]]; then
+    require_cmd cargo
+    refresh_lock=1
+  fi
+
+  backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/gruff-bump-version.XXXXXX") \
+    || die "failed to create temporary backup directory"
+  cargo_toml_backup="$backup_dir/Cargo.toml"
+  cargo_lock_backup="$backup_dir/Cargo.lock"
+  changelog_backup="$backup_dir/CHANGELOG.md"
+
+  cp -p "$CARGO_TOML" "$cargo_toml_backup" \
+    || { cleanup_dir "$backup_dir"; die "failed to back up Cargo.toml"; }
+  if ((refresh_lock)); then
+    cp -p "$CARGO_LOCK" "$cargo_lock_backup" \
+      || { cleanup_dir "$backup_dir"; die "failed to back up Cargo.lock"; }
+  fi
+  if ((WRITE_CHANGELOG)) && [[ -f "$CHANGELOG" ]]; then
+    cp -p "$CHANGELOG" "$changelog_backup" \
+      || { cleanup_dir "$backup_dir"; die "failed to back up CHANGELOG.md"; }
+  fi
+
+  if update_cargo_toml "$new"; then
+    ok "updated Cargo.toml"
+  else
+    cleanup_dir "$backup_dir"
+    die "failed to update Cargo.toml"
+  fi
+
+  if ((refresh_lock)); then
+    if sync_cargo_lock; then
       ok "refreshed Cargo.lock"
     else
-      warn "Cargo.lock not found - skipping lock refresh"
+      restore_file "$cargo_toml_backup" "$CARGO_TOML" "Cargo.toml"
+      restore_file "$cargo_lock_backup" "$CARGO_LOCK" "Cargo.lock"
+      cleanup_dir "$backup_dir"
+      die "cargo update --workspace failed; restored Cargo.toml and Cargo.lock"
     fi
+  elif ((SKIP_LOCK == 0)); then
+    warn "Cargo.lock not found - skipping lock refresh"
   fi
 
   if ((WRITE_CHANGELOG)); then
-    prepend_changelog "$new" || die "failed to update CHANGELOG.md"
-    ok "prepended CHANGELOG.md entry"
+    if prepend_changelog "$new"; then
+      ok "prepended CHANGELOG.md entry"
+    else
+      restore_file "$cargo_toml_backup" "$CARGO_TOML" "Cargo.toml"
+      restore_file "$cargo_lock_backup" "$CARGO_LOCK" "Cargo.lock"
+      restore_file "$changelog_backup" "$CHANGELOG" "CHANGELOG.md"
+      cleanup_dir "$backup_dir"
+      die "failed to update CHANGELOG.md; restored changed files"
+    fi
   fi
+
+  cleanup_dir "$backup_dir"
 
   printf '\n  %sNext steps%s\n' "$BOLD" "$RESET"
   info "  bash scripts/preflight-checks.sh"
