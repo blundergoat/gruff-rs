@@ -277,7 +277,10 @@ pub(crate) fn analyse_missing_safety_section(
 /// produce a finding. Skips functions whose rustdoc is empty (covered by
 /// `docs.missing-public-doc`) and functions whose only parameter is
 /// `self` / `&self` / `&mut self`. Underscore-prefixed parameters are
-/// considered intentionally unused and are skipped.
+/// considered intentionally unused and are skipped. Frontend-bridge
+/// macros (`#[tauri::command]`, `#[wasm_bindgen]`, `#[pyfunction]`) skip
+/// the check because their rustdoc convention describes the user-facing
+/// action rather than enumerating Rust API parameters.
 pub(crate) fn analyse_missing_param_doc(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -287,6 +290,9 @@ pub(crate) fn analyse_missing_param_doc(
         return;
     }
     if block.param_count == 0 {
+        return;
+    }
+    if has_frontend_bridge_attr(&block.body) {
         return;
     }
     let docs = doc_comment_text(&block.body);
@@ -329,7 +335,10 @@ pub(crate) fn analyse_missing_param_doc(
 /// produce a finding. Skips functions with no explicit return type or that
 /// return `Result<...>` (already covered by `docs.missing-errors-section`).
 /// Skips functions whose rustdoc is empty (covered by
-/// `docs.missing-public-doc`).
+/// `docs.missing-public-doc`). Frontend-bridge macros
+/// (`#[tauri::command]`, `#[wasm_bindgen]`, `#[pyfunction]`) skip the
+/// check for the same reason as `docs.missing-param-doc`: their rustdoc
+/// convention describes the user-facing action.
 pub(crate) fn analyse_missing_return_doc(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -342,6 +351,9 @@ pub(crate) fn analyse_missing_return_doc(
         return;
     }
     if !signature_has_return_type(&block.body) {
+        return;
+    }
+    if has_frontend_bridge_attr(&block.body) {
         return;
     }
     let docs = doc_comment_text(&block.body);
@@ -424,6 +436,21 @@ pub(crate) fn signature_has_return_type(body: &str) -> bool {
     static_regex(
         &SIG_RETURN_REGEX,
         r"fn\s+[A-Za-z_][A-Za-z0-9_]*[^{;]*->\s*[^{;]+\{",
+    )
+    .is_match(body)
+}
+
+/// True iff `body` carries a macro attribute that marks the function as a
+/// frontend bridge: `#[tauri::command]`, `#[command]` (Tauri shorthand
+/// after `use tauri::command`), `#[wasm_bindgen]`, or `#[pyfunction]`.
+/// Bridge functions follow user-facing-summary rustdoc convention rather
+/// than the Rust API contract style, so per-param and return-value
+/// documentation rules stay silent on them.
+pub(crate) fn has_frontend_bridge_attr(body: &str) -> bool {
+    static BRIDGE_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &BRIDGE_ATTR_REGEX,
+        r"#\s*\[\s*(?:tauri\s*::\s*command|command|wasm_bindgen|pyfunction|pyo3\s*::\s*pyfunction)\b",
     )
     .is_match(body)
 }

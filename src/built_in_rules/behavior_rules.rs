@@ -283,6 +283,15 @@ fn path_traversal_finding_is_suppressed(arg: &str, lines: &[&str], line: usize) 
     if arg_is_typed_path_in_nearby_signature(arg, lines, line) {
         return true;
     }
+    if arg_is_loop_var_from_literal_array(arg, lines, line) {
+        return true;
+    }
+    if arg_is_let_bound_to_literal(arg, lines, line) {
+        return true;
+    }
+    if arg_was_validated_in_nearby_call(arg, lines, line) {
+        return true;
+    }
     if window_validates_path_after(lines, line) {
         return true;
     }
@@ -350,19 +359,98 @@ fn arg_is_typed_path_in_nearby_signature(arg: &str, lines: &[&str], line: usize)
     false
 }
 
-/// True iff the 10 lines after `line` (inclusive of the join itself)
+/// True iff the 25 lines after `line` (inclusive of the join itself)
 /// contain both `.canonicalize()` and `.starts_with(`. That sequence is
 /// the validate-then-trust pattern (resolve symlinks, then check the
 /// resolved path is inside the trusted root), and recognising it lets the
-/// rule stay silent on intentionally-defended joins.
+/// rule stay silent on intentionally-defended joins. The 25-line window
+/// accommodates functions that branch on absolute-vs-relative path shapes
+/// before reaching the canonicalize check.
 fn window_validates_path_after(lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
     }
     let zero_based = line.saturating_sub(1);
-    let end = (zero_based + 10).min(lines.len());
+    let end = (zero_based + 25).min(lines.len());
     let window: String = lines[zero_based..end].join("\n");
     window.contains(".canonicalize(") && window.contains(".starts_with(")
+}
+
+/// True iff `arg` was the argument of a validation-shaped function call
+/// in the 30 lines before `line`. Recognises calls whose function name
+/// starts with `validate_`, `verify_`, `sanitize_`, or `check_` — the
+/// near-universal convention for taint-removal helpers. Callers commonly
+/// write `validate_path(&arg)?;` immediately before the `.join(arg)`, so
+/// detecting the call lets the rule stay silent on intentionally-defended
+/// joins. Also recognises inline taint checks like
+/// `if arg.contains("..") || arg.contains('/') { return Err(...) }`.
+fn arg_was_validated_in_nearby_call(arg: &str, lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let lookback_start = zero_based.saturating_sub(30);
+    let window: String = lines[lookback_start..=zero_based].join("\n");
+    let validator_pattern = format!(
+        r"(?:validate|verify|sanitize|check)_\w+\s*\([^)]*\b{}\b[^)]*\)",
+        regex::escape(arg)
+    );
+    let Ok(validator_regex) = Regex::new(&validator_pattern) else {
+        return false;
+    };
+    if validator_regex.is_match(&window) {
+        return true;
+    }
+    let inline_check_pattern = format!(r"if\s+{}\s*\.\s*contains\s*\(", regex::escape(arg));
+    let Ok(inline_check_regex) = Regex::new(&inline_check_pattern) else {
+        return false;
+    };
+    inline_check_regex.is_match(&window)
+}
+
+/// True iff `arg` is bound by a `for ARG in [...]` or `for ARG in &ITER`
+/// statement in the 3 lines before `line`. Such loop variables can only
+/// take values from the iterated source, and when that source is a local
+/// array (literal or borrowed from a same-function `let` binding), the
+/// loop variable cannot carry user input. The `&\w+` shape catches the
+/// common idiom `let candidates = [...]; for path in &candidates {...}`.
+fn arg_is_loop_var_from_literal_array(arg: &str, lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let lookback_start = zero_based.saturating_sub(3);
+    let pattern = format!(r"\bfor\s+{}\s+in\s+(?:\[|&\s*\w+)", regex::escape(arg));
+    let Ok(loop_regex) = Regex::new(&pattern) else {
+        return false;
+    };
+    for source_line in &lines[lookback_start..=zero_based] {
+        if loop_regex.is_match(source_line) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True iff `arg` is bound to a string literal in the 4 lines before
+/// `line`. Detection runs against the comment- and string-masked source,
+/// so `let ARG = "literal"` and `let ARG = r"literal"` both appear as
+/// `let ARG = ;` (the literal contents become whitespace via
+/// `strip_rust_string_literals`). The bound value is a static string, so
+/// the join cannot carry user input. Lines are joined before matching to
+/// catch multi-line `let` shapes like `let plugin_path =\n    r"..."`.
+fn arg_is_let_bound_to_literal(arg: &str, lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let lookback_start = zero_based.saturating_sub(4);
+    let window: String = lines[lookback_start..=zero_based].join("\n");
+    let pattern = format!(r"\blet\s+{}\s*(?::[^=]+)?=\s*;", regex::escape(arg));
+    let Ok(let_regex) = Regex::new(&pattern) else {
+        return false;
+    };
+    let_regex.is_match(&window)
 }
 
 fn push_path_traversal_candidate_finding(
