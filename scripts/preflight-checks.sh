@@ -8,7 +8,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GRUFF_RS_FAIL_ON="${GRUFF_RS_FAIL_ON:-advisory}"
 GRUFF_RS_RELEASE_CHECK="${GRUFF_RS_RELEASE_CHECK:-0}"
-GRUFF_RS_REQUIRE_AUDIT="${GRUFF_RS_REQUIRE_AUDIT:-0}"
 WORK_DIR=""
 
 TOTAL=0
@@ -50,7 +49,7 @@ Runs the local gruff-rs preflight suite:
   - shellcheck for shell scripts when shellcheck is installed
   - cargo fmt, clippy, and tests
   - crate version consistency between Cargo.toml and Cargo.lock
-  - RustSec dependency audit when cargo-audit is installed
+  - RustSec dependency audit, auto-installing cargo-audit when missing
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
   - gruff-rs dogfood scan of src/
 
@@ -64,7 +63,6 @@ Options:
 Environment:
   GRUFF_RS_FAIL_ON        Dogfood scan threshold (default: advisory).
   GRUFF_RS_RELEASE_CHECK  Set to 1/true/yes/on to enable --release-check.
-  GRUFF_RS_REQUIRE_AUDIT  Set to 1/true/yes/on to fail when cargo-audit is missing.
 USAGE
 }
 
@@ -120,7 +118,7 @@ header() {
   printf '  %sroot:%s %s\n' "$DIM" "$RESET" "$REPO_ROOT"
   printf '  %sdogfood fail threshold:%s %s\n' "$DIM" "$RESET" "$GRUFF_RS_FAIL_ON"
   printf '  %srelease version check:%s %s\n' "$DIM" "$RESET" "$(release_check_label)"
-  printf '  %sdependency audit required:%s %s\n' "$DIM" "$RESET" "$(audit_requirement_label)"
+  printf '  %sdependency audit:%s required (auto-install cargo-audit)\n' "$DIM" "$RESET"
   rule
   printf '\n'
 }
@@ -285,13 +283,6 @@ validate_release_check() {
   esac
 }
 
-validate_audit_requirement() {
-  case "$GRUFF_RS_REQUIRE_AUDIT" in
-    0|1|false|true|no|yes|off|on) ;;
-    *) die "invalid GRUFF_RS_REQUIRE_AUDIT value: $GRUFF_RS_REQUIRE_AUDIT" ;;
-  esac
-}
-
 release_check_enabled() {
   case "$GRUFF_RS_RELEASE_CHECK" in
     1|true|yes|on) return 0 ;;
@@ -299,23 +290,8 @@ release_check_enabled() {
   esac
 }
 
-audit_required() {
-  case "$GRUFF_RS_REQUIRE_AUDIT" in
-    1|true|yes|on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 release_check_label() {
   if release_check_enabled; then
-    printf 'on'
-  else
-    printf 'off'
-  fi
-}
-
-audit_requirement_label() {
-  if audit_required; then
     printf 'on'
   else
     printf 'off'
@@ -504,18 +480,60 @@ require_cargo() {
   command -v cargo >/dev/null 2>&1 || die "cargo is not available on PATH"
 }
 
-dependency_audit_check() {
-  if ! command -v cargo-audit >/dev/null 2>&1; then
-    if audit_required; then
-      printf 'cargo-audit is not available on PATH\n' >&2
-      return 1
-    fi
+cargo_install_root() {
+  if [[ -n "${CARGO_INSTALL_ROOT:-}" ]]; then
+    printf '%s\n' "$CARGO_INSTALL_ROOT"
+  elif [[ -n "${CARGO_HOME:-}" ]]; then
+    printf '%s\n' "$CARGO_HOME"
+  else
+    printf '%s\n' "$HOME/.cargo"
+  fi
+}
 
-    skip_step "dependency audit (cargo-audit not installed)"
+resolve_cargo_audit() {
+  local install_root
+  local cargo_audit
+
+  if cargo_audit=$(command -v cargo-audit 2>/dev/null); then
+    printf '%s\n' "$cargo_audit"
     return 0
   fi
 
-  cargo audit
+  install_root=$(cargo_install_root)
+  cargo_audit="$install_root/bin/cargo-audit"
+  if [[ -x "$cargo_audit" ]]; then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_cargo_audit() {
+  local cargo_audit
+
+  if cargo_audit=$(resolve_cargo_audit); then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  printf 'cargo-audit is not installed; installing with cargo install cargo-audit --locked\n' >&2
+  cargo install cargo-audit --locked || return $?
+
+  if cargo_audit=$(resolve_cargo_audit); then
+    printf '%s\n' "$cargo_audit"
+    return 0
+  fi
+
+  printf 'cargo-audit installed but was not found at %s/bin/cargo-audit or on PATH\n' "$(cargo_install_root)" >&2
+  return 1
+}
+
+dependency_audit_check() {
+  local cargo_audit
+
+  cargo_audit=$(ensure_cargo_audit) || return $?
+  "$cargo_audit" audit
 }
 
 fixture_json_smoke() {
@@ -685,7 +703,6 @@ main() {
 
   validate_fail_on
   validate_release_check
-  validate_audit_requirement
   require_cargo
   WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gruff-rs-preflight.XXXXXX")"
   trap cleanup EXIT
