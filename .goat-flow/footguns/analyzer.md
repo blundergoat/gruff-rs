@@ -117,6 +117,43 @@ The non-obvious failure mode is masking strings but not comments for loop-scoped
 
 The non-obvious failure mode is treating all assertion unwraps as equivalent. Unwrapping a direct function call in an assertion can be the subject under test; unwrapping a local variable inside an assertion can still hide setup intent. Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (search: `unwrap_expect_skips_cfg_test_module`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap`).
 
+## Footgun: Text-Pattern Rules Self-Fire On Their Own Sentinel Values
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+Rules that scan raw source text for literal patterns (`sensitive-data.*`, `security.hardcoded-bind-all-interfaces`, `security.weak-crypto`, etc.) cannot distinguish "this byte sequence appears in production source" from "this byte sequence appears in the rule's own implementation code." If the rule author writes a literal sentinel, default, or example value in the rule body, the dogfood scan will report the rule's own file as a finding.
+
+Concrete instance from 2026-05-24: `analyse_hardcoded_bind_all_interfaces` was first written with `let addr = capture.name("addr").map_or("", |m| m.as_str()).unwrap_or("0.0.0.0");` — the `.unwrap_or("0.0.0.0")` placed a literal `"0.0.0.0"` in the rule's source, exactly matching the rule's own quoted-IP regex. Dogfood scan flagged `src/built_in_rules/network_security_rules.rs` with `security.hardcoded-bind-all-interfaces`. Same trap nearly hit `sensitive-data.pii-test-fixture` — its placeholder list contained `"example.com"` etc. inside a `matches!` pattern; the strings were safe only because none contained `@` in source-line context, so the email regex didn't match them.
+
+The non-obvious failure mode is that the rule appears correct (calibration passes, external scan looks clean) until you scan the rule's own crate. By then the sentinel value is baked into a public API or fallback.
+
+**How to apply:**
+
+- Before writing a text-pattern rule, list every literal value that will appear in the rule body: regex patterns, fallback defaults, example strings in error messages, allowlist entries. Each one is a self-fire risk.
+- Prefer regex captures over literal fallbacks: if the named capture is guaranteed by the regex contract, early-return on `.name().is_none()` instead of using `.unwrap_or("sentinel")`.
+- For exemption lists in source: put the placeholder values in `matches!` patterns (where they appear as bare identifiers between `|` separators, not as quoted strings in context the regex sees), or load them from a non-source location.
+- After every new text-pattern rule, run `cargo run --quiet -- analyse src/built_in_rules/<new_rule_file>.rs --format json --fail-on none --no-baseline` as the first verification. If the rule fires on its own file, fix it before calibration.
+
+Regression coverage for this specific case: `src/tests/calibration/cases_pillar_expansion.rs` (search: `security.hardcoded-bind-all-interfaces`); the positive case is a Rust fn returning a `"0.0.0.0:8080"` literal, the negative returns `"127.0.0.1:8080"`. Calibration would not have caught the self-fire because calibration runs in a tempdir; only dogfood revealed it. Pairs with [[rule-precision]] for the broader candidate-rule defence pattern.
+
+## Footgun: Wrapper-Module Fan-Out Hits 8 When Adding New Rule Files
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/rust_block_rules.rs` and `src/built_in_rules/rust_other_rules.rs` are wrapper modules that mount per-rule sub-files via `#[path = "..."] mod ...;`. The `architecture.module-fan-out` rule fires on files declaring more than 8 child modules. As the rule catalogue grows past 80, adding a single new built-in rule file to one of these wrappers can push it from 8 → 9 child modules and break dogfood.
+
+Concrete instance from 2026-05-24: adding `network_security_rules.rs` to `rust_other_rules.rs` pushed its mount count to 9. Bumping the threshold would silence the rule everywhere; combining unrelated rules into one file (e.g. `network_security_rules` into `path_traversal_rules`) would create misleading file names. The right fix was moving an existing module (`dead_code`) from `rust_other_rules` to `rust_block_rules` — `dead_code` analysis operates per-item, not per-line, so it semantically fits the block-rules wrapper anyway.
+
+The non-obvious failure mode is treating the wrapper organisation as fixed. The split is: `rust_block_rules` for per-`FunctionBlock` analyzers, `rust_other_rules` for per-file / per-line analyzers. When fan-out tension appears, look for modules in the wrong wrapper before reaching for the threshold dial or for file-merging.
+
+**How to apply:**
+
+- Before adding a new built-in rule file, check `wc -l src/built_in_rules/rust_block_rules.rs src/built_in_rules/rust_other_rules.rs` and count the `#[path]` declarations. If the wrapper is already at 7 or 8, the next addition will break the rule.
+- Prefer re-classification (move a module to the wrapper that semantically fits) over threshold bumping or file merging.
+- The decision criterion: does the rule's analyzer operate on a `FunctionBlock` argument, or on `&SourceFile` + `&str source`? The former goes in `rust_block_rules`, the latter in `rust_other_rules`.
+
+Regression coverage: this footgun re-fires every time the catalogue grows and a new rule file lands. No dedicated regression test — dogfood scan catches it.
+
 ## Resolved Entries
 
 ## Footgun: Report Exclusions Are Not Discovery Ignores
