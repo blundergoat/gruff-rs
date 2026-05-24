@@ -270,9 +270,10 @@ fn needs_quoting(value: &str) -> bool {
 
 // Preserve user-customized `paths.ignore` entries when `gruff-rs init` regenerates
 // an existing config. Returns the existing entries as-is so the renderer can union
-// them with `DEFAULT_IGNORE_PATTERNS`. Missing file, unreadable file, malformed
-// YAML, or a missing `paths.ignore` key all degrade silently to an empty list -
-// `--force` must still be able to repair a broken config.
+// them with `DEFAULT_IGNORE_PATTERNS`. Missing file, unreadable file, or a missing
+// `paths.ignore` key all degrade to an empty list. Malformed YAML degrades to an
+// empty list too but emits a stderr warning - `--force` must still be able to
+// repair a broken config.
 pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
     if !path.exists() {
         return Vec::new();

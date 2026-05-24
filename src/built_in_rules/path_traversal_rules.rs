@@ -103,10 +103,7 @@ fn path_traversal_arg_is_safe(arg: &str) -> bool {
             | "out"
             | "out_dir"
             | "outdir"
-            | "dir"
-            | "parent"
             | "manifest_dir"
-            | "target"
             | "prefix"
             | "safe"
             | "sanitized"
@@ -189,8 +186,10 @@ fn arg_has_inline_taint_check(arg: &str, window: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// True iff `arg` is bound by `for ARG in [...]` or `for ARG in &ITER`
-/// within the 3 preceding lines.
+/// True iff `arg` is bound by `for ARG in [LIT, ...]` or
+/// `for ARG in &[LIT, ...]` within the 3 preceding lines. Iterating over
+/// any other reference (e.g. `for x in &user_supplied_paths`) is not
+/// suppressed - the source of the iterator may be attacker-controlled.
 fn arg_is_loop_var_from_literal_array(arg: &str, lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -214,7 +213,7 @@ fn line_is_for_loop_over_local_array(source_line: &str, arg: &str) -> bool {
         return false;
     };
     let trimmed_in = after_in.trim_start();
-    trimmed_in.starts_with('[') || trimmed_in.starts_with('&')
+    trimmed_in.starts_with('[') || trimmed_in.starts_with("&[")
 }
 
 /// True iff `arg` is bound to a string literal in the 4 preceding lines.

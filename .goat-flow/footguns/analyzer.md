@@ -22,7 +22,7 @@ Calibrate by requiring an explicit dereference or reference token: `iter().any(|
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
 
-`src/built_in_rules/behavior_rules.rs` (search: `fn analyse_path_traversal_candidate`) flags filesystem path construction from non-literal identifiers. A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
+`src/built_in_rules/path_traversal_rules.rs` (search: `fn analyse_path_traversal_candidate`) flags filesystem path construction from non-literal identifiers. A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
 
 - **Path-typed parameters in utility helpers**: `fn absolutize(root: &Path, path: &Path) -> PathBuf { root.join(path) }`. The `path` argument cannot carry an unconstrained string segment — it was already path-typed upstream.
 - **Validate-then-trust pattern**: `default_root.join(requested).canonicalize()?` followed by `.starts_with(default_root)`. The join is dangerous in isolation but resolved and re-checked immediately after.
@@ -31,7 +31,7 @@ Calibrate by requiring an explicit dereference or reference token: `iter().any(|
 
 The non-obvious failure mode is shipping a candidate rule whose recall is high but whose precision collapses on idiomatic Rust. Users either silence it project-wide or stop reading its findings.
 
-Calibrate with three guards before emitting the finding (kept in `path_traversal_finding_is_suppressed`): (1) expanded safe-arg list including validation-signal names; (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 10 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fires.
+Calibrate with three guards before emitting the finding (kept in `path_traversal_finding_is_suppressed`): (1) safe-arg list restricted to validation-outcome and base-path-convention names (no slot-describing names like `dir`, `parent`, `target`); (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 25 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fires.
 
 ## Footgun: Fixture Findings Are Intentional
 

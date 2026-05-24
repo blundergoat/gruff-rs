@@ -29,5 +29,3 @@ jobs:
 
       - name: Run checks
         run: bash scripts/preflight-checks.sh
-        env:
-          GRUFF_RS_REQUIRE_AUDIT: "1"

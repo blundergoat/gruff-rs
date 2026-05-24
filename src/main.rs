@@ -141,7 +141,12 @@ fn main() -> ExitCode {
         }
         Commands::ListRules(args) => run_list_rules(args, writer),
         Commands::Dashboard(args) => {
-            init::prompt_for_command(root, None, false, no_interaction);
+            init::prompt_for_command(
+                Some(args.project_root.as_path()),
+                None,
+                false,
+                no_interaction,
+            );
             run_dashboard(args)
         }
         Commands::Summary(args) => {

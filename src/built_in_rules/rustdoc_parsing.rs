@@ -100,7 +100,9 @@ fn split_top_level_commas(inside: &str) -> Vec<String> {
                 current.push(character);
             }
             '>' | ')' | ']' | '}' => {
-                depth -= 1;
+                if depth > 0 {
+                    depth -= 1;
+                }
                 current.push(character);
             }
             ',' if depth == 0 => {
@@ -138,5 +140,17 @@ fn parameter_name(chunk: String) -> Option<String> {
 }
 
 fn parameter_is_self(trimmed: &str) -> bool {
-    trimmed.starts_with("self") || trimmed.starts_with("&self") || trimmed.starts_with("&mut self")
+    let candidate = trimmed
+        .trim_start_matches('&')
+        .trim_start()
+        .trim_start_matches("mut ")
+        .trim_start();
+    let rest = match candidate.strip_prefix("self") {
+        Some(rest) => rest,
+        None => return false,
+    };
+    match rest.chars().next() {
+        Some(next) => !(next.is_ascii_alphanumeric() || next == '_'),
+        None => true,
+    }
 }
