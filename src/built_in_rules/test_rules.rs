@@ -5,6 +5,8 @@ static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
 static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
+static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
+static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const TEST_CHECKS: &[RegexRule] = &[
     RegexRule {
@@ -42,6 +44,54 @@ pub(crate) fn analyse_test_block(
     let searchable_body = strip_rust_string_literals(&block.body);
     analyse_test_assertions(file, block, &searchable_body, findings);
     analyse_test_regex_checks(file, block, &searchable_body, findings);
+}
+
+/// Tests marked `#[should_panic]` without `expected = "..."` cannot
+/// distinguish the intended panic from an unrelated panic that masks a
+/// real bug. Fires only when the attribute appears without any
+/// `expected` arg.
+pub(crate) fn analyse_should_panic_without_expected(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    findings: &mut Vec<Finding>,
+) {
+    if !block.is_test {
+        return;
+    }
+    let has_should_panic =
+        static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(&block.body);
+    if !has_should_panic {
+        return;
+    }
+    let has_expected = static_regex(
+        &SHOULD_PANIC_EXPECTED_REGEX,
+        r"#\s*\[\s*should_panic\s*\([^)]*\bexpected\s*=",
+    )
+    .is_match(&block.body);
+    if has_expected {
+        return;
+    }
+    findings.push(block_finding_with_extras(
+        BlockFindingDescriptor {
+            rule_id: "test-quality.should-panic-without-expected",
+            message: format!(
+                "Test `{}` uses #[should_panic] without an `expected = \"...\"` clause.",
+                block.name
+            ),
+            file,
+            block,
+            severity: Severity::Advisory,
+            pillar: Pillar::TestQuality,
+        },
+        BlockFindingExtras {
+            confidence: Confidence::High,
+            remediation: Some(
+                "Add `expected = \"message substring\"` so the test fails when an unrelated panic occurs."
+                    .to_string(),
+            ),
+            metadata: json!({}),
+        },
+    ));
 }
 
 pub(crate) fn analyse_ignored_test(

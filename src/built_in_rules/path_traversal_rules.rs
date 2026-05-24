@@ -4,22 +4,9 @@ pub(crate) static PATH_TRAVERSAL_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::
 pub(crate) static PATH_TRAVERSAL_JOIN_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// `security.path-traversal-candidate` — flags filesystem path
-/// construction where the input is a bare identifier (likely a function
-/// parameter or runtime value) rather than a static literal. Two shapes:
-/// `Path::new(var)` / `PathBuf::from(var)` and `base.join(var)`. As a
-/// `-candidate` rule the message is hedged; the goal is to surface
-/// review-worthy joins, not to claim a proven traversal bug.
-///
-/// Skips that keep the rule precise (see `path_traversal_finding_is_suppressed`):
-/// - file lives under test infrastructure
-/// - argument matches a known safe identifier
-/// - argument was declared as `&Path` / `&PathBuf` / `impl AsRef<Path>` upstream
-/// - argument is a loop variable bound to a literal array
-/// - argument is `let`-bound to a string literal in the preceding lines
-/// - a `validate_*` / `verify_*` / `sanitize_*` / `check_*` call took the
-///   argument in the preceding 30 lines
-/// - the function performs `.canonicalize()` followed by `.starts_with(`
-///   within 25 lines after the join (validate-then-trust pattern)
+/// construction where the input is a bare identifier. Two shapes match:
+/// `Path::new(var)`/`PathBuf::from(var)` and `base.join(var)`. See
+/// `path_traversal_finding_is_suppressed` for the precision guards.
 pub(crate) fn analyse_path_traversal_candidate(
     file: &SourceFile,
     source: &str,
@@ -28,70 +15,72 @@ pub(crate) fn analyse_path_traversal_candidate(
     if path_is_test_infrastructure(&file.display_path) {
         return;
     }
-    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
-    let lines: Vec<&str> = searchable.lines().collect();
-    let starts = line_starts(&searchable);
-    let mut emitted = std::collections::BTreeSet::new();
-
-    scan_path_traversal_constructors(file, &searchable, &lines, &starts, &mut emitted, findings);
-    scan_path_traversal_joins(file, &searchable, &lines, &starts, &mut emitted, findings);
+    PathTraversalScan::from(file, source).emit_findings(findings);
 }
 
-fn scan_path_traversal_constructors(
-    file: &SourceFile,
-    searchable: &str,
-    lines: &[&str],
-    starts: &[usize],
-    emitted: &mut std::collections::BTreeSet<usize>,
-    findings: &mut Vec<Finding>,
-) {
-    let regex = static_regex(
+struct PathTraversalScan<'a> {
+    file: &'a SourceFile,
+    searchable: String,
+    lines: Vec<&'a str>,
+    starts: Vec<usize>,
+}
+
+impl<'a> PathTraversalScan<'a> {
+    fn from(file: &'a SourceFile, source: &'a str) -> Self {
+        let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+        let lines: Vec<&'a str> = source.lines().collect();
+        let starts = line_starts(&searchable);
+        Self {
+            file,
+            searchable,
+            lines,
+            starts,
+        }
+    }
+
+    fn emit_findings(&self, findings: &mut Vec<Finding>) {
+        let mut emitted = std::collections::BTreeSet::new();
+        self.scan_with(constructor_regex(), &mut emitted, findings);
+        self.scan_with(join_regex(), &mut emitted, findings);
+    }
+
+    fn scan_with(
+        &self,
+        compiled: &Regex,
+        emitted: &mut std::collections::BTreeSet<usize>,
+        findings: &mut Vec<Finding>,
+    ) {
+        for captures in compiled.captures_iter(&self.searchable) {
+            let Some(arg) = captures.name("arg") else {
+                continue;
+            };
+            let Some(full) = captures.get(0) else {
+                continue;
+            };
+            let line = byte_line_from_starts(&self.starts, full.start());
+            if path_traversal_finding_is_suppressed(arg.as_str(), &self.lines, line) {
+                continue;
+            }
+            if !emitted.insert(line) {
+                continue;
+            }
+            push_path_traversal_candidate_finding(self.file, line, arg.as_str(), findings);
+        }
+    }
+}
+
+fn constructor_regex() -> &'static Regex {
+    static_regex(
         &PATH_TRAVERSAL_CONSTRUCTOR_REGEX,
         r"\b(?:Path|PathBuf)\s*::\s*(?:new|from)\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
-    );
-    record_path_traversal_matches(file, searchable, lines, starts, regex, emitted, findings);
+    )
 }
 
-fn scan_path_traversal_joins(
-    file: &SourceFile,
-    searchable: &str,
-    lines: &[&str],
-    starts: &[usize],
-    emitted: &mut std::collections::BTreeSet<usize>,
-    findings: &mut Vec<Finding>,
-) {
-    let regex = static_regex(
+fn join_regex() -> &'static Regex {
+    static_regex(
         &PATH_TRAVERSAL_JOIN_REGEX,
         r"\.join\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
-    );
-    record_path_traversal_matches(file, searchable, lines, starts, regex, emitted, findings);
-}
-
-fn record_path_traversal_matches(
-    file: &SourceFile,
-    searchable: &str,
-    lines: &[&str],
-    starts: &[usize],
-    regex: &Regex,
-    emitted: &mut std::collections::BTreeSet<usize>,
-    findings: &mut Vec<Finding>,
-) {
-    for captures in regex.captures_iter(searchable) {
-        let Some(arg) = captures.name("arg") else {
-            continue;
-        };
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let line = byte_line_from_starts(starts, full.start());
-        if path_traversal_finding_is_suppressed(arg.as_str(), lines, line) {
-            continue;
-        }
-        if !emitted.insert(line) {
-            continue;
-        }
-        push_path_traversal_candidate_finding(file, line, arg.as_str(), findings);
-    }
+    )
 }
 
 fn path_traversal_finding_is_suppressed(arg: &str, lines: &[&str], line: usize) -> bool {
@@ -130,11 +119,9 @@ fn path_traversal_arg_is_safe(arg: &str) -> bool {
     )
 }
 
-/// True iff `arg` appears in a function signature within the 30 lines
-/// preceding `line` (1-based) typed as `&Path`, `&PathBuf`, `Path`,
-/// `PathBuf`, or `impl AsRef<Path>`. Path-typed parameters cannot carry
-/// an unconstrained string segment; any external input was widened to a
-/// path-typed value upstream.
+/// True iff `arg` appears in a nearby fn signature typed as `&Path` /
+/// `&PathBuf` / `Path` / `PathBuf` / `impl AsRef<Path>`. Path-typed
+/// parameters cannot carry an unconstrained string segment.
 fn arg_is_typed_path_in_nearby_signature(arg: &str, lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -145,10 +132,10 @@ fn arg_is_typed_path_in_nearby_signature(arg: &str, lines: &[&str], line: usize)
     lines[lookback_start..=zero_based]
         .iter()
         .rev()
-        .any(|source_line| line_declares_path_typed_param(source_line, &needle))
+        .any(|source_line| line_has_path_typed_param(source_line, &needle))
 }
 
-fn line_declares_path_typed_param(source_line: &str, needle: &str) -> bool {
+fn line_has_path_typed_param(source_line: &str, needle: &str) -> bool {
     let Some((_, after)) = source_line.split_once(needle) else {
         return false;
     };
@@ -162,10 +149,7 @@ fn line_declares_path_typed_param(source_line: &str, needle: &str) -> bool {
 }
 
 /// True iff the 25 lines after `line` contain both `.canonicalize()` and
-/// `.starts_with(`. That sequence is the validate-then-trust pattern
-/// (resolve symlinks, then check the resolved path is inside the trusted
-/// root); recognising it lets the rule stay silent on intentionally-
-/// defended joins.
+/// `.starts_with(` (validate-then-trust pattern).
 fn window_has_validation_after(lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -176,9 +160,9 @@ fn window_has_validation_after(lines: &[&str], line: usize) -> bool {
     window.contains(".canonicalize(") && window.contains(".starts_with(")
 }
 
-/// True iff `arg` was passed to a validation-shaped call in the 30 lines
-/// before `line`. Recognises `(validate|verify|sanitize|check)_*(arg)`
-/// calls or inline `if arg.contains(...)` taint checks.
+/// True iff `arg` was passed to a `(validate|verify|sanitize|check)_*`
+/// call or `if arg.contains(...)` inline taint check in the 30 preceding
+/// lines.
 fn arg_was_validated_in_nearby_call(arg: &str, lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -195,21 +179,19 @@ fn arg_has_validator_call(arg: &str, window: &str) -> bool {
         regex::escape(arg)
     );
     Regex::new(&pattern)
-        .map(|re| re.is_match(window))
+        .map(|compiled| compiled.is_match(window))
         .unwrap_or(false)
 }
 
 fn arg_has_inline_taint_check(arg: &str, window: &str) -> bool {
     let pattern = format!(r"if\s+{}\s*\.\s*contains\s*\(", regex::escape(arg));
     Regex::new(&pattern)
-        .map(|re| re.is_match(window))
+        .map(|compiled| compiled.is_match(window))
         .unwrap_or(false)
 }
 
-/// True iff `arg` is bound by a `for ARG in [...]` or `for ARG in &ITER`
-/// statement in the 3 lines before `line`. Loop variables bound to a
-/// local array (literal or borrowed from a same-function `let` binding)
-/// cannot carry user input.
+/// True iff `arg` is bound by `for ARG in [...]` or `for ARG in &ITER`
+/// within the 3 preceding lines.
 fn arg_is_loop_var_from_literal_array(arg: &str, lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -229,18 +211,16 @@ fn line_is_for_loop_over_local_array(source_line: &str, arg: &str) -> bool {
     let Some(after_arg) = after_for.strip_prefix(arg) else {
         return false;
     };
-    let after = after_arg.trim_start();
-    let Some(after_in) = after.strip_prefix("in ").map(str::trim_start) else {
+    let Some(after_in) = after_arg.trim_start().strip_prefix("in ") else {
         return false;
     };
-    after_in.starts_with('[') || after_in.starts_with('&')
+    let trimmed_in = after_in.trim_start();
+    trimmed_in.starts_with('[') || trimmed_in.starts_with('&')
 }
 
-/// True iff `arg` is bound to a string literal in the 4 lines before
-/// `line`. Detection runs against the string-masked source, so
-/// `let ARG = "literal"` and `let ARG = r"literal"` both appear as
-/// `let ARG = ;` (literal contents become whitespace via
-/// `strip_rust_string_literals`).
+/// True iff `arg` is bound to a string literal in the 4 preceding lines.
+/// Detection runs against string-masked source, so `let ARG = "lit"` and
+/// `let ARG = r"lit"` both appear as `let ARG = ;` after masking.
 fn arg_is_let_bound_to_literal(arg: &str, lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -249,24 +229,16 @@ fn arg_is_let_bound_to_literal(arg: &str, lines: &[&str], line: usize) -> bool {
     let lookback_start = zero_based.saturating_sub(4);
     let window: String = lines[lookback_start..=zero_based].join("\n");
     let needle = format!("let {arg}");
-    let Some(let_pos) = window.find(&needle) else {
-        return false;
-    };
+    let_rhs_is_whitespace_only(&window, &needle).unwrap_or(false)
+}
+
+fn let_rhs_is_whitespace_only(window: &str, needle: &str) -> Option<bool> {
+    let let_pos = window.find(needle)?;
     let after = &window[let_pos + needle.len()..];
-    let after_type = match strip_type_annotation(after) {
-        Some(rest) => rest,
-        None => return false,
-    };
-    let between = after_type.trim_start();
-    let Some(without_eq) = between.strip_prefix('=') else {
-        return false;
-    };
-    let Some(semicolon_pos) = without_eq.find(';') else {
-        return false;
-    };
-    without_eq[..semicolon_pos]
-        .chars()
-        .all(|character| character.is_whitespace())
+    let after_type = strip_type_annotation(after)?;
+    let after_eq = after_type.trim_start().strip_prefix('=')?;
+    let semicolon_pos = after_eq.find(';')?;
+    Some(after_eq[..semicolon_pos].chars().all(char::is_whitespace))
 }
 
 fn strip_type_annotation(after: &str) -> Option<&str> {

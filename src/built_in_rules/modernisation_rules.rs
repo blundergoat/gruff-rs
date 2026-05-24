@@ -21,9 +21,7 @@ pub(crate) fn analyse_modernisation_rules(
 }
 
 /// `coll.len() == 0`, `coll.len() != 0`, and the swapped forms should
-/// use `is_empty()` / `!is_empty()`. Matches the comparison shape even
-/// when the receiver is a method chain (`self.cache.len() == 0`). Stays
-/// silent for non-zero comparisons.
+/// use `is_empty()`. Stays silent for non-zero comparisons.
 pub(crate) fn analyse_manual_is_empty(
     file: &SourceFile,
     searchable: &str,
@@ -35,28 +33,20 @@ pub(crate) fn analyse_manual_is_empty(
     );
     for (line_index, line) in searchable.lines().enumerate() {
         if regex.is_match(line) {
-            findings.push(finding(SimpleFindingDescriptor {
-                rule_id: "modernisation.manual-is-empty",
-                message: "Use `.is_empty()` instead of comparing `.len()` against zero.".into(),
+            push_modernisation_finding(
                 file,
-                line: Some(line_index + 1),
-                severity: Severity::Advisory,
-                pillar: Pillar::Modernisation,
-            }));
+                line_index + 1,
+                "modernisation.manual-is-empty",
+                "Use `.is_empty()` instead of comparing `.len()` against zero.",
+                findings,
+            );
         }
     }
 }
 
 /// `iter().any(|x| *x == y)` and `iter().any(|x| x == &y)` should use
-/// `.contains(&y)`. Two shapes match:
-/// - **Deref pattern**: `|x| *x == y` — closure receives `&T`, derefs to
-///   compare to `T`. `.contains(&y)` is a clean swap.
-/// - **RHS-ref pattern**: `|x| x == &y` — closure receives `&T`, compares
-///   to `&T`. `.contains(&y)` works.
-///
-/// Bare `|x| x == y` (no `*` and no `&`) is intentionally NOT matched:
-/// the types often only line up through `PartialEq` cross-type impls
-/// (e.g. `&String == &str`) where `.contains()` would not compile.
+/// `.contains(&y)`. See `manual_contains_match_is_valid` for the
+/// closure-arg / comparand binding check.
 pub(crate) fn analyse_manual_contains(
     file: &SourceFile,
     searchable: &str,
@@ -66,39 +56,25 @@ pub(crate) fn analyse_manual_contains(
         &MANUAL_CONTAINS_REGEX,
         r"\.iter\s*\(\s*\)\s*\.any\s*\(\s*\|\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)\s*\|\s*(?:\*\s*(?P<deref>[A-Za-z_][A-Za-z0-9_]*)\s*==\s*[A-Za-z_][\w\.]*|(?P<noderef>[A-Za-z_][A-Za-z0-9_]*)\s*==\s*&\s*[A-Za-z_][\w\.]*)\s*\)",
     );
-    let line_starts = line_starts(searchable);
-    for captures in regex.captures_iter(searchable) {
-        let arg = captures
-            .name("arg")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        let lhs = captures
-            .name("deref")
-            .or_else(|| captures.name("noderef"))
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        if arg != lhs {
-            continue;
-        }
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let line = byte_line_from_starts(&line_starts, full.start());
-        findings.push(finding(SimpleFindingDescriptor {
-            rule_id: "modernisation.manual-contains",
-            message: "Use `.contains(&value)` instead of `.iter().any(|x| x == &value)` or `|x| *x == value`.".into(),
-            file,
-            line: Some(line),
-            severity: Severity::Advisory,
-            pillar: Pillar::Modernisation,
-        }));
-    }
+    let check = ModernisationCheck {
+        compiled: regex,
+        is_valid: manual_contains_match_is_valid,
+        rule_id: "modernisation.manual-contains",
+        message: "Use `.contains(&value)` instead of `.iter().any(|x| x == &value)`.",
+    };
+    scan_modernisation_matches(&check, searchable, file, findings);
+}
+
+fn manual_contains_match_is_valid(captures: &regex::Captures<'_>) -> bool {
+    let arg = capture_named(captures, "arg");
+    let lhs = match capture_named(captures, "deref") {
+        "" => capture_named(captures, "noderef"),
+        deref => deref,
+    };
+    !arg.is_empty() && arg == lhs
 }
 
 /// `if s.starts_with(p) { &s[p.len()..] }` should use `s.strip_prefix(p)`.
-/// Matches the slice-return shape only; longer multi-statement bodies are
-/// intentionally NOT detected because slicing semantics may differ once
-/// other statements run.
 pub(crate) fn analyse_manual_strip_prefix(
     file: &SourceFile,
     searchable: &str,
@@ -106,47 +82,29 @@ pub(crate) fn analyse_manual_strip_prefix(
 ) {
     let regex = static_regex(
         &MANUAL_STRIP_PREFIX_REGEX,
-        r"if\s+(?P<a>[A-Za-z_][A-Za-z0-9_]*)\s*\.starts_with\s*\(\s*(?P<b>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{\s*&\s*(?P<a2>[A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(?P<b2>[A-Za-z_][A-Za-z0-9_]*)\s*\.len\s*\(\s*\)\s*\.\.\s*\]",
+        r"if\s+(?P<first>[A-Za-z_][A-Za-z0-9_]*)\s*\.starts_with\s*\(\s*(?P<second>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{\s*&\s*(?P<first_again>[A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(?P<second_again>[A-Za-z_][A-Za-z0-9_]*)\s*\.len\s*\(\s*\)\s*\.\.\s*\]",
     );
-    let line_starts = line_starts(searchable);
-    for captures in regex.captures_iter(searchable) {
-        let a = captures
-            .name("a")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        let b = captures
-            .name("b")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        let a2 = captures
-            .name("a2")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        let b2 = captures
-            .name("b2")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        if a != a2 || b != b2 {
-            continue;
-        }
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let line = byte_line_from_starts(&line_starts, full.start());
-        findings.push(finding(SimpleFindingDescriptor {
-            rule_id: "modernisation.manual-strip-prefix",
-            message: "Use `strip_prefix` instead of slicing after `starts_with`.".into(),
-            file,
-            line: Some(line),
-            severity: Severity::Advisory,
-            pillar: Pillar::Modernisation,
-        }));
-    }
+    let check = ModernisationCheck {
+        compiled: regex,
+        is_valid: manual_strip_prefix_match_is_valid,
+        rule_id: "modernisation.manual-strip-prefix",
+        message: "Use `strip_prefix` instead of slicing after `starts_with`.",
+    };
+    scan_modernisation_matches(&check, searchable, file, findings);
+}
+
+fn manual_strip_prefix_match_is_valid(captures: &regex::Captures<'_>) -> bool {
+    let first = capture_named(captures, "first");
+    let second = capture_named(captures, "second");
+    !first.is_empty()
+        && !second.is_empty()
+        && first == capture_named(captures, "first_again")
+        && second == capture_named(captures, "second_again")
 }
 
 /// `match opt { Some(v) => v, None => Default::default() }` and variants
-/// using `String::new()`, `Vec::new()`, `0`, or `""` for the `None` arm
-/// should use `opt.unwrap_or_default()`.
+/// using `String::new()`, `Vec::new()`, or `0` should use
+/// `opt.unwrap_or_default()`.
 pub(crate) fn analyse_manual_unwrap_or_default(
     file: &SourceFile,
     searchable: &str,
@@ -156,32 +114,64 @@ pub(crate) fn analyse_manual_unwrap_or_default(
         &MANUAL_UNWRAP_OR_DEFAULT_REGEX,
         r"match\s+[A-Za-z_][\w\.]*\s*\{\s*Some\s*\(\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*=>\s*(?P<ret>[A-Za-z_][A-Za-z0-9_]*)\s*,\s*None\s*=>\s*(?:Default\s*::\s*default\s*\(\s*\)|String\s*::\s*new\s*\(\s*\)|Vec\s*::\s*new\s*\(\s*\)|0|0_[a-z0-9]+)\s*,?\s*\}",
     );
-    let line_starts = line_starts(searchable);
-    for captures in regex.captures_iter(searchable) {
-        let arg = captures
-            .name("arg")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        let ret = captures
-            .name("ret")
-            .map(|capture| capture.as_str())
-            .unwrap_or("");
-        if arg != ret {
+    let check = ModernisationCheck {
+        compiled: regex,
+        is_valid: manual_unwrap_or_default_match_is_valid,
+        rule_id: "modernisation.manual-unwrap-or-default",
+        message:
+            "Use `.unwrap_or_default()` instead of a manual `match` with `Default::default()`.",
+    };
+    scan_modernisation_matches(&check, searchable, file, findings);
+}
+
+fn manual_unwrap_or_default_match_is_valid(captures: &regex::Captures<'_>) -> bool {
+    let arg = capture_named(captures, "arg");
+    !arg.is_empty() && arg == capture_named(captures, "ret")
+}
+
+struct ModernisationCheck {
+    compiled: &'static Regex,
+    is_valid: fn(&regex::Captures<'_>) -> bool,
+    rule_id: &'static str,
+    message: &'static str,
+}
+
+fn scan_modernisation_matches(
+    check: &ModernisationCheck,
+    searchable: &str,
+    file: &SourceFile,
+    findings: &mut Vec<Finding>,
+) {
+    let starts = line_starts(searchable);
+    for captures in check.compiled.captures_iter(searchable) {
+        if !(check.is_valid)(&captures) {
             continue;
         }
         let Some(full) = captures.get(0) else {
             continue;
         };
-        let line = byte_line_from_starts(&line_starts, full.start());
-        findings.push(finding(SimpleFindingDescriptor {
-            rule_id: "modernisation.manual-unwrap-or-default",
-            message:
-                "Use `.unwrap_or_default()` instead of a manual `match` with `Default::default()`."
-                    .into(),
-            file,
-            line: Some(line),
-            severity: Severity::Advisory,
-            pillar: Pillar::Modernisation,
-        }));
+        let line = byte_line_from_starts(&starts, full.start());
+        push_modernisation_finding(file, line, check.rule_id, check.message, findings);
     }
+}
+
+fn capture_named<'a>(captures: &regex::Captures<'a>, name: &str) -> &'a str {
+    captures.name(name).map(|m| m.as_str()).unwrap_or("")
+}
+
+fn push_modernisation_finding(
+    file: &SourceFile,
+    line: usize,
+    rule_id: &'static str,
+    message: &'static str,
+    findings: &mut Vec<Finding>,
+) {
+    findings.push(finding(SimpleFindingDescriptor {
+        rule_id,
+        message: message.into(),
+        file,
+        line: Some(line),
+        severity: Severity::Advisory,
+        pillar: Pillar::Modernisation,
+    }));
 }
