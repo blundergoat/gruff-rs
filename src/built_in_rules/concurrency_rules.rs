@@ -27,7 +27,7 @@ pub(crate) fn analyse_concurrency_block(
                     file,
                     block,
                     severity: Severity::Advisory,
-                    pillar: Pillar::Waste,
+                    pillar: Pillar::Maintainability,
                 },
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
@@ -66,7 +66,7 @@ pub(crate) fn analyse_async_blocking_calls(
                         file,
                         block,
                         severity: Severity::Warning,
-                        pillar: Pillar::Waste,
+                        pillar: Pillar::Maintainability,
                     },
                     BlockFindingExtras {
                         confidence: Confidence::Medium,
@@ -162,7 +162,7 @@ fn lock_across_await_finding(file: &SourceFile, block: &FunctionBlock, guard: &s
             file,
             block,
             severity: Severity::Warning,
-            pillar: Pillar::Waste,
+            pillar: Pillar::Maintainability,
         },
         BlockFindingExtras {
             confidence: Confidence::Medium,

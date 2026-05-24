@@ -1,15 +1,15 @@
 # Rules
 
-`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, waste, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
+`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, maintainability, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
 
 ## Pillars
 
 | Pillar | Current scope |
 | --- | --- |
 | Size | File length, function length, and parameter-count thresholds. File-length skips dependency lockfiles, Markdown docs, and Codex/Claude hook scripts because those surfaces are governed by different review contracts. |
-| Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, conservative NPath approximation, Halstead-style token volume, and maintainability pressure. |
-| Dead code | Private functions with no same-file call sites, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
-| Waste | Unwrap/expect, clone candidates, unreachable statements, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
+| Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, conservative NPath approximation, and Halstead-style token volume. |
+| Dead code | Private functions with no same-file call sites, unreachable statements, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
+| Maintainability | Maintainability pressure, unwrap/expect, clone candidates, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
 | Naming | Generic function names, cryptic two-character variables (including fn parameters, closure parameters, and destructured bindings), bool predicate prefixes, placeholder identifiers, and `let X = X(...)` shadows of same-file free functions. Single-letter bindings are allowed because they are common in small closures and parser/math code. Common AWS/cloud abbreviations are accepted in AWS-context files where the abbreviation is part of the domain model. The boolean-prefix, placeholder-identifier, and generic-function rules accept user-supplied allowlists via the `predicatePrefixes`, `extraPlaceholders`, and `extraGenericNames` string-array options. |
 | Documentation | Public Rust API documentation, root README presence, package metadata presence, stale TODO markers without an owner/issue/reason, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, and externally public `Result`-returning functions missing a `# Errors` rustdoc section. |
 | Modernisation | Public struct fields that expose representation, excluding serde transport/config structs where public fields are the serialization contract. |
@@ -32,7 +32,7 @@ Security rules are deliberately narrow static signals. `security.process-command
 
 Sensitive-data rules report likely secret material directly from text. `sensitive-data.database-url-password` is scoped to database and message-bus URL schemes, while `sensitive-data.url-embedded-credentials` covers generic HTTP(S) `user:password@host` URLs. Provider-prefixed token coverage stays under `sensitive-data.api-key-pattern` unless a separate rule ID adds distinct user-facing value.
 
-Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside real loop bodies. They ignore loop words in comments/strings, bounded static inventory loops, and user-facing output assembly where the allocation is not meaningful performance debt. They are reported as waste because the current report schema does not define a separate performance pillar.
+Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside real loop bodies. They ignore loop words in comments/strings, bounded static inventory loops, and user-facing output assembly where the allocation is not meaningful performance debt. They are reported under maintainability because the shared cross-language contract does not define a separate performance pillar.
 
 `test-quality.unwrap-in-test` allows a direct call result unwrapped inside an assertion expression when that call is the subject under test. It still reports setup/local unwraps that feed assertions because those can hide fixture failures behind a panic.
 

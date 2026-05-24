@@ -85,7 +85,7 @@ pub(crate) fn diff_patch_filter_keeps_only_changed_lines_and_line_less_findings(
                 "src/lib.rs",
                 12,
                 Severity::Advisory,
-                Pillar::Waste,
+                Pillar::Maintainability,
             ),
             test_finding(
                 "docs.missing-public-doc",

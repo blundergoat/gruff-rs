@@ -239,7 +239,7 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "concurrency.blocking-call-in-async",
         "Blocking call in async function",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::Medium,
@@ -249,7 +249,7 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "concurrency.lock-across-await",
         "Lock guard across await",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::Medium,
@@ -259,7 +259,7 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "concurrency.unbounded-channel",
         "Unbounded channel",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
@@ -272,7 +272,7 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "error-handling.production-panic",
         "Production panic",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
@@ -282,7 +282,7 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "error-handling.public-unwrap",
         "Public API unwrap",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
@@ -292,7 +292,7 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "error-handling.unimplemented-placeholder",
         "Unimplemented placeholder",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,

@@ -330,7 +330,7 @@ license = "MIT"
         .score
         .pillars
         .iter()
-        .find(|pillar| pillar.pillar == Pillar::Waste)
+        .find(|pillar| pillar.pillar == Pillar::Maintainability)
         .expect("waste score");
     assert!(
         waste.findings >= 3,

@@ -24,7 +24,7 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "metrics.maintainability-pressure",
         "Maintainability pressure",
-        Pillar::Complexity,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
@@ -137,7 +137,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "performance.clone-in-loop",
         "Clone in loop",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
@@ -147,7 +147,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "performance.format-in-loop",
         "Format in loop",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::Medium,
@@ -157,7 +157,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "performance.regex-in-loop",
         "Regex construction in loop",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
@@ -429,7 +429,7 @@ pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "waste.unnecessary-clone-candidate",
         "Unnecessary clone candidate",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,
@@ -439,7 +439,7 @@ pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "waste.unreachable-code",
         "Unreachable code",
-        Pillar::Waste,
+        Pillar::DeadCode,
         RuleKind::Rust,
         Severity::Warning,
         Confidence::High,
@@ -449,7 +449,7 @@ pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "waste.unwrap-expect",
         "Unwrap or expect",
-        Pillar::Waste,
+        Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
         Confidence::High,

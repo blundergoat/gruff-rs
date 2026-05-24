@@ -150,7 +150,7 @@ impl LineRuleContext<'_> {
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             }));
         }
 
@@ -165,7 +165,7 @@ impl LineRuleContext<'_> {
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             }));
         }
     }

@@ -251,6 +251,7 @@ pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
         Pillar::Complexity => "complexity",
         Pillar::DeadCode => "dead-code",
         Pillar::Waste => "waste",
+        Pillar::Maintainability => "maintainability",
         Pillar::Naming => "naming",
         Pillar::Documentation => "documentation",
         Pillar::Modernisation => "modernisation",

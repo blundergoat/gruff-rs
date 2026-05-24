@@ -175,17 +175,17 @@ The v0.1 catalogue contains 69 rules:
 
 | Pillar | Rules |
 | --- | ---: |
-| `complexity` | 6 |
-| `dead-code` | 2 |
+| `complexity` | 5 |
+| `dead-code` | 3 |
 | `design` | 4 |
 | `documentation` | 7 |
+| `maintainability` | 12 |
 | `modernisation` | 1 |
 | `naming` | 5 |
 | `security` | 13 |
 | `sensitive-data` | 8 |
 | `size` | 3 |
 | `test-quality` | 8 |
-| `waste` | 12 |
 
 Use `./.cargo-tools/bin/gruff-rs list-rules --format json` for the exact rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
 

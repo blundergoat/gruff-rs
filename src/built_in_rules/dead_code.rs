@@ -188,7 +188,7 @@ pub(crate) fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mu
                 file,
                 line: Some(line_index + 1),
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::DeadCode,
             }));
         }
         previous_terminated = terminator.is_match(trimmed) && trimmed.ends_with(';');

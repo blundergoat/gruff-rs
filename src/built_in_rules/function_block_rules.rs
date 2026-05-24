@@ -147,7 +147,7 @@ pub(crate) fn analyse_panic_block(
                 file,
                 block,
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             },
             BlockFindingExtras {
                 confidence: Confidence::High,
@@ -180,7 +180,7 @@ pub(crate) fn analyse_placeholder_block(
                 file,
                 block,
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             },
             BlockFindingExtras {
                 confidence: Confidence::High,
@@ -213,7 +213,7 @@ pub(crate) fn analyse_public_unwrap_block(
                 file,
                 block,
                 severity: Severity::Warning,
-                pillar: Pillar::Waste,
+                pillar: Pillar::Maintainability,
             },
             BlockFindingExtras {
                 confidence: Confidence::High,
@@ -311,7 +311,7 @@ pub(crate) fn analyse_maintainability_pressure(
                     file: ctx.file,
                     block: ctx.block,
                     severity: ctx.config.severity(rule_id, Severity::Advisory),
-                    pillar: Pillar::Complexity,
+                    pillar: Pillar::Maintainability,
                 },
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
