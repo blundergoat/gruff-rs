@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.1.0
+      - uses: blundergoat/gruff-rs@v0.1.1
         with:
           args: analyse . --format sarif --fail-on warning --no-baseline
 ```
