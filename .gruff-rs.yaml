@@ -14,7 +14,15 @@ paths:
   # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`
   # or top-level `exclude` entries for accepted findings.
   ignore:
+    - .agents/**
+    - .antigravitycli/**
+    - .claude/**
+    - .codex/**
+    - .github/**
+    - .goat-flow/**
     - target/**
+    - fixtures/**
+    - tests/fixtures/**
     - node_modules/**
     - "**/Cargo.lock"
     - "**/package-lock.json"
@@ -267,3 +275,77 @@ rules:
   # Flags unwrap and expect calls outside test attributes.
   waste.unwrap-expect:
     enabled: true
+
+# Scoped suppressions. Rules remain enabled globally; each entry documents why
+# a specific path or message pattern is exempt. See docs/configuration.md.
+exclude:
+  # ----- Calibration fixtures contain deliberate bad patterns by design -----
+  # `src/tests/calibration/cases_*.rs` write fake credentials into tempdirs to
+  # verify sensitive-data rules fire. The literals here are test inputs, not
+  # real secrets. See `run_calibration_case` in `src/tests/calibration/mod.rs`.
+  - rule: sensitive-data.api-key-pattern
+    paths: ["src/tests/calibration/**"]
+    reason: "Calibration fixture: deliberately-bad pattern used to verify the rule fires."
+  - rule: sensitive-data.aws-access-key
+    paths: ["src/tests/calibration/**"]
+    reason: "Calibration fixture: deliberately-bad pattern used to verify the rule fires."
+  - rule: sensitive-data.database-url-password
+    paths: ["src/tests/calibration/**"]
+    reason: "Calibration fixture: deliberately-bad pattern used to verify the rule fires."
+  - rule: sensitive-data.url-embedded-credentials
+    paths: ["src/tests/calibration/**"]
+    reason: "Calibration fixture: deliberately-bad pattern used to verify the rule fires."
+  - rule: sensitive-data.hardcoded-env-value
+    paths: ["src/tests/calibration/**"]
+    reason: "Calibration fixture: deliberately-bad pattern used to verify the rule fires."
+  - rule: sensitive-data.jwt-token
+    paths: ["src/tests/calibration/**"]
+    reason: "Calibration fixture: deliberately-bad pattern used to verify the rule fires."
+
+  # `cases_a/b/c.rs` each expose a flat `vec![case(...), case(...), ...]`
+  # registry with one entry per rule. Token volume is structural, not
+  # algorithmic; splitting would add indirection without clarity.
+  - rule: metrics.halstead-volume
+    paths: ["src/tests/calibration/**"]
+    reason: "Flat calibration-case registry: volume is structural, not algorithmic."
+  - rule: metrics.maintainability-pressure
+    paths: ["src/tests/calibration/**"]
+    reason: "Flat calibration-case registry: volume is structural, not algorithmic."
+
+  # `rule_calibration_matrix_covers_every_rule` exists to iterate every case
+  # and assert positive-fires / negative-silent. Loop and conditional are
+  # intrinsic to its purpose.
+  - rule: test-quality.conditional-logic
+    paths: ["src/tests/calibration/mod.rs"]
+    reason: "Meta-test iterates every calibration case; conditional is intrinsic."
+  - rule: test-quality.loop-in-test
+    paths: ["src/tests/calibration/mod.rs"]
+    reason: "Meta-test iterates every calibration case; loop is intrinsic."
+
+  # ----- Binary crate root -----
+  # `src/main.rs` is the binary entry that wires every top-level module
+  # together. High fan-out is normal for a CLI root; the rule still applies
+  # everywhere else in the tree.
+  - rule: architecture.module-fan-out
+    paths: ["src/main.rs"]
+    reason: "Binary crate root: naturally enumerates all top-level modules."
+
+  # ----- Cargo.lock transitive duplicates -----
+  # `hashbrown` and `wit-bindgen` are locked at two versions each because
+  # transitive deps pin different majors. Unifying would require [patch]
+  # directives, which risk breaking those deps.
+  - rule: dependency.duplicate-locked-version
+    message_contains: "hashbrown"
+    reason: "Transitive duplicate; unifying would require risky [patch] directives."
+  - rule: dependency.duplicate-locked-version
+    message_contains: "wit-bindgen"
+    reason: "Transitive duplicate; unifying would require risky [patch] directives."
+
+  # ----- Long integration tests with shared setup -----
+  # These tests bundle multiple assertions against expensive setup (write
+  # config + run analyser end-to-end). Splitting multiplies setup cost.
+  - rule: test-quality.long-test
+    paths:
+      - "src/tests/config_and_selectors/custom_rules.rs"
+      - "src/tests/config_and_selectors/exclusions.rs"
+    reason: "Integration tests bundle assertions sharing expensive setup."

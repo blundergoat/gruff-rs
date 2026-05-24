@@ -22,6 +22,11 @@ const HEADER: &str = "\
 ";
 
 const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".github/**",
+    ".goat-flow/**",
     "target/**",
     "node_modules/**",
     "**/Cargo.lock",
