@@ -47,10 +47,16 @@ pub(crate) fn analyse_manual_is_empty(
     }
 }
 
-/// `iter().any(|x| x == y)` and the dereference variant `|x| *x == y`
-/// should use `.contains(&y)`. Requires that the closure parameter is the
-/// left-hand side of the comparison so we do not flag closures whose
-/// argument is unrelated to the comparison (`|_| target == other`).
+/// `iter().any(|x| *x == y)` and `iter().any(|x| x == &y)` should use
+/// `.contains(&y)`. Two shapes match:
+/// - **Deref pattern**: `|x| *x == y` — closure receives `&T`, derefs to
+///   compare to `T`. `.contains(&y)` is a clean swap.
+/// - **RHS-ref pattern**: `|x| x == &y` — closure receives `&T`, compares
+///   to `&T`. `.contains(&y)` works.
+///
+/// Bare `|x| x == y` (no `*` and no `&`) is intentionally NOT matched:
+/// the types often only line up through `PartialEq` cross-type impls
+/// (e.g. `&String == &str`) where `.contains()` would not compile.
 pub(crate) fn analyse_manual_contains(
     file: &SourceFile,
     searchable: &str,
@@ -58,7 +64,7 @@ pub(crate) fn analyse_manual_contains(
 ) {
     let regex = static_regex(
         &MANUAL_CONTAINS_REGEX,
-        r"\.iter\s*\(\s*\)\s*\.any\s*\(\s*\|\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)\s*\|\s*\*?\s*(?P<lhs>[A-Za-z_][A-Za-z0-9_]*)\s*==\s*[A-Za-z_&][\w\.]*\s*\)",
+        r"\.iter\s*\(\s*\)\s*\.any\s*\(\s*\|\s*(?P<arg>[A-Za-z_][A-Za-z0-9_]*)\s*\|\s*(?:\*\s*(?P<deref>[A-Za-z_][A-Za-z0-9_]*)\s*==\s*[A-Za-z_][\w\.]*|(?P<noderef>[A-Za-z_][A-Za-z0-9_]*)\s*==\s*&\s*[A-Za-z_][\w\.]*)\s*\)",
     );
     let line_starts = line_starts(searchable);
     for captures in regex.captures_iter(searchable) {
@@ -67,7 +73,8 @@ pub(crate) fn analyse_manual_contains(
             .map(|capture| capture.as_str())
             .unwrap_or("");
         let lhs = captures
-            .name("lhs")
+            .name("deref")
+            .or_else(|| captures.name("noderef"))
             .map(|capture| capture.as_str())
             .unwrap_or("");
         if arg != lhs {
@@ -79,7 +86,7 @@ pub(crate) fn analyse_manual_contains(
         let line = byte_line_from_starts(&line_starts, full.start());
         findings.push(finding(SimpleFindingDescriptor {
             rule_id: "modernisation.manual-contains",
-            message: "Use `.contains(&value)` instead of `.iter().any(|x| x == value)`.".into(),
+            message: "Use `.contains(&value)` instead of `.iter().any(|x| x == &value)` or `|x| *x == value`.".into(),
             file,
             line: Some(line),
             severity: Severity::Advisory,

@@ -209,12 +209,27 @@ pub(crate) fn analyse_process_commands(
 /// `Path::new(var)` / `PathBuf::from(var)` and `base.join(var)`. As a
 /// `-candidate` rule the message is hedged; the goal is to surface
 /// review-worthy joins, not to claim a proven traversal bug.
+///
+/// Skips that keep the rule precise:
+/// - file lives under test infrastructure (`/tests/`, `_test.rs`)
+/// - argument matches a known safe identifier (`safe`, `sanitized`,
+///   `normalized`, `validated`, `file_name`, plus base-path conventions)
+/// - the argument was declared as `&Path` / `&PathBuf` / `impl AsRef<Path>`
+///   in a nearby function signature (utility helpers cannot be tainted
+///   here; any external input was already path-typed upstream)
+/// - the same function performs `.canonicalize()` followed by
+///   `.starts_with(` within a short window after the join (validate-then-
+///   trust pattern)
 pub(crate) fn analyse_path_traversal_candidate(
     file: &SourceFile,
     source: &str,
     findings: &mut Vec<Finding>,
 ) {
+    if path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
     let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let lines: Vec<&str> = searchable.lines().collect();
     let starts = line_starts(&searchable);
     let mut emitted = std::collections::BTreeSet::new();
 
@@ -226,13 +241,13 @@ pub(crate) fn analyse_path_traversal_candidate(
         let Some(arg) = captures.name("arg") else {
             continue;
         };
-        if path_traversal_arg_is_safe(arg.as_str()) {
-            continue;
-        }
         let Some(full) = captures.get(0) else {
             continue;
         };
         let line = byte_line_from_starts(&starts, full.start());
+        if path_traversal_finding_is_suppressed(arg.as_str(), &lines, line) {
+            continue;
+        }
         if !emitted.insert(line) {
             continue;
         }
@@ -247,18 +262,31 @@ pub(crate) fn analyse_path_traversal_candidate(
         let Some(arg) = captures.name("arg") else {
             continue;
         };
-        if path_traversal_arg_is_safe(arg.as_str()) {
-            continue;
-        }
         let Some(full) = captures.get(0) else {
             continue;
         };
         let line = byte_line_from_starts(&starts, full.start());
+        if path_traversal_finding_is_suppressed(arg.as_str(), &lines, line) {
+            continue;
+        }
         if !emitted.insert(line) {
             continue;
         }
         push_path_traversal_candidate_finding(file, line, arg.as_str(), findings);
     }
+}
+
+fn path_traversal_finding_is_suppressed(arg: &str, lines: &[&str], line: usize) -> bool {
+    if path_traversal_arg_is_safe(arg) {
+        return true;
+    }
+    if arg_is_typed_path_in_nearby_signature(arg, lines, line) {
+        return true;
+    }
+    if window_validates_path_after(lines, line) {
+        return true;
+    }
+    false
 }
 
 fn path_traversal_arg_is_safe(arg: &str) -> bool {
@@ -278,7 +306,63 @@ fn path_traversal_arg_is_safe(arg: &str) -> bool {
             | "manifest_dir"
             | "target"
             | "prefix"
+            | "safe"
+            | "sanitized"
+            | "normalized"
+            | "validated"
+            | "file_name"
+            | "filename"
+            | "display_path"
     )
+}
+
+/// True iff `arg` appears in a function signature within the 30 lines
+/// preceding `line` (1-based) typed as `&Path`, `&PathBuf`, `Path`,
+/// `PathBuf`, or `impl AsRef<Path>`. Path-typed parameters cannot carry
+/// an unconstrained string segment; any external input was widened to a
+/// path-typed value upstream.
+fn arg_is_typed_path_in_nearby_signature(arg: &str, lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let lookback_start = zero_based.saturating_sub(30);
+    let needle = format!("{arg}:");
+    for source_line in lines[lookback_start..=zero_based].iter().rev() {
+        if !source_line.contains(&needle) {
+            continue;
+        }
+        let after = match source_line.split_once(&needle) {
+            Some((_, after)) => after,
+            None => continue,
+        };
+        let trimmed = after.trim_start();
+        if trimmed.starts_with("&Path")
+            || trimmed.starts_with("&PathBuf")
+            || trimmed.starts_with("Path")
+            || trimmed.starts_with("PathBuf")
+            || trimmed.starts_with("impl AsRef<Path>")
+            || trimmed.starts_with("&impl AsRef<Path>")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// True iff the 10 lines after `line` (inclusive of the join itself)
+/// contain both `.canonicalize()` and `.starts_with(`. That sequence is
+/// the validate-then-trust pattern (resolve symlinks, then check the
+/// resolved path is inside the trusted root), and recognising it lets the
+/// rule stay silent on intentionally-defended joins.
+fn window_validates_path_after(lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let end = (zero_based + 10).min(lines.len());
+    let window: String = lines[zero_based..end].join("\n");
+    window.contains(".canonicalize(") && window.contains(".starts_with(")
 }
 
 fn push_path_traversal_candidate_finding(

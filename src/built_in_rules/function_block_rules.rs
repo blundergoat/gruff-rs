@@ -7,7 +7,7 @@ pub(crate) fn analyse_placeholder_block_name(
     findings: &mut Vec<Finding>,
 ) {
     let extras = config.string_array_option("naming.placeholder-identifier", "extraPlaceholders");
-    let extra_match = extras.iter().any(|name| name == &block.name);
+    let extra_match = extras.contains(&block.name);
     if is_placeholder_identifier(&block.name) || extra_match {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {

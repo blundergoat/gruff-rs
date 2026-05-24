@@ -188,7 +188,7 @@ pub(crate) fn apply_custom_rules_section(
 pub(crate) fn default_config_path(project_root: &Path) -> Option<PathBuf> {
     DEFAULT_CONFIG_FILES
         .iter()
-        .map(|name| project_root.join(name))
+        .map(|file_name| project_root.join(file_name))
         .find(|path| path.exists())
 }
 

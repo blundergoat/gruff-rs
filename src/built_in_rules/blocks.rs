@@ -264,7 +264,7 @@ pub(crate) fn analyse_block_naming(
     findings: &mut Vec<Finding>,
 ) {
     let extra_generic = config.string_array_option("naming.generic-function", "extraGenericNames");
-    if is_generic_name(&block.name) || extra_generic.iter().any(|name| name == &block.name) {
+    if is_generic_name(&block.name) || extra_generic.contains(&block.name) {
         findings.push(block_finding(BlockFindingDescriptor {
             rule_id: "naming.generic-function",
             message: format!(

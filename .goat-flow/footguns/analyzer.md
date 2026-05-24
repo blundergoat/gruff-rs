@@ -1,7 +1,37 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-23
+last_reviewed: 2026-05-24
 ---
+
+## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/modernisation_rules.rs` (search: `fn analyse_manual_contains`) flags `iter().any(|x| x == y)` shapes that should use `.contains(&y)`. The shape that *looks* equivalent isn't always: when the iterator yields `&String` and the comparison target is `&str`, the closure compiles via `PartialEq<&str> for String`, but `[String]::contains` needs `&String` — `.contains(&y)` would not compile without an allocation.
+
+Concrete instances from 2026-05-24 self-scan:
+
+- `src/built_in_rules/naming_rules.rs` (search: `extra_placeholders.iter().any`) — `extra_placeholders: Vec<String>`, `name: &str`. The bare-bare shape is the only one the type system accepts cheaply.
+- `src/config_loader/mod.rs` (search: `allowed.iter().any`) — `allowed: &[&str]`, `key: &String`. Same cross-type compare problem.
+
+The non-obvious failure mode is matching every `iter().any(|x| ARG == OTHER)` shape and producing findings the user can't safely auto-fix. The rule was first written that way and flagged both type-compatible cases (where `.contains()` is a clean swap) and cross-type cases (where it isn't).
+
+Calibrate by requiring an explicit dereference or reference token: `iter().any(|x| *x == y)` (deref pattern, items are `&T` comparing to `T`) or `iter().any(|x| x == &y)` (RHS-ref pattern, items are `&T` comparing to `&T`). Bare `|x| x == y` stays silent because the only way that compiles is through `PartialEq` cross-type impls, where `.contains()` likely needs an allocation. Regression coverage: `src/tests/calibration/cases_pillar_expansion.rs` (search: `modernisation.manual-contains`) uses `*item == target` so the deref shape stays detected.
+
+## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
+
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/behavior_rules.rs` (search: `fn analyse_path_traversal_candidate`) flags filesystem path construction from non-literal identifiers. A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
+
+- **Path-typed parameters in utility helpers**: `fn absolutize(root: &Path, path: &Path) -> PathBuf { root.join(path) }`. The `path` argument cannot carry an unconstrained string segment — it was already path-typed upstream.
+- **Validate-then-trust pattern**: `default_root.join(requested).canonicalize()?` followed by `.starts_with(default_root)`. The join is dangerous in isolation but resolved and re-checked immediately after.
+- **Identifier names that signal validation**: `safe`, `sanitized`, `normalized`, `validated`, `file_name` — common in code that has just finished validating.
+- **Test infrastructure**: paths constructed inside `tests/` directories are not attack surfaces.
+
+The non-obvious failure mode is shipping a candidate rule whose recall is high but whose precision collapses on idiomatic Rust. Users either silence it project-wide or stop reading its findings.
+
+Calibrate with three guards before emitting the finding (kept in `path_traversal_finding_is_suppressed`): (1) expanded safe-arg list including validation-signal names; (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 10 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fires.
 
 ## Footgun: Fixture Findings Are Intentional
 
