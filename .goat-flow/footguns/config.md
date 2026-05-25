@@ -25,3 +25,20 @@ Regression coverage:
 The runtime defense lives in `src/init.rs` (search: `fn read_existing_ignore_patterns`). On every `gruff-rs init` invocation, the renderer reads the existing file's `paths.ignore` and unions it with `DEFAULT_IGNORE_PATTERNS` before writing - `--force` no longer wipes user customizations of the ignore list. Missing / malformed YAML / missing `paths.ignore` all degrade silently to an empty list with a stderr warning, so the regenerate path still works against a corrupted config.
 
 **Scope caveat:** preservation today is `paths.ignore` only. Custom `rules:` thresholds, `allowlists:` extensions, `custom_rules:`, and the `exclude:` block are still regenerated from defaults on `--force`. Extending preservation further is intentional follow-up: do not silently broaden the scope without an explicit ask.
+
+## Footgun: Default-Allowlist Constants Duplicate Between config.rs And init.rs
+
+**Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
+
+`src/config.rs` (search: `pub(crate) const DEFAULT_ABBREVIATIONS`) holds the compiled-in default that `Config::default()` uses to populate `accepted_abbreviations`. `src/init.rs` (search: `for abbreviation in DEFAULT_ABBREVIATIONS`) renders the same list into the YAML body that `gruff-rs init` writes to disk. Before 0.1.2 each module had its own private 16-entry constant — byte-identical but unlinked.
+
+The PR that grew the list from 6 to 16 entries kept both copies in sync by accident; the next agent expanding only one would silently break the contract that compiled-in defaults and the freshly-`init`-generated YAML match. Unlike `DEFAULT_IGNORE_PATTERNS` (which intentionally has different runtime / on-disk shapes — empty `Vec` at runtime via `Config::default()`, populated YAML on disk via `init.rs` — see the previous footgun for why), `accepted_abbreviations` MUST match across both surfaces.
+
+The non-obvious failure mode is that drift is invisible to the test suite: `Config::default()` unit tests and `init`-output snapshot tests each pass independently. Only an end-to-end "init → load → assert against compiled default" check would catch the divergence, and the calibration / preflight pipeline does not include that today.
+
+**How to apply:**
+
+- Defaults that must match between `Config::default()` and the `init`-emitted YAML belong as one `pub(crate) const` in `src/config.rs`. `init.rs` imports it.
+- Direction matters: `init.rs` depends on `config.rs`, never the reverse — `config.rs` is foundational and should not pull from CLI-subcommand modules.
+- When adding a new allowlist / override-list config field that `init.rs` also needs to emit, factor the const out before adding both copies.
+- See patterns/architecture.md "Default Config Constants Are Defined Once" for the prescriptive form.
