@@ -230,7 +230,6 @@ pub(crate) fn severity_text(severity: Severity) -> &'static str {
     }
 }
 
-
 pub(crate) fn grade_class_letter(grade_letter: &str) -> char {
     grade_letter
         .chars()

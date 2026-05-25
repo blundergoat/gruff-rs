@@ -348,4 +348,3 @@ fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
     });
     serde_json::to_string_pretty(&value).expect("summary serializes")
 }
-

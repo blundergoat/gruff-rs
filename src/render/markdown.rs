@@ -52,4 +52,3 @@ fn render_pillars_section(output: &mut String, pillars: &[crate::summary::Pillar
         ));
     }
 }
-
