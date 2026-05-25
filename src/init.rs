@@ -35,7 +35,12 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
     "**/pnpm-lock.yaml",
 ];
 
-const DEFAULT_ABBREVIATIONS: &[&str] = &["id", "db", "io", "ui", "tx", "rx"];
+// Universal-programming abbreviations that earn their place in source across nearly any codebase.
+// Project-specific vocabulary (e.g. domain acronyms) should be appended to this list in the user's config.
+const DEFAULT_ABBREVIATIONS: &[&str] = &[
+    "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx",
+    "ui", "url",
+];
 
 pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
     let output = &args.output;

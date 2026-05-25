@@ -556,7 +556,7 @@ summary_json_smoke() {
   local summary_file="$WORK_DIR/summary.json"
 
   cargo run --quiet -- summary fixtures --format json --top 5 --include-ignored >"$summary_file" || return $?
-  grep -q '"schemaVersion": "gruff.summary.v1"' "$summary_file" || return $?
+  grep -q '"schemaVersion": "gruff.summary.v2"' "$summary_file" || return $?
   grep -q '"topRules":' "$summary_file"
 }
 

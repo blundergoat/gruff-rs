@@ -242,6 +242,7 @@ pub(crate) struct ScoreReport {
 pub(crate) struct PillarScore {
     pub(crate) pillar: Pillar,
     pub(crate) score: f64,
+    pub(crate) penalty: f64,
     pub(crate) findings: usize,
 }
 

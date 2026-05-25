@@ -54,10 +54,11 @@ pub(crate) fn pillar_scores(findings: &[Finding]) -> Vec<PillarScore> {
             let penalty: f64 = pillar_findings
                 .iter()
                 .map(|finding| finding_penalty(finding))
-                .sum();
+                .fold(0.0_f64, |acc, value| acc + value);
             PillarScore {
                 pillar,
                 score: (100.0 - penalty).max(0.0),
+                penalty,
                 findings: pillar_findings.len(),
             }
         })

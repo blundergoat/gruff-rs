@@ -229,10 +229,13 @@ impl Config {
         Self {
             ignored_paths: Vec::new(),
             ignored_path_matchers: Vec::new(),
-            accepted_abbreviations: ["id", "db", "io", "ui", "tx", "rx"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            accepted_abbreviations: [
+                "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw",
+                "rx", "tx", "ui", "url",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
             secret_previews: BTreeSet::new(),
             selectors: SelectorSet::default(),
             exclusions: Vec::new(),

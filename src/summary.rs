@@ -1,12 +1,13 @@
 use crate::{
-    grade, scoring::top_file_scores_with_limit, AnalysisReport, Pillar, Severity, SummaryFormat,
+    grade, scoring::top_file_scores_with_limit, AnalysisReport, Finding, Pillar, PillarScore,
+    Severity, SummaryFormat, SCORE_PILLARS,
 };
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-const SCHEMA_VERSION: &str = "gruff.summary.v1";
+const SCHEMA_VERSION: &str = "gruff.summary.v2";
 
 /// Render a compact summary view from a full analysis report.
 pub(crate) fn render(
@@ -30,12 +31,16 @@ struct SummaryDigest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PillarDigest {
-    pillar: Pillar,
-    findings: usize,
-    advisory: usize,
-    warning: usize,
-    error: usize,
+pub(crate) struct PillarDigest {
+    pub(crate) pillar: Pillar,
+    pub(crate) grade: String,
+    pub(crate) score: f64,
+    pub(crate) applicable: bool,
+    pub(crate) findings: usize,
+    pub(crate) advisory: usize,
+    pub(crate) warning: usize,
+    pub(crate) error: usize,
+    pub(crate) penalty: f64,
 }
 
 #[derive(Serialize)]
@@ -64,24 +69,55 @@ impl SummaryDigest {
     }
 }
 
-fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
-    let mut pillars: BTreeMap<Pillar, PillarDigest> = BTreeMap::new();
-    for finding in &report.findings {
-        let entry = pillars.entry(finding.pillar).or_insert(PillarDigest {
-            pillar: finding.pillar,
-            findings: 0,
-            advisory: 0,
-            warning: 0,
-            error: 0,
-        });
-        entry.findings += 1;
+pub(crate) fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
+    let severity_counts = tally_severity_by_pillar(&report.findings);
+    let mut digests: Vec<PillarDigest> = report
+        .score
+        .pillars
+        .iter()
+        .map(|pillar_score| pillar_digest_row(pillar_score, &severity_counts))
+        .collect();
+    digests.sort_by(|left, right| {
+        right
+            .findings
+            .cmp(&left.findings)
+            .then_with(|| left.pillar.cmp(&right.pillar))
+    });
+    digests
+}
+
+fn tally_severity_by_pillar(findings: &[Finding]) -> BTreeMap<Pillar, (usize, usize, usize)> {
+    let mut counts: BTreeMap<Pillar, (usize, usize, usize)> = BTreeMap::new();
+    for finding in findings {
+        let entry = counts.entry(finding.pillar).or_insert((0, 0, 0));
         match finding.severity {
-            Severity::Advisory => entry.advisory += 1,
-            Severity::Warning => entry.warning += 1,
-            Severity::Error => entry.error += 1,
+            Severity::Advisory => entry.0 += 1,
+            Severity::Warning => entry.1 += 1,
+            Severity::Error => entry.2 += 1,
         }
     }
-    pillars.into_values().collect()
+    counts
+}
+
+fn pillar_digest_row(
+    pillar_score: &PillarScore,
+    severity_counts: &BTreeMap<Pillar, (usize, usize, usize)>,
+) -> PillarDigest {
+    let (advisory, warning, error) = severity_counts
+        .get(&pillar_score.pillar)
+        .copied()
+        .unwrap_or((0, 0, 0));
+    PillarDigest {
+        pillar: pillar_score.pillar,
+        grade: grade(pillar_score.score),
+        score: pillar_score.score,
+        applicable: SCORE_PILLARS.contains(&pillar_score.pillar),
+        findings: pillar_score.findings,
+        advisory,
+        warning,
+        error,
+        penalty: pillar_score.penalty,
+    }
 }
 
 fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
@@ -238,19 +274,40 @@ fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {
     out.push_str("Pillars\n");
     if pillars.is_empty() {
         out.push_str("  (none)\n");
-    } else {
-        for pillar in pillars {
-            let _ = writeln!(
-                out,
-                "  {:<16}  findings={:<4}  err={:<3}  warn={:<3}  adv={:<3}",
-                pillar_label(pillar.pillar),
-                pillar.findings,
-                pillar.error,
-                pillar.warning,
-                pillar.advisory,
-            );
-        }
+        return;
     }
+
+    let name_width = pillars
+        .iter()
+        .map(|pillar| pillar_label(pillar.pillar).len())
+        .max()
+        .unwrap_or(0);
+    let count_width = pillars
+        .iter()
+        .flat_map(|pillar| [pillar.findings, pillar.advisory, pillar.warning])
+        .map(digit_width)
+        .max()
+        .unwrap_or(1);
+
+    for pillar in pillars {
+        let _ = writeln!(
+            out,
+            "  {name:<name_width$} {grade} {score:>6.2} findings={findings:<count_width$}   advisory={advisory:<count_width$}   warning={warning:<count_width$}   error={error}",
+            name = pillar_label(pillar.pillar),
+            name_width = name_width,
+            grade = pillar.grade,
+            score = pillar.score,
+            findings = pillar.findings,
+            count_width = count_width,
+            advisory = pillar.advisory,
+            warning = pillar.warning,
+            error = pillar.error,
+        );
+    }
+}
+
+fn digit_width(value: usize) -> usize {
+    value.checked_ilog10().map_or(1, |log| log as usize + 1)
 }
 
 fn render_rules_text(out: &mut String, rules: &[RuleDigest]) {
