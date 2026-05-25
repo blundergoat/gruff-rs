@@ -80,10 +80,10 @@ pub(crate) use render::{
     render_report, sarif_physical_location_from_parts, sarif_uri, total_suppressed_findings,
 };
 use report::{
-    AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence, FileScore, Finding,
-    FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions, RunDiagnostic,
-    RunInfo, ScoreReport, Severity, Summary, SuppressedFinding, SuppressionSummary, ToolInfo,
-    SCORE_PILLARS,
+    pillar_label, AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence,
+    FileScore, Finding, FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions,
+    RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding, SuppressionSummary,
+    ToolInfo, SCORE_PILLARS,
 };
 pub(crate) use scoring::{grade, score_report, summarize};
 use source::{

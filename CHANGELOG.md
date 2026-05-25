@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.1.2 - 2026-05-25
+
+### Added
+
+- `gruff-rs summary --format json` pillars[] entries expose nine fields:
+  `pillar`, `grade`, `score`, `applicable`, `findings`, `advisory`,
+  `warning`, `error`, `penalty`.
+- `pillars[]` lists every score pillar (not only pillars with findings)
+  and is sorted deterministically by `findings DESC, then pillar ASC`.
+  `applicable` records whether the pillar contributes to the composite
+  score.
+- `penalty` exposes the raw, unclamped score subtraction so saturated
+  pillars (score 0) still surface the underlying penalty for
+  worst-pillar ranking that survives the `max(0.0, 100.0 - penalty)`
+  clamp.
+- Markdown report gains a `## Pillars` section: a seven-column table
+  (`Pillar | Grade | Score | Findings | Advisory | Warning | Error`)
+  inserted between the score header and the bulleted findings list.
+  Same sort as the JSON.
+- Default `accepted_abbreviations` grows from six entries
+  (`id`, `db`, `io`, `ui`, `tx`, `rx`) to sixteen, adding `age`, `app`,
+  `fs`, `key`, `log`, `max`, `min`, `now`, `raw`, `url`. Naming rules
+  accept these out of the box; project-specific vocabulary still goes in
+  user config.
+
+### Changed
+
+- Summary JSON `schemaVersion` moves from `gruff.summary.v1` to
+  `gruff.summary.v2`.
+- Analysis JSON (`gruff.analysis.v1`) `score.pillars[]` entries gain a
+  `penalty: f64` field alongside the existing `pillar`, `score`,
+  `findings`.
+- HTML inspection report replaces the pillar card grid with a
+  seven-column table (`<table class="pillar-list">`) matching the JSON
+  and Markdown column set and sort. Grade renders inside a
+  `<span class="grade-pill {letter}">` pill. Per-severity count cells
+  get a tier CSS class (`.note`, `.warn`, `.fail`) only when non-zero;
+  zero counts stay neutral. The "pillar grades" heading shortens to
+  "pillars".
+- HTML verdict stat labels singularised: "errors" → "error", "warnings"
+  → "warning", "advisories" → "advisory".
+- HTML pillar section no longer renders the mutation placeholder card.
+- `gruff-rs summary` text output prefixes each pillar line with its
+  grade letter and two-decimal score and aligns columns by max name /
+  digit width. Severity labels widen from `err` / `warn` / `adv` to
+  `error` / `warning` / `advisory`, and ordering follows
+  `findings DESC, then pillar ASC`.
+- Version bumped to `0.1.2`.
+
+### Internal
+
+- `PillarScore` (`src/report.rs`) gains `penalty: f64`, populated by
+  `pillar_scores` in `src/scoring.rs`.
+- `summary::pillar_digests` becomes `pub(crate)` and is the single
+  source of truth for pillar grade, score, severity counts, and sort
+  order across the JSON, HTML, Markdown, and text views.
+  `src/html_report/mod.rs` and `src/render/markdown.rs` consume it
+  directly, replacing `html_report::build_pillar_rows`' duplicate
+  per-pillar tabulation.
+- `ReportView` drops the `pillar_for_mutation_missing` field that gated
+  the removed mutation placeholder.
+- Cross-port: the v2 JSON pillar shape and the seven-column HTML /
+  Markdown table match the corresponding `gruff-go`, `gruff-ts`,
+  `gruff-py`, and `gruff-php` ports.
+- New regression tests in `src/tests/renderers/output.rs` lock the
+  canonical JSON / HTML / Markdown pillar contracts (column set, sort,
+  severity tier classes, score precision).
+- Documentation references to `gruff.summary.v1` updated to
+  `gruff.summary.v2` in `.goat-flow/architecture.md`,
+  `.goat-flow/code-map.md`, and the `summary_json_smoke` check in
+  `scripts/preflight-checks.sh`.
+
 ## 0.1.1 - 2026-05-24
 
 ### Added

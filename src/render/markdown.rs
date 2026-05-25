@@ -1,5 +1,5 @@
 use super::*;
-use crate::summary::pillar_digests;
+use crate::{pillar_label, summary::pillar_digests};
 
 pub(super) fn render_markdown(report: &AnalysisReport) -> String {
     let pillars = pillar_digests(report);
@@ -53,19 +53,3 @@ fn render_pillars_section(output: &mut String, pillars: &[crate::summary::Pillar
     }
 }
 
-fn pillar_label(pillar: Pillar) -> &'static str {
-    match pillar {
-        Pillar::Size => "size",
-        Pillar::Complexity => "complexity",
-        Pillar::DeadCode => "dead-code",
-        Pillar::Waste => "waste",
-        Pillar::Maintainability => "maintainability",
-        Pillar::Naming => "naming",
-        Pillar::Documentation => "documentation",
-        Pillar::Modernisation => "modernisation",
-        Pillar::Security => "security",
-        Pillar::SensitiveData => "sensitive-data",
-        Pillar::TestQuality => "test-quality",
-        Pillar::Design => "design",
-    }
-}

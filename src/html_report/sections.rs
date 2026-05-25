@@ -1,9 +1,6 @@
 use super::styles::css;
-use super::{
-    pillar_label, severity_text, DistributionBar, OffenderRow, PillarRow, ReportView,
-    SCHEMA_VERSION,
-};
-use crate::{html_escape, Finding, RunDiagnostic, Severity};
+use super::{severity_text, DistributionBar, OffenderRow, PillarRow, ReportView, SCHEMA_VERSION};
+use crate::{html_escape, pillar_label, Finding, RunDiagnostic, Severity};
 use std::fmt::Write as _;
 
 pub(crate) fn document(view: &ReportView<'_>) -> String {

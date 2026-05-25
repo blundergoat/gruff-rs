@@ -1,6 +1,6 @@
 use crate::{
-    grade, scoring::top_file_scores_with_limit, AnalysisReport, Finding, Pillar, PillarScore,
-    Severity, SummaryFormat, SCORE_PILLARS,
+    grade, pillar_label, scoring::top_file_scores_with_limit, AnalysisReport, Finding, Pillar,
+    PillarScore, Severity, SummaryFormat, SCORE_PILLARS,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -349,19 +349,3 @@ fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
     serde_json::to_string_pretty(&value).expect("summary serializes")
 }
 
-fn pillar_label(pillar: Pillar) -> &'static str {
-    match pillar {
-        Pillar::Size => "size",
-        Pillar::Complexity => "complexity",
-        Pillar::DeadCode => "dead-code",
-        Pillar::Waste => "waste",
-        Pillar::Maintainability => "maintainability",
-        Pillar::Naming => "naming",
-        Pillar::Documentation => "documentation",
-        Pillar::Modernisation => "modernisation",
-        Pillar::Security => "security",
-        Pillar::SensitiveData => "sensitive-data",
-        Pillar::TestQuality => "test-quality",
-        Pillar::Design => "design",
-    }
-}

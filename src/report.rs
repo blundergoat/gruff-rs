@@ -47,6 +47,23 @@ pub(crate) const SCORE_PILLARS: &[Pillar] = &[
     Pillar::Design,
 ];
 
+pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
+    match pillar {
+        Pillar::Size => "size",
+        Pillar::Complexity => "complexity",
+        Pillar::DeadCode => "dead-code",
+        Pillar::Waste => "waste",
+        Pillar::Maintainability => "maintainability",
+        Pillar::Naming => "naming",
+        Pillar::Documentation => "documentation",
+        Pillar::Modernisation => "modernisation",
+        Pillar::Security => "security",
+        Pillar::SensitiveData => "sensitive-data",
+        Pillar::TestQuality => "test-quality",
+        Pillar::Design => "design",
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Finding {

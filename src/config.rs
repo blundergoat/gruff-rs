@@ -1,5 +1,12 @@
 use super::*;
 
+// Universal-programming abbreviations that earn their place in source across nearly any codebase.
+// Project-specific vocabulary (e.g. domain acronyms) should be appended to this list in the user's config.
+pub(crate) const DEFAULT_ABBREVIATIONS: &[&str] = &[
+    "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx",
+    "ui", "url",
+];
+
 #[derive(Clone)]
 pub(crate) struct AnalysisOptions {
     pub(crate) paths: Vec<PathBuf>,
@@ -229,13 +236,10 @@ impl Config {
         Self {
             ignored_paths: Vec::new(),
             ignored_path_matchers: Vec::new(),
-            accepted_abbreviations: [
-                "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw",
-                "rx", "tx", "ui", "url",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+            accepted_abbreviations: DEFAULT_ABBREVIATIONS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             secret_previews: BTreeSet::new(),
             selectors: SelectorSet::default(),
             exclusions: Vec::new(),

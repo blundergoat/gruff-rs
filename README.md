@@ -10,7 +10,7 @@
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.1.1` package line |
+| Release line | Published `0.1.2` package line |
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
@@ -34,7 +34,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 Install into a repository-local tool directory:
 
 ```bash
-cargo install gruff-rs --locked --version 0.1.1 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 0.1.2 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.1.1
+      - uses: blundergoat/gruff-rs@v0.1.2
         with:
           args: analyse . --format sarif --fail-on warning --no-baseline
 ```

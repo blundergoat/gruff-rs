@@ -239,14 +239,17 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
     assert_eq!(documentation["score"].as_f64(), Some(0.0));
     assert_eq!(documentation["penalty"].as_f64(), Some(300.0));
     assert_eq!(documentation["grade"], "F");
+    assert!(documentation["applicable"].is_boolean());
     // Complexity: 1 error * (8.0 * 1.0) = 8.0; score 92.0.
     let complexity = find_pillar("complexity");
     assert_eq!(complexity["penalty"].as_f64(), Some(8.0));
     assert_eq!(complexity["score"].as_f64(), Some(92.0));
+    assert!(complexity["applicable"].is_boolean());
     // Empty pillar still carries `penalty: 0.0` (no negative-zero leak).
     let security = find_pillar("security");
     assert_eq!(security["penalty"].as_f64(), Some(0.0));
     assert_eq!(security["score"].as_f64(), Some(100.0));
+    assert!(security["applicable"].is_boolean());
 }
 
 #[test]

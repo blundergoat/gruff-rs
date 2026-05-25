@@ -230,22 +230,6 @@ pub(crate) fn severity_text(severity: Severity) -> &'static str {
     }
 }
 
-pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
-    match pillar {
-        Pillar::Size => "size",
-        Pillar::Complexity => "complexity",
-        Pillar::DeadCode => "dead-code",
-        Pillar::Waste => "waste",
-        Pillar::Maintainability => "maintainability",
-        Pillar::Naming => "naming",
-        Pillar::Documentation => "documentation",
-        Pillar::Modernisation => "modernisation",
-        Pillar::Security => "security",
-        Pillar::SensitiveData => "sensitive-data",
-        Pillar::TestQuality => "test-quality",
-        Pillar::Design => "design",
-    }
-}
 
 pub(crate) fn grade_class_letter(grade_letter: &str) -> char {
     grade_letter
