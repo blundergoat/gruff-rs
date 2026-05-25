@@ -67,10 +67,14 @@ pub(crate) fn pillar_scores(findings: &[Finding]) -> Vec<PillarScore> {
 }
 
 pub(crate) fn composite_score(pillars: &[PillarScore]) -> f64 {
-    if pillars.is_empty() {
+    let scored: Vec<&PillarScore> = pillars
+        .iter()
+        .filter(|pillar| SCORE_PILLARS.contains(&pillar.pillar))
+        .collect();
+    if scored.is_empty() {
         100.0
     } else {
-        pillars.iter().map(|pillar| pillar.score).sum::<f64>() / pillars.len() as f64
+        scored.iter().map(|pillar| pillar.score).sum::<f64>() / scored.len() as f64
     }
 }
 

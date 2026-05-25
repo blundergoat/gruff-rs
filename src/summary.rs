@@ -81,7 +81,7 @@ pub(crate) fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
         right
             .findings
             .cmp(&left.findings)
-            .then_with(|| left.pillar.cmp(&right.pillar))
+            .then_with(|| pillar_label(left.pillar).cmp(pillar_label(right.pillar)))
     });
     digests
 }

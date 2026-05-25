@@ -253,6 +253,70 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
 }
 
 #[test]
+pub(crate) fn non_score_pillars_are_inapplicable_and_excluded_from_composite() {
+    // A custom rule emitting `Pillar::Waste` (not in SCORE_PILLARS) must surface in the
+    // pillar list with `applicable: false` AND must not drag down `composite`. Otherwise
+    // downstream consumers that trust `applicable` recompute a different composite.
+    let waste = test_finding(
+        "custom.waste",
+        "src/wasteful.rs",
+        1,
+        Severity::Error,
+        Pillar::Waste,
+    );
+    let report = sample_report_with(vec![waste], Vec::new());
+
+    // Composite must ignore Waste's 8.0 penalty: every SCORE_PILLARS pillar is 100.0,
+    // and Waste is filtered out before averaging.
+    assert_eq!(report.score.composite, 100.0);
+
+    let decoded: Value =
+        serde_json::from_str(&crate::summary::render(&report, 5, SummaryFormat::Json, 1))
+            .expect("summary json");
+    let waste_pillar = decoded["pillars"]
+        .as_array()
+        .expect("pillars array")
+        .iter()
+        .find(|pillar| pillar["pillar"] == "waste")
+        .expect("waste pillar present");
+    assert_eq!(waste_pillar["applicable"], false);
+    assert_eq!(waste_pillar["penalty"].as_f64(), Some(8.0));
+}
+
+#[test]
+pub(crate) fn pillar_ties_sort_by_canonical_label_not_enum_order() {
+    // Tie-break contract is `pillar ASC by kebab-case label`, not enum declaration order.
+    // Size (enum index 0) and Complexity (enum index 1) with equal finding counts would
+    // sort as `size, complexity` under the derived `Ord`; the canonical contract is
+    // `complexity, size`.
+    let findings = vec![
+        test_finding(
+            "size.function-length",
+            "src/big.rs",
+            1,
+            Severity::Warning,
+            Pillar::Size,
+        ),
+        test_finding(
+            "complexity.cyclomatic",
+            "src/complex.rs",
+            1,
+            Severity::Warning,
+            Pillar::Complexity,
+        ),
+    ];
+    let report = sample_report_with(findings, Vec::new());
+    let markdown = render_report(&report, OutputFormat::Markdown);
+
+    let complexity_pos = markdown.find("| complexity |").expect("complexity row");
+    let size_pos = markdown.find("| size |").expect("size row");
+    assert!(
+        complexity_pos < size_pos,
+        "tied pillars must sort by kebab-case label (complexity < size):\n{markdown}"
+    );
+}
+
+#[test]
 pub(crate) fn html_pillars_section_matches_canonical_contract() {
     // Construct a report with multiple pillars at different finding counts so we can verify
     // (1) the seven canonical columns (pillar, grade, score, findings, advisory, warning, error)
