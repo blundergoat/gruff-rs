@@ -49,7 +49,7 @@
 ## Scripts
 
 `scripts/` = Project shell entrypoints.
-`scripts/preflight-checks.sh` = Shell syntax/lint, formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff, selector, exclusion/custom-rule smokes, and warning-gated dogfood scan.
+`scripts/preflight-checks.sh` = Shell syntax/lint, formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff, selector, exclusion/custom-rule smokes, and a whole-project dogfood scan gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
 `scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes `target/perf/last-run.json`, supports `--update-baseline` and `--check` with configurable time/RSS budgets.
 

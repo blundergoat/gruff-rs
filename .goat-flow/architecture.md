@@ -53,7 +53,7 @@ Rule tuning is loaded by `load_config` from an explicit YAML config path or the 
 
 ## Deployment / Operations
 
-CI lives in `.github/workflows/ci.yml` and runs the same local preflight command as developers: `bash scripts/preflight-checks.sh`. That script runs shell syntax/lint checks, formatting, Clippy, unit tests, rule-listing smoke, JSON and SARIF fixture scans, patch-input diff, selector, exclusion, and custom-rule smokes, plus a dogfood scan of `src/` that defaults to `--fail-on warning`. The expanded rubric keeps this as a single default gate so warning-level analyzer debt, including over-large source files, is visible as a preflight failure. `cargo build` remains the build smoke test, and `bash scripts/start-dev.sh` starts the dashboard using environment-overridable host, port, and project root values.
+CI lives in `.github/workflows/ci.yml` and runs the same local preflight command as developers: `bash scripts/preflight-checks.sh`. That script runs shell syntax/lint checks, formatting, Clippy, unit tests, rule-listing smoke, JSON and SARIF fixture scans, patch-input diff, selector, exclusion, and custom-rule smokes, plus a whole-project dogfood scan (`bin/gruff-rs analyse .`) gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`. The script itself no longer carries a `--fail-on` knob; the config is the single source of truth so threshold drift between local dev and CI is impossible. `cargo build` remains the build smoke test, and `bash scripts/start-dev.sh` starts the dashboard using environment-overridable host, port, and project root values.
 
 ## Non-Obvious Constraints
 

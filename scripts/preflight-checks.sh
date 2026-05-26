@@ -6,7 +6,6 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-GRUFF_RS_FAIL_ON="${GRUFF_RS_FAIL_ON:-advisory}"
 GRUFF_RS_RELEASE_CHECK="${GRUFF_RS_RELEASE_CHECK:-0}"
 WORK_DIR=""
 
@@ -51,17 +50,14 @@ Runs the local gruff-rs preflight suite:
   - crate version consistency between Cargo.toml and Cargo.lock
   - RustSec dependency audit, auto-installing cargo-audit when missing
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
-  - gruff-rs dogfood scan of src/
+  - gruff-rs dogfood scan (analyse the whole project, gated by minimumSeverity.analyse in .gruff-rs.yaml)
 
 Options:
-  --fail-on LEVEL  Fail dogfood analysis at none, advisory, warning, or error.
-                   Defaults to GRUFF_RS_FAIL_ON, or advisory when unset.
   --release-check  Also require the crate version to be newer than the latest
                    local vX.Y.Z git tag and present in CHANGELOG.md.
   -h, --help       Show this help.
 
 Environment:
-  GRUFF_RS_FAIL_ON        Dogfood scan threshold (default: advisory).
   GRUFF_RS_RELEASE_CHECK  Set to 1/true/yes/on to enable --release-check.
 USAGE
 }
@@ -116,7 +112,6 @@ header() {
   printf '  %sPreflight Check%s\n' "$BOLD" "$RESET"
   printf '  %s%s%s\n' "$DIM" "$(date '+%Y-%m-%d %H:%M:%S')" "$RESET"
   printf '  %sroot:%s %s\n' "$DIM" "$RESET" "$REPO_ROOT"
-  printf '  %sdogfood fail threshold:%s %s\n' "$DIM" "$RESET" "$GRUFF_RS_FAIL_ON"
   printf '  %srelease version check:%s %s\n' "$DIM" "$RESET" "$(release_check_label)"
   printf '  %sdependency audit:%s required (auto-install cargo-audit)\n' "$DIM" "$RESET"
   rule
@@ -267,13 +262,6 @@ run_step() {
   fi
 
   return "$status"
-}
-
-validate_fail_on() {
-  case "$GRUFF_RS_FAIL_ON" in
-    none|advisory|warning|error) ;;
-    *) die "invalid --fail-on value: $GRUFF_RS_FAIL_ON" ;;
-  esac
 }
 
 validate_release_check() {
@@ -655,41 +643,13 @@ YAML
   grep -q 'custom.fixture-marker' "$report_file"
 }
 
-dogfood_failure_pattern() {
-  case "$GRUFF_RS_FAIL_ON" in
-    advisory) printf '%s\n' '^- \[(advisory|warning|error)\]' ;;
-    warning) printf '%s\n' '^- \[(warning|error)\]' ;;
-    error) printf '%s\n' '^- \[error\]' ;;
-    none) printf '%s\n' '^$' ;;
-  esac
-}
-
-dogfood_source_scan() {
-  local report_file="$WORK_DIR/src-self-scan.txt"
-  local status=0
-  local pattern
-
-  cargo run --quiet -- analyse src --format text --fail-on "$GRUFF_RS_FAIL_ON" --no-baseline >"$report_file" 2>&1 || status=$?
-
-  grep -m1 '^Score:' "$report_file" || true
-
-  if ((status != 0)); then
-    pattern="$(dogfood_failure_pattern)"
-    printf 'Dogfood scan failed at --fail-on %s. First matching findings:\n' "$GRUFF_RS_FAIL_ON"
-    grep -E "$pattern" "$report_file" | sed -n '1,20p' || true
-  fi
-
-  return "$status"
+dogfood_scan() {
+  bin/gruff-rs analyse . --format text --no-baseline
 }
 
 main() {
   while (($#)); do
     case "$1" in
-      --fail-on)
-        [[ $# -ge 2 ]] || die "--fail-on requires a value"
-        GRUFF_RS_FAIL_ON="$2"
-        shift 2
-        ;;
       --release-check)
         GRUFF_RS_RELEASE_CHECK=1
         shift
@@ -704,7 +664,6 @@ main() {
     esac
   done
 
-  validate_fail_on
   validate_release_check
   require_cargo
   WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gruff-rs-preflight.XXXXXX")"
@@ -730,7 +689,7 @@ main() {
   run_step "selector smoke" selector_smoke
   run_step "exclusion smoke" exclusion_smoke
   run_step "custom rule smoke" custom_rule_smoke
-  run_step "gruff-rs dogfood scan" dogfood_source_scan
+  run_step "gruff-rs dogfood scan" dogfood_scan
 
   summary
 }

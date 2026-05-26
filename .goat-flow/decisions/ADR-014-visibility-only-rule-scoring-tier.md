@@ -78,7 +78,8 @@ Revisit triggers:
 
 - ADR-009 (suppression / baseline / diff layering): the new state is layer-6.5 - post-suppression, affects scoring not visibility.
 - ADR-006 (renderers preserve analysis schema): additive `per_rule_deltas` does not bump the analysis schema version.
-- M04 task file: `.goat-flow/tasks/0.1.2/M04-visibility-tier-and-per-rule-deltas.md`.
+- M04a task file (shipped): `.goat-flow/tasks/0.1.2/M04a-visibility-only-scoring-tier.md`.
+- M04b task file (deferred to 0.3): `.goat-flow/tasks/0.3/M04b-per-rule-deltas.md`.
 - gruff-php's 0.1.4 M06 plan - sibling-port reference design.
 - Auto-memory entries: `feedback-no-bc-ceremony`.
 

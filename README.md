@@ -270,10 +270,10 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 bash scripts/preflight-checks.sh
 cargo test
 cargo clippy --all-targets -- -D warnings
-cargo run -- analyse src --format json --fail-on warning --no-baseline
+bin/gruff-rs analyse . --format json --no-baseline
 ```
 
-`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, and a dogfood scan of `src/`.
+`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, and a dogfood scan of the whole project gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
 
 ## Documentation
 

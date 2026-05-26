@@ -100,6 +100,19 @@
   CI scripts that depend on the prior default should set
   `minimumSeverity.analyse: error` in `.gruff-rs.yaml` or pass
   `--fail-on error` explicitly.
+- `scripts/preflight-checks.sh` dogfood step now scans the whole project
+  (`bin/gruff-rs analyse .`) instead of only `src/`, and the script no
+  longer accepts `--fail-on` or `GRUFF_RS_FAIL_ON`. The gate is now
+  driven entirely by `minimumSeverity.analyse` in `.gruff-rs.yaml`, so
+  threshold drift between local dev and CI is impossible. The
+  `dogfood_failure_pattern`, `validate_fail_on`, and "dogfood fail
+  threshold" header line are removed as dead code.
+- `size.file-length` now exempts `*.sh` files alongside the existing
+  `*.md` / `*.markdown` exemption. Shell scripts and Markdown both have
+  different size norms from Rust modules, and the 600-line threshold
+  was calibrated for the latter. Lockfiles and agent-hook directories
+  (`.codex/hooks/`, `.claude/hooks/`) remain exempt. Other text formats
+  (`.py`, `.yaml`, `.toml`, `.txt`, …) are still scanned.
 - `docs.missing-*` rule messages (`docs.missing-public-doc`,
   `docs.missing-errors-section`, `docs.missing-panics-section`,
   `docs.missing-safety-section`, `docs.missing-param-doc`,
