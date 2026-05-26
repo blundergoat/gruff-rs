@@ -320,14 +320,19 @@ pub(crate) fn push_missing_public_item_doc(
 ) {
     findings.push(Finding::new(FindingDescriptor {
         rule_id: "docs.missing-public-doc".to_string(),
-        message: format!("Public item `{name}` is missing a Rust doc comment."),
+        message: format!(
+            "Public item `{name}` needs a brief intent description above its declaration (one plain-English line, not a restatement of the type)."
+        ),
         file_path: file.display_path.clone(),
         line: Some(line_from_span(span.start())),
         severity: Severity::Advisory,
         pillar: Pillar::Documentation,
         confidence: Confidence::Medium,
         symbol: Some(name),
-        remediation: Some("Add a /// doc comment explaining the public API contract.".to_string()),
+        remediation: Some(
+            "Add a one-line `/// Description.` above the declaration. This rule wants content, not boilerplate - if your project policy is 'no comments', that policy is about avoiding comments that restate code, not about removing documentation. The description should answer 'what is this for, what does it represent, what should the caller know'."
+                .to_string(),
+        ),
         metadata: json!({}),
     }));
 }

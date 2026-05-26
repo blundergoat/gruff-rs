@@ -1,4 +1,7 @@
 use super::*;
+use std::fmt::Write as _;
+
+const OUTPUT_VOLUME_HINT_THRESHOLD: usize = 50;
 
 pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) -> String {
     let mut output = String::with_capacity(256 + report.findings.len().saturating_mul(160));
@@ -6,7 +9,19 @@ pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) ->
     render_text_diagnostics(&mut output, report);
     render_text_findings(&mut output, report);
     render_text_suppressions(&mut output, report);
+    render_output_volume_hint(&mut output, report);
     output
+}
+
+fn render_output_volume_hint(output: &mut String, report: &AnalysisReport) {
+    if report.findings.len() < OUTPUT_VOLUME_HINT_THRESHOLD {
+        return;
+    }
+    let _ = write!(
+        output,
+        "\nHint: {} findings is a lot to read flat. Try:\n  gruff-rs summary --top 20 <paths>\n",
+        report.findings.len()
+    );
 }
 
 fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms: Option<u128>) {

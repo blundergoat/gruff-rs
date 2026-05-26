@@ -8,17 +8,27 @@ pub(crate) fn analyse_public_function_doc(
     findings: &mut Vec<Finding>,
 ) {
     if block.is_externally_public && !has_doc_comment_before(&block.body) {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id: "docs.missing-public-doc",
-            message: format!(
-                "Public function `{}` is missing a Rust doc comment.",
-                block.name
-            ),
-            file,
-            block,
-            severity: Severity::Advisory,
-            pillar: Pillar::Documentation,
-        }));
+        findings.push(block_finding_with_extras(
+            BlockFindingDescriptor {
+                rule_id: "docs.missing-public-doc",
+                message: format!(
+                    "Public function `{}` needs a brief intent description above its signature (one plain-English line, not a restatement of the type signature).",
+                    block.name
+                ),
+                file,
+                block,
+                severity: Severity::Advisory,
+                pillar: Pillar::Documentation,
+            },
+            BlockFindingExtras {
+                confidence: Confidence::High,
+                remediation: Some(
+                    "Add a one-line `/// Description.` above the function. This rule wants content, not boilerplate - if your project policy is 'no comments', that policy is about avoiding comments that restate code, not about removing documentation. The description should answer 'what is this for, what does it return at the edge values, what must the caller satisfy'."
+                        .to_string(),
+                ),
+                metadata: json!({}),
+            },
+        ));
     }
 }
 
@@ -41,7 +51,7 @@ pub(crate) fn analyse_missing_errors_section(
         BlockFindingDescriptor {
             rule_id: "docs.missing-errors-section",
             message: format!(
-                "Public function `{}` returns Result but its rustdoc lacks a `# Errors` section.",
+                "Public function `{}` returns Result; its rustdoc needs a `# Errors` section describing when each Err variant fires.",
                 block.name
             ),
             file,
@@ -52,7 +62,7 @@ pub(crate) fn analyse_missing_errors_section(
         BlockFindingExtras {
             confidence: Confidence::High,
             remediation: Some(
-                "Add a `# Errors` rustdoc section describing when this function returns Err."
+                "Add a `# Errors` section explaining the conditions that produce each Err (input validation, IO failure, resource exhaustion, etc.). The rule wants content, not boilerplate - each entry should answer 'what triggers this error and what should the caller do about it'."
                     .to_string(),
             ),
             metadata: json!({}),
@@ -97,7 +107,7 @@ fn missing_panics_section_finding(file: &SourceFile, block: &FunctionBlock) -> F
         BlockFindingDescriptor {
             rule_id: "docs.missing-panics-section",
             message: format!(
-                "Public function `{}` can panic but its rustdoc lacks a `# Panics` section.",
+                "Public function `{}` contains code that can panic (`panic!`, `unwrap`, or `expect`); its rustdoc needs a `# Panics` section.",
                 block.name
             ),
             file,
@@ -108,7 +118,7 @@ fn missing_panics_section_finding(file: &SourceFile, block: &FunctionBlock) -> F
         BlockFindingExtras {
             confidence: Confidence::High,
             remediation: Some(
-                "Add a `# Panics` rustdoc section explaining the conditions under which this function panics."
+                "Add a `# Panics` section describing the inputs or runtime states that cause the panic so callers can avoid them or wrap the call defensively. The rule wants content, not boilerplate - each entry should answer 'which input or state triggers the panic'."
                     .to_string(),
             ),
             metadata: json!({}),
@@ -141,7 +151,7 @@ pub(crate) fn analyse_missing_safety_section(
         BlockFindingDescriptor {
             rule_id: "docs.missing-safety-section",
             message: format!(
-                "Public unsafe function `{}` lacks a `# Safety` rustdoc section.",
+                "Public `unsafe fn` `{}` needs a `# Safety` rustdoc section listing the invariants the caller must uphold.",
                 block.name
             ),
             file,
@@ -152,7 +162,7 @@ pub(crate) fn analyse_missing_safety_section(
         BlockFindingExtras {
             confidence: Confidence::High,
             remediation: Some(
-                "Add a `# Safety` rustdoc section describing the invariants the caller must uphold."
+                "Add a `# Safety` section listing every invariant the caller must guarantee before calling this function (pointer validity, type provenance, thread state, lifetime of borrowed data, etc.). This is the API contract for unsafe code, not boilerplate - missing invariants here become real soundness bugs."
                     .to_string(),
             ),
             metadata: json!({}),
@@ -203,7 +213,7 @@ fn missing_param_doc_finding(
         BlockFindingDescriptor {
             rule_id: "docs.missing-param-doc",
             message: format!(
-                "Public function `{}` rustdoc does not document parameter `{}`.",
+                "Public function `{}` rustdoc does not mention parameter `{}` by name.",
                 block.name, first
             ),
             file,
@@ -214,7 +224,7 @@ fn missing_param_doc_finding(
         BlockFindingExtras {
             confidence: Confidence::Medium,
             remediation: Some(
-                "Mention each parameter by name in the rustdoc, ideally with `# Arguments` or per-parameter prose."
+                "Mention each parameter by name in the rustdoc - either in prose or in an `# Arguments` section. The mention should answer 'what does this value represent and what range/shape is the function expecting', not restate the type signature."
                     .to_string(),
             ),
             metadata: json!({ "undocumented": undocumented }),
@@ -248,7 +258,7 @@ fn missing_return_doc_finding(file: &SourceFile, block: &FunctionBlock) -> Findi
         BlockFindingDescriptor {
             rule_id: "docs.missing-return-doc",
             message: format!(
-                "Public function `{}` returns a value but rustdoc does not describe what it returns.",
+                "Public function `{}` returns a value; its rustdoc does not describe what the return value represents.",
                 block.name
             ),
             file,
@@ -259,7 +269,7 @@ fn missing_return_doc_finding(file: &SourceFile, block: &FunctionBlock) -> Findi
         BlockFindingExtras {
             confidence: Confidence::Medium,
             remediation: Some(
-                "Add a `# Returns` rustdoc section or describe the return value in prose (e.g. \"Returns the ...\")."
+                "Describe the return value in the rustdoc - either in prose (e.g. `Returns the count of ...`) or in a `# Returns` section. The description should answer 'what does this represent at the edge values, when might it be empty/None/zero' rather than restating the return type."
                     .to_string(),
             ),
             metadata: json!({}),

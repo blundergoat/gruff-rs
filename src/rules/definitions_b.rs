@@ -10,6 +10,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags public struct fields that expose representation.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Pure transport structs that exist to serialize JSON or shuttle bytes between layers (no invariants to protect).",
+                mitigation: "The rule already skips structs deriving `Serialize`/`Deserialize`; if the carve-out misses a real case, document it with an `exclude:` entry naming the file.",
+            },
+        ],
+        related: &["modernisation.manual-is-empty", "modernisation.manual-contains"],
     ),
     rule_definition!(
         "modernisation.manual-is-empty",
@@ -114,6 +121,17 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         options: NAMING_GENERIC_FUNCTION_OPTIONS,
         default_enabled: true,
         description: "Flags function names that are too generic to explain intent.",
+        false_positive_shapes: &[
+            FalsePositiveShape {
+                shape: "Bridge functions whose name is dictated by an external macro (`#[wasm_bindgen]`, FFI signatures, JSON-RPC handlers).",
+                mitigation: "Add the name to `rules.naming.generic-function.options.extraGenericNames` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related_rules: &[
+            "naming.boolean-prefix",
+            "naming.placeholder-identifier",
+            "naming.short-variable",
+        ],
     },
     RuleDefinition {
         id: "naming.boolean-prefix",
@@ -127,6 +145,13 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         options: NAMING_BOOLEAN_PREFIX_OPTIONS,
         default_enabled: true,
         description: "Flags bool-returning functions whose names do not read like predicates.",
+        false_positive_shapes: &[
+            FalsePositiveShape {
+                shape: "Domain verbs that are inherently truthful (e.g. `validate`, `assert_`, `ensure_`).",
+                mitigation: "Add the prefix to `rules.naming.boolean-prefix.options.predicatePrefixes` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related_rules: &["naming.generic-function", "naming.placeholder-identifier"],
     },
     RuleDefinition {
         id: "naming.placeholder-identifier",
@@ -140,6 +165,13 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         options: NAMING_PLACEHOLDER_OPTIONS,
         default_enabled: true,
         description: "Flags placeholder identifiers such as foo, bar, baz, and qux.",
+        false_positive_shapes: &[
+            FalsePositiveShape {
+                shape: "Conventional loop variables in generic iteration contexts (`for foo in items`).",
+                mitigation: "Add the token to `rules.naming.placeholder-identifier.options.extraPlaceholders` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related_rules: &["naming.generic-function", "naming.short-variable"],
     },
     rule_definition!(
         "naming.short-variable",
@@ -150,6 +182,13 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags very short local variable names outside accepted abbreviations.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Domain abbreviations specific to the project (e.g. `aws`, `kms`, `ssn`).",
+                mitigation: "Append the token to `allowlists.acceptedAbbreviations` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related: &["naming.generic-function", "naming.placeholder-identifier"],
     ),
     rule_definition!(
         "naming.identifier-shadow",
@@ -213,6 +252,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags process command construction for manual argument validation.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Test fixtures or builders that construct commands with fully literal arguments and never pass user input.",
+                mitigation: "Add an `exclude:` entry for that path in `.gruff-rs.yaml` with a documented reason, or refactor the call into a helper that the rule's path-aware skip recognises (`tests/`, `fixtures/`).",
+            },
+        ],
+        related: &["security.insecure-rng-for-secrets", "sensitive-data.api-key"],
     ),
     rule_definition!(
         "security.insecure-rng-for-secrets",
@@ -399,6 +445,17 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
         Confidence::High,
         FUNCTION_LENGTH_THRESHOLD,
         "Flags functions over the configured line-count threshold.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Functions whose body is a single declarative literal (large match table, builder chain).",
+                mitigation: "Increase `rules.size.function-length.threshold` in `.gruff-rs.yaml`, or refactor the literal into a `const` table.",
+            },
+        ],
+        related: &[
+            "metrics.halstead-volume",
+            "metrics.maintainability-pressure",
+            "size.parameter-count",
+        ],
     ),
     rule_definition!(
         "size.parameter-count",
@@ -409,6 +466,13 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
         Confidence::High,
         PARAMETER_COUNT_THRESHOLD,
         "Flags functions with too many parameters.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Public API entry points whose signature mirrors an external contract (FFI, JSON-RPC).",
+                mitigation: "Increase `rules.size.parameter-count.threshold` in `.gruff-rs.yaml`, or wrap the parameter set in a builder struct.",
+            },
+        ],
+        related: &["size.function-length", "complexity.cognitive"],
     ),
 ];
 
@@ -452,6 +516,13 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags tests that do not appear to assert behavior.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Tests that assert through a helper or macro the rule's heuristic cannot recognise (custom `assert_*` macros, panic-via-`?`).",
+                mitigation: "Add a real assertion to the test, or add an `exclude:` entry in `.gruff-rs.yaml` documenting the helper used.",
+            },
+        ],
+        related: &["test-quality.sleep-in-test", "test-quality.trivial-assertion"],
     ),
     rule_definition!(
         "test-quality.sleep-in-test",
@@ -492,38 +563,5 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags `#[should_panic]` attributes without an `expected = \"...\"` clause.",
-    ),
-];
-
-pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "waste.unnecessary-clone-candidate",
-        "Unnecessary clone candidate",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags clone calls that may be avoidable.",
-    ),
-    rule_definition!(
-        "waste.unreachable-code",
-        "Unreachable code",
-        Pillar::DeadCode,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags statements after terminating statements.",
-    ),
-    rule_definition!(
-        "waste.unwrap-expect",
-        "Unwrap or expect",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags unwrap and expect calls outside test attributes.",
     ),
 ];

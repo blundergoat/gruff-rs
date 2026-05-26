@@ -82,6 +82,12 @@ pub(crate) struct Finding {
     pub(crate) remediation: Option<String>,
     pub(crate) metadata: Value,
     pub(crate) fingerprint: String,
+    /// Line-insensitive identity intended for external diff tooling.
+    /// Computed from `rule_id`, `file_path`, and either `symbol` (when
+    /// available) or `message`. Independent of `fingerprint`, which
+    /// remains line-sensitive so the baseline matcher in
+    /// `src/baseline.rs` keeps its existing semantics.
+    pub(crate) stable_identity: String,
 }
 
 pub(crate) struct FindingDescriptor {
@@ -120,6 +126,8 @@ impl Finding {
         hasher.update(b"\0");
         hasher.update(symbol.clone().unwrap_or_default().as_bytes());
         let fingerprint = format!("{:x}", hasher.finalize())[..16].to_string();
+        let stable_identity =
+            compute_stable_identity(&rule_id, &file_path, symbol.as_deref(), &message);
 
         Self {
             rule_id,
@@ -137,8 +145,24 @@ impl Finding {
             remediation,
             metadata,
             fingerprint,
+            stable_identity,
         }
     }
+}
+
+fn compute_stable_identity(
+    rule_id: &str,
+    file_path: &str,
+    symbol: Option<&str>,
+    message: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(rule_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(file_path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(symbol.unwrap_or(message).as_bytes());
+    format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -4,5 +4,7 @@ mod baseline;
 mod calibration_extras;
 mod diff;
 mod discovery;
-mod min_severity_precedence;
+mod list_rules_detail;
 mod smoke;
+mod stable_identity;
+mod summary_enrichment;

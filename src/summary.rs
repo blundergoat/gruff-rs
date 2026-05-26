@@ -1,6 +1,9 @@
 use crate::{
-    grade, pillar_label, scoring::top_file_scores_with_limit, AnalysisReport, Finding, Pillar,
-    PillarScore, Severity, SummaryFormat, SCORE_PILLARS,
+    grade, pillar_label,
+    rules::{builtin_registry, RuleRegistry},
+    scoring::top_file_scores_with_limit,
+    AnalysisReport, Confidence, Finding, Pillar, PillarScore, Severity, SummaryFormat,
+    SCORE_PILLARS,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -48,6 +51,12 @@ pub(crate) struct PillarDigest {
 struct RuleDigest {
     rule_id: String,
     count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    severity: Option<Severity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<Confidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -121,16 +130,14 @@ fn pillar_digest_row(
 }
 
 fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
+    let registry = builtin_registry();
     let mut rule_counts: BTreeMap<&str, usize> = BTreeMap::new();
     for finding in &report.findings {
         *rule_counts.entry(&finding.rule_id).or_insert(0) += 1;
     }
     let mut top_rules: Vec<RuleDigest> = rule_counts
         .into_iter()
-        .map(|(rule_id, count)| RuleDigest {
-            rule_id: rule_id.to_string(),
-            count,
-        })
+        .map(|(rule_id, count)| build_rule_digest(rule_id, count, &registry))
         .collect();
     top_rules.sort_by(|left, right| {
         right
@@ -140,6 +147,24 @@ fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
     });
     top_rules.truncate(top);
     top_rules
+}
+
+fn build_rule_digest(rule_id: &str, count: usize, registry: &RuleRegistry) -> RuleDigest {
+    let definition = registry.get(rule_id);
+    RuleDigest {
+        rule_id: rule_id.to_string(),
+        count,
+        severity: definition.map(|d| d.default_severity),
+        confidence: definition.map(|d| d.confidence),
+        description: definition.map(|d| first_sentence(d.description)),
+    }
+}
+
+fn first_sentence(description: &'static str) -> &'static str {
+    match description.find(". ") {
+        Some(end) => &description[..=end],
+        None => description,
+    }
 }
 
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
@@ -314,10 +339,40 @@ fn render_rules_text(out: &mut String, rules: &[RuleDigest]) {
     out.push_str("Top rules\n");
     if rules.is_empty() {
         out.push_str("  (none)\n");
-    } else {
-        for rule in rules {
-            let _ = writeln!(out, "  {:<48}  {}", rule.rule_id, rule.count);
-        }
+        return;
+    }
+    let id_width = rules
+        .iter()
+        .map(|rule| rule.rule_id.len())
+        .max()
+        .unwrap_or(0);
+    let count_width = rules
+        .iter()
+        .map(|rule| digit_width(rule.count))
+        .max()
+        .unwrap_or(1);
+    for rule in rules {
+        let severity = match rule.severity {
+            Some(Severity::Advisory) => "advisory",
+            Some(Severity::Warning) => "warning",
+            Some(Severity::Error) => "error",
+            None => "",
+        };
+        let confidence = match rule.confidence {
+            Some(Confidence::Low) => "low",
+            Some(Confidence::Medium) => "medium",
+            Some(Confidence::High) => "high",
+            None => "",
+        };
+        let description = rule.description.unwrap_or("").trim_end_matches(' ');
+        let _ = writeln!(
+            out,
+            "  {count:>count_width$}  {id:<id_width$}  {severity:<8}  {confidence:<6}  {description}",
+            count = rule.count,
+            count_width = count_width,
+            id = rule.rule_id,
+            id_width = id_width,
+        );
     }
 }
 

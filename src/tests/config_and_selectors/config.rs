@@ -32,6 +32,8 @@ pub(crate) fn registry_reserves_custom_namespace() {
         options: &[],
         default_enabled: true,
         description: "Reserved namespace probe.",
+        false_positive_shapes: &[],
+        related_rules: &[],
     };
     let error = rules::RuleRegistry::new(vec![definition])
         .expect_err("custom namespace reserved for config rules");

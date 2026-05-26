@@ -530,6 +530,7 @@ custom_rules:
     let json_output = render_rule_list(
         dir.path(),
         &ListRulesArgs {
+            rule_id: None,
             format: RuleListFormat::Json,
             selector: None,
             config: None,
@@ -560,6 +561,7 @@ custom_rules:
     let selector_output = render_rule_list(
         dir.path(),
         &ListRulesArgs {
+            rule_id: None,
             format: RuleListFormat::Json,
             selector: Some("custom.*".to_string()),
             config: None,

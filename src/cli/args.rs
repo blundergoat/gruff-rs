@@ -83,6 +83,11 @@ pub(crate) struct DashboardArgs {
 #[derive(Args)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct ListRulesArgs {
+    /// Render a single rule's detail card (description, options, escape
+    /// hatches, false-positive shapes, related rules) instead of the
+    /// flat catalogue.
+    #[arg(value_name = "rule_id")]
+    pub(crate) rule_id: Option<String>,
     #[arg(long, default_value = "text")]
     pub(crate) format: RuleListFormat,
     /// Preview the rules matched by one exact id, dotted prefix, or pillar selector.

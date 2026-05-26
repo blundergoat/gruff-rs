@@ -4,6 +4,40 @@
 
 ### Added
 
+- `list-rules <rule_id>` now renders a detail card for a single rule:
+  description, default severity / confidence / enabled-by-default, options
+  with their descriptions, escape-hatch config paths (`rules.<id>.options.*`,
+  `rules.<id>.enabled`, `paths.ignore`), documented false-positive shapes
+  with mitigations, and related rules. `--format=json` exposes the same
+  data structured as `escapeHatches`, `falsePositiveShapes`, and
+  `relatedRules` arrays. Unknown rule ids exit 2 with up to three
+  Levenshtein-distance suggestions.
+- `RuleDefinition` (`src/rules/mod.rs`) gains optional
+  `false_positive_shapes: &'static [FalsePositiveShape]` and
+  `related_rules: &'static [&'static str]` fields, defaulted to empty
+  slices via the `rule_definition!` macro. Twelve built-in rules ship
+  with curated metadata in 0.1.2 (naming family, size family,
+  `security.process-command`, `modernisation.public-field`,
+  `test-quality.no-assertions`, `waste.unwrap-expect`,
+  `complexity.cognitive`, `dead-code.unused-private-item-candidate`).
+- `summary` `topRules[]` entries enriched with `severity`, `confidence`,
+  and a one-sentence `description` sourced from the rule registry. JSON
+  output gains the three fields; text output renders them as columns
+  (`count`, `rule_id`, `severity`, `confidence`, `description`). Custom
+  rules with no registry entry omit the new fields rather than emit
+  blanks. Existing `topRules[]` keys (`ruleId`, `count`) are unchanged
+  and the `gruff.summary.v2` schema version stays.
+- `analyse --format text` appends a one-paragraph output-volume hint
+  when finding count reaches 50, pointing at `gruff-rs summary --top 20`
+  as the triage path. Text-only by construction - JSON, SARIF, Markdown,
+  GitHub, and hotspot outputs are byte-identical.
+- `stableIdentity` field on every `Finding` in JSON output. 16-character
+  SHA-256 prefix of `rule_id`, `file_path`, and either `symbol` (when set)
+  or `message`. Line-insensitive by design - external diff tooling can
+  match "same finding" across unrelated edits without disturbing
+  baseline behaviour. `fingerprint` stays line-sensitive so
+  `src/baseline.rs` keeps its existing contract; SARIF output is
+  byte-identical (the new field is JSON-only).
 - `minimumSeverity:` block in `.gruff-rs.yaml` sets per-subcommand
   `--fail-on` defaults. Accepts `analyse` and `report` keys; values are
   `none | advisory | warning | error`. Precedence is CLI flag > config
@@ -43,6 +77,16 @@
   CI scripts that depend on the prior default should set
   `minimumSeverity.analyse: error` in `.gruff-rs.yaml` or pass
   `--fail-on error` explicitly.
+- `docs.missing-*` rule messages (`docs.missing-public-doc`,
+  `docs.missing-errors-section`, `docs.missing-panics-section`,
+  `docs.missing-safety-section`, `docs.missing-param-doc`,
+  `docs.missing-return-doc`) reworded from absence reports
+  ("`x` is missing a Rust doc comment") to intent guidance ("`x` needs a
+  brief intent description … one plain-English line, not a restatement
+  of the type"). Remediations spell out the no-boilerplate framing so
+  agents reading the finding cannot mistake the rule for a request to
+  add stub comments that restate code. Detection logic, severity,
+  confidence, and pillar all unchanged.
 - Summary JSON `schemaVersion` moves from `gruff.summary.v1` to
   `gruff.summary.v2`.
 - Analysis JSON (`gruff.analysis.v1`) `score.pillars[]` entries gain a

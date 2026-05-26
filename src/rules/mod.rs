@@ -38,6 +38,16 @@ pub(crate) struct OptionDefinition {
     pub(crate) value_kind: OptionValueKind,
 }
 
+/// Documented false-positive pattern for a rule, surfaced by
+/// `list-rules <id>` so consumers can recognise the shape before
+/// reaching for a config override.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FalsePositiveShape {
+    pub(crate) shape: &'static str,
+    pub(crate) mitigation: &'static str,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 /// Public metadata contract for a built-in analyzer rule.
@@ -53,6 +63,8 @@ pub(crate) struct RuleDefinition {
     pub(crate) options: &'static [OptionDefinition],
     pub(crate) default_enabled: bool,
     pub(crate) description: &'static str,
+    pub(crate) false_positive_shapes: &'static [FalsePositiveShape],
+    pub(crate) related_rules: &'static [&'static str],
 }
 
 #[derive(Debug)]
@@ -150,6 +162,31 @@ macro_rules! rule_definition {
         $threshold:expr,
         $description:literal $(,)?
     ) => {
+        rule_definition!(
+            $id,
+            $name,
+            $pillar,
+            $kind,
+            $default_severity,
+            $confidence,
+            $threshold,
+            $description,
+            false_positives: &[],
+            related: &[]
+        )
+    };
+    (
+        $id:literal,
+        $name:literal,
+        $pillar:expr,
+        $kind:expr,
+        $default_severity:expr,
+        $confidence:expr,
+        $threshold:expr,
+        $description:literal,
+        false_positives: $false_positives:expr,
+        related: $related:expr $(,)?
+    ) => {
         RuleDefinition {
             id: $id,
             name: $name,
@@ -162,12 +199,15 @@ macro_rules! rule_definition {
             options: &[],
             default_enabled: true,
             description: $description,
+            false_positive_shapes: $false_positives,
+            related_rules: $related,
         }
     };
 }
 
 mod definitions_a;
 mod definitions_b;
+mod definitions_c;
 
 use definitions_a::{
     ARCHITECTURE_RULES, COMPLEXITY_RULES, CONCURRENCY_RULES, DEAD_CODE_RULES, DEPENDENCY_RULES,
@@ -175,8 +215,9 @@ use definitions_a::{
 };
 use definitions_b::{
     METADATA_RULES, NAMING_RULES, PERFORMANCE_AND_SECURITY_RULES, SENSITIVE_DATA_RULES, SIZE_RULES,
-    TEST_QUALITY_RULES, WASTE_RULES,
+    TEST_QUALITY_RULES,
 };
+use definitions_c::WASTE_RULES;
 
 fn builtin_definitions() -> Vec<RuleDefinition> {
     [
