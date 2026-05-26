@@ -4,6 +4,17 @@
 
 ### Added
 
+- `minimumSeverity:` block in `.gruff-rs.yaml` sets per-subcommand
+  `--fail-on` defaults. Accepts `analyse` and `report` keys; values are
+  `none | advisory | warning | error`. Precedence is CLI flag > config
+  key > binary default. Unknown command keys (e.g. `summary`,
+  `dashboard`) are rejected with a useful error. See ADR-013.
+- Required `schemaVersion: gruff-rs.config.v1` field on `.gruff-rs.yaml`,
+  introduced for the first time. Run `gruff-rs init --force` to
+  regenerate any existing config. Configs without it are rejected at
+  load time.
+- `gruff-rs init --force` preserves hand-edited `minimumSeverity:`
+  entries the same way it already preserves `paths.ignore`.
 - `gruff-rs summary --format json` pillars[] entries expose nine fields:
   `pillar`, `grade`, `score`, `applicable`, `findings`, `advisory`,
   `warning`, `error`, `penalty`.
@@ -27,6 +38,11 @@
 
 ### Changed
 
+- `analyse --fail-on` default lowered from `error` to `advisory` to match
+  the cross-port "show everything, gate on anything" philosophy. Existing
+  CI scripts that depend on the prior default should set
+  `minimumSeverity.analyse: error` in `.gruff-rs.yaml` or pass
+  `--fail-on error` explicitly.
 - Summary JSON `schemaVersion` moves from `gruff.summary.v1` to
   `gruff.summary.v2`.
 - Analysis JSON (`gruff.analysis.v1`) `score.pillars[]` entries gain a
@@ -71,6 +87,26 @@
   `gruff.summary.v2` in `.goat-flow/architecture.md`,
   `.goat-flow/code-map.md`, and the `summary_json_smoke` check in
   `scripts/preflight-checks.sh`.
+- `Config` (`src/config.rs`) gains required `schema_version: String` and
+  `minimum_severity: BTreeMap<String, FailThreshold>` fields. New
+  `apply_schema_version_section` / `apply_minimum_severity_section`
+  handlers in `src/config_loader/mod.rs`; new `command_setup` module
+  hosts `resolve_fail_on`, `resolve_project_root_and_config`,
+  `resolve_command_setup`, and `emit_report_output`.
+- `run_analysis_in_project` signature now takes a pre-loaded `&Config`;
+  the `run_analysis` wrapper that resolved project_root and loaded
+  config internally was removed. `main.rs` loads Config once at the CLI
+  edge before resolving `fail_on`.
+- `AnalyseArgs::fail_on` and `ReportArgs::fail_on` become
+  `Option<FailThreshold>`; clap defaults move to runtime resolution.
+- `FailThreshold` gains a hand-written `FromStr` and `serde::Deserialize`
+  impl (M07) plus `PartialEq` / `Eq` derives. Off-switch value remains
+  `none` (gruff-rs convention); `never` rejects with the four-value
+  list verbatim.
+- Cross-port: aligns with gruff-go 0.1.2's `minimumSeverity:` dimension;
+  gruff-rs uses `none` as the off-switch value where gruff-go uses
+  `never`, per port convention. Sibling ports (`gruff-ts`, `gruff-py`,
+  `gruff-php`) may track this work independently.
 
 ## 0.1.1 - 2026-05-24
 

@@ -17,7 +17,7 @@ pub(crate) struct AnalyseArgs {
     pub(crate) no_config: bool,
     #[arg(long, default_value = "text")]
     pub(crate) format: OutputFormat,
-    /// Severity gate. Defaults to `error` (M08a). Falls back to
+    /// Severity gate. Defaults to `advisory`. Falls back to
     /// `minimumSeverity.analyse:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,

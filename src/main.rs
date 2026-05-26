@@ -175,9 +175,9 @@ fn run_analyse_command(
         no_interaction,
     );
     let cli_fail_on = args.fail_on;
-    let base = options_from_analyse(args, FailThreshold::Error);
+    let base = options_from_analyse(args, FailThreshold::Advisory);
     let (project_root, options, config) =
-        match resolve_command_setup(base, cli_fail_on, "analyse", FailThreshold::Error) {
+        match resolve_command_setup(base, cli_fail_on, "analyse", FailThreshold::Advisory) {
             Ok(triple) => triple,
             Err(error) => {
                 eprintln!("gruff-rs: {error}");

@@ -115,6 +115,9 @@ pub(crate) fn apply_minimum_severity_section(
     value: &Value,
     config: &mut Config,
 ) -> Result<(), String> {
+    if value.is_null() {
+        return Ok(());
+    }
     let mapping = value
         .as_object()
         .ok_or_else(|| "config key `minimumSeverity` must be an object".to_string())?;

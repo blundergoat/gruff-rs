@@ -18,7 +18,7 @@
 | Primary config | `.gruff-rs.yaml` |
 | Analysis schema | `gruff.analysis.v1` |
 | Baseline schema | `gruff.baseline.v1` |
-| Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
+| Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error`; per-subcommand defaults via `minimumSeverity:` in `.gruff-rs.yaml` |
 | Dashboard | `127.0.0.1:8766` by default |
 
 Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are compatibility-sensitive inside the `0.1.x` line.
@@ -112,7 +112,7 @@ cargo install --path . --locked --root ./.cargo-tools
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as config failure, missing path, parse error, baseline error, diff failure, or invalid input. |
 
-`analyse` defaults to `--fail-on error`.
+`analyse` defaults to `--fail-on advisory`; `report` defaults to `--fail-on none`. Set per-project defaults with the `minimumSeverity:` block in `.gruff-rs.yaml`; the CLI flag always overrides the config value (see ADR-013).
 
 ## CI Usage
 
@@ -141,7 +141,17 @@ The action installs the matching binary via `cargo-binstall` and runs `gruff-rs`
 
 `gruff-rs` reads `.gruff-rs.yaml` by default. Use `--config <path>` to pass another YAML file, or `--no-config` to ignore project config. Unknown keys, unknown rule IDs, unknown selectors, and invalid threshold shapes fail closed.
 
+Every config must declare `schemaVersion: gruff-rs.config.v1` as the first key. Configs without it are rejected at load time; run `gruff-rs init --force` to regenerate.
+
+The optional `minimumSeverity:` block sets per-subcommand defaults for `--fail-on` so CI invocations can omit the flag. Accepted keys are `analyse` and `report` (the two commands that gate exit code); values are `none`, `advisory`, `warning`, or `error`. The CLI `--fail-on` flag always wins; if both the CLI flag and the config key are absent, the binary default (`advisory` for `analyse`, `none` for `report`) applies. See ADR-013 for the rationale and the gating-only accept-list rule.
+
 ```yaml
+schemaVersion: gruff-rs.config.v1
+
+minimumSeverity:
+  analyse: advisory  # CI gates on advisory+; CLI --fail-on always wins
+  # report: none
+
 paths:
   ignore:
     - target/**
@@ -168,6 +178,8 @@ exclude:
 ```
 
 Selectors can target exact rule IDs, dotted prefixes such as `security.*`, or public pillars such as `Security`.
+
+Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minimumSeverity.summary: advisory` errors with `unknown command "summary" in minimumSeverity: gruff-rs's summary does not gate exit code. Valid keys: analyse, report.` The off-switch value is `none` (gruff-rs convention; sibling ports may use `never`).
 
 ## Rules And Pillars
 

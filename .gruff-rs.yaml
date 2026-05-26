@@ -11,6 +11,11 @@
 
 schemaVersion: gruff-rs.config.v1
 
+# Pinned to match the current binary default (advisory). The explicit pin
+# freezes this project's CI behaviour against any future default flip.
+minimumSeverity:
+  analyse: advisory
+
 paths:
   # Discovery-time do-not-read patterns. Use this for generated
   # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`
