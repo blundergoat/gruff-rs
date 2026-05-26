@@ -1,6 +1,6 @@
 ---
 category: config
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-26
 ---
 
 ## Footgun: Stripping `paths.ignore` Defaults From `.gruff-rs.yaml`
@@ -24,7 +24,7 @@ Regression coverage:
 
 The runtime defense lives in `src/init.rs` (search: `fn read_existing_ignore_patterns`). On every `gruff-rs init` invocation, the renderer reads the existing file's `paths.ignore` and unions it with `DEFAULT_IGNORE_PATTERNS` before writing - `--force` no longer wipes user customizations of the ignore list. Missing / malformed YAML / missing `paths.ignore` all degrade silently to an empty list with a stderr warning, so the regenerate path still works against a corrupted config.
 
-**Scope caveat:** preservation today is `paths.ignore` only. Custom `rules:` thresholds, `allowlists:` extensions, `custom_rules:`, and the `exclude:` block are still regenerated from defaults on `--force`. Extending preservation further is intentional follow-up: do not silently broaden the scope without an explicit ask.
+**Scope caveat:** preservation today covers `paths.ignore` (`src/init.rs` search: `fn read_existing_ignore_patterns`) and `minimumSeverity:` (search: `fn read_existing_minimum_severity`, added 0.1.2 M09). Custom `rules:` thresholds, `allowlists:` extensions, `custom_rules:`, and the `exclude:` block are still regenerated from defaults on `--force`. Both preservation helpers share a `read_existing_yaml` reader (search: `fn read_existing_yaml`) so error-handling stays uniform. Extending preservation to a new section means adding a sibling `read_existing_<section>` plus a new parameter on `render_default_config` (search: `pub(crate) fn render_default_config`) — do not silently broaden the scope without an explicit ask.
 
 ## Footgun: Default-Allowlist Constants Duplicate Between config.rs And init.rs
 
@@ -42,3 +42,24 @@ The non-obvious failure mode is that drift is invisible to the test suite: `Conf
 - Direction matters: `init.rs` depends on `config.rs`, never the reverse — `config.rs` is foundational and should not pull from CLI-subcommand modules.
 - When adding a new allowlist / override-list config field that `init.rs` also needs to emit, factor the const out before adding both copies.
 - See patterns/architecture.md "Default Config Constants Are Defined Once" for the prescriptive form.
+
+## Footgun: Required-Field Config Schema Bumps Break Every Test Fixture
+
+**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED
+
+0.1.2 M08a introduced the required `schemaVersion: gruff-rs.config.v1` field in `src/config_loader/mod.rs` (search: `fn apply_config_value`, look for the `missing the required` error). Configs that omit it are rejected with `Run gruff-rs init --force to regenerate`. The change is intentional - per the `feedback-no-bc-ceremony` memory, gruff-rs has no external users to migrate.
+
+The non-obvious failure mode is the test suite. Every test that writes a fixture YAML and calls `load_config` started failing in lockstep: ~95 of 143 tests on first cargo test after the validator landed. The failures are spread across `src/tests/config_and_selectors/`, `src/tests/scenarios/`, `src/tests/project_tests/`, `src/tests/rule_behaviours/`, and `src/tests/renderers/` — the surface is wide because almost every behavioural test writes some inline config.
+
+The fix is centralised in `src/tests/mod.rs` (search: `fn write_config`). The helper auto-prepends `schemaVersion: gruff-rs.config.v1\n` to any body that does not already contain `schemaVersion`, and emits a JSON-style merged form when the body starts with `{` (some smoke tests write JSON-syntax YAML at the root). Every test that needs to assert on the absence of `schemaVersion` (e.g. `config_rejects_missing_schema_version`) bypasses the helper and calls `fs::write` directly.
+
+**How to apply:**
+- When adding a NEW required field to the config schema, audit every YAML writer in the test surface BEFORE landing the validator change. `rg -n 'fs::write.*\.yaml|write_config' src/tests/ scripts/preflight-checks.sh` enumerates the write sites; only `src/tests/mod.rs` `write_config` is the central one.
+- The auto-prepend belongs in `write_config`, not in individual tests - the latter rots the moment a new required field arrives.
+- Smoke tests in `scripts/preflight-checks.sh` are NOT covered by `write_config`. Each `cat >"$config_file" <<'YAML'` heredoc that writes a config needs its own `schemaVersion: gruff-rs.config.v1` line on the first content line.
+- The `null` mapping case matters: `gruff-rs init`'s default template emits `minimumSeverity:` with all keys commented, which YAML parses as null. The `apply_minimum_severity_section` handler (search: `if value.is_null()`) treats null as no-op so round-trip works. Future required-shape blocks need the same null-as-empty fall-through if they ship a commented-only default template.
+
+Regression coverage:
+- `src/tests/config_and_selectors/config.rs` (search: `fn config_rejects_missing_schema_version`) asserts the load-time error wording.
+- `src/tests/config_and_selectors/config.rs` (search: `fn config_rejects_wrong_schema_version`) asserts an unknown version value is rejected with the same useful-error shape.
+- `src/tests/config_and_selectors/config.rs` (search: `fn config_accepts_schema_version_and_records_it`) confirms the round-trip through `Config.schema_version`.

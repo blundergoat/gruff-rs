@@ -1,6 +1,6 @@
 ---
 category: architecture
-last_reviewed: 2026-05-25
+last_reviewed: 2026-05-26
 ---
 
 ## Pattern: Per-Enum Display Helpers Live Next To The Enum, Not Per-Renderer
@@ -37,3 +37,22 @@ Related: footguns/report.md "Per-Format Renderer Helpers Tend To Duplicate" for 
 When NOT to apply: defaults that *intentionally* differ between runtime and on-disk shapes — `DEFAULT_IGNORE_PATTERNS` is empty `Vec` at runtime via `Config::default()` but populated as YAML on disk by `init.rs` (search: `DEFAULT_IGNORE_PATTERNS`). That asymmetry is a deliberate design choice; see footguns/config.md "Stripping `paths.ignore` Defaults" for why. Do not collapse the two.
 
 Related: footguns/config.md "Default-Allowlist Constants Duplicate Between config.rs And init.rs" for the failure mode this pattern prevents.
+
+## Pattern: Pre-Load Config At The CLI Edge, Thread It Through
+
+**Context:** Use this when a CLI command's behaviour (exit code, output shape, default values) needs to consult the project's `.gruff-rs.yaml` BEFORE the analysis runs. Today the only consumer is `--fail-on` resolution (M08a / ADR-013), but the same pattern applies if a future command needs config-derived selectors, output-format defaults, or per-project gating logic.
+
+**Evidence:** Before 0.1.2, `src/analysis.rs` `run_analysis_in_project` (search: `pub(crate) fn run_analysis_in_project`) called `load_config(project_root, options)` internally. The CLI command functions (`run_analyse_command`, `run_report`, `run_summary`, `dashboard`) just built `AnalysisOptions` from clap args and called `run_analysis`. That hid the config load deep in the analysis pipeline. ADR-013 needs the CLI edge to know the resolved `fail_on` (from CLI flag > config key > binary default) BEFORE `AnalysisOptions::fail_on` is finalised, so the load has to move up. M08a moved it: `run_analysis_in_project` now takes `&Config` as a parameter; the wrapper `run_analysis` (which only resolved project_root) was removed. Callers in `main.rs` and `src/dashboard.rs` load the config via `command_setup::resolve_project_root_and_config` (search: `pub(crate) fn resolve_project_root_and_config`) and pass it in. `src/tests/mod.rs` `analyse_project_paths` (search: `fn analyse_project_paths`) does the same for test fixtures.
+
+**Approach:**
+
+- The shared edge helper lives in `src/command_setup.rs` (search: `pub(crate) fn resolve_project_root_and_config`). It returns `(PathBuf, Config)` so the caller never has to thread project_root and load_config separately.
+- Per-command composites in the same module wrap the edge helper plus per-command resolution: `resolve_command_setup` (search: `pub(crate) fn resolve_command_setup`) takes a base `AnalysisOptions`, the CLI value, the command name, and the binary default; returns `(PathBuf, AnalysisOptions, Config)` with `fail_on` already resolved.
+- Each consumer (`run_analyse_command`, `run_report`, `run_summary`, `dashboard::dashboard_response`) calls the helper once and threads the loaded Config into `run_analysis_in_project(&project_root, &options, &config)`.
+- Hardcoded `FailThreshold::None` stays at consumer sites that do not gate (`run_summary`, `run_list_rules`, `dashboard_scan_options`). The validator in `apply_minimum_severity_section` (search: `const GATING_COMMANDS`) rejects `summary`/`dashboard`/`list-rules` as `minimumSeverity:` keys so the runtime hardcode and the config surface stay consistent.
+
+When NOT to apply: pure analysis modules that have no CLI-edge concerns (e.g. `src/scoring.rs`, `src/render/*`). Keep config-loading at the edge; pass the loaded values down. Analysis modules consume `&Config` from `run_analysis_in_project`'s parameter; they should not re-load it.
+
+The pattern composes with adding new CLI commands: a new gating command (a) adds itself to the `GATING_COMMANDS` accept-list in `src/config_loader/mod.rs`, (b) consumes the edge helper in `main.rs`, and (c) calls `resolve_fail_on` with its own command name + binary default.
+
+Related: `.goat-flow/decisions/ADR-013-per-command-minimum-severity.md` is the decision record for the M08a/M08b split that introduced this pattern.
