@@ -253,3 +253,177 @@ impl FailThreshold {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub(crate) struct FailThresholdParseError {
+    pub(crate) value: String,
+}
+
+impl std::fmt::Display for FailThresholdParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid fail-on value \"{}\": expected one of advisory, warning, error, none",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for FailThresholdParseError {}
+
+impl std::str::FromStr for FailThreshold {
+    type Err = FailThresholdParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "advisory" => Ok(Self::Advisory),
+            "warning" => Ok(Self::Warning),
+            "error" => Ok(Self::Error),
+            _ => Err(FailThresholdParseError {
+                value: value.to_string(),
+            }),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FailThreshold {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct FailThresholdVisitor;
+
+        impl serde::de::Visitor<'_> for FailThresholdVisitor {
+            type Value = FailThreshold;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a fail-on threshold (advisory, warning, error, or none)")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<FailThreshold, E>
+            where
+                E: serde::de::Error,
+            {
+                <FailThreshold as std::str::FromStr>::from_str(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(FailThresholdVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fail_threshold_from_str_accepts_canonical_values() {
+        assert!(matches!(
+            "none".parse::<FailThreshold>(),
+            Ok(FailThreshold::None)
+        ));
+        assert!(matches!(
+            "advisory".parse::<FailThreshold>(),
+            Ok(FailThreshold::Advisory)
+        ));
+        assert!(matches!(
+            "warning".parse::<FailThreshold>(),
+            Ok(FailThreshold::Warning)
+        ));
+        assert!(matches!(
+            "error".parse::<FailThreshold>(),
+            Ok(FailThreshold::Error)
+        ));
+    }
+
+    #[test]
+    fn fail_threshold_round_trips_via_as_str() {
+        for value in [
+            FailThreshold::None,
+            FailThreshold::Advisory,
+            FailThreshold::Warning,
+            FailThreshold::Error,
+        ] {
+            let parsed: FailThreshold = value.as_str().parse().expect("canonical value parses");
+            assert_eq!(parsed.as_str(), value.as_str());
+        }
+    }
+
+    #[test]
+    fn fail_threshold_from_str_is_case_insensitive_and_trims() {
+        assert!(matches!(
+            "None".parse::<FailThreshold>(),
+            Ok(FailThreshold::None)
+        ));
+        assert!(matches!(
+            "ADVISORY".parse::<FailThreshold>(),
+            Ok(FailThreshold::Advisory)
+        ));
+        assert!(matches!(
+            "  warning  ".parse::<FailThreshold>(),
+            Ok(FailThreshold::Warning)
+        ));
+    }
+
+    #[test]
+    fn fail_threshold_from_str_rejects_never_with_documented_message() {
+        let err = "never"
+            .parse::<FailThreshold>()
+            .expect_err("never must reject");
+        assert_eq!(
+            err.to_string(),
+            "invalid fail-on value \"never\": expected one of advisory, warning, error, none"
+        );
+    }
+
+    #[test]
+    fn fail_threshold_from_str_rejects_legacy_and_typo_values() {
+        for bogus in [
+            "medium", "critical", "info", "warn", "low", "high", "notice", "",
+        ] {
+            let err = bogus
+                .parse::<FailThreshold>()
+                .expect_err(&format!("{bogus} must reject"));
+            assert!(
+                err.to_string().contains("advisory, warning, error, none"),
+                "error for {bogus:?} missing valid-values list: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn fail_threshold_deserialize_accepts_canonical_lowercase() {
+        let parsed: FailThreshold =
+            serde_yaml::from_str("none").expect("lowercase none parses via serde");
+        assert!(matches!(parsed, FailThreshold::None));
+    }
+
+    #[test]
+    fn fail_threshold_deserialize_is_case_insensitive() {
+        let parsed: FailThreshold =
+            serde_yaml::from_str("Advisory").expect("capitalised value parses via serde");
+        assert!(matches!(parsed, FailThreshold::Advisory));
+    }
+
+    #[test]
+    fn fail_threshold_deserialize_yaml_rejects_never() {
+        let err = serde_yaml::from_str::<FailThreshold>("never")
+            .expect_err("never must reject via serde");
+        assert!(
+            err.to_string()
+                .contains("expected one of advisory, warning, error, none"),
+            "serde error missing valid-values list: {err}"
+        );
+    }
+
+    #[test]
+    fn fail_threshold_deserialize_yaml_rejects_bogus() {
+        let err = serde_yaml::from_str::<FailThreshold>("bogus")
+            .expect_err("bogus must reject via serde");
+        assert!(
+            err.to_string().contains("advisory, warning, error, none"),
+            "serde error missing valid-values list: {err}"
+        );
+    }
+}
