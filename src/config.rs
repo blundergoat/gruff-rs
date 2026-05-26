@@ -7,6 +7,10 @@ pub(crate) const DEFAULT_ABBREVIATIONS: &[&str] = &[
     "ui", "url",
 ];
 
+// The only accepted value for `.gruff-rs.yaml`'s required `schemaVersion:` field.
+// Introduced by ADR-013 / M08a; bumped only when the config schema breaks compatibility.
+pub(crate) const SCHEMA_VERSION: &str = "gruff-rs.config.v1";
+
 #[derive(Clone)]
 pub(crate) struct AnalysisOptions {
     pub(crate) paths: Vec<PathBuf>,
@@ -60,6 +64,7 @@ impl RequestedScope {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
+    pub(crate) schema_version: String,
     pub(crate) ignored_paths: Vec<String>,
     pub(crate) ignored_path_matchers: Vec<PathMatcher>,
     pub(crate) accepted_abbreviations: BTreeSet<String>,
@@ -68,6 +73,7 @@ pub(crate) struct Config {
     pub(crate) exclusions: Vec<ExclusionRule>,
     pub(crate) custom_rules: Vec<CustomRule>,
     pub(crate) rule_settings: HashMap<String, RuleSetting>,
+    pub(crate) minimum_severity: BTreeMap<String, FailThreshold>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -234,6 +240,7 @@ impl CustomRuleScope {
 impl Config {
     pub(crate) fn default() -> Self {
         Self {
+            schema_version: String::new(),
             ignored_paths: Vec::new(),
             ignored_path_matchers: Vec::new(),
             accepted_abbreviations: DEFAULT_ABBREVIATIONS
@@ -245,6 +252,7 @@ impl Config {
             exclusions: Vec::new(),
             custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
+            minimum_severity: BTreeMap::new(),
         }
     }
 

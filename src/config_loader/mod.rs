@@ -55,11 +55,14 @@ pub(crate) fn read_config_value(
 
 type ConfigSectionHandler = fn(&Value, &mut Config) -> Result<(), String>;
 
-/// Ordered list of section handlers. `custom_rules` must run before
+/// Ordered list of section handlers. `schemaVersion` runs first so other
+/// handlers can assume a versioned config. `custom_rules` must run before
 /// `rules` so rule-id validation in `rules` can see the configured custom
 /// rules; `exclude` runs last so its selectors can reference both
 /// built-in and custom rules.
 const CONFIG_SECTIONS: &[(&str, ConfigSectionHandler)] = &[
+    ("schemaVersion", apply_schema_version_section),
+    ("minimumSeverity", apply_minimum_severity_section),
     ("paths", apply_paths_section),
     ("allowlists", apply_allowlists_section),
     ("custom_rules", apply_custom_rules_section),
@@ -77,12 +80,69 @@ pub(crate) fn apply_config_value(
         .ok_or_else(|| format!("config {} must be a JSON object", path.display()))?;
     let known_keys: Vec<&str> = CONFIG_SECTIONS.iter().map(|(key, _)| *key).collect();
     reject_unknown_keys(root, &known_keys, "config root")?;
+    if !root.contains_key("schemaVersion") {
+        return Err(format!(
+            "config {} is missing the required `schemaVersion` field; this build expects `schemaVersion: {}`. Run `gruff-rs init --force` to regenerate.",
+            path.display(),
+            SCHEMA_VERSION
+        ));
+    }
     for (key, handler) in CONFIG_SECTIONS {
         if let Some(section_value) = root.get(*key) {
             handler(section_value, config)?;
         }
     }
     Ok(())
+}
+
+pub(crate) fn apply_schema_version_section(
+    value: &Value,
+    config: &mut Config,
+) -> Result<(), String> {
+    let version = value.as_str().ok_or_else(|| {
+        "config key `schemaVersion` must be a string (expected `gruff-rs.config.v1`)".to_string()
+    })?;
+    if version != SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported schemaVersion `{version}`; this build expects `{SCHEMA_VERSION}`. Run `gruff-rs init --force` to regenerate."
+        ));
+    }
+    config.schema_version = version.to_string();
+    Ok(())
+}
+
+pub(crate) fn apply_minimum_severity_section(
+    value: &Value,
+    config: &mut Config,
+) -> Result<(), String> {
+    let mapping = value
+        .as_object()
+        .ok_or_else(|| "config key `minimumSeverity` must be an object".to_string())?;
+    for (command, threshold_value) in mapping {
+        let threshold = parse_minimum_severity_entry(command, threshold_value)?;
+        config.minimum_severity.insert(command.clone(), threshold);
+    }
+    Ok(())
+}
+
+fn parse_minimum_severity_entry(
+    command: &str,
+    threshold_value: &Value,
+) -> Result<FailThreshold, String> {
+    const GATING_COMMANDS: &[&str] = &["analyse", "report"];
+    if !GATING_COMMANDS.contains(&command) {
+        return Err(format!(
+            "unknown command `{command}` in `minimumSeverity`: gruff-rs's `{command}` does not gate exit code. Valid keys: analyse, report."
+        ));
+    }
+    let threshold_str = threshold_value.as_str().ok_or_else(|| {
+        format!(
+            "config key `minimumSeverity.{command}` must be a string (one of advisory, warning, error, none)"
+        )
+    })?;
+    threshold_str
+        .parse()
+        .map_err(|error| format!("config key `minimumSeverity.{command}`: {error}"))
 }
 
 pub(crate) fn apply_paths_section(paths_value: &Value, config: &mut Config) -> Result<(), String> {

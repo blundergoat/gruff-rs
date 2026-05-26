@@ -226,7 +226,7 @@ pub(crate) enum RuleListFormat {
     Json,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
+#[derive(Clone, Copy, Debug, ValueEnum, Serialize, PartialEq, Eq)]
 pub(crate) enum FailThreshold {
     None,
     Advisory,

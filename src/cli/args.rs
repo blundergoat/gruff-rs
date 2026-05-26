@@ -17,8 +17,10 @@ pub(crate) struct AnalyseArgs {
     pub(crate) no_config: bool,
     #[arg(long, default_value = "text")]
     pub(crate) format: OutputFormat,
-    #[arg(long, default_value = "error")]
-    pub(crate) fail_on: FailThreshold,
+    /// Severity gate. Defaults to `error` (M08a). Falls back to
+    /// `minimumSeverity.analyse:` in `.gruff-rs.yaml` when omitted.
+    #[arg(long)]
+    pub(crate) fail_on: Option<FailThreshold>,
     /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
@@ -55,8 +57,10 @@ pub(crate) struct ReportArgs {
     pub(crate) config: Option<PathBuf>,
     #[arg(long)]
     pub(crate) no_config: bool,
-    #[arg(long, default_value = "none")]
-    pub(crate) fail_on: FailThreshold,
+    /// Severity gate. Defaults to `none` (M08a). Falls back to
+    /// `minimumSeverity.report:` in `.gruff-rs.yaml` when omitted.
+    #[arg(long)]
+    pub(crate) fail_on: Option<FailThreshold>,
     /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,

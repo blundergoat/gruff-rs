@@ -1,11 +1,5 @@
 use super::*;
 
-pub(crate) fn run_analysis(options: &AnalysisOptions) -> Result<AnalysisReport, String> {
-    let project_root = std::env::current_dir()
-        .map_err(|error| format!("unable to resolve current directory: {error}"))?;
-    run_analysis_in_project(&project_root, options)
-}
-
 pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagnostic> {
     missing_paths
         .iter()
@@ -184,14 +178,14 @@ fn exclusion_matches_finding_with_paths(
 pub(crate) fn run_analysis_in_project(
     project_root: &Path,
     options: &AnalysisOptions,
+    config: &Config,
 ) -> Result<AnalysisReport, String> {
-    let config = load_config(project_root, options)?;
-    let mut discovery = discover_sources(project_root, options, &config);
+    let mut discovery = discover_sources(project_root, options, config);
     let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
     apply_git_diff_selection(options, &mut discovery, &mut diagnostics)?;
     let analysed_paths = analysed_display_paths(&discovery.files);
     let mut findings =
-        analyse_discovered_sources(project_root, &discovery.files, &config, &mut diagnostics);
+        analyse_discovered_sources(project_root, &discovery.files, config, &mut diagnostics);
     let baseline_report = resolve_baseline(project_root, options, &mut findings)?;
     sort_and_dedupe_findings(&mut findings);
     let (findings, summaries, suppressed_findings) =

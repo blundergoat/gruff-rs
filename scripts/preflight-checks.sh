@@ -593,6 +593,7 @@ selector_smoke() {
   local report_file="$WORK_DIR/selector.txt"
 
   cat >"$config_file" <<'YAML'
+schemaVersion: gruff-rs.config.v1
 rules:
   select: ["security.process-command"]
 YAML
@@ -613,6 +614,7 @@ exclusion_smoke() {
   local filtered_findings
 
   cat >"$config_file" <<'YAML'
+schemaVersion: gruff-rs.config.v1
 exclude:
   - rule: security.process-command
     reason: fixture command accepted for smoke testing
@@ -637,6 +639,7 @@ custom_rule_smoke() {
   local report_file="$WORK_DIR/custom-analysis.txt"
 
   cat >"$config_file" <<'YAML'
+schemaVersion: gruff-rs.config.v1
 custom_rules:
   - id: custom.fixture-marker
     pillar: Documentation

@@ -341,3 +341,105 @@ allowlists:
         "ghp_...bbbb (redacted, 26 chars)"
     );
 }
+
+#[test]
+pub(crate) fn config_rejects_missing_schema_version() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join(".gruff-rs.yaml"),
+        "paths:\n  ignore:\n    - foo\n",
+    )
+    .expect("yaml config write");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("missing schemaVersion rejected");
+    assert!(
+        error.contains("missing the required `schemaVersion` field"),
+        "{error}"
+    );
+    assert!(error.contains("gruff-rs.config.v1"), "{error}");
+}
+
+#[test]
+pub(crate) fn config_rejects_wrong_schema_version() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join(".gruff-rs.yaml"),
+        "schemaVersion: gruff-rs.config.v0\n",
+    )
+    .expect("yaml config write");
+    let error =
+        load_config(dir.path(), &default_test_options()).expect_err("wrong schemaVersion rejected");
+    assert!(
+        error.contains("unsupported schemaVersion `gruff-rs.config.v0`"),
+        "{error}"
+    );
+    assert!(error.contains("gruff-rs.config.v1"), "{error}");
+}
+
+#[test]
+pub(crate) fn config_accepts_schema_version_and_records_it() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "");
+    let config = load_config(dir.path(), &default_test_options()).expect("schemaVersion accepted");
+    assert_eq!(config.schema_version, "gruff-rs.config.v1");
+}
+
+#[test]
+pub(crate) fn minimum_severity_accepts_valid_keys_and_values() {
+    let dir = tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        "minimumSeverity:\n  analyse: warning\n  report: none\n",
+    );
+    let config = load_config(dir.path(), &default_test_options())
+        .expect("valid minimumSeverity block accepted");
+    assert_eq!(
+        config.minimum_severity.get("analyse"),
+        Some(&FailThreshold::Warning)
+    );
+    assert_eq!(
+        config.minimum_severity.get("report"),
+        Some(&FailThreshold::None)
+    );
+}
+
+#[test]
+pub(crate) fn minimum_severity_rejects_non_gating_subcommands() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity:\n  summary: advisory\n");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("non-gating subcommand rejected");
+    assert!(
+        error.contains("unknown command `summary` in `minimumSeverity`"),
+        "{error}"
+    );
+    assert!(error.contains("Valid keys: analyse, report"), "{error}");
+}
+
+#[test]
+pub(crate) fn minimum_severity_rejects_unknown_threshold_values() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity:\n  analyse: never\n");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("never is not a valid threshold");
+    assert!(error.contains("minimumSeverity.analyse"), "{error}");
+    assert!(error.contains("advisory, warning, error, none"), "{error}");
+}
+
+#[test]
+pub(crate) fn minimum_severity_empty_block_is_accepted() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity: {}\n");
+    let config =
+        load_config(dir.path(), &default_test_options()).expect("empty minimumSeverity accepted");
+    assert!(config.minimum_severity.is_empty());
+}
+
+#[test]
+pub(crate) fn minimum_severity_rejects_non_mapping_shape() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity: advisory\n");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("scalar minimumSeverity rejected");
+    assert!(error.contains("must be an object"), "{error}");
+}

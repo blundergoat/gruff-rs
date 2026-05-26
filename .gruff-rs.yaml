@@ -9,6 +9,8 @@
 # For an existing project, run `gruff-rs analyse --generate-baseline`
 # to accept today's findings as the starting point.
 
+schemaVersion: gruff-rs.config.v1
+
 paths:
   # Discovery-time do-not-read patterns. Use this for generated
   # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`
