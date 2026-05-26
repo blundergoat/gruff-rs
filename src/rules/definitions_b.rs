@@ -124,7 +124,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         false_positive_shapes: &[
             FalsePositiveShape {
                 shape: "Bridge functions whose name is dictated by an external macro (`#[wasm_bindgen]`, FFI signatures, JSON-RPC handlers).",
-                mitigation: "Add the name to `rules.naming.generic-function.options.extraGenericNames` in `.gruff-rs.yaml`.",
+                mitigation: "Add the host path to `paths.ignore` in `.gruff-rs.yaml`, or set `rules.naming.generic-function.enabled: false` on the affected scope (`extraGenericNames` extends the blocklist, not the allow-list).",
             },
         ],
         related_rules: &[
@@ -167,8 +167,8 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         description: "Flags placeholder identifiers such as foo, bar, baz, and qux.",
         false_positive_shapes: &[
             FalsePositiveShape {
-                shape: "Conventional loop variables in generic iteration contexts (`for foo in items`).",
-                mitigation: "Add the token to `rules.naming.placeholder-identifier.options.extraPlaceholders` in `.gruff-rs.yaml`.",
+                shape: "Conventional loop variables in test fixtures or generated examples (`for foo in items`).",
+                mitigation: "Add the host path to `paths.ignore` in `.gruff-rs.yaml` (`extraPlaceholders` extends the blocklist, not the allow-list).",
             },
         ],
         related_rules: &["naming.generic-function", "naming.short-variable"],

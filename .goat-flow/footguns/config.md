@@ -43,6 +43,25 @@ The non-obvious failure mode is that drift is invisible to the test suite: `Conf
 - When adding a new allowlist / override-list config field that `init.rs` also needs to emit, factor the const out before adding both copies.
 - See patterns/architecture.md "Default Config Constants Are Defined Once" for the prescriptive form.
 
+## Footgun: Rule Option Names Do Not Imply Their Semantics
+
+**Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED
+
+A rule option's NAME is not enough to know what setting it does. `naming.generic-function.options.extraGenericNames` and `naming.placeholder-identifier.options.extraPlaceholders` sound like allow-lists ("extra tokens this rule will tolerate") but are actually BLOCK-list extensions: any name added to those lists triggers the rule MORE, not less. `naming.boolean-prefix.options.predicatePrefixes` is the inverse - it IS an allow-list (prefixes that the rule will accept as predicates).
+
+The OptionDefinition.description field encodes the truth (e.g. "Additional generic function names rejected by naming.generic-function"), but those descriptions read past quickly when the option name alone seems self-explanatory. The 0.1.2 M05 first pass populated `false_positive_shapes` mitigations that told users to add their intentional names to the blocklist option, which would have made the false positive worse.
+
+**Where the failure mode surfaces:**
+- `false_positive_shapes` metadata in `src/rules/definitions_a.rs` / `definitions_b.rs` (search: `FalsePositiveShape`).
+- Per-rule remediation strings in `src/built_in_rules/*.rs` (search: `remediation: Some`).
+- `list-rules <rule_id>` detail-card mitigations in `src/rules_detail.rs` (search: `fn render_false_positive_block`).
+
+**How to apply:**
+- Before writing a mitigation that names an option, read the option's `description` field. If the description says "rejected by" / "blocked by", it's a blocklist - tell the user to use `paths.ignore` or `rules.<id>.enabled: false` instead.
+- Before writing a mitigation that names an option, check the rule's consumer code (`config.string_array_option(...)`). If the option value is checked with `contains` and a hit FIRES the rule, it's a blocklist.
+- When designing a NEW option, prefer names that unambiguously encode direction: `allowed*` / `accepted*` / `extra*Allow*` for allow-lists; `denied*` / `rejected*` / `extra*Block*` / `additional*Reject*` for blocklists. Do not name an option `extra<thing>` when the semantics are "additional rejections" - that name reads as allow-list to consumers.
+- The safest universal hatch for an intentional false positive is `paths.ignore` (when the call lives in fixtures, generated code, or a test harness) or `rules.<id>.enabled: false` (project-wide opt-out). Both are unambiguous.
+
 ## Footgun: Required-Field Config Schema Bumps Break Every Test Fixture
 
 **Status:** active | **Created:** 2026-05-26 | **Evidence:** OBSERVED

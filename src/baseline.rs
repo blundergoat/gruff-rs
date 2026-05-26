@@ -51,6 +51,7 @@ pub(crate) fn record_history(
     project_root: &Path,
     history_file: &Path,
     findings: &[Finding],
+    config: &Config,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) {
     let path = absolutize(project_root, history_file);
@@ -61,7 +62,7 @@ pub(crate) fn record_history(
     entries.push(json!({
         "recordedAt": Utc::now().to_rfc3339(),
         "findings": findings.len(),
-        "score": score_report(findings).composite,
+        "score": score_report(findings, config).composite,
     }));
     if entries.len() > 100 {
         entries = entries.split_off(entries.len() - 100);

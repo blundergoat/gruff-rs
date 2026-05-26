@@ -12,6 +12,38 @@ pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagn
         .collect()
 }
 
+/// Warn (non-fatally) when `excludeFromScore: true` is set on a rule
+/// whose pillar is Security or SensitiveData. ADR-014 keeps the
+/// exclusion legal but the choice MUST be user-visible because silently
+/// dropping a security signal from the composite score is the worst-case
+/// failure mode. Strict-mode escalation to error is deferred until a
+/// `--strict` flag exists.
+fn excluded_security_rule_diagnostics(config: &Config) -> Vec<RunDiagnostic> {
+    let registry = rules::builtin_registry();
+    let mut diagnostics = Vec::new();
+    for (rule_id, setting) in &config.rule_settings {
+        if setting.exclude_from_score != Some(true) {
+            continue;
+        }
+        let Some(definition) = registry.get(rule_id) else {
+            continue;
+        };
+        if !matches!(definition.pillar, Pillar::Security | Pillar::SensitiveData) {
+            continue;
+        }
+        diagnostics.push(RunDiagnostic {
+            diagnostic_type: "excluded-security-rule-from-score".to_string(),
+            message: format!(
+                "Rule `{rule_id}` ({:?} pillar) is configured with `excludeFromScore: true`; its findings still surface but no longer affect the composite score.",
+                definition.pillar
+            ),
+            file_path: None,
+            line: None,
+        });
+    }
+    diagnostics
+}
+
 pub(crate) fn resolve_baseline(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -182,6 +214,7 @@ pub(crate) fn run_analysis_in_project(
 ) -> Result<AnalysisReport, String> {
     let mut discovery = discover_sources(project_root, options, config);
     let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
+    diagnostics.extend(excluded_security_rule_diagnostics(config));
     apply_git_diff_selection(options, &mut discovery, &mut diagnostics)?;
     let analysed_paths = analysed_display_paths(&discovery.files);
     let mut findings =
@@ -197,6 +230,7 @@ pub(crate) fn run_analysis_in_project(
     let report = build_report(
         project_root,
         options,
+        config,
         ReportInputs {
             discovery,
             diagnostics,
@@ -205,8 +239,8 @@ pub(crate) fn run_analysis_in_project(
             suppressions,
         },
     );
-    let mut report = apply_diff_selection(project_root, options, report, &analysed_paths)?;
-    record_history_if_requested(project_root, options, &mut report);
+    let mut report = apply_diff_selection(project_root, options, config, report, &analysed_paths)?;
+    record_history_if_requested(project_root, options, config, &mut report);
     Ok(report)
 }
 
@@ -325,6 +359,7 @@ fn text_rule_needs_rust_ast(rule_id: &str) -> bool {
 pub(crate) fn apply_diff_selection(
     project_root: &Path,
     options: &AnalysisOptions,
+    config: &Config,
     report: AnalysisReport,
     analysed_paths: &BTreeSet<String>,
 ) -> Result<AnalysisReport, String> {
@@ -340,12 +375,18 @@ pub(crate) fn apply_diff_selection(
                 .to_string(),
         );
     }
-    Ok(apply_diff_patch_filter(report, &patch, analysed_paths))
+    Ok(apply_diff_patch_filter(
+        report,
+        &patch,
+        analysed_paths,
+        config,
+    ))
 }
 
 pub(crate) fn record_history_if_requested(
     project_root: &Path,
     options: &AnalysisOptions,
+    config: &Config,
     report: &mut AnalysisReport,
 ) {
     if let Some(history_file) = &options.history_file {
@@ -353,6 +394,7 @@ pub(crate) fn record_history_if_requested(
             project_root,
             history_file,
             &report.findings,
+            config,
             &mut report.diagnostics,
         );
     }
@@ -369,6 +411,7 @@ pub(crate) struct ReportInputs {
 pub(crate) fn build_report(
     project_root: &Path,
     options: &AnalysisOptions,
+    config: &Config,
     inputs: ReportInputs,
 ) -> AnalysisReport {
     let ReportInputs {
@@ -379,7 +422,7 @@ pub(crate) fn build_report(
         suppressions,
     } = inputs;
     let summary = summarize(&findings);
-    let score = score_report(&findings);
+    let score = score_report(&findings, config);
     AnalysisReport {
         schema_version: "gruff.analysis.v1".to_string(),
         tool: ToolInfo {

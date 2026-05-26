@@ -83,12 +83,19 @@ pub(crate) fn parse_rule_setting(
         .ok_or_else(|| format!("config for rule `{rule_id}` must be an object"))?;
     reject_unknown_keys(
         rule_object,
-        &["enabled", "threshold", "severity", "options"],
+        &[
+            "enabled",
+            "threshold",
+            "severity",
+            "options",
+            "excludeFromScore",
+        ],
         &format!("config for rule `{rule_id}`"),
     )?;
 
     let mut setting = RuleSetting {
         enabled: parse_rule_enabled(rule_id, rule_object)?,
+        exclude_from_score: parse_rule_exclude_from_score(rule_id, rule_object)?,
         ..RuleSetting::default()
     };
     if is_custom {
@@ -105,6 +112,20 @@ pub(crate) fn parse_rule_setting(
     apply_rule_thresholds(rule_id, rule_object, registry, &mut setting)?;
     validate_optional_rule_options(rule_id, rule_object, registry, &mut setting)?;
     Ok(setting)
+}
+
+fn parse_rule_exclude_from_score(
+    rule_id: &str,
+    rule_object: &serde_json::Map<String, Value>,
+) -> Result<Option<bool>, String> {
+    rule_object
+        .get("excludeFromScore")
+        .map(|value| {
+            value.as_bool().ok_or_else(|| {
+                format!("config key `rules.{rule_id}.excludeFromScore` must be a boolean")
+            })
+        })
+        .transpose()
 }
 
 pub(crate) fn parse_rule_enabled(

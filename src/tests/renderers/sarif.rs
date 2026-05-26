@@ -22,7 +22,7 @@ pub(crate) fn sarif_suppression_results_carry_external_justification() {
         apply_report_exclusions(vec![finding], &exclusions);
     let mut report = sample_report_with(findings, Vec::new());
     report.summary = summarize(&report.findings);
-    report.score = score_report(&report.findings);
+    report.score = score_report(&report.findings, &Config::default());
     report.suppressions = suppressions;
     report.suppressed_findings = suppressed_findings;
 

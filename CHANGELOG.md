@@ -4,6 +4,29 @@
 
 ### Added
 
+- `rules.<id>.excludeFromScore: bool` per-rule config field (ADR-014).
+  When `true`, the rule continues to run and its findings appear in every
+  reporter; only the composite-score penalty bucket skips them. Distinct
+  axis from `enabled` (which hides findings entirely) and from `severity`
+  (a per-finding property). Default is `false`. Non-boolean values
+  produce a config-load error naming the rule id.
+- Non-fatal `excluded-security-rule-from-score` diagnostic when an
+  `excludeFromScore: true` rule belongs to the Security or
+  SensitiveData pillar. The diagnostic names the rule + pillar so the
+  choice is user-visible without blocking the run. Strict-mode
+  escalation to error is deferred until a `--strict` flag exists.
+- Eleven built-in rules' `remediation` text now follows the two-sentence
+  "fix sentence + escape-hatch sentence" pattern: the second sentence
+  names the relevant `.gruff-rs.yaml` key (typically `paths.ignore`,
+  occasionally `allowlists.acceptedAbbreviations`) so consumers see the
+  config knob without grepping the source. Affected:
+  `naming.placeholder-identifier` (variable and function variants),
+  `naming.short-variable`, `security.insecure-rng-for-secrets`,
+  `security.sql-dynamic-query`, `security.weak-crypto`,
+  `security.process-command`, `security.hardcoded-bind-all-interfaces`,
+  `security.path-traversal-candidate`, `dead-code.unused-private-function`,
+  and `concurrency.unbounded-channel`. Detection logic, severity, and
+  confidence unchanged.
 - `list-rules <rule_id>` now renders a detail card for a single rule:
   description, default severity / confidence / enabled-by-default, options
   with their descriptions, escape-hatch config paths (`rules.<id>.options.*`,

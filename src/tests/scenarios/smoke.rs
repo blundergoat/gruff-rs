@@ -462,7 +462,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
 
 #[test]
 pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
-    let clean = score_report(&[]);
+    let clean = score_report(&[], &Config::default());
     assert_eq!(clean.composite, 100.0);
     assert_eq!(clean.grade, "A");
     assert_eq!(clean.pillars.len(), SCORE_PILLARS.len());
@@ -494,7 +494,7 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
             Pillar::Documentation,
         ),
     ];
-    let score = score_report(&findings);
+    let score = score_report(&findings, &Config::default());
     assert_eq!(score.grade, "A");
     assert_eq!(score.top_offenders[0].file_path, "src/a.rs");
     let security = score

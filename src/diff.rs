@@ -260,6 +260,7 @@ pub(crate) fn apply_diff_patch_filter(
     mut report: AnalysisReport,
     patch: &DiffPatchLineMap,
     analysed_files: &BTreeSet<String>,
+    config: &Config,
 ) -> AnalysisReport {
     let total_findings = report.findings.len();
     let changed_files = patch.changed_files();
@@ -270,7 +271,7 @@ pub(crate) fn apply_diff_patch_filter(
 
     report.findings = kept;
     report.summary = summarize(&report.findings);
-    report.score = score_report(&report.findings);
+    report.score = score_report(&report.findings, config);
     push_patch_filter_diagnostic(
         &mut report,
         total_findings,

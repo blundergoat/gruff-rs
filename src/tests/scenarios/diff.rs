@@ -114,7 +114,7 @@ diff --git a/missing.rs b/missing.rs\n\
     );
     let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
 
-    let filtered = apply_diff_patch_filter(report, &patch, &analysed);
+    let filtered = apply_diff_patch_filter(report, &patch, &analysed, &Config::default());
 
     assert_eq!(filtered.findings.len(), 2);
     assert!(filtered
@@ -169,7 +169,7 @@ pub(crate) fn diff_patch_filter_excludes_context_lines() {
     ));
     let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
 
-    let filtered = apply_diff_patch_filter(report, &patch, &analysed);
+    let filtered = apply_diff_patch_filter(report, &patch, &analysed, &Config::default());
 
     assert_eq!(filtered.findings.len(), 1);
     assert_eq!(filtered.findings[0].line, Some(2));

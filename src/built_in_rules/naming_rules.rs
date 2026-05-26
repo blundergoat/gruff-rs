@@ -179,7 +179,10 @@ fn placeholder_identifier_finding(file_path: &str, name: &str, line: usize) -> F
         pillar: Pillar::Naming,
         confidence: Confidence::Medium,
         symbol: Some(name.to_string()),
-        remediation: Some("Use a name that describes the domain role.".to_string()),
+        remediation: Some(
+            "Use a name that describes the domain role. If the placeholder is intentional (test fixture, generated code), add the path to `paths.ignore` in `.gruff-rs.yaml`."
+                .to_string(),
+        ),
         metadata: json!({}),
     })
 }
@@ -194,7 +197,10 @@ fn short_variable_finding(file_path: &str, name: &str, line: usize) -> Finding {
         pillar: Pillar::Naming,
         confidence: Confidence::Medium,
         symbol: Some(name.to_string()),
-        remediation: Some("Use a name that describes the domain role.".to_string()),
+        remediation: Some(
+            "Use a name that describes the domain role. If this is a domain abbreviation (e.g. `aws`, `kms`), append it to `allowlists.acceptedAbbreviations` in `.gruff-rs.yaml`."
+                .to_string(),
+        ),
         metadata: json!({}),
     })
 }

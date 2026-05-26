@@ -89,6 +89,11 @@ pub(crate) struct RuleSetting {
     pub(crate) threshold: Option<f64>,
     pub(crate) severity: Option<Severity>,
     pub(crate) string_array_options: HashMap<String, Vec<String>>,
+    /// Layer-6.5 scoring opt-out (ADR-014). When `Some(true)`, the rule's
+    /// findings are still surfaced in every reporter but skip the
+    /// composite-score penalty contribution. Default and `Some(false)`
+    /// behave identically (rule scores normally).
+    pub(crate) exclude_from_score: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +272,16 @@ impl Config {
             .get(rule_id)
             .and_then(|setting| setting.enabled)
             .unwrap_or(true)
+    }
+
+    /// Whether the rule's findings should skip the composite-score
+    /// penalty contribution. The rule still runs and findings appear in
+    /// every reporter; only `src/scoring.rs` consults this. See ADR-014.
+    pub(crate) fn is_rule_excluded_from_score(&self, rule_id: &str) -> bool {
+        self.rule_settings
+            .get(rule_id)
+            .and_then(|setting| setting.exclude_from_score)
+            .unwrap_or(false)
     }
 
     pub(crate) fn threshold(&self, rule_id: &str, default_value: f64) -> f64 {

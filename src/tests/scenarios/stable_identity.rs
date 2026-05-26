@@ -195,3 +195,168 @@ pub(crate) fn config_entry_for_one_command_does_not_leak_to_another() {
         FailThreshold::None
     );
 }
+fn synth_finding(rule_id: &str, severity: Severity, pillar: Pillar) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: rule_id.to_string(),
+        message: format!("Synthetic finding for {rule_id}."),
+        file_path: "src/auth.rs".to_string(),
+        line: Some(10),
+        severity,
+        pillar,
+        confidence: Confidence::High,
+        symbol: None,
+        remediation: None,
+        metadata: serde_json::json!({}),
+    })
+}
+
+#[test]
+pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
+    let findings = vec![
+        synth_finding(
+            "docs.missing-public-doc",
+            Severity::Advisory,
+            Pillar::Documentation,
+        ),
+        synth_finding(
+            "docs.missing-public-doc",
+            Severity::Advisory,
+            Pillar::Documentation,
+        ),
+    ];
+
+    let baseline_config = Config::default();
+    let baseline_score = score_report(&findings, &baseline_config);
+    assert!(
+        baseline_score.composite < 100.0,
+        "advisory findings should depress the score under default config",
+    );
+
+    let mut exclusion_config = Config::default();
+    exclusion_config.rule_settings.insert(
+        "docs.missing-public-doc".to_string(),
+        RuleSetting {
+            exclude_from_score: Some(true),
+            ..RuleSetting::default()
+        },
+    );
+    let excluded_score = score_report(&findings, &exclusion_config);
+    assert_eq!(
+        excluded_score.composite, 100.0,
+        "exclusion must zero out the rule's penalty contribution",
+    );
+
+    let doc_pillar = excluded_score
+        .pillars
+        .iter()
+        .find(|pillar| pillar.pillar == Pillar::Documentation)
+        .expect("documentation pillar present");
+    assert_eq!(
+        doc_pillar.findings, 2,
+        "exclusion preserves the per-pillar finding count - only the penalty bucket is empty",
+    );
+    assert_eq!(
+        doc_pillar.penalty, 0.0,
+        "exclusion zeroes the penalty bucket",
+    );
+}
+
+#[test]
+pub(crate) fn non_excluded_rule_scores_normally() {
+    let findings = vec![synth_finding(
+        "naming.short-variable",
+        Severity::Advisory,
+        Pillar::Naming,
+    )];
+    let baseline = score_report(&findings, &Config::default());
+    assert!(baseline.composite < 100.0);
+
+    let mut other_excluded = Config::default();
+    other_excluded.rule_settings.insert(
+        "docs.missing-public-doc".to_string(),
+        RuleSetting {
+            exclude_from_score: Some(true),
+            ..RuleSetting::default()
+        },
+    );
+    let still_penalised = score_report(&findings, &other_excluded);
+    assert_eq!(
+        still_penalised.composite, baseline.composite,
+        "excluding one rule does not affect penalty contributions from others",
+    );
+}
+
+#[test]
+pub(crate) fn excluding_security_rule_emits_warning_diagnostic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        "rules:\n  security.process-command:\n    excludeFromScore: true\n",
+    );
+    let options = AnalysisOptions {
+        paths: vec![std::path::PathBuf::from(".")],
+        no_baseline: true,
+        ..default_test_options()
+    };
+    let config = load_config(dir.path(), &options).expect("config loads");
+    let report = run_analysis_in_project(dir.path(), &options, &config).expect("analysis runs");
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|d| d.diagnostic_type == "excluded-security-rule-from-score")
+        .expect("diagnostic must surface for excluded Security rule");
+    assert!(
+        diagnostic.message.contains("security.process-command"),
+        "diagnostic names the affected rule: {}",
+        diagnostic.message
+    );
+    assert!(
+        !diagnostic.is_failure(),
+        "warning is non-fatal; strict-mode escalation deferred",
+    );
+}
+
+#[test]
+pub(crate) fn excluding_non_security_rule_emits_no_diagnostic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        "rules:\n  docs.missing-public-doc:\n    excludeFromScore: true\n",
+    );
+    let options = AnalysisOptions {
+        paths: vec![std::path::PathBuf::from(".")],
+        no_baseline: true,
+        ..default_test_options()
+    };
+    let config = load_config(dir.path(), &options).expect("config loads");
+    let report = run_analysis_in_project(dir.path(), &options, &config).expect("analysis runs");
+
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|d| d.diagnostic_type == "excluded-security-rule-from-score"),
+        "non-Security/SensitiveData exclusions are silent: {:?}",
+        report.diagnostics,
+    );
+}
+
+#[test]
+pub(crate) fn exclude_from_score_rejects_non_boolean_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        "rules:\n  docs.missing-public-doc:\n    excludeFromScore: \"yes\"\n",
+    );
+    let error =
+        load_config(dir.path(), &default_test_options()).expect_err("non-boolean must reject");
+    assert!(
+        error.contains("excludeFromScore"),
+        "error names the config key: {error}",
+    );
+    assert!(
+        error.contains("boolean"),
+        "error explains the required shape: {error}",
+    );
+}
