@@ -29,11 +29,30 @@ pub(crate) fn dashboard_scan_rejects_absolute_or_escaping_paths() {
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
     fs::write(dir.path().join("sample.rs"), "pub fn process() {}\n").expect("sample write");
 
-    let outside_root = dashboard_response("/scan", "projectRoot=/&path=.", dir.path());
+    // Use a canonicalized tempdir outside the dashboard root rather than a
+    // hardcoded `/`, so the test exercises the same boundary on every OS
+    // (Rust's Path::is_absolute() and PathBuf canonicalization both behave
+    // platform-specifically when given Unix-style literals).
+    let outside = tempdir().expect("outside tempdir");
+    fs::write(outside.path().join("README.md"), "# Outside\n").expect("outside readme write");
+    let outside_root_canon = outside.path().canonicalize().expect("outside canonical");
+    let outside_query = format!(
+        "projectRoot={}&path=.",
+        outside_root_canon.to_string_lossy()
+    );
+    let outside_root = dashboard_response("/scan", &outside_query, dir.path());
     assert_eq!(outside_root.status, "400 Bad Request");
     assert!(outside_root.body.contains("projectRoot must stay inside"));
 
-    let absolute_path = dashboard_response("/scan", "path=/etc", dir.path());
+    let sample_absolute = dir
+        .path()
+        .join("sample.rs")
+        .canonicalize()
+        .expect("sample canonical")
+        .to_string_lossy()
+        .into_owned();
+    let absolute_query = format!("path={sample_absolute}");
+    let absolute_path = dashboard_response("/scan", &absolute_query, dir.path());
     assert_eq!(absolute_path.status, "400 Bad Request");
     assert!(absolute_path.body.contains("path must be relative"));
 

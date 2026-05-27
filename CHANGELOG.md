@@ -139,6 +139,11 @@
   `footguns/`, `lessons/`, and `patterns/`) corrected from
   `<dir>/<file>.md` to `../<dir>/<file>.md` so they resolve from the
   containing directory.
+- `dashboard_scan_rejects_absolute_or_escaping_paths` now builds its
+  out-of-root and absolute-path inputs from canonicalized tempdirs
+  instead of hardcoded `/` and `/etc` literals, so the security-boundary
+  test exercises the same intent on any platform where
+  `Path::is_absolute()` classifies paths differently.
 
 ### Changed
 
