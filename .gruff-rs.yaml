@@ -37,13 +37,27 @@ paths:
     - "**/pnpm-lock.yaml"
 
 allowlists:
+  # Mirror the full DEFAULT_ABBREVIATIONS set from src/config.rs so this
+  # file does not narrow the runtime default. The loader replaces (not
+  # merges) acceptedAbbreviations from yaml; keeping the full list here
+  # makes the accepted set visible at the config surface.
   acceptedAbbreviations:
-    - id
+    - age
+    - app
     - db
+    - fs
+    - id
     - io
-    - ui
-    - tx
+    - key
+    - log
+    - max
+    - min
+    - now
+    - raw
     - rx
+    - tx
+    - ui
+    - url
   secretPreviews: []
 
 rules:

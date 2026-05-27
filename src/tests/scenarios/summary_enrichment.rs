@@ -351,3 +351,23 @@ pub(crate) fn summary_omits_per_rule_deltas_when_absent() {
     let parsed: Value = serde_json::from_str(&summary_json).expect("summary json parses");
     assert!(parsed.get("perRuleDeltas").is_none());
 }
+
+#[test]
+pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
+    // PR #3 review: summary text emitted the `Top 5` delta block AFTER
+    // the `Score:` line, opposite of ADR-014 (the analyse text and
+    // Markdown reporters both put deltas BEFORE the score line). Pin
+    // the position so the comparison signal stays above the score.
+    let mut report = sample_report_with(Vec::new(), Vec::new());
+    report.per_rule_deltas = Some(vec![rule_delta_fixture("docs.missing-public-doc", 0, 4)]);
+
+    let summary_text = crate::summary::render(&report, 10, SummaryFormat::Text, 0);
+    let improved_offset = summary_text
+        .find("Top 5 improved:")
+        .expect("improved block present");
+    let score_offset = summary_text.find("Score:").expect("score line present");
+    assert!(
+        improved_offset < score_offset,
+        "summary delta block must render above the Score line, got:\n{summary_text}",
+    );
+}

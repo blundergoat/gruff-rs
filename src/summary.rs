@@ -201,8 +201,9 @@ fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
 
 fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u128) -> String {
     let mut out = String::new();
-    render_scan_card(&mut out, report, duration_ms);
-    rule_delta_blocks::render_text(&mut out, digest.per_rule_deltas.as_deref());
+    render_scan_card(&mut out, report, duration_ms, |out| {
+        rule_delta_blocks::render_text(out, digest.per_rule_deltas.as_deref());
+    });
     out.push('\n');
     render_pillars_text(&mut out, &digest.pillars);
     out.push('\n');
@@ -229,7 +230,9 @@ mod rule_delta_blocks {
         if improved.is_empty() && regressed.is_empty() {
             return;
         }
-        out.push('\n');
+        // Sits between the header line and the Score line per ADR-014.
+        // Caller arranges leading/trailing newlines; both flank lines
+        // already terminate with `\n`.
         if !improved.is_empty() {
             let _ = writeln!(out, "Top {RULE_DELTA_BLOCK_LIMIT} improved: {improved}");
         }
@@ -257,7 +260,15 @@ mod rule_delta_blocks {
     }
 }
 
-fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128) {
+// `mid` runs between the header line and the Score line so callers can
+// inject content there (per-rule deltas per ADR-014 in the comparison
+// case). When the caller has nothing to inject, pass a no-op closure.
+fn render_scan_card(
+    out: &mut String,
+    report: &AnalysisReport,
+    duration_ms: u128,
+    mid: impl FnOnce(&mut String),
+) {
     let _ = writeln!(
         out,
         "{} {}  ·  project: {}  ·  files: {}{}  ·  duration: {}",
@@ -268,7 +279,7 @@ fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128
         ignored_count_label(report),
         format_duration(duration_ms),
     );
-
+    mid(out);
     let mut score_line = format!(
         "Score: {:.1} ({})  ·  Findings: {} error · {} warning · {} advisory",
         report.score.composite,
