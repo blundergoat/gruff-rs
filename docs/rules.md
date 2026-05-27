@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-rs` v0.1 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, maintainability, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
+`gruff-rs` v0.2 focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, maintainability, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; they do not escalate through warning/error ranges.
 
 ## Pillars
 
@@ -36,7 +36,7 @@ Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, 
 
 `test-quality.unwrap-in-test` allows a direct call result unwrapped inside an assertion expression when that call is the subject under test. It still reports setup/local unwraps that feed assertions because those can hide fixture failures behind a panic.
 
-Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default threshold of `1500` with advisory severity. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default threshold of `45` with advisory severity. Config uses `threshold` plus `severity` for thresholded rules. These metric findings complement the existing score report and do not change `gruff.analysis.v1`.
+Advanced metric rules use deterministic tokenization after Rust string literals are masked. Tokens are identifiers, numeric literals, multi-character operators, and punctuation. `metrics.halstead-volume` reports `total_tokens * log2(unique_tokens)` above the default threshold of `1500` with advisory severity. `metrics.maintainability-pressure` reports when `100 - min(100, total_tokens * 0.08 + cyclomatic * 2.0 + halstead_volume / 60.0)` falls below the default threshold of `45` with advisory severity. Config uses `threshold` plus `severity` for thresholded rules. These metric findings complement the existing score report and do not change `gruff.analysis.v2`.
 
 ## Threshold calibration
 
@@ -85,7 +85,7 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
   safe/unsafe metadata before any gruff fix mode.
 - Additional dedicated CI renderers such as Checkstyle XML and Code Climate
   JSON. Peer unlocks: Detekt, PMD, Semgrep, and golangci-lint; ADR-006 keeps
-  these as renderers over `gruff.analysis.v1`. SARIF is the first implemented
+  these as renderers over `gruff.analysis.v2`. SARIF is the first implemented
   CI renderer.
 - User-defined rules. Peer unlocks: SwiftLint regex rules, Semgrep pattern
   rules, and PMD XPath rules; ADR-010 limits the first gruff custom-rule surface

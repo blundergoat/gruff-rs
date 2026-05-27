@@ -1,6 +1,41 @@
 # Changelog
 
-## 0.1.2 - 2026-05-25
+## 0.2.0 - 2026-05-27
+
+This version collects the cross-port ergonomics work originally planned as
+`0.1.2`, plus the schema and CLI-default changes the README's stability
+contract reserved for `0.2.0`: the `analyse --fail-on` binary default flips
+from `error` to `advisory`, `.gruff-rs.yaml` now requires a
+`schemaVersion: gruff-rs.config.v1` field, the analysis JSON schema bumps from
+`gruff.analysis.v1` to `gruff.analysis.v2`, and the summary JSON schema bumps
+from `gruff.summary.v1` to `gruff.summary.v2`.
+
+### Schema versions
+
+- Analysis JSON: `gruff.analysis.v1` → `gruff.analysis.v2`. The v2 shape adds
+  `score.pillars[].penalty: f64`, `findings[].stableIdentity: string`, and an
+  optional `perRuleDeltas[]` array populated when a baseline or diff context
+  is active. All other fields keep their v1 names, types, and meaning.
+  Consumers that validated `schemaVersion == "gruff.analysis.v1"` must
+  update to accept `gruff.analysis.v2`.
+- Summary JSON: `gruff.summary.v1` → `gruff.summary.v2`. The v2 shape exposes
+  nine pillar fields (`pillar`, `grade`, `score`, `applicable`, `findings`,
+  `advisory`, `warning`, `error`, `penalty`) and enriches `topRules[]` with
+  `severity`, `confidence`, and `description`.
+- Baseline JSON (`gruff.baseline.v1`), hotspot JSON (`gruff.hotspot.v1`), and
+  SARIF (2.1.0) surfaces are unchanged.
+
+### Breaking
+
+- `analyse --fail-on` binary default lowered from `error` to `advisory`.
+  Pipelines that relied on the prior default to ignore advisory and warning
+  findings now fail. Restore the prior behaviour with `--fail-on error` on
+  the CLI, or `minimumSeverity.analyse: error` in `.gruff-rs.yaml`.
+- `.gruff-rs.yaml` now requires `schemaVersion: gruff-rs.config.v1`. Configs
+  without the field are rejected at load time. Run `gruff-rs init --force` to
+  regenerate; `paths.ignore`, per-rule overrides, and `minimumSeverity:` are
+  preserved.
+- See `UPGRADING.md` for the full 0.1.x → 0.2.0 migration workflow.
 
 ### Added
 
@@ -144,6 +179,14 @@
   instead of hardcoded `/` and `/etc` literals, so the security-boundary
   test exercises the same intent on any platform where
   `Path::is_absolute()` classifies paths differently.
+- `list-rules <rule_id>` now resolves configured `custom.<slug>` ids in
+  addition to built-in rules. Previously the M05 detail view only
+  consulted the built-in registry, so the catalogue mode listed a custom
+  rule while `list-rules custom.<slug>` returned `Unknown rule`. Custom
+  rules render a kind-`custom` detail card (pillar, severity, confidence,
+  scope, pattern, message, optional remediation, escape hatches) in both
+  text and JSON; the unknown-rule suggestion pool now spans built-in and
+  custom ids together.
 
 ### Changed
 

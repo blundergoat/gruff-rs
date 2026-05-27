@@ -13,7 +13,7 @@ cargo run -- analyse src --format text --fail-on warning
 
 ## JSON
 
-Use `json` for automation. JSON reports use `gruff.analysis.v1`.
+Use `json` for automation. JSON reports use `gruff.analysis.v2`.
 
 ```sh
 cargo run -- analyse src --format json --fail-on none > gruff-rs.json

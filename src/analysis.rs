@@ -393,7 +393,7 @@ pub(crate) fn build_report(
     let summary = summarize(&findings);
     let score = score_report(&findings, config);
     AnalysisReport {
-        schema_version: "gruff.analysis.v1".to_string(),
+        schema_version: "gruff.analysis.v2".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),

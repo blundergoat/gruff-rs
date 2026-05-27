@@ -7,20 +7,88 @@ const SUGGESTION_LIMIT: usize = 3;
 const SUGGESTION_MAX_DISTANCE: usize = 3;
 
 /// Render the deep-view card for a single rule, or surface a
-/// suggestions-bearing error when the id does not match.
+/// suggestions-bearing error when the id does not match. Looks at
+/// built-in rules first, then `custom_rules` so configured `custom.<slug>`
+/// ids resolve symmetrically with the catalogue view.
 pub(crate) fn render_rule_detail(
     rule_id: &str,
     registry: &RuleRegistry,
+    custom_rules: &[CustomRule],
     format: RuleListFormat,
 ) -> Result<String, String> {
-    let Some(definition) = registry.get(rule_id) else {
-        let suggestions = suggest_rule_ids(rule_id, registry);
-        return Err(format_unknown_rule_error(rule_id, &suggestions));
-    };
-    Ok(match format {
-        RuleListFormat::Json => render_detail_json(definition),
-        RuleListFormat::Text => render_detail_text(definition),
-    })
+    if let Some(definition) = registry.get(rule_id) {
+        return Ok(match format {
+            RuleListFormat::Json => render_detail_json(definition),
+            RuleListFormat::Text => render_detail_text(definition),
+        });
+    }
+    if let Some(custom) = custom_rules.iter().find(|rule| rule.id == rule_id) {
+        return Ok(match format {
+            RuleListFormat::Json => render_custom_detail_json(custom),
+            RuleListFormat::Text => render_custom_detail_text(custom),
+        });
+    }
+    let suggestions = suggest_rule_ids(rule_id, registry, custom_rules);
+    Err(format_unknown_rule_error(rule_id, &suggestions))
+}
+
+fn render_custom_detail_text(rule: &CustomRule) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Rule: {}", rule.id);
+    let _ = writeln!(out, "  Kind:                custom");
+    let _ = writeln!(out, "  Pillar:              {:?}", rule.pillar);
+    let _ = writeln!(
+        out,
+        "  Severity:            {}",
+        severity_word(rule.severity)
+    );
+    let _ = writeln!(
+        out,
+        "  Confidence:          {}",
+        confidence_word(rule.confidence)
+    );
+    let _ = writeln!(out, "  Scope:               {}", rule.scope.as_str());
+    out.push('\n');
+
+    out.push_str("Message:\n");
+    let _ = writeln!(out, "  {}", rule.message);
+    out.push('\n');
+
+    out.push_str("Pattern:\n");
+    let _ = writeln!(out, "  {}", rule.pattern);
+    out.push('\n');
+
+    if let Some(remediation) = rule.remediation.as_deref() {
+        out.push_str("Remediation:\n");
+        let _ = writeln!(out, "  {remediation}");
+        out.push('\n');
+    }
+
+    out.push_str("Escape hatches:\n");
+    let _ = writeln!(out, "  custom_rules[id={}]", rule.id);
+    let _ = writeln!(out, "  paths.ignore");
+    out.push('\n');
+
+    out.trim_end_matches('\n').to_string()
+}
+
+fn render_custom_detail_json(rule: &CustomRule) -> String {
+    let payload = json!({
+        "id": rule.id,
+        "kind": "custom",
+        "pillar": pillar_label(rule.pillar),
+        "severity": severity_word(rule.severity),
+        "confidence": confidence_word(rule.confidence),
+        "scope": rule.scope.as_str(),
+        "pattern": rule.pattern,
+        "message": rule.message,
+        "remediation": rule.remediation,
+        "escapeHatches": [
+            format!("custom_rules[id={}]", rule.id),
+            "paths.ignore".to_string(),
+        ],
+    });
+    serde_json::to_string_pretty(&payload).expect("custom rule detail serializes")
 }
 
 fn render_detail_text(definition: &RuleDefinition) -> String {
@@ -151,7 +219,7 @@ fn render_detail_json(definition: &RuleDefinition) -> String {
     serde_json::to_string_pretty(&payload).expect("rule detail serializes")
 }
 
-fn format_unknown_rule_error(rule_id: &str, suggestions: &[&'static str]) -> String {
+fn format_unknown_rule_error(rule_id: &str, suggestions: &[String]) -> String {
     if suggestions.is_empty() {
         return format!("Unknown rule: {rule_id}.");
     }
@@ -161,18 +229,23 @@ fn format_unknown_rule_error(rule_id: &str, suggestions: &[&'static str]) -> Str
     )
 }
 
-fn suggest_rule_ids(rule_id: &str, registry: &RuleRegistry) -> Vec<&'static str> {
-    let mut scored: Vec<(usize, &'static str)> = registry
-        .definitions()
-        .iter()
-        .map(|def| (levenshtein_distance(rule_id, def.id), def.id))
+fn suggest_rule_ids(
+    rule_id: &str,
+    registry: &RuleRegistry,
+    custom_rules: &[CustomRule],
+) -> Vec<String> {
+    let builtin_ids = registry.definitions().iter().map(|def| def.id);
+    let custom_ids = custom_rules.iter().map(|rule| rule.id.as_str());
+    let mut scored: Vec<(usize, &str)> = builtin_ids
+        .chain(custom_ids)
+        .map(|id| (levenshtein_distance(rule_id, id), id))
         .filter(|(distance, _)| *distance <= SUGGESTION_MAX_DISTANCE)
         .collect();
     scored.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
     scored
         .into_iter()
         .take(SUGGESTION_LIMIT)
-        .map(|(_, id)| id)
+        .map(|(_, id)| id.to_string())
         .collect()
 }
 

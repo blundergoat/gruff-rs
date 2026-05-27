@@ -115,7 +115,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
     let summary = summarize(&findings);
     let score = score_report(&findings, &Config::default());
     AnalysisReport {
-        schema_version: "gruff.analysis.v1".to_string(),
+        schema_version: "gruff.analysis.v2".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),

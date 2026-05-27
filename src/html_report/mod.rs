@@ -6,7 +6,7 @@ use crate::{
 mod sections;
 mod styles;
 
-pub(crate) const SCHEMA_VERSION: &str = "gruff.analysis.v1";
+pub(crate) const SCHEMA_VERSION: &str = "gruff.analysis.v2";
 pub(crate) const DISTRIBUTION_BUCKETS: [DistributionBucket; 5] = [
     DistributionBucket::new("1-5", ""),
     DistributionBucket::new("6-10", ""),

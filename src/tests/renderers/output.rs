@@ -6,7 +6,7 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
 
     let json_output = render_report(&report, OutputFormat::Json);
     let decoded: Value = serde_json::from_str(&json_output).expect("json report");
-    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v1");
+    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v2");
     assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
 
     let sarif: Value =
@@ -16,7 +16,7 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "gruff-rs");
     assert_eq!(
         sarif["runs"][0]["properties"]["gruffSchemaVersion"],
-        "gruff.analysis.v1"
+        "gruff.analysis.v2"
     );
     let sarif_rules = sarif["runs"][0]["tool"]["driver"]["rules"]
         .as_array()

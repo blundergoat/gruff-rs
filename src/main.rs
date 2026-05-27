@@ -305,7 +305,12 @@ fn render_rule_list(project_root: &Path, args: &ListRulesArgs) -> Result<String,
     let registry = rules::builtin_registry();
     let config = list_rules_config(project_root, args)?;
     if let Some(rule_id) = &args.rule_id {
-        return rules_detail::render_rule_detail(rule_id, &registry, args.format);
+        return rules_detail::render_rule_detail(
+            rule_id,
+            &registry,
+            &config.custom_rules,
+            args.format,
+        );
     }
     if let Some(selector) = &args.selector {
         return render_selector_output(selector, &registry, &config.custom_rules, args.format);
