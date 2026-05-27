@@ -35,6 +35,7 @@ pub(crate) fn json_report_uses_schema_version() {
             top_offenders: Vec::new(),
         },
         baseline: None,
+        per_rule_deltas: None,
         suppressed_findings: Vec::new(),
     };
 

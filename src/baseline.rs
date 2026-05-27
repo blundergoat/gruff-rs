@@ -24,7 +24,25 @@ pub(crate) fn write_baseline(path: &Path, findings: &[Finding]) -> Result<(), St
     .map_err(|error| format!("unable to write baseline {}: {error}", path.display()))
 }
 
-pub(crate) fn apply_baseline(path: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
+type BaselineKey = (String, String, String);
+
+fn finding_key(finding: &Finding) -> BaselineKey {
+    (
+        finding.fingerprint.clone(),
+        finding.rule_id.clone(),
+        finding.file_path.clone(),
+    )
+}
+
+fn entry_key(entry: &BaselineEntry) -> BaselineKey {
+    (
+        entry.fingerprint.clone(),
+        entry.rule_id.clone(),
+        entry.file_path.clone(),
+    )
+}
+
+fn load_baseline_entries(path: &Path) -> Result<Vec<BaselineEntry>, String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("unable to read baseline {}: {error}", path.display()))?;
     let data: BaselineData = serde_json::from_str(&raw)
@@ -32,19 +50,142 @@ pub(crate) fn apply_baseline(path: &Path, findings: &mut Vec<Finding>) -> Result
     if data.schema_version.as_deref() != Some("gruff.baseline.v1") {
         return Err(format!("unsupported baseline schema in {}", path.display()));
     }
-    let keys: BTreeSet<(String, String, String)> = data
-        .entries
+    Ok(data.entries)
+}
+
+/// Apply a baseline file to `findings` and return the per-rule
+/// introduced/removed deltas computed against the baseline snapshot.
+/// "Introduced" = current findings not matched by any baseline entry
+/// (i.e. the surviving findings after `retain`). "Removed" = baseline
+/// entries that did not match any current finding (i.e. issues that have
+/// been resolved since the baseline was recorded). See ADR-014.
+pub(crate) fn apply_baseline(
+    path: &Path,
+    findings: &mut Vec<Finding>,
+) -> Result<Vec<RuleDelta>, String> {
+    let entries = load_baseline_entries(path)?;
+    let baseline_keys: BTreeSet<BaselineKey> = entries.iter().map(entry_key).collect();
+    let current_keys: BTreeSet<BaselineKey> = findings.iter().map(finding_key).collect();
+    let deltas = baseline_rule_deltas(findings, &entries, &baseline_keys, &current_keys);
+    findings.retain(|finding| !baseline_keys.contains(&finding_key(finding)));
+    Ok(deltas)
+}
+
+fn baseline_rule_deltas(
+    findings: &[Finding],
+    entries: &[BaselineEntry],
+    baseline_keys: &BTreeSet<BaselineKey>,
+    current_keys: &BTreeSet<BaselineKey>,
+) -> Vec<RuleDelta> {
+    let mut introduced_per_rule: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in findings {
+        if !baseline_keys.contains(&finding_key(finding)) {
+            *introduced_per_rule
+                .entry(finding.rule_id.clone())
+                .or_insert(0) += 1;
+        }
+    }
+    let mut removed_per_rule: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in entries {
+        if !current_keys.contains(&entry_key(entry)) {
+            *removed_per_rule.entry(entry.rule_id.clone()).or_insert(0) += 1;
+        }
+    }
+    rule_deltas_from_counts(&introduced_per_rule, &removed_per_rule)
+}
+
+pub(crate) fn rule_deltas_from_counts(
+    introduced_per_rule: &BTreeMap<String, usize>,
+    removed_per_rule: &BTreeMap<String, usize>,
+) -> Vec<RuleDelta> {
+    let mut rule_ids: BTreeSet<&str> = BTreeSet::new();
+    rule_ids.extend(introduced_per_rule.keys().map(String::as_str));
+    rule_ids.extend(removed_per_rule.keys().map(String::as_str));
+    rule_ids
         .into_iter()
-        .map(|entry| (entry.fingerprint, entry.rule_id, entry.file_path))
-        .collect();
-    findings.retain(|finding| {
-        !keys.iter().any(|(fingerprint, rule_id, file_path)| {
-            fingerprint == &finding.fingerprint
-                && rule_id == &finding.rule_id
-                && file_path == &finding.file_path
+        .map(|rule_id| {
+            let introduced = introduced_per_rule.get(rule_id).copied().unwrap_or(0);
+            let removed = removed_per_rule.get(rule_id).copied().unwrap_or(0);
+            RuleDelta {
+                rule_id: rule_id.to_string(),
+                introduced,
+                removed,
+                net: introduced as i64 - removed as i64,
+            }
         })
-    });
-    Ok(())
+        .collect()
+}
+
+pub(crate) struct BaselineResolution {
+    pub(crate) report: BaselineReport,
+    /// Per-rule introduced/removed counts versus the applied baseline.
+    /// Empty when generating a fresh baseline (no comparison context).
+    pub(crate) deltas: Vec<RuleDelta>,
+}
+
+pub(crate) fn resolve_baseline(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    findings: &mut Vec<Finding>,
+) -> Result<Option<BaselineResolution>, String> {
+    if let Some(path) = &options.generate_baseline {
+        return generate_baseline_report(project_root, path, findings).map(Some);
+    }
+    if options.no_baseline {
+        return Ok(None);
+    }
+    let Some((baseline_path, source)) = select_baseline_path(project_root, options) else {
+        return Ok(None);
+    };
+    apply_selected_baseline(project_root, &baseline_path, source, findings).map(Some)
+}
+
+fn generate_baseline_report(
+    project_root: &Path,
+    path: &Path,
+    findings: &[Finding],
+) -> Result<BaselineResolution, String> {
+    let baseline_path = absolutize(project_root, path);
+    write_baseline(&baseline_path, findings)?;
+    Ok(BaselineResolution {
+        report: BaselineReport {
+            path: display_path(project_root, &baseline_path),
+            source: "generated".to_string(),
+            suppressed: 0,
+            generated: true,
+        },
+        deltas: Vec::new(),
+    })
+}
+
+fn select_baseline_path(
+    project_root: &Path,
+    options: &AnalysisOptions,
+) -> Option<(PathBuf, &'static str)> {
+    if let Some(path) = options.baseline.as_ref() {
+        return Some((absolutize(project_root, path), "explicit"));
+    }
+    let default = project_root.join(DEFAULT_BASELINE);
+    default.exists().then_some((default, "default"))
+}
+
+fn apply_selected_baseline(
+    project_root: &Path,
+    baseline_path: &Path,
+    source: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<BaselineResolution, String> {
+    let before = findings.len();
+    let deltas = apply_baseline(baseline_path, findings)?;
+    Ok(BaselineResolution {
+        report: BaselineReport {
+            path: display_path(project_root, baseline_path),
+            source: source.to_string(),
+            suppressed: before.saturating_sub(findings.len()),
+            generated: false,
+        },
+        deltas,
+    })
 }
 
 pub(crate) fn record_history(

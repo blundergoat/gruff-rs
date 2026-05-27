@@ -19,6 +19,8 @@ Use `json` for automation. JSON reports use `gruff.analysis.v1`.
 cargo run -- analyse src --format json --fail-on none > gruff-rs.json
 ```
 
+When a baseline or diff-patch context is in scope, the report gains an additive `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Full-tree scans omit the key entirely so existing consumers stay byte-identical.
+
 ## HTML
 
 Use `html` for archived human review or dashboard scan output.

@@ -236,6 +236,15 @@ git diff --no-ext-diff > /tmp/gruff.patch
 
 Pass `--diff-patch -` to read a patch from stdin. The older Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe`.
 
+When a baseline or diff comparison context is active, `analyse` and `summary` surface per-rule deltas before the composite-score line:
+
+```text
+Top 5 improved: -12 docs.missing-public-doc, -7 size.method-length, ...
+Top 5 regressed: +4 modernisation.semver-pin, +2 naming.identifier-quality, ...
+```
+
+The JSON output exposes the same data as a `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Both surfaces stay omitted on full-tree scans so the schema remains byte-identical for non-comparison runs.
+
 ## Dashboard
 
 ```bash

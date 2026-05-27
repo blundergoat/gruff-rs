@@ -1,14 +1,18 @@
 use super::*;
 use crate::{pillar_label, summary::pillar_digests};
 
+const RULE_DELTA_BLOCK_LIMIT: usize = 5;
+
 pub(super) fn render_markdown(report: &AnalysisReport) -> String {
     let pillars = pillar_digests(report);
     let finding_count = report.findings.len().min(50);
     let mut output = String::with_capacity(
         256 + finding_count.saturating_mul(120) + pillars.len().saturating_mul(96),
     );
+    output.push_str("# gruff-rs report\n");
+    render_rule_delta_blocks(&mut output, report);
     output.push_str(&format!(
-        "# gruff-rs report\n\nScore: **{:.1} ({})**\n\nFindings: {} advisory, {} warning, {} error.\n",
+        "\nScore: **{:.1} ({})**\n\nFindings: {} advisory, {} warning, {} error.\n",
         report.score.composite,
         report.score.grade,
         report.summary.advisory,
@@ -26,6 +30,50 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
         ));
     }
     output
+}
+
+// ADR-014 per-rule delta blocks for markdown. Same shape as text reporter:
+// rendered BEFORE the composite-score line, two ranked sub-lists capped at
+// five entries each, zero-net rules omitted. Order: by absolute net DESC
+// then rule_id ASC.
+fn render_rule_delta_blocks(output: &mut String, report: &AnalysisReport) {
+    let Some(deltas) = report.per_rule_deltas.as_ref() else {
+        return;
+    };
+    let improved = rule_delta_entries(deltas, |delta| delta.net < 0);
+    let regressed = rule_delta_entries(deltas, |delta| delta.net > 0);
+    if improved.is_empty() && regressed.is_empty() {
+        return;
+    }
+    if !improved.is_empty() {
+        let _ = std::fmt::Write::write_fmt(
+            output,
+            format_args!("\nTop {RULE_DELTA_BLOCK_LIMIT} improved: {improved}\n"),
+        );
+    }
+    if !regressed.is_empty() {
+        let _ = std::fmt::Write::write_fmt(
+            output,
+            format_args!("\nTop {RULE_DELTA_BLOCK_LIMIT} regressed: {regressed}\n"),
+        );
+    }
+}
+
+fn rule_delta_entries(deltas: &[RuleDelta], predicate: impl Fn(&RuleDelta) -> bool) -> String {
+    let mut filtered: Vec<&RuleDelta> = deltas.iter().filter(|delta| predicate(delta)).collect();
+    filtered.sort_by(|left, right| {
+        right
+            .net
+            .abs()
+            .cmp(&left.net.abs())
+            .then_with(|| left.rule_id.cmp(&right.rule_id))
+    });
+    filtered.truncate(RULE_DELTA_BLOCK_LIMIT);
+    filtered
+        .into_iter()
+        .map(|delta| format!("{:+} `{}`", delta.net, delta.rule_id))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // Canonical Pillars block (cross-port harmonised contract). Seven columns in fixed order:

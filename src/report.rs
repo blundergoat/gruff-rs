@@ -203,8 +203,24 @@ pub(crate) struct AnalysisReport {
     pub(crate) findings: Vec<Finding>,
     pub(crate) score: ScoreReport,
     pub(crate) baseline: Option<BaselineReport>,
+    /// Per-rule introduced/removed/net counts when a baseline or diff
+    /// comparison context is active. None on full-tree runs so JSON output
+    /// stays byte-identical to pre-ADR-014 consumers (the field is omitted
+    /// entirely via `skip_serializing_if`). Populated by `apply_baseline`
+    /// and `apply_diff_patch_filter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     #[serde(skip)]
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuleDelta {
+    pub(crate) rule_id: String,
+    pub(crate) introduced: usize,
+    pub(crate) removed: usize,
+    pub(crate) net: i64,
 }
 
 #[derive(Debug, Serialize)]

@@ -34,5 +34,5 @@ The non-obvious failure mode is that the struct may live in a module that *feels
 **How to apply:**
 
 - Before adding a field to any `pub(crate) struct` in `src/report.rs`, check whether the struct is reachable from `AnalysisReport` (directly, or transitively via `Vec`/`Option`/nested struct). If yes, the new field is part of the v1 JSON shape.
-- The no-bc-ceremony rule for this codebase (see lessons/release.md) means the response is *not* to bump the schema version string. The response is to note the shape change factually in the changelog (`Analysis JSON gains <field>` rather than `unchanged`). The agent doing the field addition is the only one who can spot the cascade.
+- The no-bc-ceremony rule for this codebase (see ../lessons/release.md) means the response is *not* to bump the schema version string. The response is to note the shape change factually in the changelog (`Analysis JSON gains <field>` rather than `unchanged`). The agent doing the field addition is the only one who can spot the cascade.
 - Tests asserting on field-set equality (e.g. `src/tests/renderers/output.rs` search: `summary_json_pillar_shape_includes_canonical_fields_with_penalty`) catch additions only inside the *tested* struct. New fields on untested structs pass silently — add a contract test alongside the struct change.

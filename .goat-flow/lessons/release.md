@@ -17,7 +17,7 @@ When writing CHANGELOG entries, schema-version notes, code comments, or PR descr
 
 - Changelogs: describe what changed plainly. Drop "compatibility-sensitive", "downstream consumers", "v1 shape carried only N", "additive only" phrases.
 - Code: when changing schemas, output formats, CLI flags, or rule IDs, rewrite cleanly. Don't preserve `_v1` shims, alias-rename, or carry deprecation cycles.
-- Schemas: bump (or don't) the version string by feel. There is no formal deprecation policy and no external migration audience. See footguns/report.md "AnalysisReport Tree Silently Reshapes gruff.analysis.v1 JSON" for what to note vs. bump.
+- Schemas: bump (or don't) the version string by feel. There is no formal deprecation policy and no external migration audience. See ../footguns/report.md "AnalysisReport Tree Silently Reshapes gruff.analysis.v1 JSON" for what to note vs. bump.
 - Still note shape changes for the user's own situational awareness, but as one factual line ("Analysis JSON gains X") — not a migration guide.
 - README.md currently includes "compatibility-sensitive" framing (search: `0\.1\.x.*compatibility-sensitive`). That predates this lesson and reflects an earlier intent; treat it as documentation drift, not as authority over this rule. Update README on the next pass that touches it.
 - Reassess when the user mentions external integrations, third-party consumers, or publishes the cross-port ports for outside use — that's when this rule needs revisiting.

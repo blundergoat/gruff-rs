@@ -1,6 +1,6 @@
 ---
 category: architecture
-last_reviewed: 2026-05-26
+last_reviewed: 2026-05-27
 ---
 
 ## Pattern: Per-Enum Display Helpers Live Next To The Enum, Not Per-Renderer
@@ -20,7 +20,7 @@ The pattern composes with adding new enum variants: adding `Pillar::NewVariant` 
 
 When NOT to apply: helpers that need per-format escaping (e.g. HTML-escaped variant of an already-canonical string) belong in the renderer module. The canonical helper in `report.rs` returns the unescaped form; the renderer composes with its own escape function (e.g. `html_escape(pillar_label(p))`).
 
-Related: footguns/report.md "Per-Format Renderer Helpers Tend To Duplicate" for the failure mode this pattern prevents.
+Related: ../footguns/report.md "Per-Format Renderer Helpers Tend To Duplicate" for the failure mode this pattern prevents.
 
 ## Pattern: Default Config Constants Are Defined Once, Imported From init.rs
 
@@ -34,9 +34,9 @@ Related: footguns/report.md "Per-Format Renderer Helpers Tend To Duplicate" for 
 - `init.rs` imports the const via `use crate::config::<NAME>`.
 - Direction matters: `init.rs` depends on `config.rs`, never the reverse. `config.rs` is foundational and should not pull from CLI-subcommand modules.
 
-When NOT to apply: defaults that *intentionally* differ between runtime and on-disk shapes — `DEFAULT_IGNORE_PATTERNS` is empty `Vec` at runtime via `Config::default()` but populated as YAML on disk by `init.rs` (search: `DEFAULT_IGNORE_PATTERNS`). That asymmetry is a deliberate design choice; see footguns/config.md "Stripping `paths.ignore` Defaults" for why. Do not collapse the two.
+When NOT to apply: defaults that *intentionally* differ between runtime and on-disk shapes — `DEFAULT_IGNORE_PATTERNS` is empty `Vec` at runtime via `Config::default()` but populated as YAML on disk by `init.rs` (search: `DEFAULT_IGNORE_PATTERNS`). That asymmetry is a deliberate design choice; see ../footguns/config.md "Stripping `paths.ignore` Defaults" for why. Do not collapse the two.
 
-Related: footguns/config.md "Default-Allowlist Constants Duplicate Between config.rs And init.rs" for the failure mode this pattern prevents.
+Related: ../footguns/config.md "Default-Allowlist Constants Duplicate Between config.rs And init.rs" for the failure mode this pattern prevents.
 
 ## Pattern: Pre-Load Config At The CLI Edge, Thread It Through
 
@@ -56,3 +56,23 @@ When NOT to apply: pure analysis modules that have no CLI-edge concerns (e.g. `s
 The pattern composes with adding new CLI commands: a new gating command (a) adds itself to the `GATING_COMMANDS` accept-list in `src/config_loader/mod.rs`, (b) consumes the edge helper in `main.rs`, and (c) calls `resolve_fail_on` with its own command name + binary default.
 
 Related: `.goat-flow/decisions/ADR-013-per-command-minimum-severity.md` is the decision record for the M08a/M08b split that introduced this pattern.
+
+## Pattern: Inline Submodule To Keep `architecture.large-module` Off Cohesive Helper Groups
+
+**Context:** Use this when adding a small cluster of cohesive helpers to an existing module that is already near the `architecture.large-module` threshold (default 25 indexed items per `(file_path, module_path)`). The new helpers belong semantically with the host file, but a flat addition would push the parent over the threshold and either (a) trigger a real findings regression that gates the dogfood scan or (b) force a premature file split that obscures the cohesion.
+
+**Evidence:** Before M04b shipped, `src/summary.rs` was already at 23 indexed items. M04b's per-rule delta rendering adds three logical pieces (the entry point, a per-block ranking helper, and a shared cap constant). Flat addition would push `summary` to 26 items and fire `architecture.large-module` on a clean dogfood scan. Solved by wrapping the helpers in `mod rule_delta_blocks { use super::{RuleDelta, RULE_DELTA_BLOCK_LIMIT}; ... }` inline in `src/summary.rs` (search: `mod rule_delta_blocks {`). Items inside that inline submodule get `module_path = "summary::rule_delta_blocks"` from `src/project/items.rs` `collect_project_module` (search: `pub(crate) fn collect_project_module`), so `analyse_large_modules` groups them under a separate `(file_path, module_path)` bucket and they do not count toward `summary`. Dogfood scan stayed at 100.0 (A) / 0 findings; the helpers stay in their natural host file; the call-site becomes `rule_delta_blocks::render_text(...)` which is a readable signpost rather than a buried free function.
+
+**Approach:**
+
+- Wrap the cohesive helper group in an inline `mod <descriptive_name> { use super::*; ... }` at the bottom of the host file. Name the submodule for the *feature* (e.g. `rule_delta_blocks`), not for the file type (e.g. `helpers`).
+- Use `pub(super)` (not `pub(crate)`) on the entry-point function so the parent module is the only caller. This keeps the submodule's surface minimal and signals "internal cohesive cluster" to readers.
+- Re-import only the specific symbols the submodule needs (`use super::{RuleDelta, RULE_DELTA_BLOCK_LIMIT};`), not `use super::*;`, so the cluster's dependencies are visible at a glance.
+- Call from the parent as `<modname>::entry_point(...)`. That namespacing is the readability payoff — readers see `rule_delta_blocks::render_text` and know exactly where to find the related helpers without grep.
+- Counterindication: if the cluster grows past ~4 items or starts being referenced from outside the host file, promote it to its own file (`src/<host>/<modname>.rs` or `src/<modname>/mod.rs`). The inline submodule is a way to keep a small cluster together, not a substitute for file decomposition.
+
+When NOT to apply: when the host module is already well below the threshold and adding helpers is fine flat. The inline submodule is not free — it adds a layer of indirection that costs readability if the cluster is too small (1-2 items) or too sprawling (>5 items). Reach for it when both "items belong together semantically" and "the parent is bumping up against the threshold" hold at once.
+
+The same trick neutralises `architecture.module-fan-out` if a `mod.rs` declaration list is approaching its threshold: wrap a small group of cohesive child modules in `mod <group> { pub(super) mod a; pub(super) mod b; }` so they count as one child of the parent and N children of the new group. Use sparingly — file structure is the better long-term lever.
+
+Related: `src/analyse_project/architecture.rs` `analyse_large_modules` (search: `pub(crate) fn analyse_large_modules`) is the rule that consults `(file_path, module_path)` groupings; `src/project/items.rs` `collect_project_module` (search: `pub(crate) fn collect_project_module`) is where the submodule's `module_path` is forked from its parent's path.

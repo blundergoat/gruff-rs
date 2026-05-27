@@ -41,7 +41,7 @@ The non-obvious failure mode is that drift is invisible to the test suite: `Conf
 - Defaults that must match between `Config::default()` and the `init`-emitted YAML belong as one `pub(crate) const` in `src/config.rs`. `init.rs` imports it.
 - Direction matters: `init.rs` depends on `config.rs`, never the reverse — `config.rs` is foundational and should not pull from CLI-subcommand modules.
 - When adding a new allowlist / override-list config field that `init.rs` also needs to emit, factor the const out before adding both copies.
-- See patterns/architecture.md "Default Config Constants Are Defined Once" for the prescriptive form.
+- See ../patterns/architecture.md "Default Config Constants Are Defined Once" for the prescriptive form.
 
 ## Footgun: Rule Option Names Do Not Imply Their Semantics
 

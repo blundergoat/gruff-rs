@@ -56,7 +56,11 @@ pub(crate) use analyse_project::analyse_project;
 #[cfg(test)]
 use analysis::apply_report_exclusions;
 pub(crate) use analysis::run_analysis_in_project;
-pub(crate) use baseline::{apply_baseline, record_history, write_baseline};
+#[cfg(test)]
+pub(crate) use baseline::write_baseline;
+pub(crate) use baseline::{
+    record_history, resolve_baseline, rule_deltas_from_counts, BaselineResolution,
+};
 use cli::{
     AnalyseArgs, Cli, Commands, CompletionArgs, DashboardArgs, FailThreshold, ListRulesArgs,
     OutputFormat, OutputWriter, ReportArgs, ReportFormat, RuleListFormat, RunOutcome, SummaryArgs,
@@ -87,8 +91,8 @@ pub(crate) use render::{
 use report::{
     pillar_label, AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence,
     FileScore, Finding, FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions,
-    RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding, SuppressionSummary,
-    ToolInfo, SCORE_PILLARS,
+    RuleDelta, RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding,
+    SuppressionSummary, ToolInfo, SCORE_PILLARS,
 };
 pub(crate) use scoring::{grade, score_report, summarize};
 use source::{

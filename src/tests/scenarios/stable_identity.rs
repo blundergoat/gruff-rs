@@ -360,3 +360,77 @@ pub(crate) fn exclude_from_score_rejects_non_boolean_value() {
         "error explains the required shape: {error}",
     );
 }
+
+#[test]
+pub(crate) fn excluded_security_rule_diagnostics_are_sorted_by_rule_id() {
+    // Two Security/SensitiveData built-ins excluded at the same time.
+    // `rule_settings` is a HashMap, so the iteration order of the source
+    // is non-deterministic; the diagnostics list must still come out in
+    // a stable sorted order so JSON/HTML output stays reproducible.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        "rules:\n  \
+         security.process-command:\n    excludeFromScore: true\n  \
+         sensitive-data.api-key-pattern:\n    excludeFromScore: true\n",
+    );
+    let options = AnalysisOptions {
+        paths: vec![std::path::PathBuf::from(".")],
+        no_baseline: true,
+        ..default_test_options()
+    };
+    let config = load_config(dir.path(), &options).expect("config loads");
+    let report = run_analysis_in_project(dir.path(), &options, &config).expect("analysis runs");
+
+    let security_diagnostics: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.diagnostic_type == "excluded-security-rule-from-score")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        security_diagnostics.len(),
+        2,
+        "both excluded rules surface: {security_diagnostics:?}"
+    );
+    let mut sorted = security_diagnostics.clone();
+    sorted.sort();
+    assert_eq!(
+        security_diagnostics, sorted,
+        "diagnostics must already be sorted by rule id; got {security_diagnostics:?}"
+    );
+}
+
+#[test]
+pub(crate) fn custom_rules_cannot_set_exclude_from_score() {
+    // ADR-014 + the M04a config-loader restriction together mean custom
+    // rules can only carry `enabled` under `rules.<id>:`. PR #3 review
+    // worried about a "silent scoring blind spot" when a custom
+    // Security/SensitiveData rule sets `excludeFromScore: true`, but the
+    // loader rejects that combination outright. Pin the loader behaviour
+    // so the assumption stays explicit; future lifts must update this
+    // test alongside the analysis-side diagnostic coverage.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  custom.fake-secret:
+    excludeFromScore: true
+custom_rules:
+  - id: custom.fake-secret
+    pillar: Security
+    severity: warning
+    message: Fake secret pattern
+    scope: text
+    pattern: 'SECRET_TOKEN'
+"#,
+    );
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("custom rule + excludeFromScore must reject at load time");
+    assert!(
+        error.contains("custom rule `custom.fake-secret`")
+            && error.contains("only supports `enabled`"),
+        "error names the rule + the loader restriction: {error}",
+    );
+}

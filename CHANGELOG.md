@@ -15,6 +15,25 @@
   SensitiveData pillar. The diagnostic names the rule + pillar so the
   choice is user-visible without blocking the run. Strict-mode
   escalation to error is deferred until a `--strict` flag exists.
+- `perRuleDeltas[]` additive field on `AnalysisReport` populated when a
+  baseline or diff comparison context is active (ADR-014 second half).
+  Each entry carries `ruleId`, `introduced`, `removed`, `net`.
+  `introduced` is current findings not matched by the baseline (or, in
+  diff-patch mode, findings inside the patched ranges); `removed` is
+  baseline entries no current finding reproduces (or findings outside
+  the patched ranges). Field is omitted entirely on full-tree scans via
+  `skip_serializing_if = Option::is_none`, so existing JSON consumers
+  stay byte-identical.
+- Text and Markdown reporters render `Top 5 improved: ...` and
+  `Top 5 regressed: ...` ranked blocks before the composite-score line
+  when `perRuleDeltas` is present. Blocks cap at five entries each,
+  omit zero-net rules, sort by absolute net DESC then `rule_id` ASC
+  for deterministic output, and stay suppressed when no comparison
+  context is in scope.
+- `gruff-rs summary` surfaces the same per-rule delta data: the text
+  view inserts a "Top 5 improved / regressed" block between the scan
+  card and pillars block, and the JSON view emits an additive
+  `perRuleDeltas[]` array. Same omission contract on full-tree runs.
 - Eleven built-in rules' `remediation` text now follows the two-sentence
   "fix sentence + escape-hatch sentence" pattern: the second sentence
   names the relevant `.gruff-rs.yaml` key (typically `paths.ignore`,
@@ -92,6 +111,19 @@
   `fs`, `key`, `log`, `max`, `min`, `now`, `raw`, `url`. Naming rules
   accept these out of the box; project-specific vocabulary still goes in
   user config.
+
+### Fixed
+
+- `excluded-security-rule-from-score` diagnostics now emit in
+  deterministic order. The previous loop iterated `config.rule_settings`
+  (a `HashMap`) directly, so multiple excluded Security/SensitiveData
+  rules could produce different orderings across runs — breaking the
+  deterministic-report contract for JSON/HTML consumers. Matched rule
+  ids are sorted before construction.
+- Six relative cross-references inside `.goat-flow/` (between
+  `footguns/`, `lessons/`, and `patterns/`) corrected from
+  `<dir>/<file>.md` to `../<dir>/<file>.md` so they resolve from the
+  containing directory.
 
 ### Changed
 

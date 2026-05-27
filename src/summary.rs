@@ -2,7 +2,7 @@ use crate::{
     grade, pillar_label,
     rules::{builtin_registry, RuleRegistry},
     scoring::top_file_scores_with_limit,
-    AnalysisReport, Confidence, Finding, Pillar, PillarScore, Severity, SummaryFormat,
+    AnalysisReport, Confidence, Finding, Pillar, PillarScore, RuleDelta, Severity, SummaryFormat,
     SCORE_PILLARS,
 };
 use serde::Serialize;
@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 const SCHEMA_VERSION: &str = "gruff.summary.v2";
+const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
 /// Render a compact summary view from a full analysis report.
 pub(crate) fn render(
@@ -30,6 +31,7 @@ struct SummaryDigest {
     pillars: Vec<PillarDigest>,
     top_rules: Vec<RuleDigest>,
     top_files: Vec<FileDigest>,
+    per_rule_deltas: Option<Vec<RuleDelta>>,
 }
 
 #[derive(Serialize)]
@@ -74,6 +76,7 @@ impl SummaryDigest {
             pillars: pillar_digests(report),
             top_rules: top_rule_digests(report, top),
             top_files: top_file_digests(report, top),
+            per_rule_deltas: report.per_rule_deltas.clone(),
         }
     }
 }
@@ -182,6 +185,7 @@ fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
 fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u128) -> String {
     let mut out = String::new();
     render_scan_card(&mut out, report, duration_ms);
+    rule_delta_blocks::render_text(&mut out, digest.per_rule_deltas.as_deref());
     out.push('\n');
     render_pillars_text(&mut out, &digest.pillars);
     out.push('\n');
@@ -189,6 +193,51 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     out.push('\n');
     render_files_text(&mut out, &digest.top_files);
     out.trim_end_matches('\n').to_string()
+}
+
+// ADR-014 per-rule delta blocks in the compact summary view. Surfaced when
+// a baseline or diff comparison context populated `per_rule_deltas`. Same
+// shape and ordering as the analyse text reporter (absolute net DESC,
+// rule_id ASC, capped at five entries, zero-net rules dropped).
+mod rule_delta_blocks {
+    use super::{RuleDelta, RULE_DELTA_BLOCK_LIMIT};
+    use std::fmt::Write as _;
+
+    pub(super) fn render_text(out: &mut String, deltas: Option<&[RuleDelta]>) {
+        let Some(deltas) = deltas else {
+            return;
+        };
+        let improved = entries(deltas, |delta| delta.net < 0);
+        let regressed = entries(deltas, |delta| delta.net > 0);
+        if improved.is_empty() && regressed.is_empty() {
+            return;
+        }
+        out.push('\n');
+        if !improved.is_empty() {
+            let _ = writeln!(out, "Top {RULE_DELTA_BLOCK_LIMIT} improved: {improved}");
+        }
+        if !regressed.is_empty() {
+            let _ = writeln!(out, "Top {RULE_DELTA_BLOCK_LIMIT} regressed: {regressed}");
+        }
+    }
+
+    fn entries(deltas: &[RuleDelta], predicate: impl Fn(&RuleDelta) -> bool) -> String {
+        let mut filtered: Vec<&RuleDelta> =
+            deltas.iter().filter(|delta| predicate(delta)).collect();
+        filtered.sort_by(|left, right| {
+            right
+                .net
+                .abs()
+                .cmp(&left.net.abs())
+                .then_with(|| left.rule_id.cmp(&right.rule_id))
+        });
+        filtered.truncate(RULE_DELTA_BLOCK_LIMIT);
+        filtered
+            .into_iter()
+            .map(|delta| format!("{:+} {}", delta.net, delta.rule_id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128) {
@@ -392,7 +441,7 @@ fn render_files_text(out: &mut String, files: &[FileDigest]) {
 }
 
 fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
-    let value = json!({
+    let mut value = json!({
         "schemaVersion": SCHEMA_VERSION,
         "tool": report.tool,
         "run": report.run,
@@ -401,5 +450,14 @@ fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
         "topRules": digest.top_rules,
         "topFiles": digest.top_files,
     });
+    if let Some(deltas) = digest.per_rule_deltas.as_ref() {
+        value
+            .as_object_mut()
+            .expect("summary root is an object")
+            .insert(
+                "perRuleDeltas".to_string(),
+                serde_json::to_value(deltas).expect("rule deltas serialize"),
+            );
+    }
     serde_json::to_string_pretty(&value).expect("summary serializes")
 }
