@@ -47,6 +47,23 @@ pub(crate) const SCORE_PILLARS: &[Pillar] = &[
     Pillar::Design,
 ];
 
+pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
+    match pillar {
+        Pillar::Size => "size",
+        Pillar::Complexity => "complexity",
+        Pillar::DeadCode => "dead-code",
+        Pillar::Waste => "waste",
+        Pillar::Maintainability => "maintainability",
+        Pillar::Naming => "naming",
+        Pillar::Documentation => "documentation",
+        Pillar::Modernisation => "modernisation",
+        Pillar::Security => "security",
+        Pillar::SensitiveData => "sensitive-data",
+        Pillar::TestQuality => "test-quality",
+        Pillar::Design => "design",
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Finding {
@@ -65,6 +82,12 @@ pub(crate) struct Finding {
     pub(crate) remediation: Option<String>,
     pub(crate) metadata: Value,
     pub(crate) fingerprint: String,
+    /// Line-insensitive identity intended for external diff tooling.
+    /// Computed from `rule_id`, `file_path`, and either `symbol` (when
+    /// available) or `message`. Independent of `fingerprint`, which
+    /// remains line-sensitive so the baseline matcher in
+    /// `src/baseline.rs` keeps its existing semantics.
+    pub(crate) stable_identity: String,
 }
 
 pub(crate) struct FindingDescriptor {
@@ -103,6 +126,8 @@ impl Finding {
         hasher.update(b"\0");
         hasher.update(symbol.clone().unwrap_or_default().as_bytes());
         let fingerprint = format!("{:x}", hasher.finalize())[..16].to_string();
+        let stable_identity =
+            compute_stable_identity(&rule_id, &file_path, symbol.as_deref(), &message);
 
         Self {
             rule_id,
@@ -120,8 +145,24 @@ impl Finding {
             remediation,
             metadata,
             fingerprint,
+            stable_identity,
         }
     }
+}
+
+fn compute_stable_identity(
+    rule_id: &str,
+    file_path: &str,
+    symbol: Option<&str>,
+    message: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(rule_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(file_path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(symbol.unwrap_or(message).as_bytes());
+    format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -162,8 +203,24 @@ pub(crate) struct AnalysisReport {
     pub(crate) findings: Vec<Finding>,
     pub(crate) score: ScoreReport,
     pub(crate) baseline: Option<BaselineReport>,
+    /// Per-rule introduced/removed/net counts when a baseline or diff
+    /// comparison context is active. None on full-tree runs so JSON output
+    /// stays byte-identical to pre-ADR-014 consumers (the field is omitted
+    /// entirely via `skip_serializing_if`). Populated by `apply_baseline`
+    /// and `apply_diff_patch_filter`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     #[serde(skip)]
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RuleDelta {
+    pub(crate) rule_id: String,
+    pub(crate) introduced: usize,
+    pub(crate) removed: usize,
+    pub(crate) net: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -242,6 +299,7 @@ pub(crate) struct ScoreReport {
 pub(crate) struct PillarScore {
     pub(crate) pillar: Pillar,
     pub(crate) score: f64,
+    pub(crate) penalty: f64,
     pub(crate) findings: usize,
 }
 

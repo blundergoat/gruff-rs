@@ -1,12 +1,17 @@
 use crate::{
-    grade, scoring::top_file_scores_with_limit, AnalysisReport, Pillar, Severity, SummaryFormat,
+    grade, pillar_label,
+    rules::{builtin_registry, RuleRegistry},
+    scoring::top_file_scores_with_limit,
+    AnalysisReport, Confidence, Finding, Pillar, PillarScore, RuleDelta, Severity, SummaryFormat,
+    SCORE_PILLARS,
 };
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-const SCHEMA_VERSION: &str = "gruff.summary.v1";
+const SCHEMA_VERSION: &str = "gruff.summary.v2";
+const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
 /// Render a compact summary view from a full analysis report.
 pub(crate) fn render(
@@ -26,16 +31,21 @@ struct SummaryDigest {
     pillars: Vec<PillarDigest>,
     top_rules: Vec<RuleDigest>,
     top_files: Vec<FileDigest>,
+    per_rule_deltas: Option<Vec<RuleDelta>>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PillarDigest {
-    pillar: Pillar,
-    findings: usize,
-    advisory: usize,
-    warning: usize,
-    error: usize,
+pub(crate) struct PillarDigest {
+    pub(crate) pillar: Pillar,
+    pub(crate) grade: String,
+    pub(crate) score: f64,
+    pub(crate) applicable: bool,
+    pub(crate) findings: usize,
+    pub(crate) advisory: usize,
+    pub(crate) warning: usize,
+    pub(crate) error: usize,
+    pub(crate) penalty: f64,
 }
 
 #[derive(Serialize)]
@@ -43,6 +53,12 @@ struct PillarDigest {
 struct RuleDigest {
     rule_id: String,
     count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    severity: Option<Severity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<Confidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -60,41 +76,68 @@ impl SummaryDigest {
             pillars: pillar_digests(report),
             top_rules: top_rule_digests(report, top),
             top_files: top_file_digests(report, top),
+            per_rule_deltas: report.per_rule_deltas.clone(),
         }
     }
 }
 
-fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
-    let mut pillars: BTreeMap<Pillar, PillarDigest> = BTreeMap::new();
-    for finding in &report.findings {
-        let entry = pillars.entry(finding.pillar).or_insert(PillarDigest {
-            pillar: finding.pillar,
-            findings: 0,
-            advisory: 0,
-            warning: 0,
-            error: 0,
-        });
-        entry.findings += 1;
+pub(crate) fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
+    let severity_counts = tally_severity_by_pillar(&report.findings);
+    let mut digests: Vec<PillarDigest> = report
+        .score
+        .pillars
+        .iter()
+        .map(|pillar_score| pillar_digest_row(pillar_score, &severity_counts))
+        .collect();
+    digests.sort_by(|left, right| {
+        right
+            .findings
+            .cmp(&left.findings)
+            .then_with(|| pillar_label(left.pillar).cmp(pillar_label(right.pillar)))
+    });
+    digests
+}
+
+fn tally_severity_by_pillar(findings: &[Finding]) -> BTreeMap<Pillar, (usize, usize, usize)> {
+    let mut counts: BTreeMap<Pillar, (usize, usize, usize)> = BTreeMap::new();
+    for finding in findings {
+        let entry = counts.entry(finding.pillar).or_insert((0, 0, 0));
         match finding.severity {
-            Severity::Advisory => entry.advisory += 1,
-            Severity::Warning => entry.warning += 1,
-            Severity::Error => entry.error += 1,
+            Severity::Advisory => entry.0 += 1,
+            Severity::Warning => entry.1 += 1,
+            Severity::Error => entry.2 += 1,
         }
     }
-    pillars.into_values().collect()
+    counts
+}
+
+fn pillar_digest_row(
+    pillar_score: &PillarScore,
+    severity_counts: &BTreeMap<Pillar, (usize, usize, usize)>,
+) -> PillarDigest {
+    let (advisory, warning, error) = severity_counts
+        .get(&pillar_score.pillar)
+        .copied()
+        .unwrap_or((0, 0, 0));
+    PillarDigest {
+        pillar: pillar_score.pillar,
+        grade: grade(pillar_score.score),
+        score: pillar_score.score,
+        applicable: SCORE_PILLARS.contains(&pillar_score.pillar),
+        findings: pillar_score.findings,
+        advisory,
+        warning,
+        error,
+        penalty: pillar_score.penalty,
+    }
 }
 
 fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
-    let mut rule_counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for finding in &report.findings {
-        *rule_counts.entry(&finding.rule_id).or_insert(0) += 1;
-    }
-    let mut top_rules: Vec<RuleDigest> = rule_counts
+    let registry = builtin_registry();
+    let by_rule = tally_findings_by_rule(report);
+    let mut top_rules: Vec<RuleDigest> = by_rule
         .into_iter()
-        .map(|(rule_id, count)| RuleDigest {
-            rule_id: rule_id.to_string(),
-            count,
-        })
+        .map(|(rule_id, (count, severity))| build_rule_digest(rule_id, count, severity, &registry))
         .collect();
     top_rules.sort_by(|left, right| {
         right
@@ -104,6 +147,44 @@ fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
     });
     top_rules.truncate(top);
     top_rules
+}
+
+// Source per-rule severity from the actual findings, not from
+// `RuleDefinition.default_severity`, so `rules.<id>.severity:` overrides
+// (applied via `config.severity` at rule-emission time) stay consistent
+// between `summary.<severity>` counts and the topRules digest.
+fn tally_findings_by_rule(report: &AnalysisReport) -> BTreeMap<&str, (usize, Severity)> {
+    let mut by_rule: BTreeMap<&str, (usize, Severity)> = BTreeMap::new();
+    for finding in &report.findings {
+        let entry = by_rule
+            .entry(&finding.rule_id)
+            .or_insert((0, finding.severity));
+        entry.0 += 1;
+    }
+    by_rule
+}
+
+fn build_rule_digest(
+    rule_id: &str,
+    count: usize,
+    severity: Severity,
+    registry: &RuleRegistry,
+) -> RuleDigest {
+    let definition = registry.get(rule_id);
+    RuleDigest {
+        rule_id: rule_id.to_string(),
+        count,
+        severity: Some(severity),
+        confidence: definition.map(|d| d.confidence),
+        description: definition.map(|d| first_sentence(d.description)),
+    }
+}
+
+fn first_sentence(description: &'static str) -> &'static str {
+    match description.find(". ") {
+        Some(end) => &description[..=end],
+        None => description,
+    }
 }
 
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
@@ -120,7 +201,9 @@ fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
 
 fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u128) -> String {
     let mut out = String::new();
-    render_scan_card(&mut out, report, duration_ms);
+    render_scan_card(&mut out, report, duration_ms, |out| {
+        rule_delta_blocks::render_text(out, digest.per_rule_deltas.as_deref());
+    });
     out.push('\n');
     render_pillars_text(&mut out, &digest.pillars);
     out.push('\n');
@@ -130,7 +213,62 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     out.trim_end_matches('\n').to_string()
 }
 
-fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128) {
+// ADR-014 per-rule delta blocks in the compact summary view. Surfaced when
+// a baseline or diff comparison context populated `per_rule_deltas`. Same
+// shape and ordering as the analyse text reporter (absolute net DESC,
+// rule_id ASC, capped at five entries, zero-net rules dropped).
+mod rule_delta_blocks {
+    use super::{RuleDelta, RULE_DELTA_BLOCK_LIMIT};
+    use std::fmt::Write as _;
+
+    pub(super) fn render_text(out: &mut String, deltas: Option<&[RuleDelta]>) {
+        let Some(deltas) = deltas else {
+            return;
+        };
+        let improved = entries(deltas, |delta| delta.net < 0);
+        let regressed = entries(deltas, |delta| delta.net > 0);
+        if improved.is_empty() && regressed.is_empty() {
+            return;
+        }
+        // Sits between the header line and the Score line per ADR-014.
+        // Caller arranges leading/trailing newlines; both flank lines
+        // already terminate with `\n`.
+        if !improved.is_empty() {
+            let _ = writeln!(out, "Top {RULE_DELTA_BLOCK_LIMIT} improved: {improved}");
+        }
+        if !regressed.is_empty() {
+            let _ = writeln!(out, "Top {RULE_DELTA_BLOCK_LIMIT} regressed: {regressed}");
+        }
+    }
+
+    fn entries(deltas: &[RuleDelta], predicate: impl Fn(&RuleDelta) -> bool) -> String {
+        let mut filtered: Vec<&RuleDelta> =
+            deltas.iter().filter(|delta| predicate(delta)).collect();
+        filtered.sort_by(|left, right| {
+            right
+                .net
+                .abs()
+                .cmp(&left.net.abs())
+                .then_with(|| left.rule_id.cmp(&right.rule_id))
+        });
+        filtered.truncate(RULE_DELTA_BLOCK_LIMIT);
+        filtered
+            .into_iter()
+            .map(|delta| format!("{:+} {}", delta.net, delta.rule_id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+// `mid` runs between the header line and the Score line so callers can
+// inject content there (per-rule deltas per ADR-014 in the comparison
+// case). When the caller has nothing to inject, pass a no-op closure.
+fn render_scan_card(
+    out: &mut String,
+    report: &AnalysisReport,
+    duration_ms: u128,
+    mid: impl FnOnce(&mut String),
+) {
     let _ = writeln!(
         out,
         "{} {}  ·  project: {}  ·  files: {}{}  ·  duration: {}",
@@ -141,7 +279,7 @@ fn render_scan_card(out: &mut String, report: &AnalysisReport, duration_ms: u128
         ignored_count_label(report),
         format_duration(duration_ms),
     );
-
+    mid(out);
     let mut score_line = format!(
         "Score: {:.1} ({})  ·  Findings: {} error · {} warning · {} advisory",
         report.score.composite,
@@ -238,29 +376,80 @@ fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {
     out.push_str("Pillars\n");
     if pillars.is_empty() {
         out.push_str("  (none)\n");
-    } else {
-        for pillar in pillars {
-            let _ = writeln!(
-                out,
-                "  {:<16}  findings={:<4}  err={:<3}  warn={:<3}  adv={:<3}",
-                pillar_label(pillar.pillar),
-                pillar.findings,
-                pillar.error,
-                pillar.warning,
-                pillar.advisory,
-            );
-        }
+        return;
     }
+
+    let name_width = pillars
+        .iter()
+        .map(|pillar| pillar_label(pillar.pillar).len())
+        .max()
+        .unwrap_or(0);
+    let count_width = pillars
+        .iter()
+        .flat_map(|pillar| [pillar.findings, pillar.advisory, pillar.warning])
+        .map(digit_width)
+        .max()
+        .unwrap_or(1);
+
+    for pillar in pillars {
+        let _ = writeln!(
+            out,
+            "  {name:<name_width$} {grade} {score:>6.2} findings={findings:<count_width$}   advisory={advisory:<count_width$}   warning={warning:<count_width$}   error={error}",
+            name = pillar_label(pillar.pillar),
+            name_width = name_width,
+            grade = pillar.grade,
+            score = pillar.score,
+            findings = pillar.findings,
+            count_width = count_width,
+            advisory = pillar.advisory,
+            warning = pillar.warning,
+            error = pillar.error,
+        );
+    }
+}
+
+fn digit_width(value: usize) -> usize {
+    value.checked_ilog10().map_or(1, |log| log as usize + 1)
 }
 
 fn render_rules_text(out: &mut String, rules: &[RuleDigest]) {
     out.push_str("Top rules\n");
     if rules.is_empty() {
         out.push_str("  (none)\n");
-    } else {
-        for rule in rules {
-            let _ = writeln!(out, "  {:<48}  {}", rule.rule_id, rule.count);
-        }
+        return;
+    }
+    let id_width = rules
+        .iter()
+        .map(|rule| rule.rule_id.len())
+        .max()
+        .unwrap_or(0);
+    let count_width = rules
+        .iter()
+        .map(|rule| digit_width(rule.count))
+        .max()
+        .unwrap_or(1);
+    for rule in rules {
+        let severity = match rule.severity {
+            Some(Severity::Advisory) => "advisory",
+            Some(Severity::Warning) => "warning",
+            Some(Severity::Error) => "error",
+            None => "",
+        };
+        let confidence = match rule.confidence {
+            Some(Confidence::Low) => "low",
+            Some(Confidence::Medium) => "medium",
+            Some(Confidence::High) => "high",
+            None => "",
+        };
+        let description = rule.description.unwrap_or("").trim_end_matches(' ');
+        let _ = writeln!(
+            out,
+            "  {count:>count_width$}  {id:<id_width$}  {severity:<8}  {confidence:<6}  {description}",
+            count = rule.count,
+            count_width = count_width,
+            id = rule.rule_id,
+            id_width = id_width,
+        );
     }
 }
 
@@ -280,7 +469,7 @@ fn render_files_text(out: &mut String, files: &[FileDigest]) {
 }
 
 fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
-    let value = json!({
+    let mut value = json!({
         "schemaVersion": SCHEMA_VERSION,
         "tool": report.tool,
         "run": report.run,
@@ -289,22 +478,14 @@ fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
         "topRules": digest.top_rules,
         "topFiles": digest.top_files,
     });
-    serde_json::to_string_pretty(&value).expect("summary serializes")
-}
-
-fn pillar_label(pillar: Pillar) -> &'static str {
-    match pillar {
-        Pillar::Size => "size",
-        Pillar::Complexity => "complexity",
-        Pillar::DeadCode => "dead-code",
-        Pillar::Waste => "waste",
-        Pillar::Maintainability => "maintainability",
-        Pillar::Naming => "naming",
-        Pillar::Documentation => "documentation",
-        Pillar::Modernisation => "modernisation",
-        Pillar::Security => "security",
-        Pillar::SensitiveData => "sensitive-data",
-        Pillar::TestQuality => "test-quality",
-        Pillar::Design => "design",
+    if let Some(deltas) = digest.per_rule_deltas.as_ref() {
+        value
+            .as_object_mut()
+            .expect("summary root is an object")
+            .insert(
+                "perRuleDeltas".to_string(),
+                serde_json::to_value(deltas).expect("rule deltas serialize"),
+            );
     }
+    serde_json::to_string_pretty(&value).expect("summary serializes")
 }

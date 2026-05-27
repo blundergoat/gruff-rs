@@ -1,9 +1,6 @@
 use super::styles::css;
-use super::{
-    pillar_label, severity_text, DistributionBar, OffenderRow, PillarRow, ReportView,
-    SCHEMA_VERSION,
-};
-use crate::{html_escape, Finding, RunDiagnostic, Severity};
+use super::{severity_text, DistributionBar, OffenderRow, PillarRow, ReportView, SCHEMA_VERSION};
+use crate::{html_escape, pillar_label, Finding, RunDiagnostic, Severity};
 use std::fmt::Write as _;
 
 pub(crate) fn document(view: &ReportView<'_>) -> String {
@@ -137,9 +134,9 @@ fn verdict_section(view: &ReportView<'_>) -> String {
         score = html_escape(&view.composite_text),
         summary = html_escape(&view.verdict_summary),
         total_stat = stat_block(&summary.total.to_string(), "findings", ""),
-        error_stat = stat_block(&summary.error.to_string(), "errors", "fail"),
-        warning_stat = stat_block(&summary.warning.to_string(), "warnings", "warn"),
-        advisory_stat = stat_block(&summary.advisory.to_string(), "advisories", "note"),
+        error_stat = stat_block(&summary.error.to_string(), "error", "fail"),
+        warning_stat = stat_block(&summary.warning.to_string(), "warning", "warn"),
+        advisory_stat = stat_block(&summary.advisory.to_string(), "advisory", "note"),
     )
 }
 
@@ -155,54 +152,59 @@ fn stat_block(value: &str, label: &str, class: &str) -> String {
 fn pillars_section(view: &ReportView<'_>) -> String {
     let mut out = String::new();
     out.push_str("<section class=\"pillars\">");
-    out.push_str("<h2 class=\"section-head\">pillar grades <span class=\"aside\">weighted composite</span></h2>");
-    out.push_str("<div class=\"pillar-grid\">");
-    for row in &view.pillar_rows {
-        out.push_str(&pillar_card(row));
+    out.push_str(
+        "<h2 class=\"section-head\">pillars <span class=\"aside\">weighted composite</span></h2>",
+    );
+    out.push_str(concat!(
+        "<table class=\"pillar-list\"><thead><tr>",
+        "<th scope=\"col\">pillar</th>",
+        "<th scope=\"col\" class=\"num\">grade</th>",
+        "<th scope=\"col\" class=\"num\">score</th>",
+        "<th scope=\"col\" class=\"num\">findings</th>",
+        "<th scope=\"col\" class=\"num\">advisory</th>",
+        "<th scope=\"col\" class=\"num\">warning</th>",
+        "<th scope=\"col\" class=\"num\">error</th>",
+        "</tr></thead><tbody>"
+    ));
+    if view.pillar_rows.is_empty() {
+        out.push_str("<tr><td colspan=\"7\">No pillars.</td></tr>");
+    } else {
+        for row in &view.pillar_rows {
+            out.push_str(&pillar_row(row));
+        }
     }
-    if view.pillar_for_mutation_missing {
-        out.push_str(&mutation_placeholder());
-    }
-    out.push_str("</div></section>");
+    out.push_str("</tbody></table></section>");
     out
 }
 
-fn pillar_card(row: &PillarRow) -> String {
+fn pillar_row(row: &PillarRow) -> String {
     format!(
         concat!(
-            "<div class=\"pillar\">",
-            "<div class=\"name\">{name}</div>",
-            "<div class=\"grade grade-{class}\">{letter}</div>",
-            "<div class=\"breakdown\">",
-            "<div class=\"row\"><span class=\"key\">score</span><span class=\"val\">{score:.2}</span></div>",
-            "<div class=\"row\"><span class=\"key\">findings</span><span class=\"val\">{findings}</span></div>",
-            "<div class=\"row\"><span class=\"key\">advisories</span><span class=\"val\">{advisories}</span></div>",
-            "<div class=\"row\"><span class=\"key\">warnings</span><span class=\"val\">{warnings}</span></div>",
-            "<div class=\"row\"><span class=\"key\">errors</span><span class=\"val\">{errors}</span></div>",
-            "</div></div>"
+            "<tr>",
+            "<td class=\"pillar-name\">{name}</td>",
+            "<td class=\"num\"><span class=\"grade-pill {class}\">{letter}</span></td>",
+            "<td class=\"num\">{score:.2}</td>",
+            "<td class=\"num\">{findings}</td>",
+            "{advisory_cell}{warning_cell}{error_cell}",
+            "</tr>"
         ),
         name = html_escape(pillar_label(row.pillar)),
         class = row.grade_class,
         letter = html_escape(&row.grade_letter),
         score = row.score,
         findings = row.findings,
-        advisories = row.advisories,
-        warnings = row.warnings,
-        errors = row.errors,
+        advisory_cell = severity_count_cell(row.advisories, "note"),
+        warning_cell = severity_count_cell(row.warnings, "warn"),
+        error_cell = severity_count_cell(row.errors, "fail"),
     )
 }
 
-fn mutation_placeholder() -> String {
-    concat!(
-        "<div class=\"pillar pillar-empty\">",
-        "<div class=\"name\">mutation</div>",
-        "<div class=\"grade grade-n\">n/a</div>",
-        "<div class=\"breakdown\">",
-        "<div class=\"row\"><span class=\"key\">score</span><span class=\"val\">not scored</span></div>",
-        "<div class=\"row empty-note\">Mutation data unavailable. Wire <code>cargo-mutants</code> ingest to score this pillar.</div>",
-        "</div></div>",
-    )
-    .to_string()
+fn severity_count_cell(count: usize, tier: &str) -> String {
+    if count == 0 {
+        format!("<td class=\"num\">{count}</td>")
+    } else {
+        format!("<td class=\"num {tier}\">{count}</td>")
+    }
 }
 
 fn offenders_section(view: &ReportView<'_>) -> String {

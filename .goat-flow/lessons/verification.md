@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-27
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -180,3 +180,40 @@ through Cargo, but the installed `cargo-audit` binary needs the explicit
 For tool-root smoke tests, run the exact path form the script will use, such as
 `/tmp/tool-root/bin/cargo-audit audit`, before treating the Cargo-dispatched
 form as equivalent.
+
+## Lesson: Verify Bot Review Claims Against Current Code Before Fixing
+
+**Created:** 2026-05-27
+
+Automated PR reviewers (Codex / CodeRabbit / Copilot bots) generate suggestions against a specific commit snapshot. By the time their comments arrive, the same suggestions can be: (a) already addressed by a later commit, (b) based on a premise that does not match current code, or (c) describing a failure mode that an upstream guard already prevents. Acting on every bot suggestion produces churn — unnecessary diffs, false-positive backlog entries, and "fixes" that revert genuine design choices.
+
+**Concrete examples from PR #3 review (2026-05-27):**
+
+- **Stale: `pillar_label` duplication** — bot suggested extracting to shared module. Verified `pub(crate) fn pillar_label` already in `src/report.rs:50`. Action: skip.
+- **Stale: `applicable` boolean assertion** — bot suggested adding `is_boolean()` checks. Verified `src/tests/renderers/output.rs:242, 247, 252` already have them. Action: skip.
+- **Stale: schemaVersion grep brittleness** — bot suggested whitespace-tolerant regex. Verified `scripts/preflight-checks.sh:547` already uses `[[:space:]]*`. Action: skip.
+- **False premise: `applicable` decoupled from composite** — bot claimed composite includes non-`SCORE_PILLARS` pillars. Verified `src/scoring.rs:78` filters by `SCORE_PILLARS.contains(...)`. Action: skip — premise is wrong.
+- **False premise: init lacks schemaVersion** — bot claimed `render_default_config` omits the key. Verified `src/init.rs:192` calls `append_schema_version_section`. Action: skip — premise is wrong.
+- **Unreachable: custom security rule with `excludeFromScore`** — bot worried about silent scoring blind spot. Verified `src/config_loader/rule_settings.rs:101-110` rejects `excludeFromScore` for custom rules at load time. Action: pin the restriction with a regression test instead of "fixing" the unreachable code path.
+- **Real: HashMap iteration in security diagnostics** — verified `config.rule_settings: HashMap`. Action: fix.
+- **Real: digest severity from registry default** — verified `build_rule_digest` uses `definition.default_severity`. Action: fix.
+
+The pattern is consistent: out of 14 inline + 3 nitpick comments, 6 were real, 1 was a real-but-design-decision (queue to backlog), 5 were stale, and 5 were premise mismatches.
+
+**How to apply:**
+
+- For each bot comment, do not start editing. First, find the line the bot points at in the *current* code (not the diff hunk the bot quoted). Read the surrounding 10-20 lines.
+- If the bot's claim describes a line, function, or shape that no longer matches current code: the comment is stale. Skip with a note in the response.
+- If the bot's claim depends on a premise (e.g. "this function iterates over X and produces Y"), trace whether the premise actually holds. The premise is the part most likely to be wrong; bots can hallucinate call-graph relationships.
+- If the failure mode the bot describes requires a specific config / runtime state, check whether an upstream guard prevents reaching that state. A guard makes the bot's "fix" defensive code for an unreachable scenario — which violates CLAUDE.md's "don't add fallbacks for scenarios that can't happen".
+- When the bot is right but the fix is non-trivial (e.g. needs an ADR), queue to backlog with the verification evidence captured — including the bot's exact framing so the deferred decision is reviewable later.
+- When the bot is right and the fix is trivial: ship the fix with a regression test that pins the contract the bot identified.
+- Capture the per-comment outcome in your response so the user can see what was acted on vs. why. "Disagree because X" is more useful than silence.
+
+Watch list (signals a bot claim is likely stale or premise-mismatched):
+
+- The bot quotes a diff hunk's line number that does not match the current file.
+- The bot's "fix" suggestion is structurally identical to code that already exists somewhere in the repo (you can find it by grep).
+- The bot references a function name that has been renamed or extracted.
+- The bot's premise involves a HashMap, threading, or iteration order assumption — sometimes correct, but the loudest source of false alarms.
+- The bot's suggested action requires changing a contract (schema bump, fingerprint format) that the project's stability stance explicitly defers — see [[release]] for the no-bc-ceremony rule.

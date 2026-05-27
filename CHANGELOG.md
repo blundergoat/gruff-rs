@@ -1,119 +1,52 @@
 # Changelog
 
-## 0.1.1 - 2026-05-24
+## v0.2.0 - 2026-05-28
 
-### Added
+First minor on the `0.2.x` line. Collects the cross-port ergonomics work originally planned as 0.1.2 plus the schema and CLI-default changes the README stability contract reserved for the next major. See `UPGRADING.md` for the 0.1.x → 0.2.0 migration workflow.
 
-- 10 new default-on rubrics across four pillars (catalogue: 67 → 77 rules):
-  - `modernisation.manual-is-empty` — flag `len() == 0` / `len() != 0` checks that
-    should use `is_empty()`.
-  - `modernisation.manual-contains` — flag `iter().any(|x| *x == y)` or
-    `iter().any(|x| x == &y)` shapes that should use `contains(&y)`.
-  - `modernisation.manual-strip-prefix` — flag
-    `if s.starts_with(p) { &s[p.len()..] }` shapes that should use
-    `strip_prefix`.
-  - `modernisation.manual-unwrap-or-default` — flag
-    `match opt { Some(v) => v, None => Default::default() }` shapes that should
-    use `unwrap_or_default()`.
-  - `docs.missing-panics-section` — public functions containing
-    `panic!`/`unwrap`/`expect` without a `# Panics` rustdoc section.
-  - `docs.missing-safety-section` — public `unsafe fn` items lacking a
-    `# Safety` rustdoc section.
-  - `docs.missing-param-doc` — public functions whose rustdoc does not mention
-    each parameter by identifier.
-  - `docs.missing-return-doc` — public non-`Result` functions returning a value
-    whose rustdoc does not describe the return.
-  - `security.path-traversal-candidate` — filesystem path construction from
-    non-literal identifiers (Tauri/JS-bridge params, env vars, user-controlled
-    request paths).
-  - `test-quality.should-panic-without-expected` — `#[should_panic]` attributes
-    without an `expected = "..."` clause.
-- `gruff-rs init` command to generate a default `.gruff-rs.yaml` from the
-  built-in rule registry; preserves user-customized `paths.ignore` entries on
-  regeneration.
-- CLI options for explicit baseline path and additional discovery-time ignored
-  paths.
-- `scripts/dependency-install.sh` and `scripts/dependency-update.sh` with
-  auto-install for `cargo-audit` used by the dependency-audit preflight check.
-- Documentation pages for CI integration, configuration, the dashboard, output
-  formats, and the release process.
+- **Breaking: `analyse --fail-on` defaults to `advisory`** - was `error`. Pipelines that relied on the prior default to let advisory and warning findings through now exit `1`. Restore the prior gate with `--fail-on error` on the CLI or `minimumSeverity.analyse: error` in `.gruff-rs.yaml`. Precedence: CLI flag > config key > binary default. The `report` subcommand stays `none`.
+- **Breaking: `.gruff-rs.yaml` requires `schemaVersion: gruff-rs.config.v1`** - configs without the field are rejected at load time. `gruff-rs init --force` regenerates the header while preserving `paths.ignore`, per-rule overrides, and any hand-edited `minimumSeverity:` block.
+- **Breaking: analysis JSON `schemaVersion` → `gruff.analysis.v2`** - additive fields `score.pillars[].penalty: f64`, `findings[].stableIdentity: string`, optional `perRuleDeltas[]` array. All other v1 field names, types, and meanings carry forward; consumers that pinned on `gruff.analysis.v1` must accept the new string.
+- **Breaking: summary JSON `schemaVersion` → `gruff.summary.v2`** - nine canonical pillar fields and enriched `topRules[]` (see below). Baseline (`gruff.baseline.v1`) and SARIF (2.1.0) surfaces are unchanged.
+- **Per-rule scoring opt-out** - `rules.<id>.excludeFromScore: bool` keeps a rule's findings visible in every reporter while skipping its composite-score penalty (ADR-014). Distinct axis from `enabled` (which hides findings) and from `severity` (per-finding). Excluding a Security or SensitiveData rule emits a non-fatal `excluded-security-rule-from-score` diagnostic so the choice stays user-visible. Non-boolean values produce a config-load error naming the rule id.
+- **Per-rule deltas in baseline and diff scans** - text and Markdown reporters render `Top 5 improved` / `Top 5 regressed` blocks above the composite-score line when a baseline or diff context is active. `summary` surfaces the same data in its compact view. JSON gets an additive `perRuleDeltas[]: Array<{ruleId, introduced, removed, net}>` array, omitted entirely on full-tree runs so non-comparison consumers stay byte-identical. Blocks cap at five entries each, omit zero-net rules, and sort by absolute net DESC then `rule_id` ASC for deterministic output.
+- **`list-rules <rule_id>` deep-view card** - description, default severity / confidence / enabled-by-default, options with their descriptions, escape-hatch config paths (`rules.<id>.options.*`, `rules.<id>.enabled`, `paths.ignore`), documented false-positive shapes with mitigations, and related rules. Configured `custom.<slug>` ids resolve to a kind-`custom` card with pillar, severity, confidence, scope, pattern, message, and optional remediation. `--format=json` exposes `escapeHatches`, `falsePositiveShapes`, `relatedRules` arrays. Unknown ids exit `2` with up to three Levenshtein suggestions spanning built-in and custom ids together.
+- **`stableIdentity` field on every finding** - 16-character SHA-256 prefix of `rule_id` + `file_path` + `symbol` (or `message` when no symbol). Line-insensitive by design so external diff tooling can match "same finding" across unrelated edits without disturbing baseline behaviour. `fingerprint` stays line-sensitive so baselines keep their existing contract; SARIF output is byte-identical (the new field is JSON-only).
+- **Per-subcommand `--fail-on` defaults via `minimumSeverity:`** - new top-level config block accepting `analyse` and `report` keys with `none | advisory | warning | error` values (ADR-013). Unknown subcommand keys (`summary`, `dashboard`, `list-rules`) are rejected at load time with the valid-key list; `gruff-rs init --force` preserves hand-edited entries the same way it already preserves `paths.ignore`.
+- **Richer summary JSON pillars** - `pillars[]` exposes nine canonical fields (`pillar`, `grade`, `score`, `applicable`, `findings`, `advisory`, `warning`, `error`, `penalty`), lists every score pillar (not only those with findings), and is sorted deterministically by `findings DESC, then pillar ASC`. `applicable` records whether the pillar contributes to the composite score; `penalty` exposes the raw unclamped score subtraction so saturated pillars (score 0) still surface the underlying penalty for worst-pillar ranking that survives the `max(0.0, 100.0 - penalty)` clamp.
+- **Richer summary `topRules` entries** - now carry `severity`, `confidence`, and a one-sentence `description` sourced from the rule registry. Text output renders the new fields as columns. `severity` reflects any `rules.<id>.severity:` override applied at config time (previously the digest pulled `default_severity` from the registry, which disagreed with finding-level severity when an override was set).
+- **Markdown reports gain a `## Pillars` table** - seven columns (`Pillar | Grade | Score | Findings | Advisory | Warning | Error`) inserted between the score header and the bulleted findings, same sort as the JSON.
+- **HTML inspection report polish** - pillar card grid replaced with a seven-column table matching JSON and Markdown. Grade renders inside a `<span class="grade-pill {letter}">` pill; per-severity count cells get a tier CSS class (`.note`, `.warn`, `.fail`) only when non-zero. Verdict stat labels singularised ("errors" → "error", etc.); the mutation placeholder card removed. The "pillar grades" heading shortens to "pillars".
+- **Triage hint when text scans grow** - `analyse --format text` appends a one-paragraph hint at 50+ findings pointing at `gruff-rs summary --top 20`. Text-only by construction; JSON, SARIF, Markdown, GitHub, and hotspot outputs are byte-identical.
+- **Escape-hatch hints in eleven rule remediations** - second sentence on each affected remediation now names the relevant `.gruff-rs.yaml` knob (typically `paths.ignore`, occasionally `allowlists.acceptedAbbreviations`). Affected: `naming.placeholder-identifier` (variable and function variants), `naming.short-variable`, `security.insecure-rng-for-secrets`, `security.sql-dynamic-query`, `security.weak-crypto`, `security.process-command`, `security.hardcoded-bind-all-interfaces`, `security.path-traversal-candidate`, `dead-code.unused-private-function`, `concurrency.unbounded-channel`. Detection logic, severity, and confidence unchanged.
+- **`docs.missing-*` rules reworded for agent consumers** - absence reports ("`x` is missing a Rust doc comment") replaced with intent guidance ("`x` needs a brief intent description … one plain-English line, not a restatement of the type"). Agents reading the finding can no longer mistake the rule for a request to add stub comments that restate code. Detection logic, severity, confidence, and pillar all unchanged.
+- **Default `accepted_abbreviations` grows from six to sixteen** - adds `age`, `app`, `fs`, `key`, `log`, `max`, `min`, `now`, `raw`, `url` to the existing `id`, `db`, `io`, `ui`, `tx`, `rx`. Naming rules accept these out of the box for fresh installs. **Upgrade note:** the config loader replaces (not merges) `allowlists.acceptedAbbreviations` from yaml, so a `.gruff-rs.yaml` carried over from 0.1.x still uses its prior list. Run `gruff-rs init --force` to regenerate the allowlist with the new defaults, or hand-add the ten new entries to the existing `acceptedAbbreviations:` block. The committed `.gruff-rs.yaml` in this repo now mirrors the full default set so the project convention "yaml enumerates defaults" stays visible.
+- **Twelve built-in rules ship curated false-positive metadata** - `RuleDefinition` gains optional `false_positive_shapes` and `related_rules` slices, defaulted to empty via the `rule_definition!` macro. Curated for the naming family, size family, `security.process-command`, `modernisation.public-field`, `test-quality.no-assertions`, `waste.unwrap-expect`, `complexity.cognitive`, and `dead-code.unused-private-item-candidate`.
+- **Cross-port determinism and correctness fixes** - `excluded-security-rule-from-score` diagnostics now sort by rule id (`config.rule_settings` is a `HashMap`, so direct iteration was non-deterministic across runs). `summary` `topRules[].severity` sources from a finding's effective severity instead of the registry default. Baseline `perRuleDeltas.introduced` no longer over-counts duplicate raw findings (`sort_and_dedupe_findings` now runs before `resolve_baseline`). `summary` text now renders the `Top 5 improved` / `Top 5 regressed` block above the `Score:` line per ADR-014 (was emitting below). `list-rules custom.<slug>` resolves configured custom rules (the catalogue listed them but the detail command returned `Unknown rule`). `dashboard_scan_rejects_absolute_or_escaping_paths` builds its inputs from canonicalized tempdirs instead of hardcoded `/` and `/etc` literals. Six relative cross-references inside `.goat-flow/` documentation corrected to resolve from the containing directory.
+- **Internal refactors** - `pillar_label` consolidated into `src/report.rs` next to the `Pillar` enum (was three duplicate per-renderer copies). `DEFAULT_ABBREVIATIONS` lifted to `src/config.rs` as a single source of truth; `init.rs` imports it. `summary::pillar_digests` becomes `pub(crate)` and is the single source for pillar grade, score, severity counts, and sort order across JSON, HTML, Markdown, and text views. `Config` gains required `schema_version` and `minimum_severity` fields; new `command_setup` module hosts the CLI-edge config-loading helpers. `run_analysis_in_project` signature now takes a pre-loaded `&Config`; the `run_analysis` wrapper that resolved project_root and loaded config internally was removed. `FailThreshold` gains hand-written `FromStr` and `serde::Deserialize` impls plus `PartialEq`/`Eq` derives; off-switch value stays `none` (gruff-rs convention). Cross-port: the v2 JSON pillar shape, seven-column tables, and `minimumSeverity:` dimension align with `gruff-go`, `gruff-ts`, `gruff-py`, and `gruff-php`.
 
-### Changed
+## v0.1.1 - 2026-05-24
 
-- `security.path-traversal-candidate` ships with six layered precision guards
-  (added after deep-testing against an external Tauri codebase): expanded
-  safe-arg list (`safe`, `sanitized`, `normalized`, `validated`, `file_name`,
-  `filename`, `display_path`, plus base-path conventions); skip when the
-  argument is typed `&Path` / `&PathBuf` / `impl AsRef<Path>` in a nearby fn
-  signature; skip when the same function performs `.canonicalize()` followed by
-  `.starts_with(` within 25 lines after the join (validate-then-trust); skip
-  when a `validate_*` / `verify_*` / `sanitize_*` / `check_*` call took the
-  argument in the preceding 30 lines or an inline `if arg.contains(..)` taint
-  check appears; skip loop variables bound to literal arrays
-  (`for ARG in [...]` or `for ARG in &ITER`); skip `let`-bindings to string
-  literals (raw or quoted, including multi-line `let` shapes).
-- `modernisation.manual-contains` tightened to require either deref
-  (`|x| *x == y`) or RHS-ref (`|x| x == &y`) shape — bare `|x| x == y` is
-  intentionally NOT matched because the closure typically compiles only through
-  `PartialEq` cross-type impls where `.contains()` would not.
-- `docs.missing-param-doc` and `docs.missing-return-doc` skip functions
-  carrying a frontend-bridge attribute (`#[tauri::command]`, `#[command]`,
-  `#[wasm_bindgen]`, `#[pyfunction]`, `#[pyo3::pyfunction]`) — those macros
-  follow user-facing-summary rustdoc convention rather than the Rust API
-  contract style.
-- `.gruff-rs.yaml` rule handling: rule entries regenerated deterministically
-  from the built-in registry; per-rule overrides preserved; user-customized
-  `paths.ignore` entries kept on regeneration.
-- Default `paths.ignore` patterns expanded to suppress scan noise from
-  agent/CLI directories (`.agents/`, `.antigravitycli/`, `.claude/`, `.codex/`,
-  `.goat-flow/`) and dependency lockfiles (`Cargo.lock`, `package-lock.json`,
-  `yarn.lock`, `pnpm-lock.yaml`).
-- Version bumped to `0.1.1`.
+Ten new default-on rules, the `gruff-rs init` scaffold, expanded `paths.ignore` defaults, and the documentation pages that move the README from one wall of text to focused topics.
 
-### Internal
+- **Ten new default-on rules across four pillars** - catalogue grows 67 → 77. `modernisation.manual-is-empty` flags `len() == 0` / `len() != 0` checks that should use `is_empty()`. `modernisation.manual-contains` flags `iter().any(|x| *x == y)` or `iter().any(|x| x == &y)` shapes that should use `contains(&y)`. `modernisation.manual-strip-prefix` flags `if s.starts_with(p) { &s[p.len()..] }` shapes that should use `strip_prefix`. `modernisation.manual-unwrap-or-default` flags `match opt { Some(v) => v, None => Default::default() }` shapes that should use `unwrap_or_default()`. `docs.missing-panics-section` flags public functions containing `panic!`/`unwrap`/`expect` without a `# Panics` section. `docs.missing-safety-section` flags public `unsafe fn` items lacking a `# Safety` section. `docs.missing-param-doc` flags public rustdoc that does not mention each parameter by identifier. `docs.missing-return-doc` flags public non-`Result` functions returning a value whose rustdoc does not describe the return. `security.path-traversal-candidate` flags filesystem-path construction from non-literal identifiers. `test-quality.should-panic-without-expected` flags `#[should_panic]` attributes without an `expected = "..."` clause.
+- **`gruff-rs init` scaffold** - generates a default `.gruff-rs.yaml` from the built-in rule registry. Preserves user-customised `paths.ignore` entries on regeneration so reruns stay safe.
+- **`security.path-traversal-candidate` precision guards** - six layered guards added after deep-testing against an external Tauri codebase: expanded safe-arg list (`safe`, `sanitized`, `normalized`, `validated`, `file_name`, `filename`, `display_path`); skip when the argument is typed `&Path` / `&PathBuf` / `impl AsRef<Path>` in a nearby fn signature; skip when the same function performs `.canonicalize()` followed by `.starts_with(` within 25 lines after the join (validate-then-trust); skip when a `validate_*` / `verify_*` / `sanitize_*` / `check_*` call took the argument in the preceding 30 lines, or an inline `if arg.contains(..)` taint check appears; skip loop variables bound to literal arrays (`for ARG in [...]`); skip `let`-bindings to string literals (raw or quoted, including multi-line `let` shapes).
+- **`modernisation.manual-contains` tightened** - requires either deref (`|x| *x == y`) or RHS-ref (`|x| x == &y`) shape. Bare `|x| x == y` is intentionally NOT matched because the closure typically compiles only through `PartialEq` cross-type impls where `.contains()` would not.
+- **`docs.missing-param-doc` and `docs.missing-return-doc` skip bridge functions** - functions carrying `#[tauri::command]`, `#[command]`, `#[wasm_bindgen]`, `#[pyfunction]`, or `#[pyo3::pyfunction]` are exempt because those macros follow user-facing-summary rustdoc convention rather than the Rust API contract style.
+- **Expanded `paths.ignore` defaults** - now suppresses scan noise from agent/CLI directories (`.agents/`, `.antigravitycli/`, `.claude/`, `.codex/`, `.goat-flow/`) and dependency lockfiles (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`). User-customised `paths.ignore` entries are preserved on `init` regeneration.
+- **CLI surface additions** - explicit baseline path option and additional discovery-time ignored paths.
+- **Dependency tooling** - new `scripts/dependency-install.sh` and `scripts/dependency-update.sh` with auto-install for `cargo-audit` used by the dependency-audit preflight check.
+- **Documentation pages** - separate guides for CI integration, configuration, the dashboard, output formats, and the release process so the README can stay focused on the common path.
+- **Calibration matrix extended to 77/77** - every rule has positive and negative cases that the matrix harness verifies on every test run, including a new `src/tests/calibration/cases_pillar_expansion.rs` for the ten new rules. Dogfood score stays 100/A with 0 findings; preflight passes all 17/17.
+- **Internal refactors** - new built-in rule files split out for size and module-item-count compliance: `path_traversal_rules.rs` extracted from `behavior_rules.rs`; `docs_rules.rs` and `rustdoc_parsing.rs` extracted from `function_block_rules.rs`; `modernisation_rules.rs` new. `analyse_should_panic_without_expected` moved to `test_rules.rs`. Reduced Halstead/maintainability pressure in path-traversal, modernisation, and docs analyzers via helper extraction (`PathTraversalScan` struct, `ModernisationCheck` struct, per-rule `*_finding` helpers, `is_documentable_block` predicate). Boolean helpers renamed to predicate-shaped names (`mentions_identifier` → `has_identifier_mention`, `mentions_returns` → `has_returns_section`, `window_validates_path_after` → `window_has_validation_after`, `line_declares_path_typed_param` → `line_has_path_typed_param`). New learning-loop entries in `.goat-flow/footguns/analyzer.md`, `.goat-flow/patterns/rule-precision.md`, `.goat-flow/lessons/naming.md`, and `.goat-flow/lessons/verification.md`.
 
-- New built-in-rule files split out for size + module-item-count compliance:
-  `src/built_in_rules/path_traversal_rules.rs` (extracted from
-  `behavior_rules.rs`), `src/built_in_rules/docs_rules.rs` and
-  `src/built_in_rules/rustdoc_parsing.rs` (extracted from
-  `function_block_rules.rs`), `src/built_in_rules/modernisation_rules.rs`
-  (new). `analyse_should_panic_without_expected` moved to
-  `src/built_in_rules/test_rules.rs` (its natural pillar home).
-- Reduced Halstead/maintainability pressure in path-traversal, modernisation,
-  and docs analyzers via helper extraction (`PathTraversalScan` struct,
-  `ModernisationCheck` struct, per-rule `*_finding` helpers,
-  `is_documentable_block` predicate).
-- Renamed boolean helpers to predicate-shaped names
-  (`mentions_identifier` → `has_identifier_mention`,
-  `mentions_returns` → `has_returns_section`,
-  `window_validates_path_after` → `window_has_validation_after`,
-  `line_declares_path_typed_param` → `line_has_path_typed_param`).
-- Calibration matrix extended to 77/77 rules (new file
-  `src/tests/calibration/cases_pillar_expansion.rs` for the 10 new rules);
-  every rule has positive + negative cases that the matrix harness verifies on
-  every test run.
-- Self-scan (dogfood) score: 100/A with 0 findings; `scripts/preflight-checks.sh`
-  passes all 17/17 checks.
-- New learning-loop entries:
-  `.goat-flow/footguns/analyzer.md` (bare-bare equality FP class;
-  candidate-rule defence-pattern recognition);
-  `.goat-flow/patterns/rule-precision.md` (local-defence suppression pattern
-  for candidate rules; safe-arg name semantics);
-  `.goat-flow/lessons/naming.md` (alphabet-sequel file-name lesson);
-  `.goat-flow/lessons/verification.md` (deep-scan-on-external-repo lesson;
-  zero-finding ambiguity lesson).
+## v0.1.0 - 2026-05-23
 
-## 0.1.0 - 2026-05-23
+First public release. Deterministic, schema-versioned quality analyzer for Rust projects; single-binary CLI you can drop into CI.
 
-First public release. Deterministic, schema-versioned quality analyzer for
-Rust projects; single-binary CLI you can drop into CI.
-
-- Commands: `analyse`, `report`, `summary`, `list-rules`, `dashboard`, `completion`.
-- Outputs: text, JSON (`gruff.analysis.v1`), SARIF 2.1.0, HTML, Markdown,
-  GitHub annotations, hotspot.
-- Default-on rules cover the shared pillars: complexity, dead-code, design,
-  documentation, maintainability, modernisation, naming, security,
-  sensitive-data, size, test-quality.
-- `.gruff-rs.yaml` config with selectors, thresholds, allowlists, custom
-  regex rules, and report-level exclusions.
-- Baselines and patch-diff filtering for incremental adoption.
+- **Commands** - `analyse`, `report`, `summary`, `list-rules`, `dashboard`, `completion`.
+- **Output formats** - text, JSON (`gruff.analysis.v1`), SARIF 2.1.0, HTML, Markdown, GitHub annotations, hotspot.
+- **Default-on rules across eleven pillars** - complexity, dead-code, design, documentation, maintainability, modernisation, naming, security, sensitive-data, size, test-quality.
+- **`.gruff-rs.yaml` config** - selectors, thresholds, allowlists, custom regex rules, and report-level exclusions.
+- **Baselines and patch-diff filtering** - for incremental adoption against an existing codebase.

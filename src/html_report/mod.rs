@@ -1,11 +1,12 @@
 use crate::{
-    grade, AnalysisReport, FileScore, Finding, Pillar, PillarScore, RequestedScope, Severity,
+    grade, summary::pillar_digests, AnalysisReport, FileScore, Finding, Pillar, RequestedScope,
+    Severity,
 };
 
 mod sections;
 mod styles;
 
-pub(crate) const SCHEMA_VERSION: &str = "gruff.analysis.v1";
+pub(crate) const SCHEMA_VERSION: &str = "gruff.analysis.v2";
 pub(crate) const DISTRIBUTION_BUCKETS: [DistributionBucket; 5] = [
     DistributionBucket::new("1-5", ""),
     DistributionBucket::new("6-10", ""),
@@ -32,7 +33,6 @@ pub(crate) struct ReportView<'a> {
     pub(crate) distribution: Vec<DistributionBar>,
     pub(crate) distribution_summary: String,
     pub(crate) findings_total: usize,
-    pub(crate) pillar_for_mutation_missing: bool,
 }
 
 pub(crate) struct PillarRow {
@@ -77,7 +77,7 @@ impl<'a> ReportView<'a> {
         let composite_text = format!("{:.2} / 100", composite);
         let summary_line = verdict_summary(&report.findings, &report.summary);
 
-        let pillar_rows = build_pillar_rows(&report.score.pillars, &report.findings);
+        let pillar_rows = build_pillar_rows(report);
         let offender_rows = build_offender_rows(&report.score.top_offenders);
         let (distribution, distribution_summary) = build_distribution(&report.findings);
 
@@ -93,39 +93,24 @@ impl<'a> ReportView<'a> {
             distribution,
             distribution_summary,
             findings_total: report.findings.len(),
-            pillar_for_mutation_missing: true,
         }
     }
 }
 
-fn build_pillar_rows(pillars: &[PillarScore], findings: &[Finding]) -> Vec<PillarRow> {
-    pillars
-        .iter()
-        .map(|pillar| {
-            let mut advisories = 0usize;
-            let mut warnings = 0usize;
-            let mut errors = 0usize;
-            for finding in findings
-                .iter()
-                .filter(|entry| entry.pillar == pillar.pillar)
-            {
-                match finding.severity {
-                    Severity::Advisory => advisories += 1,
-                    Severity::Warning => warnings += 1,
-                    Severity::Error => errors += 1,
-                }
-            }
-            let letter = grade(pillar.score);
-            let class = grade_class_letter(&letter);
+fn build_pillar_rows(report: &AnalysisReport) -> Vec<PillarRow> {
+    pillar_digests(report)
+        .into_iter()
+        .map(|digest| {
+            let class = grade_class_letter(&digest.grade);
             PillarRow {
-                pillar: pillar.pillar,
-                score: pillar.score,
-                grade_letter: letter,
+                pillar: digest.pillar,
+                score: digest.score,
+                grade_letter: digest.grade,
                 grade_class: class,
-                findings: pillar.findings,
-                advisories,
-                warnings,
-                errors,
+                findings: digest.findings,
+                advisories: digest.advisory,
+                warnings: digest.warning,
+                errors: digest.error,
             }
         })
         .collect()
@@ -242,23 +227,6 @@ pub(crate) fn severity_text(severity: Severity) -> &'static str {
         Severity::Advisory => "advisory",
         Severity::Warning => "warning",
         Severity::Error => "error",
-    }
-}
-
-pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
-    match pillar {
-        Pillar::Size => "size",
-        Pillar::Complexity => "complexity",
-        Pillar::DeadCode => "dead-code",
-        Pillar::Waste => "waste",
-        Pillar::Maintainability => "maintainability",
-        Pillar::Naming => "naming",
-        Pillar::Documentation => "documentation",
-        Pillar::Modernisation => "modernisation",
-        Pillar::Security => "security",
-        Pillar::SensitiveData => "sensitive-data",
-        Pillar::TestQuality => "test-quality",
-        Pillar::Design => "design",
     }
 }
 

@@ -43,6 +43,17 @@ pub(crate) const COMPLEXITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         COMPLEXITY_COGNITIVE_THRESHOLD,
         "Flags functions with high cognitive complexity.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Match-heavy dispatch functions whose cognitive load is one nested `match` per CLI subcommand or AST node.",
+                mitigation: "Raise `rules.complexity.cognitive.threshold` in `.gruff-rs.yaml`, or extract per-arm helpers.",
+            },
+        ],
+        related: &[
+            "complexity.cyclomatic",
+            "complexity.nesting-depth",
+            "metrics.halstead-volume",
+        ],
     ),
     rule_definition!(
         "complexity.cyclomatic",
@@ -96,6 +107,13 @@ pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags private items whose names are not referenced elsewhere in discovered Rust sources.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Items referenced only via macros or via a build-script-generated file the discovery layer did not see (e.g. proc-macro-generated names).",
+                mitigation: "Add the generating path to `paths.ignore` in `.gruff-rs.yaml`, or document with an `exclude:` entry naming the path.",
+            },
+        ],
+        related: &["dead-code.unused-private-function"],
     ),
 ];
 

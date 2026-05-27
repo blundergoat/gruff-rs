@@ -55,22 +55,26 @@ pub fn run_shell(command: &str) {
 }
 
 #[test]
-pub(crate) fn file_length_skips_markdown_and_agent_hooks_not_source() {
+pub(crate) fn file_length_skips_markdown_shell_and_agent_hooks_not_source() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
     fs::create_dir_all(dir.path().join(".codex/hooks")).expect("hook dir");
+    fs::create_dir_all(dir.path().join("scripts")).expect("scripts dir");
 
     let mut markdown = String::from("# Review\n");
     let mut hook = String::from("#!/usr/bin/env bash\n");
+    let mut script = String::from("#!/usr/bin/env bash\n");
     let mut source = String::from("/// Long source fixture.\npub fn long_source() {}\n");
     for index in 0..620 {
         markdown.push_str(&format!("review line {index}\n"));
         hook.push_str(&format!("# hook line {index}\n"));
+        script.push_str(&format!("# script line {index}\n"));
         source.push_str(&format!("// source line {index}\n"));
     }
     fs::write(dir.path().join("REVIEW_improvements.md"), markdown).expect("review write");
     fs::write(dir.path().join(".codex/hooks/deny-dangerous.sh"), hook).expect("hook write");
+    fs::write(dir.path().join("scripts/long_script.sh"), script).expect("script write");
     fs::write(dir.path().join("src/long_source.rs"), source).expect("source write");
 
     let report = run_project_analysis(
@@ -88,10 +92,12 @@ pub(crate) fn file_length_skips_markdown_and_agent_hooks_not_source() {
             finding.rule_id == "size.file-length"
                 && matches!(
                     finding.file_path.as_str(),
-                    "REVIEW_improvements.md" | ".codex/hooks/deny-dangerous.sh"
+                    "REVIEW_improvements.md"
+                        | ".codex/hooks/deny-dangerous.sh"
+                        | "scripts/long_script.sh"
                 )
         }),
-        "markdown and agent hooks should not produce file-length findings; findings={:?}",
+        "markdown, shell scripts, and agent hooks should not produce file-length findings; findings={:?}",
         report
             .findings
             .iter()

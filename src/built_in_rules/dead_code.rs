@@ -144,7 +144,10 @@ pub(crate) fn analyse_dead_function(
             pillar: Pillar::DeadCode,
             confidence: Confidence::Low,
             symbol: Some(name),
-            remediation: Some("Remove the function or add a real call site.".to_string()),
+            remediation: Some(
+                "Remove the function or add a real call site. If the function is reachable only via macro-generated code or a build-script-produced file the discovery layer did not see, add that host path to `paths.ignore` in `.gruff-rs.yaml`."
+                    .to_string(),
+            ),
             metadata: json!({}),
         }));
     }

@@ -260,17 +260,21 @@ pub(crate) fn apply_diff_patch_filter(
     mut report: AnalysisReport,
     patch: &DiffPatchLineMap,
     analysed_files: &BTreeSet<String>,
+    config: &Config,
 ) -> AnalysisReport {
     let total_findings = report.findings.len();
     let changed_files = patch.changed_files();
     let missing_files = unanalysed_patch_files(&changed_files, analysed_files);
-    let kept = retain_findings_in_patch(&mut report, patch, &changed_files);
+    let DiffPatchPartition { kept, suppressed } =
+        partition_findings_by_patch(&mut report, patch, &changed_files);
     let kept_findings = kept.len();
     let suppressed_findings = total_findings.saturating_sub(kept_findings);
 
+    let deltas = patch_rule_deltas(&kept, &suppressed);
     report.findings = kept;
     report.summary = summarize(&report.findings);
-    report.score = score_report(&report.findings);
+    report.score = score_report(&report.findings, config);
+    report.per_rule_deltas = (!deltas.is_empty()).then_some(deltas);
     push_patch_filter_diagnostic(
         &mut report,
         total_findings,
@@ -279,6 +283,20 @@ pub(crate) fn apply_diff_patch_filter(
         &missing_files,
     );
     report
+}
+
+fn patch_rule_deltas(kept: &[Finding], suppressed: &[Finding]) -> Vec<RuleDelta> {
+    let mut introduced_per_rule: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in kept {
+        *introduced_per_rule
+            .entry(finding.rule_id.clone())
+            .or_insert(0) += 1;
+    }
+    let mut removed_per_rule: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in suppressed {
+        *removed_per_rule.entry(finding.rule_id.clone()).or_insert(0) += 1;
+    }
+    crate::rule_deltas_from_counts(&introduced_per_rule, &removed_per_rule)
 }
 
 fn unanalysed_patch_files(
@@ -292,22 +310,30 @@ fn unanalysed_patch_files(
         .collect()
 }
 
-fn retain_findings_in_patch(
+struct DiffPatchPartition {
+    kept: Vec<Finding>,
+    suppressed: Vec<Finding>,
+}
+
+fn partition_findings_by_patch(
     report: &mut AnalysisReport,
     patch: &DiffPatchLineMap,
     changed_files: &BTreeSet<String>,
-) -> Vec<Finding> {
+) -> DiffPatchPartition {
     let mut kept = Vec::new();
+    let mut suppressed = Vec::new();
     for finding in std::mem::take(&mut report.findings) {
         if patch_intersects_finding(&finding, patch, changed_files) {
             kept.push(finding);
+        } else {
+            suppressed.push(finding);
         }
     }
     report
         .suppressed_findings
         .retain(|suppressed| patch_intersects_finding(&suppressed.finding, patch, changed_files));
     recount_suppressions(&mut report.suppressions, &report.suppressed_findings);
-    kept
+    DiffPatchPartition { kept, suppressed }
 }
 
 fn push_patch_filter_diagnostic(

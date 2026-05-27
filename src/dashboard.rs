@@ -93,7 +93,8 @@ fn scan_response(query: &str, default_root: &Path) -> DashboardResponse {
     };
     let options = dashboard_scan_options(scan_path);
     let scope = RequestedScope::from_options(&options);
-    let body = run_analysis_in_project(&root, &options)
+    let body = load_config(&root, &options)
+        .and_then(|config| run_analysis_in_project(&root, &options, &config))
         .map(|report| dashboard_shell(&report, &scope, &root))
         .unwrap_or_else(|error| format!("<pre>{}</pre>", html_escape(&error)));
     DashboardResponse {

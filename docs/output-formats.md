@@ -13,11 +13,13 @@ cargo run -- analyse src --format text --fail-on warning
 
 ## JSON
 
-Use `json` for automation. JSON reports use `gruff.analysis.v1`.
+Use `json` for automation. JSON reports use `gruff.analysis.v2`.
 
 ```sh
 cargo run -- analyse src --format json --fail-on none > gruff-rs.json
 ```
+
+When a baseline or diff-patch context is in scope, the report gains an additive `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Full-tree scans omit the key entirely so existing consumers stay byte-identical.
 
 ## HTML
 

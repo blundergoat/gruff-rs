@@ -139,6 +139,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
     let text = render_rule_list(
         Path::new("."),
         &ListRulesArgs {
+            rule_id: None,
             format: RuleListFormat::Text,
             selector: Some("Security".to_string()),
             config: None,
@@ -170,6 +171,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
     let sensitive_text = render_rule_list(
         Path::new("."),
         &ListRulesArgs {
+            rule_id: None,
             format: RuleListFormat::Text,
             selector: Some("sensitive-data".to_string()),
             config: None,
@@ -196,6 +198,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
     let json_output = render_rule_list(
         Path::new("."),
         &ListRulesArgs {
+            rule_id: None,
             format: RuleListFormat::Json,
             selector: Some("performance.*".to_string()),
             config: None,

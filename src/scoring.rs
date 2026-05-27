@@ -21,8 +21,8 @@ pub(crate) fn summarize(findings: &[Finding]) -> Summary {
     }
 }
 
-pub(crate) fn score_report(findings: &[Finding]) -> ScoreReport {
-    let pillars = pillar_scores(findings);
+pub(crate) fn score_report(findings: &[Finding], config: &Config) -> ScoreReport {
+    let pillars = pillar_scores(findings, config);
     let composite = composite_score(&pillars);
     let top_offenders = top_file_scores(findings);
 
@@ -34,7 +34,7 @@ pub(crate) fn score_report(findings: &[Finding]) -> ScoreReport {
     }
 }
 
-pub(crate) fn pillar_scores(findings: &[Finding]) -> Vec<PillarScore> {
+pub(crate) fn pillar_scores(findings: &[Finding], config: &Config) -> Vec<PillarScore> {
     let mut by_pillar: BTreeMap<Pillar, Vec<&Finding>> = BTreeMap::new();
     for finding in findings {
         by_pillar.entry(finding.pillar).or_default().push(finding);
@@ -47,29 +47,40 @@ pub(crate) fn pillar_scores(findings: &[Finding]) -> Vec<PillarScore> {
         }
     }
 
-    let pillars: Vec<PillarScore> = pillar_order
+    pillar_order
         .into_iter()
-        .map(|pillar| {
-            let pillar_findings = by_pillar.get(&pillar).cloned().unwrap_or_default();
-            let penalty: f64 = pillar_findings
-                .iter()
-                .map(|finding| finding_penalty(finding))
-                .sum();
-            PillarScore {
-                pillar,
-                score: (100.0 - penalty).max(0.0),
-                findings: pillar_findings.len(),
-            }
-        })
-        .collect();
-    pillars
+        .map(|pillar| pillar_score_row(pillar, by_pillar.get(&pillar), config))
+        .collect()
+}
+
+fn pillar_score_row(
+    pillar: Pillar,
+    pillar_findings: Option<&Vec<&Finding>>,
+    config: &Config,
+) -> PillarScore {
+    let findings = pillar_findings.map(Vec::as_slice).unwrap_or(&[]);
+    let penalty: f64 = findings
+        .iter()
+        .filter(|finding| !config.is_rule_excluded_from_score(&finding.rule_id))
+        .map(|finding| finding_penalty(finding))
+        .sum();
+    PillarScore {
+        pillar,
+        score: (100.0 - penalty).max(0.0),
+        penalty,
+        findings: findings.len(),
+    }
 }
 
 pub(crate) fn composite_score(pillars: &[PillarScore]) -> f64 {
-    if pillars.is_empty() {
+    let scored: Vec<&PillarScore> = pillars
+        .iter()
+        .filter(|pillar| SCORE_PILLARS.contains(&pillar.pillar))
+        .collect();
+    if scored.is_empty() {
         100.0
     } else {
-        pillars.iter().map(|pillar| pillar.score).sum::<f64>() / pillars.len() as f64
+        scored.iter().map(|pillar| pillar.score).sum::<f64>() / scored.len() as f64
     }
 }
 

@@ -25,30 +25,29 @@ fn analyse_test_paths(paths: Vec<PathBuf>) -> AnalysisReport {
 }
 
 fn analyse_project_paths(project_root: &Path, paths: Vec<PathBuf>) -> AnalysisReport {
-    run_analysis_in_project(
-        project_root,
-        &AnalysisOptions {
-            paths,
-            config: None,
-            no_config: true,
-            format: OutputFormat::Json,
-            fail_on: FailThreshold::None,
-            include_ignored: false,
-            diff: None,
-            history_file: None,
-            baseline: None,
-            generate_baseline: None,
-            no_baseline: true,
-        },
-    )
-    .expect("analysis succeeds")
+    let options = AnalysisOptions {
+        paths,
+        config: None,
+        no_config: true,
+        format: OutputFormat::Json,
+        fail_on: FailThreshold::None,
+        include_ignored: false,
+        diff: None,
+        history_file: None,
+        baseline: None,
+        generate_baseline: None,
+        no_baseline: true,
+    };
+    let config = load_config(project_root, &options).expect("test config loads");
+    run_analysis_in_project(project_root, &options, &config).expect("analysis succeeds")
 }
 
 fn run_project_analysis(
     project_root: &Path,
     options: AnalysisOptions,
 ) -> Result<AnalysisReport, String> {
-    run_analysis_in_project(project_root, &options)
+    let config = load_config(project_root, &options)?;
+    run_analysis_in_project(project_root, &options, &config)
 }
 
 fn test_finding(
@@ -114,9 +113,9 @@ fn sample_report() -> AnalysisReport {
 
 fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -> AnalysisReport {
     let summary = summarize(&findings);
-    let score = score_report(&findings);
+    let score = score_report(&findings, &Config::default());
     AnalysisReport {
-        schema_version: "gruff.analysis.v1".to_string(),
+        schema_version: "gruff.analysis.v2".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),
@@ -138,6 +137,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         findings,
         score,
         baseline: None,
+        per_rule_deltas: None,
         suppressed_findings: Vec::new(),
     }
 }
@@ -203,6 +203,14 @@ fn default_test_options() -> AnalysisOptions {
 }
 
 fn write_config(dir: &Path, body: &str) {
+    let trimmed = body.trim_start();
+    let body = if body.contains("schemaVersion") {
+        body.to_string()
+    } else if let Some(rest) = trimmed.strip_prefix('{') {
+        format!("{{\"schemaVersion\": \"gruff-rs.config.v1\", {rest}")
+    } else {
+        format!("schemaVersion: gruff-rs.config.v1\n{body}")
+    };
     fs::write(dir.join(".gruff-rs.yaml"), body).expect("yaml config write");
 }
 

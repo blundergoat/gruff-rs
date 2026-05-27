@@ -1,4 +1,7 @@
 use super::*;
+use std::fmt::Write as _;
+
+const OUTPUT_VOLUME_HINT_THRESHOLD: usize = 50;
 
 pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) -> String {
     let mut output = String::with_capacity(256 + report.findings.len().saturating_mul(160));
@@ -6,7 +9,65 @@ pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) ->
     render_text_diagnostics(&mut output, report);
     render_text_findings(&mut output, report);
     render_text_suppressions(&mut output, report);
+    render_output_volume_hint(&mut output, report);
     output
+}
+
+// ADR-014 per-rule delta blocks. Rendered BEFORE the composite-score line
+// when `per_rule_deltas` is present. Two ranked blocks (improved, regressed)
+// capped at five entries each, omitting zero-net rules. Order: by absolute
+// net delta DESC then rule_id ASC for deterministic output.
+const RULE_DELTA_BLOCK_LIMIT: usize = 5;
+
+fn render_rule_delta_blocks(output: &mut String, report: &AnalysisReport) {
+    let Some(deltas) = report.per_rule_deltas.as_ref() else {
+        return;
+    };
+    let improved = render_rule_delta_entries(deltas, |delta| delta.net < 0);
+    let regressed = render_rule_delta_entries(deltas, |delta| delta.net > 0);
+    if improved.is_empty() && regressed.is_empty() {
+        return;
+    }
+    if !improved.is_empty() {
+        let _ = writeln!(output, "Top {RULE_DELTA_BLOCK_LIMIT} improved: {improved}");
+    }
+    if !regressed.is_empty() {
+        let _ = writeln!(
+            output,
+            "Top {RULE_DELTA_BLOCK_LIMIT} regressed: {regressed}"
+        );
+    }
+}
+
+fn render_rule_delta_entries(
+    deltas: &[RuleDelta],
+    predicate: impl Fn(&RuleDelta) -> bool,
+) -> String {
+    let mut filtered: Vec<&RuleDelta> = deltas.iter().filter(|delta| predicate(delta)).collect();
+    filtered.sort_by(|left, right| {
+        right
+            .net
+            .abs()
+            .cmp(&left.net.abs())
+            .then_with(|| left.rule_id.cmp(&right.rule_id))
+    });
+    filtered.truncate(RULE_DELTA_BLOCK_LIMIT);
+    filtered
+        .into_iter()
+        .map(|delta| format!("{:+} {}", delta.net, delta.rule_id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_output_volume_hint(output: &mut String, report: &AnalysisReport) {
+    if report.findings.len() < OUTPUT_VOLUME_HINT_THRESHOLD {
+        return;
+    }
+    let _ = write!(
+        output,
+        "\nHint: {} findings is a lot to read flat. Try:\n  gruff-rs summary --top 20 <paths>\n",
+        report.findings.len()
+    );
 }
 
 fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms: Option<u128>) {
@@ -22,6 +83,7 @@ fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms:
     }
     header.push('\n');
     output.push_str(&header);
+    render_rule_delta_blocks(output, report);
 
     output.push_str(&format!(
         "Score: {:.1} ({}) | Findings: {} advisory, {} warning, {} error\n",

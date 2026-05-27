@@ -1,5 +1,16 @@
 use super::*;
 
+// Universal-programming abbreviations that earn their place in source across nearly any codebase.
+// Project-specific vocabulary (e.g. domain acronyms) should be appended to this list in the user's config.
+pub(crate) const DEFAULT_ABBREVIATIONS: &[&str] = &[
+    "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx",
+    "ui", "url",
+];
+
+// The only accepted value for `.gruff-rs.yaml`'s required `schemaVersion:` field.
+// Introduced by ADR-013 / M08a; bumped only when the config schema breaks compatibility.
+pub(crate) const SCHEMA_VERSION: &str = "gruff-rs.config.v1";
+
 #[derive(Clone)]
 pub(crate) struct AnalysisOptions {
     pub(crate) paths: Vec<PathBuf>,
@@ -53,6 +64,7 @@ impl RequestedScope {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Config {
+    pub(crate) schema_version: String,
     pub(crate) ignored_paths: Vec<String>,
     pub(crate) ignored_path_matchers: Vec<PathMatcher>,
     pub(crate) accepted_abbreviations: BTreeSet<String>,
@@ -61,6 +73,7 @@ pub(crate) struct Config {
     pub(crate) exclusions: Vec<ExclusionRule>,
     pub(crate) custom_rules: Vec<CustomRule>,
     pub(crate) rule_settings: HashMap<String, RuleSetting>,
+    pub(crate) minimum_severity: BTreeMap<String, FailThreshold>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -76,6 +89,11 @@ pub(crate) struct RuleSetting {
     pub(crate) threshold: Option<f64>,
     pub(crate) severity: Option<Severity>,
     pub(crate) string_array_options: HashMap<String, Vec<String>>,
+    /// Layer-6.5 scoring opt-out (ADR-014). When `Some(true)`, the rule's
+    /// findings are still surfaced in every reporter but skip the
+    /// composite-score penalty contribution. Default and `Some(false)`
+    /// behave identically (rule scores normally).
+    pub(crate) exclude_from_score: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,17 +245,19 @@ impl CustomRuleScope {
 impl Config {
     pub(crate) fn default() -> Self {
         Self {
+            schema_version: String::new(),
             ignored_paths: Vec::new(),
             ignored_path_matchers: Vec::new(),
-            accepted_abbreviations: ["id", "db", "io", "ui", "tx", "rx"]
-                .into_iter()
-                .map(String::from)
+            accepted_abbreviations: DEFAULT_ABBREVIATIONS
+                .iter()
+                .map(|value| (*value).to_string())
                 .collect(),
             secret_previews: BTreeSet::new(),
             selectors: SelectorSet::default(),
             exclusions: Vec::new(),
             custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
+            minimum_severity: BTreeMap::new(),
         }
     }
 
@@ -252,6 +272,16 @@ impl Config {
             .get(rule_id)
             .and_then(|setting| setting.enabled)
             .unwrap_or(true)
+    }
+
+    /// Whether the rule's findings should skip the composite-score
+    /// penalty contribution. The rule still runs and findings appear in
+    /// every reporter; only `src/scoring.rs` consults this. See ADR-014.
+    pub(crate) fn is_rule_excluded_from_score(&self, rule_id: &str) -> bool {
+        self.rule_settings
+            .get(rule_id)
+            .and_then(|setting| setting.exclude_from_score)
+            .unwrap_or(false)
     }
 
     pub(crate) fn threshold(&self, rule_id: &str, default_value: f64) -> f64 {

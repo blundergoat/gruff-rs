@@ -1,6 +1,8 @@
-use crate::cli::{InitArgs, OutputWriter};
+use crate::cli::{FailThreshold, InitArgs, OutputWriter};
+use crate::config::{DEFAULT_ABBREVIATIONS, SCHEMA_VERSION};
 use crate::rules::{builtin_registry, RuleDefinition, RuleRegistry};
 use crate::Severity;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -35,12 +37,15 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
     "**/pnpm-lock.yaml",
 ];
 
-const DEFAULT_ABBREVIATIONS: &[&str] = &["id", "db", "io", "ui", "tx", "rx"];
-
 pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
     let output = &args.output;
-    let preserved = read_existing_ignore_patterns(output);
-    let body = render_default_config(&builtin_registry(), &preserved);
+    let preserved_ignores = read_existing_ignore_patterns(output);
+    let preserved_min_severity = read_existing_minimum_severity(output);
+    let body = render_default_config(
+        &builtin_registry(),
+        &preserved_ignores,
+        &preserved_min_severity,
+    );
 
     if args.stdout {
         writer.emit_unconditional(&body);
@@ -134,10 +139,15 @@ fn should_write_default_config(project_root: &Path) -> bool {
 
 fn write_default_config_at(target: &Path) {
     let mut stderr = std::io::stderr();
-    let preserved = read_existing_ignore_patterns(target);
+    let preserved_ignores = read_existing_ignore_patterns(target);
+    let preserved_min_severity = read_existing_minimum_severity(target);
     match fs::write(
         target,
-        render_default_config(&builtin_registry(), &preserved),
+        render_default_config(
+            &builtin_registry(),
+            &preserved_ignores,
+            &preserved_min_severity,
+        ),
     ) {
         Ok(()) => {
             let _ = writeln!(stderr, "Wrote {}", target.display());
@@ -156,11 +166,17 @@ fn write_default_config_at(target: &Path) {
     }
 }
 
-pub(crate) fn render_default_config(registry: &RuleRegistry, extra_ignores: &[String]) -> String {
+pub(crate) fn render_default_config(
+    registry: &RuleRegistry,
+    extra_ignores: &[String],
+    preserved_min_severity: &BTreeMap<String, FailThreshold>,
+) -> String {
     let mut out = String::new();
     out.push_str(HEADER);
     out.push('\n');
 
+    append_schema_version_section(&mut out);
+    append_minimum_severity_section(&mut out, preserved_min_severity);
     append_paths_section(&mut out, extra_ignores);
     append_allowlists_section(&mut out);
 
@@ -170,6 +186,32 @@ pub(crate) fn render_default_config(registry: &RuleRegistry, extra_ignores: &[St
     }
 
     out
+}
+
+fn append_schema_version_section(out: &mut String) {
+    out.push_str(&format!("schemaVersion: {SCHEMA_VERSION}\n\n"));
+}
+
+fn append_minimum_severity_section(out: &mut String, preserved: &BTreeMap<String, FailThreshold>) {
+    out.push_str("# minimumSeverity controls per-subcommand fail thresholds.\n");
+    out.push_str("# Uncomment and edit to override the binary defaults. Valid values:\n");
+    out.push_str("# none, advisory, warning, error. CLI --fail-on flag overrides this block.\n");
+    out.push_str("minimumSeverity:\n");
+    append_minimum_severity_entry(out, "analyse", preserved.get("analyse"), "advisory");
+    append_minimum_severity_entry(out, "report", preserved.get("report"), "none");
+    out.push('\n');
+}
+
+fn append_minimum_severity_entry(
+    out: &mut String,
+    command: &str,
+    preserved: Option<&FailThreshold>,
+    placeholder: &str,
+) {
+    match preserved {
+        Some(value) => out.push_str(&format!("  {command}: {}\n", value.as_str())),
+        None => out.push_str(&format!("  # {command}: {placeholder}\n")),
+    }
 }
 
 fn append_paths_section(out: &mut String, extra_ignores: &[String]) {
@@ -275,22 +317,8 @@ fn needs_quoting(value: &str) -> bool {
 // empty list too but emits a stderr warning - `--force` must still be able to
 // repair a broken config.
 pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
-    if !path.exists() {
+    let Some(value) = read_existing_yaml(path, "ignore preservation") else {
         return Vec::new();
-    }
-    let Ok(content) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let value: serde_yaml::Value = match serde_yaml::from_str(&content) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = writeln!(
-                std::io::stderr(),
-                "gruff-rs: could not parse existing {} for ignore preservation ({error}); proceeding with default ignores only",
-                path.display()
-            );
-            return Vec::new();
-        }
     };
     value
         .get("paths")
@@ -302,4 +330,49 @@ pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Read any hand-edited `minimumSeverity:` entries from an existing
+/// config file so `gruff-rs init --force` does not wipe them. Mirrors
+/// `read_existing_ignore_patterns`. Unknown commands and invalid
+/// thresholds are silently skipped - the user re-runs init expecting a
+/// repair, so partial preservation is preferable to refusing to write.
+pub(crate) fn read_existing_minimum_severity(path: &Path) -> BTreeMap<String, FailThreshold> {
+    let Some(value) = read_existing_yaml(path, "minimumSeverity preservation") else {
+        return BTreeMap::new();
+    };
+    value
+        .get("minimumSeverity")
+        .and_then(|v| v.as_mapping())
+        .map(|mapping| mapping.iter().filter_map(parse_preserved_entry).collect())
+        .unwrap_or_default()
+}
+
+fn parse_preserved_entry(
+    (key, value): (&serde_yaml::Value, &serde_yaml::Value),
+) -> Option<(String, FailThreshold)> {
+    let command = key.as_str()?;
+    if !matches!(command, "analyse" | "report") {
+        return None;
+    }
+    let threshold: FailThreshold = value.as_str()?.parse().ok()?;
+    Some((command.to_string(), threshold))
+}
+
+fn read_existing_yaml(path: &Path, purpose: &str) -> Option<serde_yaml::Value> {
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    match serde_yaml::from_str(&content) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "gruff-rs: could not parse existing {} for {purpose} ({error}); proceeding with defaults only",
+                path.display()
+            );
+            None
+        }
+    }
 }

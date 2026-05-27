@@ -114,7 +114,7 @@ diff --git a/missing.rs b/missing.rs\n\
     );
     let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
 
-    let filtered = apply_diff_patch_filter(report, &patch, &analysed);
+    let filtered = apply_diff_patch_filter(report, &patch, &analysed, &Config::default());
 
     assert_eq!(filtered.findings.len(), 2);
     assert!(filtered
@@ -169,7 +169,7 @@ pub(crate) fn diff_patch_filter_excludes_context_lines() {
     ));
     let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
 
-    let filtered = apply_diff_patch_filter(report, &patch, &analysed);
+    let filtered = apply_diff_patch_filter(report, &patch, &analysed, &Config::default());
 
     assert_eq!(filtered.findings.len(), 1);
     assert_eq!(filtered.findings[0].line, Some(2));
@@ -287,4 +287,64 @@ pub(crate) fn diff_requires_explicit_unsafe_git_flag() {
         "--diff-git-unsafe",
     ]);
     assert!(with_flag.is_ok());
+}
+
+#[test]
+pub(crate) fn diff_patch_filter_emits_per_rule_deltas_for_inside_and_outside_findings() {
+    let report = sample_report_with(
+        vec![
+            test_finding(
+                "security.process-command",
+                "src/lib.rs",
+                11,
+                Severity::Warning,
+                Pillar::Security,
+            ),
+            test_finding(
+                "waste.unwrap-expect",
+                "src/lib.rs",
+                11,
+                Severity::Advisory,
+                Pillar::Maintainability,
+            ),
+            test_finding(
+                "docs.missing-public-doc",
+                "src/other.rs",
+                7,
+                Severity::Advisory,
+                Pillar::Documentation,
+            ),
+        ],
+        Vec::new(),
+    );
+    let patch = parse_unified_diff(
+        "\
+diff --git a/src/lib.rs b/src/lib.rs\n\
+--- a/src/lib.rs\n\
++++ b/src/lib.rs\n\
+@@ -10,1 +11,1 @@\n\
++changed\n",
+    );
+    let analysed = BTreeSet::from(["src/lib.rs".to_string(), "src/other.rs".to_string()]);
+
+    let filtered = apply_diff_patch_filter(report, &patch, &analysed, &Config::default());
+
+    let deltas = filtered
+        .per_rule_deltas
+        .as_ref()
+        .expect("diff filter populates per_rule_deltas");
+    let process_command = deltas
+        .iter()
+        .find(|delta| delta.rule_id == "security.process-command")
+        .expect("process-command finding inside patch");
+    assert_eq!(process_command.introduced, 1);
+    assert_eq!(process_command.removed, 0);
+    assert_eq!(process_command.net, 1);
+    let docs = deltas
+        .iter()
+        .find(|delta| delta.rule_id == "docs.missing-public-doc")
+        .expect("docs finding outside patch");
+    assert_eq!(docs.introduced, 0);
+    assert_eq!(docs.removed, 1);
+    assert_eq!(docs.net, -1);
 }

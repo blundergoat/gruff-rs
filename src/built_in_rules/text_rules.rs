@@ -47,11 +47,12 @@ fn file_length_is_exempt(display_path: &str) -> bool {
         "cargo.lock" | "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml"
     ) || file_name.ends_with(".lock");
     let markdown = file_name.ends_with(".md") || file_name.ends_with(".markdown");
+    let shell = file_name.ends_with(".sh");
     let agent_hook = normalized.contains("/.codex/hooks/")
         || normalized.contains("/.claude/hooks/")
         || normalized.starts_with(".codex/hooks/")
         || normalized.starts_with(".claude/hooks/");
-    lockfile || markdown || agent_hook
+    lockfile || markdown || shell || agent_hook
 }
 
 fn analyse_ci_github_event_shell_interpolation(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {

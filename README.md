@@ -10,18 +10,18 @@
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.1.1` package line |
+| Release line | Published `0.2.0` package line |
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
 | Rule catalogue | 80 rules across 11 pillars |
-| Primary config | `.gruff-rs.yaml` |
-| Analysis schema | `gruff.analysis.v1` |
+| Primary config | `.gruff-rs.yaml` (requires `schemaVersion: gruff-rs.config.v1`) |
+| Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
-| Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error` |
+| Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error`; per-subcommand defaults via `minimumSeverity:` in `.gruff-rs.yaml` |
 | Dashboard | `127.0.0.1:8766` by default |
 
-Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are compatibility-sensitive inside the `0.1.x` line.
+Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are compatibility-sensitive inside the `0.2.x` line.
 
 ## Requirements
 
@@ -34,7 +34,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 Install into a repository-local tool directory:
 
 ```bash
-cargo install gruff-rs --locked --version 0.1.1 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 0.2.0 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```
@@ -95,7 +95,7 @@ cargo install --path . --locked --root ./.cargo-tools
 | Format | Use it for |
 | --- | --- |
 | `text` | Human terminal output. |
-| `json` | Full `gruff.analysis.v1` report. |
+| `json` | Full `gruff.analysis.v2` report. |
 | `sarif` | SARIF 2.1.0 for code scanning. |
 | `html` | Self-contained inspection report. |
 | `markdown` | Pull-request or issue comment summary. |
@@ -112,7 +112,7 @@ cargo install --path . --locked --root ./.cargo-tools
 | `1` | At least one finding met `--fail-on`. |
 | `2` | Fatal diagnostic such as config failure, missing path, parse error, baseline error, diff failure, or invalid input. |
 
-`analyse` defaults to `--fail-on error`.
+`analyse` defaults to `--fail-on advisory`; `report` defaults to `--fail-on none`. Set per-project defaults with the `minimumSeverity:` block in `.gruff-rs.yaml`; the CLI flag always overrides the config value (see ADR-013).
 
 ## CI Usage
 
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.1.1
+      - uses: blundergoat/gruff-rs@v0.2.0
         with:
           args: analyse . --format sarif --fail-on warning --no-baseline
 ```
@@ -141,7 +141,17 @@ The action installs the matching binary via `cargo-binstall` and runs `gruff-rs`
 
 `gruff-rs` reads `.gruff-rs.yaml` by default. Use `--config <path>` to pass another YAML file, or `--no-config` to ignore project config. Unknown keys, unknown rule IDs, unknown selectors, and invalid threshold shapes fail closed.
 
+Every config must declare `schemaVersion: gruff-rs.config.v1` as the first key. Configs without it are rejected at load time; run `gruff-rs init --force` to regenerate.
+
+The optional `minimumSeverity:` block sets per-subcommand defaults for `--fail-on` so CI invocations can omit the flag. Accepted keys are `analyse` and `report` (the two commands that gate exit code); values are `none`, `advisory`, `warning`, or `error`. The CLI `--fail-on` flag always wins; if both the CLI flag and the config key are absent, the binary default (`advisory` for `analyse`, `none` for `report`) applies. See ADR-013 for the rationale and the gating-only accept-list rule.
+
 ```yaml
+schemaVersion: gruff-rs.config.v1
+
+minimumSeverity:
+  analyse: advisory  # CI gates on advisory+; CLI --fail-on always wins
+  # report: none
+
 paths:
   ignore:
     - target/**
@@ -168,6 +178,8 @@ exclude:
 ```
 
 Selectors can target exact rule IDs, dotted prefixes such as `security.*`, or public pillars such as `Security`.
+
+Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minimumSeverity.summary: advisory` errors with `unknown command "summary" in minimumSeverity: gruff-rs's summary does not gate exit code. Valid keys: analyse, report.` The off-switch value is `none` (gruff-rs convention; sibling ports may use `never`).
 
 ## Rules And Pillars
 
@@ -203,7 +215,7 @@ custom_rules:
     pattern: '(?m)^[ \t]*//[ \t]*HACK\b'
 ```
 
-Custom rules are intentionally regex-only in `0.1.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
+Custom rules are intentionally regex-only in `0.2.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
 
 ## Baselines And Changed-Code Scans
 
@@ -224,6 +236,15 @@ git diff --no-ext-diff > /tmp/gruff.patch
 
 Pass `--diff-patch -` to read a patch from stdin. The older Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe`.
 
+When a baseline or diff comparison context is active, `analyse` and `summary` surface per-rule deltas before the composite-score line:
+
+```text
+Top 5 improved: -12 docs.missing-public-doc, -7 size.method-length, ...
+Top 5 regressed: +4 modernisation.semver-pin, +2 naming.identifier-quality, ...
+```
+
+The JSON output exposes the same data as a `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Both surfaces stay omitted on full-tree scans so the schema remains byte-identical for non-comparison runs.
+
 ## Dashboard
 
 ```bash
@@ -240,7 +261,7 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 ## Stability Contract
 
-`0.1.x` is the "mostly stable, with caveats" line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v1`, SARIF rendering, and CLI exit semantics are compatibility-sensitive. Breaking changes to those surfaces ship as `0.2.0`, not inside `0.1.x`. See [UPGRADING.md](UPGRADING.md) for the full contract.
+`0.2.x` is the "mostly stable, with caveats" line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are compatibility-sensitive. Breaking changes to those surfaces ship as `0.3.0`, not inside `0.2.x`. See [UPGRADING.md](UPGRADING.md) for the full contract.
 
 ## How It Compares
 
@@ -258,10 +279,10 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 bash scripts/preflight-checks.sh
 cargo test
 cargo clippy --all-targets -- -D warnings
-cargo run -- analyse src --format json --fail-on warning --no-baseline
+bin/gruff-rs analyse . --format json --no-baseline
 ```
 
-`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, and a dogfood scan of `src/`.
+`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, and a dogfood scan of the whole project gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
 
 ## Documentation
 

@@ -267,7 +267,7 @@ fn push_path_traversal_candidate_finding(
         confidence: Confidence::Medium,
         symbol: None,
         remediation: Some(
-            "Validate the segment with `Path::components`, reject `..` and absolute paths, or canonicalise and re-check the prefix."
+            "Validate the segment with `Path::components`, reject `..` and absolute paths, or canonicalise and re-check the prefix. If this call is in a test that intentionally constructs untrusted paths, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
                 .to_string(),
         ),
         metadata: json!({ "argument": arg }),

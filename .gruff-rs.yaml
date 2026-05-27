@@ -9,6 +9,13 @@
 # For an existing project, run `gruff-rs analyse --generate-baseline`
 # to accept today's findings as the starting point.
 
+schemaVersion: gruff-rs.config.v1
+
+# Pinned to match the current binary default (advisory). The explicit pin
+# freezes this project's CI behaviour against any future default flip.
+minimumSeverity:
+  analyse: advisory
+
 paths:
   # Discovery-time do-not-read patterns. Use this for generated
   # build/vendor artifacts; use `gruff-rs analyse --generate-baseline`
@@ -30,13 +37,27 @@ paths:
     - "**/pnpm-lock.yaml"
 
 allowlists:
+  # Mirror the full DEFAULT_ABBREVIATIONS set from src/config.rs so this
+  # file does not narrow the runtime default. The loader replaces (not
+  # merges) acceptedAbbreviations from yaml; keeping the full list here
+  # makes the accepted set visible at the config surface.
   acceptedAbbreviations:
-    - id
+    - age
+    - app
     - db
+    - fs
+    - id
     - io
-    - ui
-    - tx
+    - key
+    - log
+    - max
+    - min
+    - now
+    - raw
     - rx
+    - tx
+    - ui
+    - url
   secretPreviews: []
 
 rules:

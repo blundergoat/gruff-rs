@@ -24,6 +24,7 @@ mod analyse_project;
 mod analysis;
 mod baseline;
 mod cli;
+mod command_setup;
 mod config;
 mod config_loader;
 mod dashboard;
@@ -36,6 +37,7 @@ mod project;
 mod render;
 mod report;
 mod rules;
+mod rules_detail;
 mod scoring;
 mod source;
 mod summary;
@@ -53,17 +55,24 @@ pub(crate) use project::{
 pub(crate) use analyse_project::analyse_project;
 #[cfg(test)]
 use analysis::apply_report_exclusions;
-use analysis::run_analysis;
 pub(crate) use analysis::run_analysis_in_project;
-pub(crate) use baseline::{apply_baseline, record_history, write_baseline};
+#[cfg(test)]
+pub(crate) use baseline::write_baseline;
+pub(crate) use baseline::{
+    record_history, resolve_baseline, rule_deltas_from_counts, BaselineResolution,
+};
 use cli::{
     AnalyseArgs, Cli, Commands, CompletionArgs, DashboardArgs, FailThreshold, ListRulesArgs,
     OutputFormat, OutputWriter, ReportArgs, ReportFormat, RuleListFormat, RunOutcome, SummaryArgs,
     SummaryFormat,
 };
+#[cfg(test)]
+use command_setup::resolve_fail_on;
+use command_setup::{emit_report_output, resolve_command_setup, resolve_project_root_and_config};
 use config::{
     compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DiffSelection,
     ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting, SelectorSet,
+    SCHEMA_VERSION,
 };
 #[cfg(test)]
 use config_loader::expand_rule_selector;
@@ -80,10 +89,10 @@ pub(crate) use render::{
     render_report, sarif_physical_location_from_parts, sarif_uri, total_suppressed_findings,
 };
 use report::{
-    AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence, FileScore, Finding,
-    FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions, RunDiagnostic,
-    RunInfo, ScoreReport, Severity, Summary, SuppressedFinding, SuppressionSummary, ToolInfo,
-    SCORE_PILLARS,
+    pillar_label, AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence,
+    FileScore, Finding, FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions,
+    RuleDelta, RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding,
+    SuppressionSummary, ToolInfo, SCORE_PILLARS,
 };
 pub(crate) use scoring::{grade, score_report, summarize};
 use source::{
@@ -170,10 +179,19 @@ fn run_analyse_command(
         args.no_config,
         no_interaction,
     );
-    let options = options_from_analyse(args);
+    let cli_fail_on = args.fail_on;
+    let base = options_from_analyse(args, FailThreshold::Advisory);
+    let (project_root, options, config) =
+        match resolve_command_setup(base, cli_fail_on, "analyse", FailThreshold::Advisory) {
+            Ok(triple) => triple,
+            Err(error) => {
+                eprintln!("gruff-rs: {error}");
+                return ExitCode::from(2);
+            }
+        };
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
-    match run_analysis(&options) {
+    match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = Some(started.elapsed().as_millis());
             let outcome = RunOutcome::classify(&report, options.fail_on);
@@ -188,7 +206,7 @@ fn run_analyse_command(
     }
 }
 
-fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
+fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOptions {
     let diff = match (args.diff_patch, args.diff) {
         (Some(path), None) => Some(DiffSelection::Patch(path)),
         (None, Some(mode)) => Some(DiffSelection::GitUnsafe(mode)),
@@ -200,7 +218,7 @@ fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
         config: args.config,
         no_config: args.no_config,
         format: args.format,
-        fail_on: args.fail_on,
+        fail_on,
         include_ignored: args.include_ignored,
         diff,
         history_file: args.history_file,
@@ -210,7 +228,7 @@ fn options_from_analyse(args: AnalyseArgs) -> AnalysisOptions {
     }
 }
 
-fn options_from_report(args: &ReportArgs) -> AnalysisOptions {
+fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOptions {
     let format = match args.format {
         ReportFormat::Html => OutputFormat::Html,
         ReportFormat::Json => OutputFormat::Json,
@@ -220,7 +238,7 @@ fn options_from_report(args: &ReportArgs) -> AnalysisOptions {
         config: args.config.clone(),
         no_config: args.no_config,
         format,
-        fail_on: args.fail_on,
+        fail_on,
         include_ignored: args.include_ignored,
         diff: None,
         history_file: None,
@@ -231,23 +249,31 @@ fn options_from_report(args: &ReportArgs) -> AnalysisOptions {
 }
 
 fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
-    let options = options_from_report(&args);
+    let cli_fail_on = args.fail_on;
+    let output = args.output.clone();
+    let base = options_from_report(&args, FailThreshold::None);
+    let (project_root, options, config) =
+        match resolve_command_setup(base, cli_fail_on, "report", FailThreshold::None) {
+            Ok(triple) => triple,
+            Err(error) => {
+                eprintln!("gruff-rs: {error}");
+                return ExitCode::from(2);
+            }
+        };
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
-    match run_analysis(&options) {
+    match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = Some(started.elapsed().as_millis());
-            let outcome = RunOutcome::classify(&report, args.fail_on);
+            let outcome = RunOutcome::classify(&report, options.fail_on);
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
-            if let Some(output) = args.output {
-                if let Err(error) = fs::write(&output, rendered) {
-                    eprintln!("gruff-rs: unable to write {}: {error}", output.display());
-                    return ExitCode::from(2);
+            match emit_report_output(writer, output, outcome, &rendered) {
+                Ok(()) => outcome.exit_code(),
+                Err(error) => {
+                    eprintln!("gruff-rs: {error}");
+                    ExitCode::from(2)
                 }
-            } else {
-                writer.emit(outcome, &rendered);
             }
-            outcome.exit_code()
         }
         Err(error) => {
             eprintln!("gruff-rs: {error}");
@@ -278,6 +304,14 @@ fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
 fn render_rule_list(project_root: &Path, args: &ListRulesArgs) -> Result<String, String> {
     let registry = rules::builtin_registry();
     let config = list_rules_config(project_root, args)?;
+    if let Some(rule_id) = &args.rule_id {
+        return rules_detail::render_rule_detail(
+            rule_id,
+            &registry,
+            &config.custom_rules,
+            args.format,
+        );
+    }
     if let Some(selector) = &args.selector {
         return render_selector_output(selector, &registry, &config.custom_rules, args.format);
     }
@@ -425,9 +459,16 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
         generate_baseline: None,
         no_baseline: false,
     };
+    let (project_root, config) = match resolve_project_root_and_config(&options) {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            return ExitCode::from(2);
+        }
+    };
 
     let started = Instant::now();
-    match run_analysis(&options) {
+    match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = started.elapsed().as_millis();
             let outcome = RunOutcome::classify(&report, FailThreshold::None);

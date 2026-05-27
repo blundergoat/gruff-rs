@@ -72,7 +72,7 @@ fn bind_all_interfaces_finding(file: &SourceFile, line: usize, addr: &str) -> Fi
         confidence: Confidence::High,
         symbol: None,
         remediation: Some(
-            "Bind to a loopback address for local-only servers, or gate the all-interfaces bind behind a deployment flag."
+            "Bind to a loopback address for local-only servers, or gate the all-interfaces bind behind a deployment flag. If the bind is in a test harness or build script, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
                 .to_string(),
         ),
         metadata: json!({ "address": addr }),
