@@ -171,6 +171,69 @@ pub(crate) fn baseline_generation_and_failure_modes_are_reported_cleanly() {
 }
 
 #[test]
+pub(crate) fn baseline_deltas_do_not_over_count_duplicate_findings() {
+    // PR #3 review: `run_analysis_in_project` used to call
+    // `resolve_baseline` BEFORE `sort_and_dedupe_findings`, so a
+    // duplicated raw finding (same fingerprint emitted twice) would be
+    // counted twice toward `introduced` even though the final report
+    // collapses it to one entry. Pin the dedupe-then-baseline order
+    // here by constructing a fixture that produces duplicates and
+    // asserting introduced == 1 (not 2).
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(dir.path().join("sample.rs"), "pub fn one() {}\n").expect("fixture write");
+
+    // Write a baseline that has NO entries — every finding from the
+    // current scan is "introduced". With duplicates in the raw stream,
+    // a buggy pipeline would over-count introduced.
+    let baseline_path = dir.path().join("baseline.json");
+    fs::write(
+        &baseline_path,
+        json!({
+            "schemaVersion": "gruff.baseline.v1",
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "entries": [],
+        })
+        .to_string(),
+    )
+    .expect("empty baseline write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: false,
+            ..default_test_options()
+        },
+    )
+    .expect("baseline analysis succeeds");
+
+    // Whatever the final per-rule finding count is, introduced must
+    // equal that count exactly (the empty baseline matches nothing).
+    // Over-counted duplicates would push introduced above the final
+    // per-rule finding count, which the loop below would catch.
+    let deltas = report
+        .per_rule_deltas
+        .as_ref()
+        .expect("baseline run populates per_rule_deltas");
+    for delta in deltas {
+        let final_count = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == delta.rule_id)
+            .count();
+        assert_eq!(
+            delta.introduced, final_count,
+            "introduced count for `{}` must equal final finding count, not pre-dedupe duplicates",
+            delta.rule_id,
+        );
+    }
+}
+
+#[test]
 pub(crate) fn full_tree_run_produces_no_per_rule_deltas() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");

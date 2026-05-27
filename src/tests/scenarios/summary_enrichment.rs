@@ -132,6 +132,69 @@ pub(crate) fn summary_top_rules_carries_severity_confidence_description() {
 }
 
 #[test]
+pub(crate) fn summary_top_rules_severity_reflects_configured_override() {
+    // PR #3 review: top-rules severity must come from the actual
+    // findings, not the registry's default severity. ADR-011 only
+    // permits `severity` paired with `threshold`, so the override
+    // scenario applies to thresholded rules — pick `size.function-length`
+    // because the fixture triggers it deterministically. The override
+    // should propagate to topRules.severity in the summary digest.
+    let dir = tempdir().expect("tempdir");
+    let source = (0..30)
+        .map(|i| format!("    let value_{i} = {i};\n"))
+        .collect::<String>();
+    fs::write(
+        dir.path().join("long.rs"),
+        format!("pub fn long_function() {{\n{source}}}\n"),
+    )
+    .expect("fixture write");
+    write_config(
+        dir.path(),
+        "rules:\n  size.function-length:\n    threshold: 10\n    severity: advisory\n",
+    );
+
+    let options = AnalysisOptions {
+        paths: vec![PathBuf::from("long.rs")],
+        no_config: false,
+        no_baseline: true,
+        format: OutputFormat::Json,
+        ..default_test_options()
+    };
+    let config = load_config(dir.path(), &options).expect("config loads");
+    let report = run_analysis_in_project(dir.path(), &options, &config).expect("analysis succeeds");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "size.function-length"),
+        "fixture must trigger size.function-length so the override is exercised",
+    );
+    let rendered = crate::summary::render(&report, 10, SummaryFormat::Json, 0);
+    let value: Value = serde_json::from_str(&rendered).expect("summary JSON parses");
+    let top_rules = value["topRules"].as_array().expect("topRules array");
+    let entry = top_rules
+        .iter()
+        .find(|entry| entry["ruleId"] == "size.function-length")
+        .expect("size.function-length present in topRules");
+    let entry_severity = entry["severity"].as_str().unwrap_or("");
+    // size.function-length defaults to `warning` in the registry; the
+    // configured override is `advisory`. topRules.severity must follow
+    // the finding-level severity (advisory), not the registry default.
+    assert_eq!(
+        entry_severity, "advisory",
+        "topRules.severity must reflect the configured override, not registry default: {entry}",
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "size.function-length")
+            .all(|finding| matches!(finding.severity, Severity::Advisory)),
+        "all findings for the overridden rule must carry the override severity",
+    );
+}
+
+#[test]
 pub(crate) fn analyse_text_ranks_rule_deltas_by_absolute_net_then_rule_id() {
     let mut report = sample_report_with(Vec::new(), Vec::new());
     report.per_rule_deltas = Some(vec![

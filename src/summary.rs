@@ -134,13 +134,10 @@ fn pillar_digest_row(
 
 fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
     let registry = builtin_registry();
-    let mut rule_counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for finding in &report.findings {
-        *rule_counts.entry(&finding.rule_id).or_insert(0) += 1;
-    }
-    let mut top_rules: Vec<RuleDigest> = rule_counts
+    let by_rule = tally_findings_by_rule(report);
+    let mut top_rules: Vec<RuleDigest> = by_rule
         .into_iter()
-        .map(|(rule_id, count)| build_rule_digest(rule_id, count, &registry))
+        .map(|(rule_id, (count, severity))| build_rule_digest(rule_id, count, severity, &registry))
         .collect();
     top_rules.sort_by(|left, right| {
         right
@@ -152,12 +149,32 @@ fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
     top_rules
 }
 
-fn build_rule_digest(rule_id: &str, count: usize, registry: &RuleRegistry) -> RuleDigest {
+// Source per-rule severity from the actual findings, not from
+// `RuleDefinition.default_severity`, so `rules.<id>.severity:` overrides
+// (applied via `config.severity` at rule-emission time) stay consistent
+// between `summary.<severity>` counts and the topRules digest.
+fn tally_findings_by_rule(report: &AnalysisReport) -> BTreeMap<&str, (usize, Severity)> {
+    let mut by_rule: BTreeMap<&str, (usize, Severity)> = BTreeMap::new();
+    for finding in &report.findings {
+        let entry = by_rule
+            .entry(&finding.rule_id)
+            .or_insert((0, finding.severity));
+        entry.0 += 1;
+    }
+    by_rule
+}
+
+fn build_rule_digest(
+    rule_id: &str,
+    count: usize,
+    severity: Severity,
+    registry: &RuleRegistry,
+) -> RuleDigest {
     let definition = registry.get(rule_id);
     RuleDigest {
         rule_id: rule_id.to_string(),
         count,
-        severity: definition.map(|d| d.default_severity),
+        severity: Some(severity),
         confidence: definition.map(|d| d.confidence),
         description: definition.map(|d| first_sentence(d.description)),
     }

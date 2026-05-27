@@ -120,6 +120,21 @@
   rules could produce different orderings across runs — breaking the
   deterministic-report contract for JSON/HTML consumers. Matched rule
   ids are sorted before construction.
+- `summary` `topRules[].severity` now reflects the configured per-rule
+  severity (e.g. `rules.size.function-length: { threshold: 10, severity:
+  advisory }`) instead of the registry default. Previously the digest
+  pulled from `RuleDefinition.default_severity`, so the entry could
+  report `warning` while the same rule's findings carried `advisory` —
+  topRules and the findings array disagreed on the same rule's effective
+  severity. Source is now the first matching finding's severity, which
+  is set once at rule-emission time via `config.severity(rule_id,
+  default)`.
+- Baseline `perRuleDeltas.introduced` no longer over-counts duplicate
+  raw findings. `run_analysis_in_project` now runs
+  `sort_and_dedupe_findings` BEFORE `resolve_baseline`, so the
+  introduced count matches the per-rule finding count in the final
+  report. The previous order counted duplicates as separate introduced
+  findings even though they collapsed to one entry in the report.
 - Six relative cross-references inside `.goat-flow/` (between
   `footguns/`, `lessons/`, and `patterns/`) corrected from
   `<dir>/<file>.md` to `../<dir>/<file>.md` so they resolve from the

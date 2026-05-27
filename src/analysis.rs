@@ -164,10 +164,26 @@ pub(crate) fn run_analysis_in_project(
     diagnostics.extend(excluded_security_rule_diagnostics(config));
     apply_git_diff_selection(options, &mut discovery, &mut diagnostics)?;
     let analysed_paths = analysed_display_paths(&discovery.files);
+    let inputs = collect_report_inputs(project_root, options, config, discovery, diagnostics)?;
+    let report = build_report(project_root, options, config, inputs);
+    let mut report = apply_diff_selection(project_root, options, config, report, &analysed_paths)?;
+    record_history_if_requested(project_root, options, config, &mut report);
+    Ok(report)
+}
+
+fn collect_report_inputs(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    discovery: DiscoveryResult,
+    mut diagnostics: Vec<RunDiagnostic>,
+) -> Result<ReportInputs, String> {
     let mut findings =
         analyse_discovered_sources(project_root, &discovery.files, config, &mut diagnostics);
-    let baseline_resolution = resolve_baseline(project_root, options, &mut findings)?;
+    // Dedupe before baseline so perRuleDeltas match the final report
+    // (see .goat-flow/footguns/report.md "Mutation-Step Ordering").
     sort_and_dedupe_findings(&mut findings);
+    let baseline_resolution = resolve_baseline(project_root, options, &mut findings)?;
     let (findings, summaries, suppressed_findings) =
         apply_report_exclusions(findings, &config.exclusions);
     let suppressions = ReportSuppressions {
@@ -175,22 +191,14 @@ pub(crate) fn run_analysis_in_project(
         suppressed_findings,
     };
     let (baseline_report, per_rule_deltas) = split_baseline_resolution(baseline_resolution);
-    let report = build_report(
-        project_root,
-        options,
-        config,
-        ReportInputs {
-            discovery,
-            diagnostics,
-            findings,
-            baseline_report,
-            suppressions,
-            per_rule_deltas,
-        },
-    );
-    let mut report = apply_diff_selection(project_root, options, config, report, &analysed_paths)?;
-    record_history_if_requested(project_root, options, config, &mut report);
-    Ok(report)
+    Ok(ReportInputs {
+        discovery,
+        diagnostics,
+        findings,
+        baseline_report,
+        suppressions,
+        per_rule_deltas,
+    })
 }
 
 fn split_baseline_resolution(
