@@ -135,6 +135,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         diagnostics,
         suppressions: Vec::new(),
         findings,
+        suppressed_count: None,
         score,
         baseline: None,
         per_rule_deltas: None,

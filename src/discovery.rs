@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Clone)]
 pub(crate) struct DiscoveryResult {
     pub(crate) files: Vec<SourceFile>,
     pub(crate) missing_paths: Vec<String>,

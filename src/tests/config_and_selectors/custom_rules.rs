@@ -491,7 +491,10 @@ rules:
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from("src/lib.rs")],
-            diff: Some(DiffSelection::Patch(PathBuf::from("custom.patch"))),
+            diff: Some(DiffSelection::Patch {
+                path: PathBuf::from("custom.patch"),
+                scope: ChangedScope::Symbol,
+            }),
             no_baseline: true,
             ..default_test_options()
         },

@@ -201,6 +201,8 @@ pub(crate) struct AnalysisReport {
     pub(crate) diagnostics: Vec<RunDiagnostic>,
     pub(crate) suppressions: Vec<SuppressionSummary>,
     pub(crate) findings: Vec<Finding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) suppressed_count: Option<usize>,
     pub(crate) score: ScoreReport,
     pub(crate) baseline: Option<BaselineReport>,
     /// Per-rule introduced/removed/net counts when a baseline or diff
@@ -254,7 +256,7 @@ pub(crate) struct PathSummary {
     pub(crate) missing_paths: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BaselineReport {
     pub(crate) path: String,

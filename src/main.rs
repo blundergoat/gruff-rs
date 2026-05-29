@@ -70,9 +70,9 @@ use cli::{
 use command_setup::resolve_fail_on;
 use command_setup::{emit_report_output, resolve_command_setup, resolve_project_root_and_config};
 use config::{
-    compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DiffSelection,
-    ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting, SelectorSet,
-    SCHEMA_VERSION,
+    compile_path_matchers, AnalysisOptions, ChangedScope, Config, CustomRule, CustomRuleScope,
+    DiffSelection, ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting,
+    SelectorSet, SCHEMA_VERSION,
 };
 #[cfg(test)]
 use config_loader::expand_rule_selector;
@@ -80,7 +80,12 @@ use config_loader::{expand_rule_selector_with_custom, load_config};
 #[cfg(test)]
 pub(crate) use dashboard::dashboard_response;
 use dashboard::run_dashboard;
-use diff::{apply_diff_patch_filter, normalize_report_path, parse_unified_diff, read_diff_patch};
+#[cfg(test)]
+use diff::apply_diff_patch_filter;
+use diff::{
+    apply_changed_region_filter, explicit_ranges_patch, git_diff_patch, normalize_report_path,
+    parse_unified_diff, read_diff_patch, DiffPatchLineMap,
+};
 use discovery::{discover_sources, DiscoveryResult};
 pub(crate) use render::html_escape;
 use render::render_report_with_scope;
@@ -207,11 +212,29 @@ fn run_analyse_command(
 }
 
 fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOptions {
-    let diff = match (args.diff_patch, args.diff) {
-        (Some(path), None) => Some(DiffSelection::Patch(path)),
-        (None, Some(mode)) => Some(DiffSelection::GitUnsafe(mode)),
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("clap prevents --diff and --diff-patch together"),
+    let diff = match (args.changed_ranges, args.since, args.diff_patch, args.diff) {
+        (Some(ranges), None, None, None) => Some(DiffSelection::ExplicitRanges {
+            ranges,
+            scope: args.changed_scope,
+        }),
+        (None, Some(base), None, None) => Some(DiffSelection::Git {
+            mode: base,
+            scope: args.changed_scope,
+        }),
+        (None, None, Some(path), None) => Some(DiffSelection::Patch {
+            path,
+            scope: args.changed_scope,
+        }),
+        (None, None, None, Some(mode)) if mode == "-" => Some(DiffSelection::Patch {
+            path: PathBuf::from("-"),
+            scope: args.changed_scope,
+        }),
+        (None, None, None, Some(mode)) => Some(DiffSelection::Git {
+            mode,
+            scope: args.changed_scope,
+        }),
+        (None, None, None, None) => None,
+        _ => unreachable!("clap prevents multiple changed-region selectors"),
     };
     AnalysisOptions {
         paths: args.paths,
@@ -502,32 +525,6 @@ pub(crate) fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Find
 mod built_in_rules;
 
 mod custom_rules;
-
-pub(crate) fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
-    let mut command = std::process::Command::new("git");
-    command.arg("diff").arg("--name-only").arg("-z");
-    match mode {
-        "working-tree" | "unstaged" => {}
-        "staged" => {
-            command.arg("--cached");
-        }
-        other => {
-            command.arg(other);
-        }
-    }
-    let output = command
-        .output()
-        .map_err(|error| format!("unable to execute git diff for --diff: {error}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    Ok(output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| String::from_utf8_lossy(entry).replace('\\', "/"))
-        .collect())
-}
 
 pub(crate) fn absolutize(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {

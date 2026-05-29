@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Changed-region analysis** - `analyse` now supports `--changed-ranges`, `--since`, `--diff`/`--diff -`, and `--changed-scope=symbol|hunk`. JSON output additively includes `suppressedCount` when changed-region filtering is active.
+- **Documented project mission** - `## Mission` sections in `README.md`, `CLAUDE.md`, `AGENTS.md`, and `.goat-flow/architecture.md`, a user-facing [`docs/mission.md`](docs/mission.md), and `ADR-015` state that gruff governs agent-generated code for reviewer verifiability, security, and genuine tests. Documentation only; no behaviour change.
+
 ## v0.2.0 - 2026-05-28
 
 First minor on the `0.2.x` line. Collects the cross-port ergonomics work originally planned as 0.1.2 plus the schema and CLI-default changes the README stability contract reserved for the next major. See `UPGRADING.md` for the 0.1.x → 0.2.0 migration workflow.

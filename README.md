@@ -6,6 +6,16 @@
 
 `gruff-rs` is an opinionated quality analyzer for Rust projects. It scans Rust source, Cargo metadata, and common project files, then emits deterministic reports for terminals, CI annotations, SARIF consumers, static HTML, and a local dashboard. It is heuristic static analysis; run it beside Clippy, `cargo audit`, rustfmt, tests, and code review, not instead of them.
 
+## Mission
+
+gruff governs AI-generated code so a human who didn't write it can read, review, and trust it. Coding agents routinely produce code that superficially works while misunderstanding the requirement, and gruff exists to make that gap visible to a reviewer. Run as a coding-agent hook, it guides — or forces — the agent toward code a person can actually sign off on:
+
+- **Verifiable** — legible enough that a reviewer can confirm it does what was asked.
+- **Secure** — hardened where human review is weakest.
+- **Genuinely tested** — tests that exercise the contract, not low-signal bloat or ceremony.
+
+Doc comments are mandatory even on a private one-liner: forcing the agent to state intent, usage, contract, and failure behaviour in prose gives the reviewer something to check the implementation against. A mismatch between the doc comment and the code is the signal that a change needs a deeper look.
+
 ## Status At A Glance
 
 | Field | Value |
@@ -27,7 +37,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 
 - No Rust toolchain is needed when using a prebuilt binary through `cargo-binstall`.
 - Rust `1.82+` is required when building from source with Cargo.
-- Git is not used by default; Git-backed diff mode requires explicit `--diff-git-unsafe`.
+- Git is not used by default; Git-backed changed-region modes run only when `--diff`/`--since` is explicitly passed.
 
 ## Install
 
@@ -227,14 +237,18 @@ Baselines suppress reviewed findings by exact fingerprint, rule ID, and file pat
 ./.cargo-tools/bin/gruff-rs analyse src --no-baseline --fail-on none
 ```
 
-Patch diff filtering treats a unified diff as data and does not execute Git:
+Changed-code scans keep findings whose location or enclosing declaration
+overlaps the changed hunk. JSON output includes `suppressedCount` for findings
+excluded as out of scope.
 
 ```bash
-git diff --no-ext-diff > /tmp/gruff.patch
-./.cargo-tools/bin/gruff-rs analyse . --diff-patch /tmp/gruff.patch --format json --fail-on none
+./.cargo-tools/bin/gruff-rs analyse --format json --changed-ranges "3-3,8-10" src/foo.rs
+./.cargo-tools/bin/gruff-rs analyse --format json --since HEAD src/foo.rs
+git diff | ./.cargo-tools/bin/gruff-rs analyse --format json --diff - src/foo.rs
 ```
 
-Pass `--diff-patch -` to read a patch from stdin. The older Git-backed `--diff <mode>` path is available only with `--diff-git-unsafe`.
+Use `--changed-scope=hunk` for line/hunk-only filtering; the default is
+`--changed-scope=symbol`.
 
 When a baseline or diff comparison context is active, `analyse` and `summary` surface per-rule deltas before the composite-score line:
 
@@ -257,7 +271,7 @@ In polyglot repositories, `gruff-rs` defaults to port `8766` while `gruff-go`, `
 
 ## Trust Boundary
 
-Default scans are source-only and local-only. `gruff-rs` does not execute target code, run Cargo build scripts, call Git unless an unsafe Git diff mode is explicitly requested, query registries, read vulnerability feeds, or run benchmarks. Dependency checks read `Cargo.toml` and `Cargo.lock` as data. Candidate wording means the analyzer found a deterministic static signal, not type-aware or runtime certainty.
+Default scans are source-only and local-only. `gruff-rs` does not execute target code, run Cargo build scripts, call Git unless a Git-backed changed-region mode is explicitly requested, query registries, read vulnerability feeds, or run benchmarks. Dependency checks read `Cargo.toml` and `Cargo.lock` as data. Candidate wording means the analyzer found a deterministic static signal, not type-aware or runtime certainty.
 
 ## Stability Contract
 

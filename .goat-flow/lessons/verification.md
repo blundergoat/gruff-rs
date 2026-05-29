@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-27
+last_reviewed: 2026-05-30
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -217,3 +217,17 @@ Watch list (signals a bot claim is likely stale or premise-mismatched):
 - The bot references a function name that has been renamed or extracted.
 - The bot's premise involves a HashMap, threading, or iteration order assumption — sometimes correct, but the loudest source of false alarms.
 - The bot's suggested action requires changing a contract (schema bump, fingerprint format) that the project's stability stance explicitly defers — see [[release]] for the no-bc-ceremony rule.
+
+## Lesson: A Captured CLI Artifact Can Be A Sibling Port's Output (Shared /tmp)
+
+**Created:** 2026-05-30
+
+When capturing `gruff-rs` CLI output to a file for parsing (`... list-rules --format json > /tmp/rules.json`), do not trust a shared, predictable temp path. This repo lives in a `gruff-workspace` alongside sibling ports (`gruff-{go,php,py,ts}`); a sibling run can overwrite the same `/tmp/rules.json` between your capture and your parse, silently replacing the contents.
+
+**Concrete example (this repo, 2026-05-30):** A rubric audit captured `cargo run -- list-rules --format json > /tmp/rules.json` and parsed it once correctly (80 Rust rules); a later parse of the SAME file returned 64 Go-flavoured ids (`maintainability.defer-in-loop`, `test-quality.fatal-in-goroutine`, `naming.package-stutter`) — gruff-go's catalogue. It nearly produced the false conclusion "gruff-rs ships inapplicable Go rules." Source ground-truth settled it: `rg 'fatal-in-goroutine' src/rules/` → 0 hits, `halstead-volume` → present. Re-running to a unique path (`/tmp/gruff_rs_rules_$$.json`) gave the correct catalogue.
+
+**How to apply:**
+
+- Capture CLI output to a unique path (`mktemp` or `...$$.json`), not a shared `/tmp/<tool>.json`, when other workspace ports may run concurrently.
+- Before drawing a conclusion from a captured artifact, sanity-check it against source: `rg` one id you expect and one you don't in `src/rules/`. A surprising result (rules from another language) is far more likely a clobbered artifact than a real finding.
+- This is a specific case of the universal rule: verify against current source before asserting; never fabricate codebase facts from a stale or swapped artifact.

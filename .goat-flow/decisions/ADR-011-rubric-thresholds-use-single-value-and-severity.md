@@ -4,6 +4,7 @@
 **Date:** 2026-05-18
 **Author(s):** Codex, after human review feedback
 **Ticket/Context:** M32 follow-up; gruff-php threshold contract comparison
+**Updated:** 2026-05-30 (added agent-hook rationale — see Addendum)
 
 ## Decision
 
@@ -77,6 +78,20 @@ configure.
   thresholded, not an array of named thresholds.
 - Future rubric additions must choose one default threshold and one default
   severity, or remain non-thresholded.
+
+## Addendum (2026-05-30): Agent-hook rationale reinforces single-severity
+
+The original decision was driven by human-review simplicity. The project mission
+(ADR-015) adds an independent reason to keep one severity per rubric: when gruff
+runs as a coding-agent hook, the agent fixes advisory and warning findings alike,
+so the severity *level* does not change agent behaviour. Split warn/error bands
+(e.g. `warning: 200 / error: 500`) therefore carry no signal the agent acts on —
+they only add config surface and a second cutoff to reason about. The meaningful
+per-rubric knobs under the mission are the single `threshold` and whether the
+rule is enabled. Severity still matters for the human reviewer, the `--fail-on`
+gate, and severity-ordered triage — but not as a per-rubric escalation band.
+Reaffirmed by the user 2026-05-30: "one severity type and value per rubric …
+choose `warning: 200` OR `error: 500`, not both."
 
 ## Reversibility
 

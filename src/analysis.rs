@@ -162,11 +162,20 @@ pub(crate) fn run_analysis_in_project(
     let mut discovery = discover_sources(project_root, options, config);
     let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
     diagnostics.extend(excluded_security_rule_diagnostics(config));
-    apply_git_diff_selection(options, &mut discovery, &mut diagnostics)?;
+    let diff_filter = resolve_diff_filter(project_root, options, &discovery.files)?;
+    apply_diff_file_selection(&mut discovery, diff_filter.as_ref());
     let analysed_paths = analysed_display_paths(&discovery.files);
-    let inputs = collect_report_inputs(project_root, options, config, discovery, diagnostics)?;
+    let inputs = collect_report_inputs(
+        project_root,
+        options,
+        config,
+        discovery,
+        diagnostics,
+        diff_filter.as_ref(),
+        &analysed_paths,
+    )?;
     let report = build_report(project_root, options, config, inputs);
-    let mut report = apply_diff_selection(project_root, options, config, report, &analysed_paths)?;
+    let mut report = report;
     record_history_if_requested(project_root, options, config, &mut report);
     Ok(report)
 }
@@ -177,20 +186,71 @@ fn collect_report_inputs(
     config: &Config,
     discovery: DiscoveryResult,
     mut diagnostics: Vec<RunDiagnostic>,
+    diff_filter: Option<&ResolvedDiffFilter>,
+    analysed_paths: &BTreeSet<String>,
 ) -> Result<ReportInputs, String> {
-    let mut findings =
-        analyse_discovered_sources(project_root, &discovery.files, config, &mut diagnostics);
+    let AnalysisArtifacts {
+        mut findings,
+        function_blocks_by_file,
+    } = analyse_discovered_sources_with_artifacts(
+        project_root,
+        &discovery.files,
+        config,
+        &mut diagnostics,
+    );
     // Dedupe before baseline so perRuleDeltas match the final report
     // (see .goat-flow/footguns/report.md "Mutation-Step Ordering").
     sort_and_dedupe_findings(&mut findings);
     let baseline_resolution = resolve_baseline(project_root, options, &mut findings)?;
-    let (findings, summaries, suppressed_findings) =
+    let (mut findings, summaries, suppressed_findings) =
         apply_report_exclusions(findings, &config.exclusions);
     let suppressions = ReportSuppressions {
         summaries,
         suppressed_findings,
     };
-    let (baseline_report, per_rule_deltas) = split_baseline_resolution(baseline_resolution);
+    let (baseline_report, mut per_rule_deltas) = split_baseline_resolution(baseline_resolution);
+    let mut suppressed_count = None;
+    if let Some(diff_filter) = diff_filter {
+        let mut report = build_report(
+            project_root,
+            options,
+            config,
+            ReportInputs {
+                discovery: discovery.clone(),
+                diagnostics: diagnostics.clone(),
+                findings,
+                baseline_report: baseline_report.clone(),
+                suppressions,
+                per_rule_deltas,
+                suppressed_count: None,
+            },
+        );
+        report = apply_changed_region_filter(
+            report,
+            &diff_filter.patch,
+            analysed_paths,
+            config,
+            &function_blocks_by_file,
+            diff_filter.scope,
+        );
+        findings = report.findings;
+        diagnostics = report.diagnostics;
+        let suppressions = ReportSuppressions {
+            summaries: report.suppressions,
+            suppressed_findings: report.suppressed_findings,
+        };
+        per_rule_deltas = report.per_rule_deltas;
+        suppressed_count = report.suppressed_count;
+        return Ok(ReportInputs {
+            discovery,
+            diagnostics,
+            findings,
+            baseline_report,
+            suppressions,
+            per_rule_deltas,
+            suppressed_count,
+        });
+    }
     Ok(ReportInputs {
         discovery,
         diagnostics,
@@ -198,6 +258,7 @@ fn collect_report_inputs(
         baseline_report,
         suppressions,
         per_rule_deltas,
+        suppressed_count,
     })
 }
 
@@ -211,45 +272,88 @@ fn split_baseline_resolution(
     (Some(report), deltas)
 }
 
-pub(crate) fn apply_git_diff_selection(
-    options: &AnalysisOptions,
-    discovery: &mut DiscoveryResult,
-    diagnostics: &mut Vec<RunDiagnostic>,
-) -> Result<(), String> {
-    let Some(DiffSelection::GitUnsafe(mode)) = &options.diff else {
-        return Ok(());
-    };
+pub(crate) struct ResolvedDiffFilter {
+    pub(crate) patch: DiffPatchLineMap,
+    pub(crate) scope: ChangedScope,
+    pub(crate) explicit_ranges: bool,
+}
 
-    let changed = changed_files(mode)?;
+pub(crate) fn resolve_diff_filter(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    files: &[SourceFile],
+) -> Result<Option<ResolvedDiffFilter>, String> {
+    let Some(selection) = &options.diff else {
+        return Ok(None);
+    };
+    let filter = match selection {
+        DiffSelection::Patch { path, scope } => ResolvedDiffFilter {
+            patch: parse_patch_selection(project_root, path)?,
+            scope: *scope,
+            explicit_ranges: false,
+        },
+        DiffSelection::Git { mode, scope } => ResolvedDiffFilter {
+            patch: git_diff_patch(project_root, mode, &options.paths)?,
+            scope: *scope,
+            explicit_ranges: false,
+        },
+        DiffSelection::ExplicitRanges { ranges, scope } => ResolvedDiffFilter {
+            patch: explicit_ranges_patch(ranges, files)?,
+            scope: *scope,
+            explicit_ranges: true,
+        },
+    };
+    Ok(Some(filter))
+}
+
+fn parse_patch_selection(project_root: &Path, path: &Path) -> Result<DiffPatchLineMap, String> {
+    let patch_text = read_diff_patch(project_root, path)?;
+    let patch = parse_unified_diff(&patch_text);
+    if !patch.saw_hunk && patch.changed_files().is_empty() {
+        return Err(format!(
+            "--diff-patch {} is not a parseable unified diff",
+            path.display()
+        ));
+    }
+    Ok(patch)
+}
+
+pub(crate) fn apply_diff_file_selection(
+    discovery: &mut DiscoveryResult,
+    diff_filter: Option<&ResolvedDiffFilter>,
+) {
+    let Some(diff_filter) = diff_filter else {
+        return;
+    };
+    if diff_filter.explicit_ranges {
+        return;
+    }
+    let changed = diff_filter.patch.changed_files();
     discovery
         .files
         .retain(|file| changed.contains(&file.display_path));
-    diagnostics.push(RunDiagnostic {
-        diagnostic_type: "diff-git-unsafe".to_string(),
-        message: format!(
-            "Unsafe Git diff mode `{mode}` executed `git diff --name-only`; use --diff-patch for no-execute filtering."
-        ),
-        file_path: None,
-        line: None,
-    });
-
-    Ok(())
 }
 
 pub(crate) fn analysed_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
     files.iter().map(|file| file.display_path.clone()).collect()
 }
 
-pub(crate) fn analyse_discovered_sources(
+pub(crate) struct AnalysisArtifacts {
+    pub(crate) findings: Vec<Finding>,
+    pub(crate) function_blocks_by_file: BTreeMap<String, Vec<FunctionBlock>>,
+}
+
+pub(crate) fn analyse_discovered_sources_with_artifacts(
     project_root: &Path,
     files: &[SourceFile],
     config: &Config,
     diagnostics: &mut Vec<RunDiagnostic>,
-) -> Vec<Finding> {
+) -> AnalysisArtifacts {
     let capabilities = AnalysisCapabilities::from_config(config);
     let (parsed_sources, read_diagnostics) =
         crate::project::read_and_parse_sources_with_options(files, capabilities.parse_rust);
     diagnostics.extend(read_diagnostics);
+    let function_blocks_by_file = function_blocks_by_file(&parsed_sources);
 
     let mut findings = if capabilities.project_context {
         let project_context = build_project_context(project_root, &parsed_sources);
@@ -262,7 +366,23 @@ pub(crate) fn analyse_discovered_sources(
         findings.extend(analyse_source(&parsed_source.as_source_unit(), config));
         diagnostics.extend(parsed_source.diagnostics.iter().cloned());
     }
-    findings
+    AnalysisArtifacts {
+        findings,
+        function_blocks_by_file,
+    }
+}
+
+fn function_blocks_by_file(sources: &[ParsedSource]) -> BTreeMap<String, Vec<FunctionBlock>> {
+    sources
+        .iter()
+        .filter_map(|source| {
+            let ast = source.rust_ast.as_ref()?;
+            Some((
+                source.file.display_path.clone(),
+                crate::built_in_rules::rust_function_blocks(ast, &source.source),
+            ))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,33 +443,6 @@ fn text_rule_needs_rust_ast(rule_id: &str) -> bool {
     rule_id == "sensitive-data.hardcoded-env-value"
 }
 
-pub(crate) fn apply_diff_selection(
-    project_root: &Path,
-    options: &AnalysisOptions,
-    config: &Config,
-    report: AnalysisReport,
-    analysed_paths: &BTreeSet<String>,
-) -> Result<AnalysisReport, String> {
-    let Some(DiffSelection::Patch(path)) = &options.diff else {
-        return Ok(report);
-    };
-
-    let patch_text = read_diff_patch(project_root, path)?;
-    let patch = parse_unified_diff(&patch_text);
-    if !patch_text.trim().is_empty() && !patch.saw_hunk {
-        return Err(
-            "--diff-patch input is not a parseable unified diff; refusing to suppress findings."
-                .to_string(),
-        );
-    }
-    Ok(apply_diff_patch_filter(
-        report,
-        &patch,
-        analysed_paths,
-        config,
-    ))
-}
-
 pub(crate) fn record_history_if_requested(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -374,6 +467,7 @@ pub(crate) struct ReportInputs {
     pub(crate) baseline_report: Option<BaselineReport>,
     pub(crate) suppressions: ReportSuppressions,
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
+    pub(crate) suppressed_count: Option<usize>,
 }
 
 pub(crate) fn build_report(
@@ -389,6 +483,7 @@ pub(crate) fn build_report(
         baseline_report,
         suppressions,
         per_rule_deltas,
+        suppressed_count,
     } = inputs;
     let summary = summarize(&findings);
     let score = score_report(&findings, config);
@@ -413,6 +508,7 @@ pub(crate) fn build_report(
         diagnostics,
         suppressions: suppressions.summaries,
         findings,
+        suppressed_count,
         score,
         baseline: baseline_report,
         per_rule_deltas,
