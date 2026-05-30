@@ -10,7 +10,7 @@
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.2.0` package line |
+| Release line | Published `1.0.0` package line |
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
@@ -21,7 +21,7 @@
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error`; per-subcommand defaults via `minimumSeverity:` in `.gruff-rs.yaml` |
 | Dashboard | `127.0.0.1:8766` by default |
 
-Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are compatibility-sensitive inside the `0.2.x` line.
+Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are compatibility-sensitive inside the `1.0.x` line.
 
 ## Requirements
 
@@ -34,7 +34,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 Install into a repository-local tool directory:
 
 ```bash
-cargo install gruff-rs --locked --version 0.2.0 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 1.0.0 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```
@@ -130,7 +130,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.2.0
+      - uses: blundergoat/gruff-rs@v1.0.0
         with:
           args: analyse . --format sarif --fail-on warning --no-baseline
 ```
@@ -223,7 +223,7 @@ custom_rules:
     pattern: '(?m)^[ \t]*//[ \t]*HACK\b'
 ```
 
-Custom rules are intentionally regex-only in `0.2.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
+Custom rules are intentionally regex-only in `1.0.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
 
 ## Baselines And Changed-Code Scans
 
@@ -269,7 +269,7 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 ## Stability Contract
 
-`0.2.x` is the "mostly stable, with caveats" line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are compatibility-sensitive. Breaking changes to those surfaces ship as `0.3.0`, not inside `0.2.x`. See [UPGRADING.md](UPGRADING.md) for the full contract.
+`1.0.x` is the first stable line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are compatibility-sensitive. Breaking changes to those surfaces ship as `2.0.0`, not inside `1.0.x`. See [UPGRADING.md](UPGRADING.md) for the full contract.
 
 ## How It Compares
 

@@ -395,12 +395,10 @@ pub(crate) fn rule_fixtures_prove_complexity_and_naming_rules() {
     )]);
 
     assert_has_rule(&positive, "complexity.nesting-depth");
-    assert_has_rule(&positive, "complexity.npath");
     assert_has_rule(&positive, "naming.boolean-prefix");
     assert_has_rule(&positive, "naming.placeholder-identifier");
 
     assert_missing_rule(&negative, "complexity.nesting-depth");
-    assert_missing_rule(&negative, "complexity.npath");
     assert_missing_rule(&negative, "naming.boolean-prefix");
     assert_missing_rule(&negative, "naming.placeholder-identifier");
 }

@@ -94,11 +94,6 @@ rules:
     enabled: true
     threshold: 4
     severity: warning
-  # Flags functions with many approximate execution paths.
-  complexity.npath:
-    enabled: true
-    threshold: 100
-    severity: warning
   # Flags narrow blocking call patterns inside async functions.
   concurrency.blocking-call-in-async:
     enabled: true

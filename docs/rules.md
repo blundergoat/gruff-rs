@@ -7,11 +7,7 @@
 | Pillar | Current scope |
 | --- | --- |
 | Size | File length, function length, and parameter-count thresholds. File-length skips dependency lockfiles, Markdown docs, and Codex/Claude hook scripts because those surfaces are governed by different review contracts. |
-<<<<<<< Updated upstream
-| Complexity | Cyclomatic complexity, cognitive complexity, nesting depth, conservative NPath approximation, and Halstead-style token volume. |
-=======
 | Complexity | Cyclomatic complexity, cognitive complexity, and nesting depth. |
->>>>>>> Stashed changes
 | Dead code | Private functions with no same-file call sites, unreachable statements, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
 | Maintainability | Unwrap/expect, clone candidates, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
 | Naming | Generic function names, cryptic two-character variables (including fn parameters, closure parameters, and destructured bindings), bool predicate prefixes, placeholder identifiers, and `let X = X(...)` shadows of same-file free functions. Single-letter bindings are allowed because they are common in small closures and parser/math code. Common AWS/cloud abbreviations are accepted in AWS-context files where the abbreviation is part of the domain model. The boolean-prefix, placeholder-identifier, and generic-function rules accept user-supplied allowlists via the `predicatePrefixes`, `extraPlaceholders`, and `extraGenericNames` string-array options. |
@@ -49,12 +45,6 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
 | `complexity.cognitive` | 15 | Detekt CognitiveComplexMethod 15, PMD CognitiveComplexity 15 | Matches the Detekt/PMD consensus. |
 | `complexity.cyclomatic` | 10 | PMD CyclomaticComplexity 10 | Between Detekt (14) and RuboCop (7). |
 | `complexity.nesting-depth` | 4 | RuboCop Metrics/BlockNesting 3 | One step looser than RuboCop's Ruby default. |
-<<<<<<< Updated upstream
-| `complexity.npath` | 100 | PMD NPathComplexity 200 | Stricter than PMD; gruff treats Rust expression branches as denser than Java method bodies. |
-| `metrics.halstead-volume` | 1500 | none | Gruff-specific; no major peer ships Halstead as a default-on lint. Calibrated against self-scan distribution where real outliers cluster above 1500. |
-| `metrics.maintainability-pressure` | 45 | SonarQube maintainability index (concept-only) | Gruff-specific composite of token volume, cyclomatic, and Halstead volume. |
-=======
->>>>>>> Stashed changes
 | `architecture.large-module` | 25 items | Detekt LargeClass 600 lines (different unit) | Gruff measures public-or-visible item count per module, not raw lines; not directly comparable. |
 | `architecture.module-fan-out` | 8 | none | Gruff-specific; PMD CouplingBetweenObjects exists but its threshold is not documented in the neighbor studies. |
 | `architecture.public-api-surface` | 12 items | none | Gruff-specific external-public count; PMD TooManyMethods is the nearest peer concept. |

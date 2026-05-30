@@ -136,7 +136,6 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
 const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));
 const COMPLEXITY_CYCLOMATIC_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(10.0));
 const COMPLEXITY_NESTING_DEPTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
-const COMPLEXITY_NPATH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(100.0));
 const ARCHITECTURE_LARGE_MODULE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(25.0));
 const ARCHITECTURE_MODULE_FAN_OUT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(8.0));
 const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =

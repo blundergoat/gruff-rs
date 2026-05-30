@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.0 - 2026-05-30
+
+First stable release. The rule catalogue and analysis contract become the 1.x compatibility surface, changed-region analysis lands, and the rule set is pruned to the checks that serve the project mission: govern AI-generated code so a human reviewer can verify, secure, and trust it (see `docs/mission.md` and ADR-015).
+
+- **Changed-region analysis** - `analyse` now supports `--changed-ranges`, `--since`, `--diff`/`--diff -`, and `--changed-scope=symbol|hunk`, so CI can scope findings to the lines a change actually touched. JSON output additively includes `suppressedCount` when changed-region filtering is active. (1c601c3)
+- **Removed `complexity.npath`** - the NPath approximation was redundant with `complexity.cyclomatic` (44/54 hits overlapped on a real-world scan), anti-aligned with the verifiability mission (its only independent signal was flat sequential branching, the easiest code to review), and a crude `2^branches` estimate that even counted control-flow keywords inside comments. `cyclomatic`, `cognitive`, and `nesting-depth` cover every genuinely hard-to-verify function. See ADR-016. (8a0cd32)
+- **Removed `metrics.halstead-volume`, `metrics.maintainability-pressure`, and `design.god-function`** - the two metrics were one signal counted twice (maintainability-pressure is derived from Halstead volume; they co-fired 99%) and academic token-volume measures a reviewer never acts on; `god-function` fired only on functions already flagged by both `size.function-length` and `complexity.cyclomatic`. Together they were ~26% of findings on a real-world scan with no unique signal. See ADR-017.
+- **`size.parameter-count` threshold 5 → 7** - aligned to Clippy's `too_many_arguments` default; idiomatic Rust tolerates 6-7 parameters (builders, context structs).
+- **Rule catalogue 80 → 76.** Removed rule IDs no longer emit findings. `gruff.analysis.v2`, `gruff.baseline.v1`, SARIF 2.1.0, and the IDs/fingerprints of the remaining rules are unchanged.
+- **Project mission documented** - `## Mission` sections in `README.md`, `CLAUDE.md`, `AGENTS.md`, and `.goat-flow/architecture.md`, a user-facing `docs/mission.md`, and ADR-015 establish gruff as an agent-code-governance hook optimised for reviewer verifiability, security, and genuine tests. ADR-011 gains an addendum recording why each rubric keeps a single threshold and severity. (1c601c3)
+
 ## v0.2.0 - 2026-05-28
 
 First minor on the `0.2.x` line. Collects the cross-port ergonomics work originally planned as 0.1.2 plus the schema and CLI-default changes the README stability contract reserved for the next major. See `UPGRADING.md` for the 0.1.x → 0.2.0 migration workflow.

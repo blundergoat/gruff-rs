@@ -9,7 +9,7 @@ pub struct Harness {
 }
 
 impl Harness {
-    pub fn process(&self, a: bool, b: String, c: String, d: String, e: String, f: String) {
+    pub fn process(&self, a: bool, b: String, c: String, d: String, e: String, f: String, g: String, h: String) {
         call_block!({
             if a {
                 println!("{}{}{}{}{}", b, c, d, e, f);

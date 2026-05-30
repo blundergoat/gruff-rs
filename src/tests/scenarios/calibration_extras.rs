@@ -180,7 +180,6 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
         "size.function-length",
         "complexity.cyclomatic",
         "complexity.nesting-depth",
-        "complexity.npath",
         "complexity.cognitive",
     ] {
         assert!(

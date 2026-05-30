@@ -13,7 +13,7 @@ pub(crate) fn analysis_finds_core_rust_smells() {
 }
 
 impl Bad {
-    pub fn process(a: bool, b: Vec<String>, c: String, d: String, e: String, f: String) {
+    pub fn process(a: bool, b: Vec<String>, c: String, d: String, e: String, f: String, g: String, h: String) {
         if a {
             "#,
             PROCESS_COMMAND_NEW,

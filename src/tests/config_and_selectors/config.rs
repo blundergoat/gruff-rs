@@ -209,7 +209,7 @@ pub(crate) fn config_disables_rules_and_overrides_threshold() {
     fs::write(
         dir.path().join("sample.rs"),
         [
-            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String, g: String, h: String) {
     if a {
         "#,
             PROCESS_COMMAND_NEW,
@@ -257,7 +257,7 @@ pub(crate) fn legacy_config_byte_identical_rule_blocks_remain_selector_neutral()
     fs::write(
         dir.path().join("sample.rs"),
         [
-            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String) {
+            r#"pub fn process(a: bool, b: String, c: String, d: String, e: String, f: String, g: String, h: String) {
     if a {
         "#,
             PROCESS_COMMAND_NEW,

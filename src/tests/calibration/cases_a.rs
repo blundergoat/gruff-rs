@@ -117,33 +117,6 @@ pub fn shallow(flag_a: bool, flag_b: bool) -> i32 {
                 )
             }),
         ),
-        case(
-            "complexity.npath",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    r#"/// Probe.
-pub fn many_paths(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool, h: bool) -> i32 {
-    if a { 1 } else { 0 };
-    if b { 1 } else { 0 };
-    if c { 1 } else { 0 };
-    if d { 1 } else { 0 };
-    if e { 1 } else { 0 };
-    if f { 1 } else { 0 };
-    if g { 1 } else { 0 };
-    if h { 1 } else { 0 };
-    0
-}
-"#,
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn linear(a: bool) -> i32 { if a { 1 } else { 0 } }\n",
-                )
-            }),
-        ),
         // ----- concurrency -----
         case(
             "concurrency.blocking-call-in-async",
