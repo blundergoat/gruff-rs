@@ -193,11 +193,11 @@ Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minim
 
 ## Rules And Pillars
 
-The v0.1 catalogue contains 80 rules:
+The v0.1 catalogue contains 79 rules:
 
 | Pillar | Rules |
 | --- | ---: |
-| `complexity` | 5 |
+| `complexity` | 4 |
 | `dead-code` | 3 |
 | `design` | 4 |
 | `documentation` | 11 |

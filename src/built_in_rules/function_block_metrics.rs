@@ -170,19 +170,6 @@ pub(crate) fn max_nesting_depth(source: &str) -> usize {
     max_depth.saturating_sub(1)
 }
 
-pub(crate) fn approximate_npath(source: &str) -> usize {
-    let branch_decisions = count_regex(
-        source,
-        static_regex(&NPATH_BRANCH_REGEX, r"\b(if|match|for|while|loop)\b"),
-    );
-    let boolean_decisions = count_regex(source, static_regex(&NPATH_BOOLEAN_REGEX, r"&&|\|\||\?"));
-    let mut paths = 1usize;
-    for _ in 0..branch_decisions.min(20) {
-        paths = paths.saturating_mul(2);
-    }
-    paths.saturating_add(boolean_decisions)
-}
-
 pub(crate) fn function_metrics(source: &str, cyclomatic: usize) -> FunctionMetrics {
     let tokens = metric_tokens(source);
     let unique_tokens: BTreeSet<&str> = tokens.iter().map(String::as_str).collect();

@@ -104,13 +104,6 @@ pub(crate) fn analyse_block_complexity(
     analyse_cyclomatic_complexity(file, block, cyclomatic, config, findings);
     let nesting = max_nesting_depth(searchable_body);
     analyse_nesting_depth(file, block, nesting, config, findings);
-    analyse_npath_complexity(
-        file,
-        block,
-        approximate_npath(searchable_body),
-        config,
-        findings,
-    );
     analyse_cognitive_complexity(
         BlockAnalysisContext {
             file,
@@ -172,37 +165,6 @@ pub(crate) fn analyse_nesting_depth(
             pillar: Pillar::Complexity,
         },
         json!({ "nestingDepth": nesting }),
-    ));
-}
-
-pub(crate) fn analyse_npath_complexity(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    npath: usize,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let rule_id = "complexity.npath";
-    if npath <= config.threshold(rule_id, 100.0) as usize {
-        return;
-    }
-    findings.push(block_finding_with_extras(
-        BlockFindingDescriptor {
-            rule_id,
-            message: format!(
-                "Function `{}` has approximate NPath complexity {npath}.",
-                block.name
-            ),
-            file,
-            block,
-            severity: config.severity(rule_id, Severity::Warning),
-            pillar: Pillar::Complexity,
-        },
-        BlockFindingExtras {
-            confidence: Confidence::Medium,
-            remediation: None,
-            metadata: json!({ "npath": npath, "approximation": "branch-doubling" }),
-        },
     ));
 }
 

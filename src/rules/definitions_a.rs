@@ -75,16 +75,6 @@ pub(crate) const COMPLEXITY_RULES: &[RuleDefinition] = &[
         COMPLEXITY_NESTING_DEPTH_THRESHOLD,
         "Flags functions with deeply nested control flow.",
     ),
-    rule_definition!(
-        "complexity.npath",
-        "NPath complexity",
-        Pillar::Complexity,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::Medium,
-        COMPLEXITY_NPATH_THRESHOLD,
-        "Flags functions with many approximate execution paths.",
-    ),
 ];
 
 pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
