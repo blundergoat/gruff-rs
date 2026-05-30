@@ -76,7 +76,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                         root,
-                        "/// Loads the value.\n///\n/// # Errors\n///\n/// Returns Err when input is missing.\npub fn load() -> Result<i32, String> { Ok(0) }\n",
+                        "/// Loads the value.\n///\n/// Returns Err when input is missing.\npub fn load() -> Result<i32, String> { Ok(0) }\n",
                     )
             }),
         ),

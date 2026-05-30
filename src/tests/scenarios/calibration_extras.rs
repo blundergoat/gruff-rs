@@ -160,6 +160,7 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
     let mut body = String::from(
             "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod fixtures {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
         );
+    body.push_str("        assert_eq!(total, 0);\n");
     for index in 0..130 {
         body.push_str(&format!("        if {index} > 0 {{ total += {index}; }}\n"));
     }

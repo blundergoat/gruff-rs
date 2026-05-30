@@ -1,16 +1,19 @@
 use super::*;
 
 pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "waste.unnecessary-clone-candidate",
-        "Unnecessary clone candidate",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags clone calls that may be avoidable.",
-    ),
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "waste.unnecessary-clone-candidate",
+            "Unnecessary clone candidate",
+            Pillar::Maintainability,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::High,
+            None,
+            "Flags clone calls that may be avoidable.",
+        )
+    },
     rule_definition!(
         "waste.unreachable-code",
         "Unreachable code",

@@ -126,22 +126,36 @@ pub(crate) fn analyse_test_size(
     }
     let rule_id = "test-quality.long-test";
     let threshold = config.threshold(rule_id, 120.0) as usize;
-    if block.line_count > threshold {
+    let effective_lines = long_test_effective_line_count(block);
+    if effective_lines > threshold {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!(
-                    "Test `{}` has {} lines, above the threshold of {threshold}.",
-                    block.name, block.line_count
+                    "Test `{}` has {effective_lines} lines after the first assertion, above the threshold of {threshold}.",
+                    block.name
                 ),
                 file,
                 block,
                 severity: config.severity(rule_id, Severity::Advisory),
                 pillar: Pillar::TestQuality,
             },
-            json!({ "lines": block.line_count }),
+            json!({ "lines": effective_lines, "totalLines": block.line_count }),
         ));
     }
+}
+
+fn long_test_effective_line_count(block: &FunctionBlock) -> usize {
+    let searchable =
+        strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
+    let assertion = static_regex(
+        &TEST_ASSERTION_REGEX,
+        r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
+    );
+    let Some(first_assertion) = searchable.lines().position(|line| assertion.is_match(line)) else {
+        return block.line_count;
+    };
+    block.body.lines().count().saturating_sub(first_assertion)
 }
 
 pub(crate) fn analyse_test_assertions(

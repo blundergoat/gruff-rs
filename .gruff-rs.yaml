@@ -304,7 +304,7 @@ rules:
     enabled: true
   # Flags clone calls that may be avoidable.
   waste.unnecessary-clone-candidate:
-    enabled: true
+    enabled: false
   # Flags statements after terminating statements.
   waste.unreachable-code:
     enabled: true

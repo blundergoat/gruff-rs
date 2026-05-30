@@ -211,6 +211,8 @@ The v1.0 catalogue contains 76 rules:
 
 Use `./.cargo-tools/bin/gruff-rs list-rules --format json` for the exact rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
 
+Generated default config keeps `size.file-length` enabled for Rust source over 600 lines and marks `waste.unnecessary-clone-candidate` as opt-in, because a clone can be the clearer ownership boundary. `test-quality.long-test` counts from the first assertion onward so fixture setup does not dilute the test-signal check.
+
 ## Custom Rules
 
 Top-level `custom_rules` entries register config-only regex rules under the reserved `custom.<slug>` namespace. They can be selected with exact IDs, `custom.*`, or their public pillar, and they use the normal fingerprint formula.

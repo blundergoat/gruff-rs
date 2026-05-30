@@ -6,16 +6,16 @@
 
 | Pillar | Current scope |
 | --- | --- |
-| Size | File length, function length, and parameter-count thresholds. File-length skips dependency lockfiles, Markdown docs, and Codex/Claude hook scripts because those surfaces are governed by different review contracts. |
+| Size | File length, function length, and parameter-count thresholds. File-length stays default-on for Rust source over 600 lines, while dependency lockfiles, Markdown docs, and Codex/Claude hook scripts are skipped because those surfaces are governed by different review contracts. |
 | Complexity | Cyclomatic complexity, cognitive complexity, and nesting depth. |
 | Dead code | Private functions with no same-file call sites, unreachable statements, plus project-level private item candidates whose names are not referenced elsewhere in discovered Rust sources. |
-| Maintainability | Unwrap/expect, clone candidates, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
+| Maintainability | Unwrap/expect, opt-in clone candidates, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |
 | Naming | Generic function names, cryptic two-character variables (including fn parameters, closure parameters, and destructured bindings), bool predicate prefixes, placeholder identifiers, and `let X = X(...)` shadows of same-file free functions. Single-letter bindings are allowed because they are common in small closures and parser/math code. Common AWS/cloud abbreviations are accepted in AWS-context files where the abbreviation is part of the domain model. The boolean-prefix, placeholder-identifier, and generic-function rules accept user-supplied allowlists via the `predicatePrefixes`, `extraPlaceholders`, and `extraGenericNames` string-array options. |
-| Documentation | Public Rust API documentation, root README presence, package metadata presence, stale TODO markers without an owner/issue/reason, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, externally public `Result`-returning functions missing a `# Errors` rustdoc section, public panic-capable functions missing a `# Panics` section, public `unsafe fn` items missing a `# Safety` section, and public functions whose rustdoc fails to mention each parameter or describe the return value. |
+| Documentation | Public Rust API documentation, root README presence, package metadata presence, stale TODO markers without an owner/issue/reason, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, externally public `Result`-returning functions missing an error contract, public panic-capable functions missing a panic contract, public `unsafe fn` items missing a `# Safety` section, and public functions whose rustdoc fails to describe parameters or return values. `# Errors`, `# Panics`, and `# Returns` headings are accepted, but concise contract prose is enough when it conveys the same behaviour. |
 | Modernisation | Public struct fields that expose representation (excluding serde transport/config structs where public fields are the serialization contract); four `manual-*` idiom rules covering `len() == 0` (use `is_empty`), `iter().any(|x| x == y)` (use `contains`), `if s.starts_with(p) { &s[p.len()..] }` (use `strip_prefix`), and `match opt { Some(v) => v, None => Default::default() }` (use `unwrap_or_default`); and `question-mark-candidate` covering manual `match`/`if let Err` Result-propagation shapes that should use `?`. |
 | Security | Process command uses with concrete risk signals, direct dynamic SQL query arguments, explicit TLS verification bypasses, weak cryptographic primitive review signals, non-cryptographic RNG use inside secret-like generation functions, unsafe blocks without a nearby `SAFETY:` rationale, filesystem path construction from non-literal input (candidate), hardcoded `0.0.0.0`/`[::]` listener binds outside test infrastructure, local-only dependency posture checks for git/path sources, unpinned git revisions, wildcard requirements, and duplicate lockfile versions, plus narrow config/CI checks for security-blind ignores and GitHub event interpolation into shell steps. |
 | Sensitive data | Common API keys, AWS keys, JWT-looking tokens, database URLs with passwords, HTTP(S) URLs with embedded credentials, private-key blocks, environment-style secret assignments, and high-entropy string literals. The common API-key pattern includes provider-prefixed tokens such as GitHub, GitLab, npm, Slack, Stripe, Google, Anthropic-style, and common cloud connection strings. A separate `pii-test-fixture` rule flags realistic emails, SSN-shaped strings, and US phone numbers in committed fixture or sample files (skips obvious placeholders such as `@example.com`, 555-prefix phones, 000-prefix SSNs). |
-| Test quality | Missing assertions, sleeps, loops, conditionals, unwrap/expect that hides setup or fixture failures, ignored tests without reasons, long tests, trivial assertions, and `#[should_panic]` attributes without an `expected = "..."` clause. |
+| Test quality | Missing assertions, sleeps, loops, conditionals, unwrap/expect that hides setup or fixture failures, ignored tests without reasons, long post-assertion test bodies, trivial assertions, and `#[should_panic]` attributes without an `expected = "..."` clause. |
 | Design | Project-level module fan-out, large-module, and public API surface checks. |
 
 ## Rule Selection
@@ -36,6 +36,8 @@ Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, 
 
 `test-quality.unwrap-in-test` allows a direct call result unwrapped inside an assertion expression when that call is the subject under test. It still reports setup/local unwraps that feed assertions because those can hide fixture failures behind a panic.
 
+`test-quality.long-test` counts the test body from the first assertion onward, so fixture setup before the first assertion does not trigger the rule. `waste.unnecessary-clone-candidate` is opt-in because ownership-preserving clones can be the more readable and verifiable choice.
+
 ## Threshold calibration
 
 Threshold defaults are anchored to documented peer analyzers where one exists, and called out as gruff-specific where no peer ships a comparable numeric default. Peer references come from the M19-M22 neighbor study notes under `.goat-flow/scratchpad/related-projects/`.
@@ -53,7 +55,7 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
 | `size.file-length` | 600 | Detekt LargeClass 600 | Matches Detekt exactly; PMD uses 1500 NCSS, RuboCop uses 250 lines. |
 | `size.function-length` | 50 | Detekt LongMethod 60, PMD NcssCount 60 | Slightly stricter than Detekt/PMD; far looser than RuboCop's 10-line Ruby default. |
 | `size.parameter-count` | 7 | Clippy `too_many_arguments` 7 | Aligned to Clippy, the default Rust devs calibrate to; idiomatic Rust tolerates 6-7 params (builders, context structs). |
-| `test-quality.long-test` | 80 | RuboCop RSpec/ExampleLength 25 (unit only) | Gruff-specific; RuboCop's peer rule is unit-spec scoped, so it does not apply to integration tests with realistic fixtures. |
+| `test-quality.long-test` | 120 | RuboCop RSpec/ExampleLength 25 (unit only) | Gruff-specific; counts lines after the first assertion so setup-heavy integration tests are not penalised for fixture construction. |
 
 ## Deferred
 

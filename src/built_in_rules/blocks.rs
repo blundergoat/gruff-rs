@@ -83,15 +83,16 @@ pub(crate) fn analyse_block_complexity(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) -> usize {
+    let code_only_body = strip_rust_comments_after_string_mask(searchable_body);
     let cyclomatic = count_regex(
-        searchable_body,
+        &code_only_body,
         static_regex(
             &CYCLOMATIC_COMPLEXITY_REGEX,
-            r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
+            r"\b(if|else if|match|for|while|loop)\b|&&|\|\|",
         ),
     ) + 1;
     analyse_cyclomatic_complexity(file, block, cyclomatic, config, findings);
-    let nesting = max_nesting_depth(searchable_body);
+    let nesting = max_nesting_depth(&code_only_body);
     analyse_nesting_depth(file, block, nesting, config, findings);
     analyse_cognitive_complexity(
         BlockAnalysisContext {

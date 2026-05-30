@@ -209,6 +209,52 @@ pub(crate) fn parser_handles_raw_strings_macros_impls_and_test_attributes() {
 }
 
 #[test]
+pub(crate) fn parameter_count_threshold_allows_seven_and_flags_eight() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Probe.
+pub fn six(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
+    a + b + c + d + e + f
+}
+
+/// Probe.
+pub fn seven(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 {
+    a + b + c + d + e + f + g
+}
+
+/// Probe.
+pub fn eight(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 {
+    a + b + c + d + e + f + g + h
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let parameter_symbols: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "size.parameter-count")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    assert_eq!(
+        parameter_symbols,
+        vec!["eight"],
+        "parameter-count should allow 6 and 7 params, then flag 8; findings={:?}",
+        report.findings
+    );
+}
+
+#[test]
 pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
     let _guard = analysis_lock();
     let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);

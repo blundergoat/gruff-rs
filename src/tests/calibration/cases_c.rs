@@ -394,6 +394,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 let mut body = String::from(
                         "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn long() {\n        let value = 0;\n",
                     );
+                body.push_str("        assert_eq!(value, 0);\n");
                 for index in 0..130 {
                     body.push_str(&format!("        let value = value + {index};\n"));
                 }
