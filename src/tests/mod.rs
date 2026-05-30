@@ -176,16 +176,6 @@ fn assert_missing_rule(report: &AnalysisReport, rule_id: &str) {
     );
 }
 
-fn metric_metadata_number(report: &AnalysisReport, rule_id: &str, symbol: &str, key: &str) -> f64 {
-    report
-        .findings
-        .iter()
-        .find(|finding| finding.rule_id == rule_id && finding.symbol.as_deref() == Some(symbol))
-        .and_then(|finding| finding.metadata.get(key))
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("missing `{key}` metadata for `{rule_id}` `{symbol}`"))
-}
-
 fn default_test_options() -> AnalysisOptions {
     AnalysisOptions {
         paths: vec![PathBuf::from(".")],

@@ -68,26 +68,6 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         None,
         "Flags manual `match`/`if let Err` Result-propagation shapes that should use `?`.",
     ),
-    rule_definition!(
-        "metrics.halstead-volume",
-        "Halstead-style volume",
-        Pillar::Complexity,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        METRICS_HALSTEAD_VOLUME_THRESHOLD,
-        "Flags functions whose deterministic token volume exceeds the configured threshold.",
-    ),
-    rule_definition!(
-        "metrics.maintainability-pressure",
-        "Maintainability pressure",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD,
-        "Flags functions whose maintainability pressure score falls below the configured minimum.",
-    ),
 ];
 
 const NAMING_GENERIC_FUNCTION_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
@@ -452,8 +432,6 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
             },
         ],
         related: &[
-            "metrics.halstead-volume",
-            "metrics.maintainability-pressure",
             "size.parameter-count",
         ],
     ),

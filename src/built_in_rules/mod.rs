@@ -28,9 +28,12 @@ pub(crate) static UNWRAP_EXPECT_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CYCLOMATIC_COMPLEXITY_REGEX: OnceLock<Regex> = OnceLock::new();
+<<<<<<< Updated upstream
 pub(crate) static NPATH_BRANCH_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static NPATH_BOOLEAN_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static METRIC_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
+=======
+>>>>>>> Stashed changes
 pub(crate) static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();

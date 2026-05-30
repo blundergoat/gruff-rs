@@ -350,7 +350,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
             Box::new(|root| {
                 baseline_with_lib(
                         root,
-                        "/// Probe.\npub fn entry(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 { a + b + c + d + e + f }\n",
+                        "/// Probe.\npub fn entry(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 { a + b + c + d + e + f + g + h }\n",
                     )
             }),
             Box::new(|root| {

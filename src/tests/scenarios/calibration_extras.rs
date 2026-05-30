@@ -182,8 +182,6 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
         "complexity.nesting-depth",
         "complexity.npath",
         "complexity.cognitive",
-        "metrics.halstead-volume",
-        "metrics.maintainability-pressure",
     ] {
         assert!(
             !report.findings.iter().any(|finding| {

@@ -122,13 +122,6 @@ struct FunctionBlock {
     body_is_declarative_literal: bool,
 }
 
-struct FunctionMetrics {
-    total_tokens: usize,
-    unique_tokens: usize,
-    halstead_volume: f64,
-    maintainability_score: f64,
-}
-
 impl FunctionBlock {
     pub(crate) fn is_test_context(&self) -> bool {
         self.is_test || self.test_context

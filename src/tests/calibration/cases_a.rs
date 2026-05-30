@@ -359,24 +359,5 @@ serde = "*"
             }),
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
         ),
-        // ----- design -----
-        case(
-            "design.god-function",
-            Box::new(|root| {
-                let mut body = String::from(
-                        "/// Probe.\npub fn god(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool) -> i32 {\n    let mut total = 0;\n",
-                    );
-                for index in 0..60 {
-                    body.push_str(&format!(
-                        "    if a && b {{\n        total += {index};\n    }}\n"
-                    ));
-                }
-                body.push_str("    total\n}\n");
-                baseline_with_lib(root, &body);
-            }),
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn small(a: i32) -> i32 { a + 1 }\n")
-            }),
-        ),
     ]
 }

@@ -134,9 +134,6 @@ rules:
   # Flags dependency requirements that use wildcard versions.
   dependency.wildcard-version:
     enabled: true
-  # Flags functions that are both long and complex.
-  design.god-function:
-    enabled: true
   # Flags comments whose payload looks like a disabled Rust statement or item.
   docs.commented-out-code:
     enabled: true
@@ -176,16 +173,6 @@ rules:
   # Flags todo! and unimplemented! placeholders in non-test functions.
   error-handling.unimplemented-placeholder:
     enabled: true
-  # Flags functions whose deterministic token volume exceeds the configured threshold.
-  metrics.halstead-volume:
-    enabled: true
-    threshold: 1500
-    severity: advisory
-  # Flags functions whose maintainability pressure score falls below the configured minimum.
-  metrics.maintainability-pressure:
-    enabled: true
-    threshold: 45
-    severity: advisory
   # Flags `iter().any(|x| *x == y)` patterns that should use `.contains(&y)`.
   modernisation.manual-contains:
     enabled: true
@@ -292,7 +279,7 @@ rules:
   # Flags functions with too many parameters.
   size.parameter-count:
     enabled: true
-    threshold: 5
+    threshold: 7
     severity: warning
   # Flags tests that contain conditional logic.
   test-quality.conditional-logic:

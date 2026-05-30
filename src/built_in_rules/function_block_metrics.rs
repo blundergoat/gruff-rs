@@ -170,6 +170,7 @@ pub(crate) fn max_nesting_depth(source: &str) -> usize {
     max_depth.saturating_sub(1)
 }
 
+<<<<<<< Updated upstream
 pub(crate) fn approximate_npath(source: &str) -> usize {
     let branch_decisions = count_regex(
         source,
@@ -218,6 +219,8 @@ pub(crate) fn round_one_decimal(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+=======
+>>>>>>> Stashed changes
 /// Counts occurrences of `pattern` that appear inside a loop body in
 /// `source`. `count_line` lets callers skip structurally exempt lines
 /// (struct-field clones, owned API arguments) so the performance rules
