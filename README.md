@@ -183,19 +183,11 @@ Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minim
 
 ## Rules And Pillars
 
-<<<<<<< Updated upstream
-The v0.1 catalogue contains 80 rules:
-
-| Pillar | Rules |
-| --- | ---: |
-| `complexity` | 5 |
-=======
-The v0.1 catalogue contains 76 rules:
+The v1.0 catalogue contains 76 rules:
 
 | Pillar | Rules |
 | --- | ---: |
 | `complexity` | 3 |
->>>>>>> Stashed changes
 | `dead-code` | 3 |
 | `design` | 3 |
 | `documentation` | 11 |
@@ -252,6 +244,10 @@ Top 5 regressed: +4 modernisation.semver-pin, +2 naming.identifier-quality, ...
 ```
 
 The JSON output exposes the same data as a `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Both surfaces stay omitted on full-tree scans so the schema remains byte-identical for non-comparison runs.
+
+**Coding-agent hook.** Coding agents can run gruff-rs after each edit so they only see findings on the code they just changed, not unrelated debt in the same file. The goat-flow project ships a PostToolUse hook (`gruff-code-quality.sh`) that runs `gruff-rs analyse <file> --format json --fail-on none` on the edited file and filters the JSON to the changed line ranges (from the agent's tool payload or `git diff --unified=0`), reporting a suppressed count for pre-existing same-file findings; see its `gruff-code-quality.md` playbook for setup and triage. gruff-rs's side of the contract is the stable per-file JSON (`filePath`, `line`, `severity`, `ruleId`) under `gruff.analysis.v2`; the `--diff-patch` / `--diff <mode>` flags above are the in-binary change-scoping equivalent for CI or single-binary use.
+
+Config `paths.ignore` is authoritative in every invocation mode (walk, explicit file args, and all diff modes), so a hook can pass an ignored file and gruff-rs emits no findings for it — `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`. Ignored paths are reported under `paths.ignoredPathDetails` with their `source` and `pattern`. The `check-ignore` command lets a hook query the same decision per path without analysing (`gruff-rs check-ignore --format json <path>...` → `[{path, ignored, source, pattern}]`, `git check-ignore` exit codes). See [CI Integration](docs/ci-integration.md) and ADR-018.
 
 ## Dashboard
 

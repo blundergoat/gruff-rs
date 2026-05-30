@@ -92,10 +92,13 @@ pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
         path: "gruff-baseline.json".to_string(),
         source: "default".to_string(),
         suppressed: 1,
+        new_count: 2,
+        unchanged_count: 1,
+        absent_count: 3,
         generated: false,
     });
     let baseline_summary = crate::summary::render(&report, 10, SummaryFormat::Text, 1);
-    assert!(baseline_summary.contains("baseline: 1 suppressed"));
+    assert!(baseline_summary.contains("baseline: 2 new, 1 unchanged, 3 resolved"));
     assert!(baseline_summary.contains("gruff-rs analyse --no-baseline"));
     assert!(!baseline_summary.contains("gruff-rs analyse --generate-baseline"));
 }

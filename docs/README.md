@@ -4,6 +4,7 @@ Use these docs with the top-level README for the stable user-facing surface.
 
 ## Core Docs
 
+- [Mission](mission.md) - what gruff governs and why: agent-code governance for reviewer verifiability, security, and genuine tests.
 - [Configuration](configuration.md) - config discovery, selectors, exclusions, and custom rules.
 - [Rules](rules.md) - rule IDs, severities, thresholds, and remediation guidance.
 - [Output Formats](output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.

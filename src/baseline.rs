@@ -53,22 +53,48 @@ fn load_baseline_entries(path: &Path) -> Result<Vec<BaselineEntry>, String> {
     Ok(data.entries)
 }
 
-/// Apply a baseline file to `findings` and return the per-rule
-/// introduced/removed deltas computed against the baseline snapshot.
-/// "Introduced" = current findings not matched by any baseline entry
-/// (i.e. the surviving findings after `retain`). "Removed" = baseline
-/// entries that did not match any current finding (i.e. issues that have
-/// been resolved since the baseline was recorded). See ADR-014.
+/// Tri-state classification counts for a baseline comparison (ADR-002 M01
+/// addendum). `new` = current findings matched by no baseline entry,
+/// `unchanged` = current findings matched by a baseline entry (dropped from the
+/// default list), `absent` = baseline entries matched by no current finding
+/// (resolved). Computed from the current findings vs the on-disk baseline only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BaselineCounts {
+    pub(crate) new: usize,
+    pub(crate) unchanged: usize,
+    pub(crate) absent: usize,
+}
+
+/// Apply a baseline file to `findings`, returning the per-rule
+/// introduced/removed deltas (ADR-014) and the tri-state counts (ADR-002 M01
+/// addendum) computed against the baseline snapshot. "Introduced"/`new` =
+/// current findings not matched by any baseline entry (the surviving findings
+/// after `retain`). "Removed"/`absent` = baseline entries that did not match any
+/// current finding. `unchanged` = current findings matched by the baseline (the
+/// dropped set).
 pub(crate) fn apply_baseline(
     path: &Path,
     findings: &mut Vec<Finding>,
-) -> Result<Vec<RuleDelta>, String> {
+) -> Result<(Vec<RuleDelta>, BaselineCounts), String> {
     let entries = load_baseline_entries(path)?;
     let baseline_keys: BTreeSet<BaselineKey> = entries.iter().map(entry_key).collect();
     let current_keys: BTreeSet<BaselineKey> = findings.iter().map(finding_key).collect();
     let deltas = baseline_rule_deltas(findings, &entries, &baseline_keys, &current_keys);
+    let unchanged = findings
+        .iter()
+        .filter(|finding| baseline_keys.contains(&finding_key(finding)))
+        .count();
+    let absent = entries
+        .iter()
+        .filter(|entry| !current_keys.contains(&entry_key(entry)))
+        .count();
     findings.retain(|finding| !baseline_keys.contains(&finding_key(finding)));
-    Ok(deltas)
+    let counts = BaselineCounts {
+        new: findings.len(),
+        unchanged,
+        absent,
+    };
+    Ok((deltas, counts))
 }
 
 fn baseline_rule_deltas(
@@ -152,6 +178,9 @@ fn generate_baseline_report(
             path: display_path(project_root, &baseline_path),
             source: "generated".to_string(),
             suppressed: 0,
+            new_count: 0,
+            unchanged_count: 0,
+            absent_count: 0,
             generated: true,
         },
         deltas: Vec::new(),
@@ -175,13 +204,15 @@ fn apply_selected_baseline(
     source: &str,
     findings: &mut Vec<Finding>,
 ) -> Result<BaselineResolution, String> {
-    let before = findings.len();
-    let deltas = apply_baseline(baseline_path, findings)?;
+    let (deltas, counts) = apply_baseline(baseline_path, findings)?;
     Ok(BaselineResolution {
         report: BaselineReport {
             path: display_path(project_root, baseline_path),
             source: source.to_string(),
-            suppressed: before.saturating_sub(findings.len()),
+            suppressed: counts.unchanged,
+            new_count: counts.new,
+            unchanged_count: counts.unchanged,
+            absent_count: counts.absent,
             generated: false,
         },
         deltas,

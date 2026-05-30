@@ -416,7 +416,10 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         finding.rule_id == "sensitive-data.hardcoded-env-value"
             && finding.file_path == "local/secret.env"
     }));
-    assert!(include_ignored.findings.iter().any(|finding| {
+    // ADR-018: config `paths.ignore` is authoritative. `--include-ignored` opts
+    // into git/default ignores only and must NOT reveal config-ignored files,
+    // so `ignored/**` stays excluded here even with include_ignored.
+    assert!(!include_ignored.findings.iter().any(|finding| {
         finding.rule_id == "sensitive-data.hardcoded-env-value"
             && finding.file_path == "ignored/secret.env"
     }));

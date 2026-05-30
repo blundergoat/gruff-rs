@@ -130,6 +130,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         paths: PathSummary {
             analysed_files: 1,
             ignored_paths: Vec::new(),
+            ignored_path_details: Vec::new(),
             missing_paths: Vec::new(),
         },
         diagnostics,

@@ -408,6 +408,7 @@ pub(crate) fn build_report(
         paths: PathSummary {
             analysed_files: discovery.files.len(),
             ignored_paths: discovery.ignored_paths,
+            ignored_path_details: discovery.ignored_path_details,
             missing_paths: discovery.missing_paths,
         },
         diagnostics,

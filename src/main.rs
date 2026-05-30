@@ -23,6 +23,7 @@ use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 mod analyse_project;
 mod analysis;
 mod baseline;
+mod check_ignore;
 mod cli;
 mod command_setup;
 mod config;
@@ -31,6 +32,7 @@ mod dashboard;
 mod diff;
 mod discovery;
 mod html_report;
+mod ignore_policy;
 mod init;
 mod parser;
 mod project;
@@ -61,10 +63,11 @@ pub(crate) use baseline::write_baseline;
 pub(crate) use baseline::{
     record_history, resolve_baseline, rule_deltas_from_counts, BaselineResolution,
 };
+use check_ignore::run_check_ignore;
 use cli::{
-    AnalyseArgs, Cli, Commands, CompletionArgs, DashboardArgs, FailThreshold, ListRulesArgs,
-    OutputFormat, OutputWriter, ReportArgs, ReportFormat, RuleListFormat, RunOutcome, SummaryArgs,
-    SummaryFormat,
+    AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, Cli, Commands, CompletionArgs, DashboardArgs,
+    FailThreshold, ListRulesArgs, OutputFormat, OutputWriter, ReportArgs, ReportFormat,
+    RuleListFormat, RunOutcome, SummaryArgs, SummaryFormat,
 };
 #[cfg(test)]
 use command_setup::resolve_fail_on;
@@ -76,12 +79,13 @@ use config::{
 };
 #[cfg(test)]
 use config_loader::expand_rule_selector;
-use config_loader::{expand_rule_selector_with_custom, load_config};
+use config_loader::{expand_rule_selector_with_custom, load_config, load_config_for};
 #[cfg(test)]
 pub(crate) use dashboard::dashboard_response;
 use dashboard::run_dashboard;
 use diff::{apply_diff_patch_filter, normalize_report_path, parse_unified_diff, read_diff_patch};
-use discovery::{discover_sources, DiscoveryResult};
+use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
+use ignore_policy::{IgnoreSource, IgnoredPath};
 pub(crate) use render::html_escape;
 use render::render_report_with_scope;
 #[cfg(test)]
@@ -155,6 +159,7 @@ fn main() -> ExitCode {
             init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
             run_summary(args, writer)
         }
+        Commands::CheckIgnore(args) => run_check_ignore(args, global.verbose > 0, writer),
         Commands::Completion(args) => run_completion(args, writer),
         Commands::Init(args) => init::run_init(args, writer),
     }

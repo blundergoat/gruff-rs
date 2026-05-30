@@ -22,12 +22,23 @@ pub(crate) fn load_config(
     project_root: &Path,
     options: &AnalysisOptions,
 ) -> Result<Config, String> {
+    load_config_for(project_root, options.config.as_deref(), options.no_config)
+}
+
+/// Load the project `Config` from an explicit config path / `--no-config`
+/// choice, independent of `AnalysisOptions`. Lets non-analysing commands such as
+/// `check-ignore` resolve config through the exact same loader as `analyse`.
+pub(crate) fn load_config_for(
+    project_root: &Path,
+    config_path: Option<&Path>,
+    no_config: bool,
+) -> Result<Config, String> {
     let mut config = Config::default();
-    if options.no_config {
+    if no_config {
         return Ok(config);
     }
 
-    let Some((path, value)) = read_config_value(project_root, options)? else {
+    let Some((path, value)) = read_config_value(project_root, config_path)? else {
         return Ok(config);
     };
     apply_config_value(&path, &value, &mut config)?;
@@ -36,11 +47,9 @@ pub(crate) fn load_config(
 
 pub(crate) fn read_config_value(
     project_root: &Path,
-    options: &AnalysisOptions,
+    config: Option<&Path>,
 ) -> Result<Option<(PathBuf, Value)>, String> {
-    let config_path = options
-        .config
-        .as_ref()
+    let config_path = config
         .map(|path| absolutize(project_root, path))
         .or_else(|| default_config_path(project_root));
     let Some(path) = config_path else {

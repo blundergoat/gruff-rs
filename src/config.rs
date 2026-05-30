@@ -149,6 +149,12 @@ impl PathMatcher {
         Self { pattern, kind }
     }
 
+    /// The original glob this matcher was compiled from, reported as the
+    /// `pattern` for `source: config` ignores and by `check-ignore`.
+    pub(crate) fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
     pub(crate) fn matches(&self, path: &str) -> bool {
         let path = normalize_report_path(path);
         if self.pattern == path {

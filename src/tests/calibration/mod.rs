@@ -23,6 +23,7 @@ pub(crate) fn json_report_uses_schema_version() {
         paths: PathSummary {
             analysed_files: 0,
             ignored_paths: Vec::new(),
+            ignored_path_details: Vec::new(),
             missing_paths: Vec::new(),
         },
         diagnostics: Vec::new(),

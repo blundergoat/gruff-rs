@@ -563,8 +563,11 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs
 +        std::process::Command::new(command).arg(url).spawn().unwrap();
 PATCH
 
-  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline >"$full_report" || return $?
-  cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --diff-patch "$patch_file" >"$patch_report" || return $?
+  # --no-config so the smoke exercises --diff-patch mechanics independent of the
+  # project's paths.ignore (which excludes fixtures/** — authoritative even for
+  # explicit file args per ADR-018).
+  cargo run --quiet -- analyse fixtures/sample.rs --no-config --format text --fail-on none --no-baseline >"$full_report" || return $?
+  cargo run --quiet -- analyse fixtures/sample.rs --no-config --format text --fail-on none --no-baseline --diff-patch "$patch_file" >"$patch_report" || return $?
 
   full_findings="$(grep -c '^- \[' "$full_report" || true)"
   patch_findings="$(grep -c '^- \[' "$patch_report" || true)"

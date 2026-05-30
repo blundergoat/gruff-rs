@@ -3,7 +3,8 @@ use super::*;
 mod args;
 
 pub(crate) use args::{
-    AnalyseArgs, CompletionArgs, DashboardArgs, InitArgs, ListRulesArgs, ReportArgs, SummaryArgs,
+    AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, CompletionArgs, DashboardArgs, InitArgs,
+    ListRulesArgs, ReportArgs, SummaryArgs,
 };
 
 /// Symfony-Console-style colours for help output: yellow section headers,
@@ -77,9 +78,10 @@ pub(crate) struct GlobalOptions {
     /// Disable ANSI output.
     #[arg(long = "no-ansi", global = true)]
     no_ansi: bool,
-    /// Increase the verbosity of stderr messages (-v, -vv, -vvv).
+    /// Increase the verbosity of stderr messages (-v, -vv, -vvv). `check-ignore`
+    /// also reads this: any `-v` switches its text output to `<path>\t<source>:<pattern>`.
     #[arg(short = 'v', long, action = clap::ArgAction::Count, global = true)]
-    verbose: u8,
+    pub(crate) verbose: u8,
     /// Do not ask any interactive question (accepted for CLI parity; gruff-rs is non-interactive).
     #[arg(short = 'n', long, global = true)]
     no_interaction: bool,
@@ -177,6 +179,8 @@ pub(crate) enum Commands {
     Dashboard(DashboardArgs),
     /// Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders.
     Summary(SummaryArgs),
+    /// Report whether gruff would ignore each path and why, using the same config and ignore engine as `analyse`. Runs no analysis.
+    CheckIgnore(CheckIgnoreArgs),
     /// Dump the shell completion script.
     Completion(CompletionArgs),
     /// Write a default `.gruff-rs.yaml` config derived from the built-in rule registry.
