@@ -35,7 +35,7 @@ Concrete evidence that the mission must drive tuning (gathered 2026-05-30): `com
 
 ## Consequences
 
-- The mission is documented for users in `docs/mission.md`, with this ADR as the binding decision the rule set is measured against.
+- The mission is documented as `## Mission` in `README.md`, `CLAUDE.md`, `AGENTS.md`, and `.goat-flow/architecture.md`, and as a user-facing `docs/mission.md`, with this ADR as the binding decision the rule set is measured against.
 - Complexity strictness (`complexity.cyclomatic` 10, `complexity.cognitive` 15, `complexity.nesting-depth` 4) is justified by verifiability, not convention, and must not be relaxed toward generic defaults without re-deciding against this ADR.
 - Rule and threshold reviews weigh false-positive rate above coverage. New default-on rules must be classified TP/FP against at least one repository outside this tree (`.goat-flow/lessons/verification.md`).
 - Known divergences to reconcile against this mission (open as of 2026-05-30):

@@ -139,9 +139,20 @@ pub(crate) enum RunOutcome {
 }
 
 impl RunOutcome {
-    pub(crate) fn classify(report: &AnalysisReport, fail_on: FailThreshold) -> Self {
+    /// Classify a run's exit outcome. A fatal diagnostic is exit 2; otherwise the
+    /// `gate:` block evaluates first (a trip with `onMatch: fail` is exit 1), then
+    /// the legacy `--fail-on` flag - the precedence documented in the ADR-003 M02
+    /// addendum.
+    pub(crate) fn classify(
+        report: &AnalysisReport,
+        fail_on: FailThreshold,
+        gate: Option<&Gate>,
+    ) -> Self {
         if report.diagnostics.iter().any(RunDiagnostic::is_failure) {
             return Self::DiagnosticsFailed;
+        }
+        if gate.is_some_and(|gate| gate.evaluate(&report.summary).fails) {
+            return Self::ThresholdHit;
         }
         if report
             .findings

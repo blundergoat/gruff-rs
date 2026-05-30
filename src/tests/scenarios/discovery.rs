@@ -213,7 +213,10 @@ pub(crate) fn config_ignore_is_authoritative_in_diff_patch_mode() {
             paths: vec![PathBuf::from(".")],
             no_config: false,
             no_baseline: true,
-            diff: Some(DiffSelection::Patch(patch_path)),
+            diff: Some(DiffSelection::Patch {
+                path: patch_path,
+                scope: ChangedScope::Symbol,
+            }),
             ..default_test_options()
         },
     )

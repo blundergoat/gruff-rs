@@ -24,12 +24,26 @@ pub(crate) struct AnalyseArgs {
     /// Include paths ignored by Git ignore files or built-in default dirs; config `paths.ignore` and VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
-    #[arg(long, value_name = "MODE", requires = "diff_git_unsafe")]
+    #[arg(
+        long,
+        value_name = "MODE",
+        num_args = 0..=1,
+        default_missing_value = "working-tree",
+        allow_hyphen_values = true,
+        requires = "diff_git_unsafe"
+    )]
     pub(crate) diff: Option<String>,
+    /// Git base ref for changed-region filtering; executes Git, so it needs the unsafe-Git opt-in.
+    #[arg(long, value_name = "REF", conflicts_with_all = ["diff", "diff_patch"], requires = "diff_git_unsafe")]
+    pub(crate) since: Option<String>,
+    /// Explicit changed line ranges such as 3-3,8-10.
+    #[arg(long, value_name = "RANGES", conflicts_with_all = ["diff", "diff_patch", "since"])]
+    pub(crate) changed_ranges: Option<String>,
+    /// Changed-region scope: symbol or hunk.
+    #[arg(long, default_value = "symbol")]
+    pub(crate) changed_scope: ChangedScope,
     #[arg(long, value_name = "PATH", conflicts_with = "diff")]
     pub(crate) diff_patch: Option<PathBuf>,
-    #[arg(long, requires = "diff")]
-    pub(crate) diff_git_unsafe: bool,
     #[arg(long)]
     pub(crate) history_file: Option<PathBuf>,
     /// Apply a baseline file, defaulting to gruff-baseline.json when no path is provided.
@@ -41,6 +55,10 @@ pub(crate) struct AnalyseArgs {
     /// Do not apply the default gruff-baseline.json file even when it exists.
     #[arg(long)]
     pub(crate) no_baseline: bool,
+    /// Opt in to the Git-executing diff modes (`--diff`, `--since`). Git-free
+    /// modes (`--diff-patch`, `--changed-ranges`) never need it.
+    #[arg(long, hide = true)]
+    pub(crate) diff_git_unsafe: bool,
 }
 
 #[derive(Args)]

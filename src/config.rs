@@ -28,8 +28,9 @@ pub(crate) struct AnalysisOptions {
 
 #[derive(Clone, Debug)]
 pub(crate) enum DiffSelection {
-    Patch(PathBuf),
-    GitUnsafe(String),
+    Patch { path: PathBuf, scope: ChangedScope },
+    Git { mode: String, scope: ChangedScope },
+    ExplicitRanges { ranges: String, scope: ChangedScope },
 }
 
 /// Renderer-only view of which paths and diff mode the user asked for.
@@ -55,8 +56,9 @@ impl RequestedScope {
                 .collect()
         };
         let diff_label = options.diff.as_ref().map(|selection| match selection {
-            DiffSelection::Patch(path) => format!("diff-patch · {}", path.display()),
-            DiffSelection::GitUnsafe(mode) => format!("diff-git-unsafe · {mode}"),
+            DiffSelection::Patch { path, .. } => format!("diff-patch · {}", path.display()),
+            DiffSelection::Git { mode, .. } => format!("diff · {mode}"),
+            DiffSelection::ExplicitRanges { ranges, .. } => format!("changed-ranges · {ranges}"),
         });
         Self { paths, diff_label }
     }
@@ -74,6 +76,7 @@ pub(crate) struct Config {
     pub(crate) custom_rules: Vec<CustomRule>,
     pub(crate) rule_settings: HashMap<String, RuleSetting>,
     pub(crate) minimum_severity: BTreeMap<String, FailThreshold>,
+    pub(crate) gate: Option<Gate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -264,6 +267,7 @@ impl Config {
             custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
             minimum_severity: BTreeMap::new(),
+            gate: None,
         }
     }
 

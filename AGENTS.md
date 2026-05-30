@@ -2,6 +2,10 @@
 
 Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
 
+## Mission
+
+gruff governs AI-generated code so a human who didn't write it can read, review, and trust it. Run as a coding-agent hook, it guides — or forces — the agent toward code a person can actually sign off on: **verifiable** (legible enough to review by reading), **secure** (hardened where the eye fails), and **genuinely tested** (real tests that exercise the contract, never low-signal bloat or ceremony). Doc comments are a verifiability anchor: stating intent, usage, contract, and failure behaviour in prose gives the reviewer something to check the implementation against, and a doc/code mismatch flags the change for a deeper look. Judge every rule, threshold, and report against verifiability + security + test-signal first, not generic "code health". Because gruff runs as a hook, a false positive is a command to change code the agent may have gotten right — so finding correctness outranks breadth of coverage.
+
 ## Truth Order
 
 1. User's explicit instruction for the current session.

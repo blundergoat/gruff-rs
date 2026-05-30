@@ -29,6 +29,7 @@ pub(crate) fn json_report_uses_schema_version() {
         diagnostics: Vec::new(),
         suppressions: Vec::new(),
         findings: Vec::new(),
+        suppressed_count: None,
         score: ScoreReport {
             composite: 100.0,
             grade: "A".to_string(),

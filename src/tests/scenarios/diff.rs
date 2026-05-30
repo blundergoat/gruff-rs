@@ -176,6 +176,91 @@ pub(crate) fn diff_patch_filter_excludes_context_lines() {
 }
 
 #[test]
+pub(crate) fn changed_region_symbol_scope_keeps_signature_finding_for_changed_body() {
+    let report = sample_report_with(
+        vec![
+            test_finding(
+                "docs.missing-function-doc",
+                "src/lib.rs",
+                1,
+                Severity::Warning,
+                Pillar::Documentation,
+            ),
+            test_finding(
+                "docs.missing-function-doc",
+                "src/lib.rs",
+                10,
+                Severity::Warning,
+                Pillar::Documentation,
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut patch = DiffPatchLineMap::default();
+    patch
+        .lines_by_file
+        .insert("src/lib.rs".to_string(), BTreeSet::from([3]));
+    let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
+    let mut blocks = BTreeMap::new();
+    blocks.insert(
+        "src/lib.rs".to_string(),
+        vec![
+            function_block("changed", 1, 4),
+            function_block("old", 10, 2),
+        ],
+    );
+
+    let filtered = apply_changed_region_filter(
+        report,
+        &patch,
+        &analysed,
+        &Config::default(),
+        &blocks,
+        ChangedScope::Symbol,
+    );
+
+    assert_eq!(filtered.findings.len(), 1);
+    assert_eq!(filtered.findings[0].line, Some(1));
+    assert_eq!(filtered.suppressed_count, Some(1));
+}
+
+#[test]
+pub(crate) fn changed_region_hunk_scope_excludes_signature_only_finding() {
+    let report = sample_report_with(
+        vec![test_finding(
+            "docs.missing-function-doc",
+            "src/lib.rs",
+            1,
+            Severity::Warning,
+            Pillar::Documentation,
+        )],
+        Vec::new(),
+    );
+    let mut patch = DiffPatchLineMap::default();
+    patch
+        .lines_by_file
+        .insert("src/lib.rs".to_string(), BTreeSet::from([3]));
+    let analysed = BTreeSet::from(["src/lib.rs".to_string()]);
+    let mut blocks = BTreeMap::new();
+    blocks.insert(
+        "src/lib.rs".to_string(),
+        vec![function_block("changed", 1, 4)],
+    );
+
+    let filtered = apply_changed_region_filter(
+        report,
+        &patch,
+        &analysed,
+        &Config::default(),
+        &blocks,
+        ChangedScope::Hunk,
+    );
+
+    assert!(filtered.findings.is_empty());
+    assert_eq!(filtered.suppressed_count, Some(1));
+}
+
+#[test]
 pub(crate) fn diff_patch_rejects_non_unified_input_before_suppressing_findings() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -188,7 +273,10 @@ pub(crate) fn diff_patch_rejects_non_unified_input_before_suppressing_findings()
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            diff: Some(DiffSelection::Patch(PathBuf::from("names.patch"))),
+            diff: Some(DiffSelection::Patch {
+                path: PathBuf::from("names.patch"),
+                scope: ChangedScope::Symbol,
+            }),
             no_config: true,
             no_baseline: true,
             ..default_test_options()
@@ -200,6 +288,24 @@ pub(crate) fn diff_patch_rejects_non_unified_input_before_suppressing_findings()
         error.contains("not a parseable unified diff"),
         "unexpected error: {error}"
     );
+}
+
+fn function_block(name: &str, start_line: usize, line_count: usize) -> FunctionBlock {
+    FunctionBlock {
+        name: name.to_string(),
+        param_count: 0,
+        start_line,
+        line_count,
+        body: String::new(),
+        is_externally_public: true,
+        is_test: false,
+        test_context: false,
+        is_async: false,
+        returns_bool: false,
+        returns_result: false,
+        ignore_without_reason: false,
+        body_is_declarative_literal: false,
+    }
 }
 
 #[test]
@@ -225,7 +331,10 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
     let options = AnalysisOptions {
         paths: vec![PathBuf::from("fixtures/sample.rs")],
         no_config: true,
-        diff: Some(DiffSelection::Patch(patch_path)),
+        diff: Some(DiffSelection::Patch {
+            path: patch_path,
+            scope: ChangedScope::Symbol,
+        }),
         no_baseline: true,
         ..default_test_options()
     };
@@ -237,7 +346,12 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
     assert!(report
         .findings
         .iter()
-        .all(|finding| finding.file_path == "fixtures/sample.rs" && finding.line == Some(11)));
+        .all(|finding| finding.file_path == "fixtures/sample.rs"));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.line == Some(11)));
+    assert!(report.suppressed_count.is_some());
     assert_eq!(
         report
             .diagnostics
@@ -246,7 +360,7 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
         Some("patch-filter")
     );
     assert_eq!(
-        RunOutcome::classify(&report, FailThreshold::None),
+        RunOutcome::classify(&report, FailThreshold::None, None),
         RunOutcome::Success
     );
 }
@@ -275,18 +389,39 @@ pub(crate) fn diff_patch_diagnostics_are_sarif_notifications_without_failed_exec
 }
 
 #[test]
-pub(crate) fn diff_requires_explicit_unsafe_git_flag() {
-    let without_flag = Cli::try_parse_from(["gruff-rs", "analyse", "--diff", "working-tree"]);
-    assert!(without_flag.is_err());
-
-    let with_flag = Cli::try_parse_from([
+pub(crate) fn diff_flags_accept_changed_region_forms() {
+    // Git-executing modes require the --diff-git-unsafe opt-in (ADR-009 trust boundary).
+    // The opt-in goes first: `--diff` allows hyphen values, so it would otherwise
+    // swallow a trailing `--diff-git-unsafe` as its MODE.
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--diff-git-unsafe", "--diff"]).is_ok());
+    assert!(
+        Cli::try_parse_from(["gruff-rs", "analyse", "--diff-git-unsafe", "--diff", "-"]).is_ok()
+    );
+    assert!(Cli::try_parse_from([
         "gruff-rs",
         "analyse",
-        "--diff",
-        "working-tree",
         "--diff-git-unsafe",
-    ]);
-    assert!(with_flag.is_ok());
+        "--since",
+        "HEAD"
+    ])
+    .is_ok());
+    // ...and are rejected without it.
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--diff"]).is_err());
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--since", "HEAD"]).is_err());
+    // Git-free modes need no opt-in.
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--changed-ranges", "3-3,8-10"]).is_ok());
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--changed-scope", "hunk"]).is_ok());
+
+    let mut command = Cli::command();
+    let help = command
+        .find_subcommand_mut("analyse")
+        .expect("analyse subcommand exists")
+        .render_long_help()
+        .to_string();
+    assert!(help.contains("--since"));
+    assert!(help.contains("--changed-ranges"));
+    assert!(help.contains("--changed-scope"));
+    assert!(!help.contains("--diff-git-unsafe"));
 }
 
 #[test]

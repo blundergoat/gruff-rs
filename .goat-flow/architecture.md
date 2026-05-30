@@ -1,5 +1,17 @@
 # Architecture
 
+## Mission
+
+gruff-rs governs AI-generated code so a human who didn't write it can read, review, and trust it. The premise is that coding agents routinely produce code that superficially works while misunderstanding the requirement, so every rule, threshold, and report optimises for one outcome: a reviewer who didn't write the change can confirm it does what was asked. Run as a coding-agent hook, gruff guides — or forces — the agent toward code a person can sign off on along three axes:
+
+- **Verifiable** — legible enough to review by reading. The complexity and size rubrics exist to keep functions holdable-in-head, not to chase abstract "code health".
+- **Secure** — hardened where human review is weakest.
+- **Genuinely tested** — real tests that exercise the contract, not low-signal bloat or ceremony. Test rubrics measure signal, not volume; rewarding raw count or coverage would only train agents to pad.
+
+Doc comments are a verifiability anchor, not decoration: forcing the agent to state intent, usage, contract, and failure behaviour in prose gives the reviewer something to check the implementation against, and a doc-comment/code mismatch is the signal that a change needs a deeper look.
+
+Rule and threshold decisions are judged against these three axes first. Because gruff runs as a hook, a false positive is a *command* to the agent to change code it may have gotten right, so finding correctness is weighted above breadth of coverage.
+
 ## System Overview
 
 `gruff-rs` is a Rust binary composed of focused modules. The binary has six user-facing modes: `analyse` walks source trees and emits findings, `report` renders analysis output to a file or stdout, `summary` prints a compact digest (scan card + per-pillar / top-rules / top-files), `list-rules` prints registry metadata, `dashboard` starts a small local HTTP server for browser-driven scans, and `completion` emits shell completion scripts.

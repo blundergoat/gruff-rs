@@ -3,12 +3,17 @@ use super::*;
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct DiffPatchLineMap {
     pub(crate) lines_by_file: BTreeMap<String, BTreeSet<usize>>,
+    pub(crate) whole_files: BTreeSet<String>,
     pub(crate) saw_hunk: bool,
 }
 
 impl DiffPatchLineMap {
     pub(crate) fn changed_files(&self) -> BTreeSet<String> {
-        self.lines_by_file.keys().cloned().collect()
+        self.lines_by_file
+            .keys()
+            .chain(self.whole_files.iter())
+            .cloned()
+            .collect()
     }
 }
 
@@ -256,17 +261,41 @@ pub(crate) fn normalize_report_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
+#[cfg(test)]
 pub(crate) fn apply_diff_patch_filter(
-    mut report: AnalysisReport,
+    report: AnalysisReport,
     patch: &DiffPatchLineMap,
     analysed_files: &BTreeSet<String>,
     config: &Config,
 ) -> AnalysisReport {
+    apply_changed_region_filter(
+        report,
+        patch,
+        analysed_files,
+        config,
+        &BTreeMap::new(),
+        ChangedScope::Hunk,
+    )
+}
+
+pub(crate) fn apply_changed_region_filter(
+    mut report: AnalysisReport,
+    patch: &DiffPatchLineMap,
+    analysed_files: &BTreeSet<String>,
+    config: &Config,
+    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+    scope: ChangedScope,
+) -> AnalysisReport {
     let total_findings = report.findings.len();
     let changed_files = patch.changed_files();
     let missing_files = unanalysed_patch_files(&changed_files, analysed_files);
-    let DiffPatchPartition { kept, suppressed } =
-        partition_findings_by_patch(&mut report, patch, &changed_files);
+    let DiffPatchPartition { kept, suppressed } = partition_findings_by_patch(
+        &mut report,
+        patch,
+        &changed_files,
+        function_blocks_by_file,
+        scope,
+    );
     let kept_findings = kept.len();
     let suppressed_findings = total_findings.saturating_sub(kept_findings);
 
@@ -275,6 +304,7 @@ pub(crate) fn apply_diff_patch_filter(
     report.summary = summarize(&report.findings);
     report.score = score_report(&report.findings, config);
     report.per_rule_deltas = (!deltas.is_empty()).then_some(deltas);
+    report.suppressed_count = Some(suppressed_findings);
     push_patch_filter_diagnostic(
         &mut report,
         total_findings,
@@ -319,19 +349,33 @@ fn partition_findings_by_patch(
     report: &mut AnalysisReport,
     patch: &DiffPatchLineMap,
     changed_files: &BTreeSet<String>,
+    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+    scope: ChangedScope,
 ) -> DiffPatchPartition {
     let mut kept = Vec::new();
     let mut suppressed = Vec::new();
     for finding in std::mem::take(&mut report.findings) {
-        if patch_intersects_finding(&finding, patch, changed_files) {
+        if patch_intersects_finding_with_scope(
+            &finding,
+            patch,
+            changed_files,
+            function_blocks_by_file,
+            scope,
+        ) {
             kept.push(finding);
         } else {
             suppressed.push(finding);
         }
     }
-    report
-        .suppressed_findings
-        .retain(|suppressed| patch_intersects_finding(&suppressed.finding, patch, changed_files));
+    report.suppressed_findings.retain(|suppressed| {
+        patch_intersects_finding_with_scope(
+            &suppressed.finding,
+            patch,
+            changed_files,
+            function_blocks_by_file,
+            scope,
+        )
+    });
     recount_suppressions(&mut report.suppressions, &report.suppressed_findings);
     DiffPatchPartition { kept, suppressed }
 }
@@ -379,13 +423,32 @@ pub(crate) fn patch_intersects_finding(
     if !changed_files.contains(&file_path) {
         return false;
     }
+    if patch.whole_files.contains(&file_path) {
+        return true;
+    }
     let Some(line) = finding.line else {
         return true;
     };
+    let end_line = finding.end_line.unwrap_or(line).max(line);
+    patch_range_intersects(patch, &file_path, line, end_line)
+}
+
+/// True when any changed line of `file_path` lies in `start..=end`, or the whole
+/// file changed. Shared by `patch_intersects_finding` here and the symbol-scope
+/// check in `changed_region`.
+pub(crate) fn patch_range_intersects(
+    patch: &DiffPatchLineMap,
+    file_path: &str,
+    start: usize,
+    end: usize,
+) -> bool {
+    if patch.whole_files.contains(file_path) {
+        return true;
+    }
     patch
         .lines_by_file
-        .get(&file_path)
-        .is_some_and(|lines| lines.contains(&line))
+        .get(file_path)
+        .is_some_and(|lines| (start..=end).any(|line| lines.contains(&line)))
 }
 
 pub(crate) fn patch_filter_message(

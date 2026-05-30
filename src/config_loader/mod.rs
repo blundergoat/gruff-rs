@@ -77,6 +77,7 @@ const CONFIG_SECTIONS: &[(&str, ConfigSectionHandler)] = &[
     ("custom_rules", apply_custom_rules_section),
     ("rules", apply_rules_section),
     ("exclude", apply_exclusions_section),
+    ("gate", apply_gate_section),
 ];
 
 pub(crate) fn apply_config_value(
@@ -118,6 +119,70 @@ pub(crate) fn apply_schema_version_section(
     }
     config.schema_version = version.to_string();
     Ok(())
+}
+
+/// Parse the optional `gate:` block (ADR-003 M02 addendum) into `config.gate`.
+/// Strict: rejects unknown keys, non-integer/negative counts, and an `onMatch`
+/// other than `fail`/`warn`. An omitted cap stays unlimited; `gate: {}` is valid.
+pub(crate) fn apply_gate_section(value: &Value, config: &mut Config) -> Result<(), String> {
+    if !value.is_null() {
+        config.gate = Some(parse_gate(value)?);
+    }
+    Ok(())
+}
+
+fn parse_gate(value: &Value) -> Result<Gate, String> {
+    let mapping = value
+        .as_object()
+        .ok_or_else(|| "config key `gate` must be an object".to_string())?;
+    reject_unknown_keys(mapping, &["total", "severity", "onMatch"], "gate")?;
+    let mut gate = Gate {
+        total: parse_gate_count(mapping, "total", "gate.total")?,
+        ..Gate::default()
+    };
+    if let Some(severity) = mapping.get("severity") {
+        apply_gate_severity(severity, &mut gate)?;
+    }
+    if let Some(on_match) = mapping.get("onMatch") {
+        gate.on_match = parse_gate_on_match(on_match)?;
+    }
+    Ok(gate)
+}
+
+fn apply_gate_severity(value: &Value, gate: &mut Gate) -> Result<(), String> {
+    let mapping = value
+        .as_object()
+        .ok_or_else(|| "config key `gate.severity` must be an object".to_string())?;
+    reject_unknown_keys(mapping, &["error", "warning", "advisory"], "gate.severity")?;
+    gate.error = parse_gate_count(mapping, "error", "gate.severity.error")?;
+    gate.warning = parse_gate_count(mapping, "warning", "gate.severity.warning")?;
+    gate.advisory = parse_gate_count(mapping, "advisory", "gate.severity.advisory")?;
+    Ok(())
+}
+
+/// Parse an optional non-negative integer cap at `key`, erroring (with `path` in
+/// the message) on a negative or non-integer value. Absent key -> `None` (unlimited).
+fn parse_gate_count(
+    mapping: &serde_json::Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<Option<u64>, String> {
+    mapping
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| format!("config key `{path}` must be a non-negative integer"))
+        })
+        .transpose()
+}
+
+fn parse_gate_on_match(value: &Value) -> Result<GateOnMatch, String> {
+    match value.as_str() {
+        Some("fail") => Ok(GateOnMatch::Fail),
+        Some("warn") => Ok(GateOnMatch::Warn),
+        _ => Err("config key `gate.onMatch` must be `fail` or `warn`".to_string()),
+    }
 }
 
 pub(crate) fn apply_minimum_severity_section(

@@ -23,6 +23,7 @@ use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 mod analyse_project;
 mod analysis;
 mod baseline;
+mod changed_region;
 mod check_ignore;
 mod cli;
 mod command_setup;
@@ -31,6 +32,7 @@ mod config_loader;
 mod dashboard;
 mod diff;
 mod discovery;
+mod gate;
 mod html_report;
 mod ignore_policy;
 mod init;
@@ -63,6 +65,10 @@ pub(crate) use baseline::write_baseline;
 pub(crate) use baseline::{
     record_history, resolve_baseline, rule_deltas_from_counts, BaselineResolution,
 };
+use changed_region::{
+    apply_diff_file_selection, patch_intersects_finding_with_scope, resolve_diff_filter,
+    ChangedScope, ResolvedDiffFilter,
+};
 use check_ignore::run_check_ignore;
 use cli::{
     AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, Cli, Commands, CompletionArgs, DashboardArgs,
@@ -83,8 +89,14 @@ use config_loader::{expand_rule_selector_with_custom, load_config, load_config_f
 #[cfg(test)]
 pub(crate) use dashboard::dashboard_response;
 use dashboard::run_dashboard;
-use diff::{apply_diff_patch_filter, normalize_report_path, parse_unified_diff, read_diff_patch};
+#[cfg(test)]
+use diff::apply_diff_patch_filter;
+use diff::{
+    apply_changed_region_filter, normalize_report_path, parse_unified_diff,
+    patch_intersects_finding, patch_range_intersects, read_diff_patch, DiffPatchLineMap,
+};
 use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
+use gate::{Gate, GateOnMatch};
 use ignore_policy::{IgnoreSource, IgnoredPath};
 pub(crate) use render::html_escape;
 use render::render_report_with_scope;
@@ -192,7 +204,7 @@ fn run_analyse_command(
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = Some(started.elapsed().as_millis());
-            let outcome = RunOutcome::classify(&report, options.fail_on);
+            let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()
@@ -205,11 +217,29 @@ fn run_analyse_command(
 }
 
 fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOptions {
-    let diff = match (args.diff_patch, args.diff) {
-        (Some(path), None) => Some(DiffSelection::Patch(path)),
-        (None, Some(mode)) => Some(DiffSelection::GitUnsafe(mode)),
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("clap prevents --diff and --diff-patch together"),
+    let diff = match (args.changed_ranges, args.since, args.diff_patch, args.diff) {
+        (Some(ranges), None, None, None) => Some(DiffSelection::ExplicitRanges {
+            ranges,
+            scope: args.changed_scope,
+        }),
+        (None, Some(base), None, None) => Some(DiffSelection::Git {
+            mode: base,
+            scope: args.changed_scope,
+        }),
+        (None, None, Some(path), None) => Some(DiffSelection::Patch {
+            path,
+            scope: args.changed_scope,
+        }),
+        (None, None, None, Some(mode)) if mode == "-" => Some(DiffSelection::Patch {
+            path: PathBuf::from("-"),
+            scope: args.changed_scope,
+        }),
+        (None, None, None, Some(mode)) => Some(DiffSelection::Git {
+            mode,
+            scope: args.changed_scope,
+        }),
+        (None, None, None, None) => None,
+        _ => unreachable!("clap prevents multiple changed-region selectors"),
     };
     AnalysisOptions {
         paths: args.paths,
@@ -263,7 +293,7 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = Some(started.elapsed().as_millis());
-            let outcome = RunOutcome::classify(&report, options.fail_on);
+            let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             match emit_report_output(writer, output, outcome, &rendered) {
                 Ok(()) => outcome.exit_code(),
@@ -469,7 +499,7 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = started.elapsed().as_millis();
-            let outcome = RunOutcome::classify(&report, FailThreshold::None);
+            let outcome = RunOutcome::classify(&report, FailThreshold::None, config.gate.as_ref());
             let rendered = summary::render(&report, args.top, args.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()
@@ -500,32 +530,6 @@ pub(crate) fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Find
 mod built_in_rules;
 
 mod custom_rules;
-
-pub(crate) fn changed_files(mode: &str) -> Result<BTreeSet<String>, String> {
-    let mut command = std::process::Command::new("git");
-    command.arg("diff").arg("--name-only").arg("-z");
-    match mode {
-        "working-tree" | "unstaged" => {}
-        "staged" => {
-            command.arg("--cached");
-        }
-        other => {
-            command.arg(other);
-        }
-    }
-    let output = command
-        .output()
-        .map_err(|error| format!("unable to execute git diff for --diff: {error}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    Ok(output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| String::from_utf8_lossy(entry).replace('\\', "/"))
-        .collect())
-}
 
 pub(crate) fn absolutize(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {

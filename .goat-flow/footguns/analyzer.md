@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-24
+last_reviewed: 2026-05-30
 ---
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
@@ -153,6 +153,23 @@ The non-obvious failure mode is treating the wrapper organisation as fixed. The 
 - The decision criterion: does the rule's analyzer operate on a `FunctionBlock` argument, or on `&SourceFile` + `&str source`? The former goes in `rust_block_rules`, the latter in `rust_other_rules`.
 
 Regression coverage: this footgun re-fires every time the catalogue grows and a new rule file lands. No dedicated regression test — dogfood scan catches it.
+
+## Footgun: Complexity Scanners Count Control-Flow Keywords In Comments
+
+**Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/blocks.rs` (search: `let searchable_body = strip_rust_string_literals`) feeds the complexity scanners — `fn analyse_block_complexity` (cyclomatic via `CYCLOMATIC_COMPLEXITY_REGEX`), `fn approximate_npath`, `fn max_nesting_depth`, and cognitive — a body with string literals masked but COMMENTS intact. Control-flow words (`if`, `for`, `match`, `while`, `loop`, `&&`, `||`, `?`) inside `//` and `///` comments are therefore counted as real decisions. This is the complexity-pillar twin of "Loop-Scoped Rules Must Mask Comments" above: the perf rules already comment-mask; the complexity rules do not.
+
+Concrete instance (2026-05-30, external scan): a private `validate_script_path` with THREE flat `if` guards and ZERO loops reported `complexity.npath` 128. The branch-keyword count came back as 7 = 3 real `if` + 4 occurrences of the word "for" inside its comments ("Check **for** path traversal", "a script path **for** security"). NPath exponentiates (2^7 = 128 > threshold 100) so it crossed the line, while `complexity.cyclomatic` only summed (7 + 1 = 8 <= 10) and stayed silent — which is why npath fired alone on clean, well-documented code.
+
+The non-obvious failure mode: the more faithfully an agent follows the doc-comment mandate (`.goat-flow/decisions/ADR-015-mission-agent-code-governance.md`), the more control-flow prose its comments carry, and the more the complexity metrics inflate — the analyzer penalises the documentation it requires. `?`-dense idiomatic error handling also reads higher than its real decision complexity.
+
+**How to apply:**
+
+- Fix: derive a comment-masked body for the complexity scanners — reuse `strip_rust_comments_after_string_mask` (search in `src/built_in_rules/modernisation_rules.rs`) over the string-masked body, localized to `analyse_block_complexity` so the perf / error-handling / concurrency rules that share `searchable_body` are unaffected. Tracked by milestone M00c.
+- `?` (error-propagation) counts toward cyclomatic but reads linearly; weight it deliberately (M00c).
+- `complexity.npath` was removed entirely (M00) because exponentiation made this inflation cross threshold while adding no signal cyclomatic / cognitive / nesting don't already carry.
+- Regression coverage to add when fixed: a complexity calibration case whose body contains control-flow words only in comments and stays silent.
 
 ## Resolved Entries
 
