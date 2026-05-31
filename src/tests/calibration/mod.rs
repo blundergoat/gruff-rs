@@ -160,15 +160,15 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
     (positive_fired, negative_fired)
 }
 
-mod cases_a;
-mod cases_b;
-mod cases_c;
 mod cases_pillar_expansion;
+mod documentation_error_idiom_cases;
+mod security_size_test_waste_cases;
+mod structural_project_cases;
 
 pub(crate) fn calibration_cases() -> Vec<CalibrationCase> {
-    let mut cases = cases_a::cases();
-    cases.extend(cases_b::cases());
-    cases.extend(cases_c::cases());
+    let mut cases = structural_project_cases::cases();
+    cases.extend(documentation_error_idiom_cases::cases());
+    cases.extend(security_size_test_waste_cases::cases());
     cases.extend(cases_pillar_expansion::cases());
     cases
 }

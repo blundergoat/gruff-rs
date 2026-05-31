@@ -1,8 +1,8 @@
 # Changelog
 
-## v1.0.0 - 2026-05-30
+## v0.3.0 - 2026-05-30
 
-First stable release. The rule catalogue and analysis contract become the 1.x compatibility surface, changed-region scoping lands, and the rule set is pruned to the checks that serve the project mission: govern AI-generated code so a human reviewer can verify, secure, and trust it (see `docs/mission.md` and ADR-015).
+0.3.0 release. Changed-region scoping lands, config ignores become authoritative in every invocation mode, and the rule set is pruned to the checks that serve the project mission: govern AI-generated code so a human reviewer can verify, secure, and trust it (see `docs/mission.md` and ADR-015).
 
 - **Changed-region scoping.** `analyse` scopes findings to the code a change touched: `--diff-patch <file>` / `--diff-patch -` (a unified diff read as data, no Git) and `--changed-ranges <a-b,...>` (explicit new-side line ranges, no Git) are the Git-free modes a coding-agent hook can pass directly; `--since <ref>` and `--diff <mode>` are the Git-backed modes (both require `--diff-git-unsafe`, since they execute Git). `--changed-scope symbol|hunk` controls whether a touched line pulls in its whole symbol or just the hunk. JSON additively includes `suppressedCount` when changed-region filtering is active, and `perRuleDeltas[]` when a diff or baseline comparison context is present. See ADR-009.
 - **Config `paths.ignore` is authoritative in every invocation mode.** It now excludes paths from analysis during the directory walk, for explicit file arguments, and in all diff modes - previously explicit args and diffs bypassed it, so a coding-agent hook passing changed files flagged deliberately-ignored code. `--include-ignored` opts into git/default-directory ignores only and no longer overrides `paths.ignore`; VCS internals stay blocked. Ignored paths are reported additively under `paths.ignoredPathDetails` (`[{path, source, pattern}]`, `source` ∈ `config|gitignore|default|generated`); the existing `paths.ignoredPaths` string list is unchanged and `gruff.analysis.v2` is not bumped. See ADR-018.
@@ -14,6 +14,7 @@ First stable release. The rule catalogue and analysis contract become the 1.x co
 - **`size.parameter-count` threshold 5 → 7** - aligned to Clippy's `too_many_arguments` default; idiomatic Rust tolerates 6-7 parameters (builders, context structs).
 - **Rule catalogue 80 → 76.** Removed rule IDs no longer emit findings. `gruff.analysis.v2`, `gruff.baseline.v1`, SARIF 2.1.0, and the IDs/fingerprints of the remaining rules are unchanged.
 - **Project mission documented** - `## Mission` sections in `README.md`, `CLAUDE.md`, `AGENTS.md`, and `.goat-flow/architecture.md`, a user-facing `docs/mission.md`, and ADR-015 establish gruff as an agent-code-governance hook optimised for reviewer verifiability, security, and genuine tests.
+- **Internal rule/calibration shards renamed for navigation** - legacy alphabet-sequel files (`definitions_a.rs`, `definitions_b.rs`, `definitions_c.rs`, `cases_a.rs`, `cases_b.rs`, `cases_c.rs`) now use content-descriptive module names: `structure_docs_reliability_definitions.rs`, `idiom_security_size_test_definitions.rs`, `waste_definitions.rs`, `structural_project_cases.rs`, `documentation_error_idiom_cases.rs`, and `security_size_test_waste_cases.rs`. Rule IDs, fingerprints, and report schemas are unchanged.
 
 ## v0.2.0 - 2026-05-28
 

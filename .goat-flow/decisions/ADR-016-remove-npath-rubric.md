@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-30
 **Author(s):** Claude, on user direction
-**Ticket/Context:** 1.0.0 M00; mission ADR-015; rubric audit 2026-05-30
+**Ticket/Context:** 0.3.0 M00; mission ADR-015; rubric audit 2026-05-30
 
 ## Decision
 
@@ -52,7 +52,7 @@ problem.
 
 - After removal the complexity pillar is `complexity.cyclomatic` (threshold 10),
   `complexity.cognitive` (15), and `complexity.nesting-depth` (4); npath leaves no
-  gap these three do not already cover. The removal is part of the 1.0.0 catalogue
+  gap these three do not already cover. The removal is part of the 0.3.0 catalogue
   prune to 76 rules — the redundant maintainability/design metrics removed under
   ADR-017 account for the remainder.
 - `rule_calibration_matrix_covers_every_rule` (`src/tests/calibration/mod.rs`)

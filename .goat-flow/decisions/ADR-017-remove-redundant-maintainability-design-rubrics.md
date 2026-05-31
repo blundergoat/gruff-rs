@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-30
 **Author(s):** Claude, on user direction
-**Ticket/Context:** 1.0.0 M00b; mission ADR-015; rubric audit 2026-05-30; follows ADR-016 (npath)
+**Ticket/Context:** 0.3.0 M00b; mission ADR-015; rubric audit 2026-05-30; follows ADR-016 (npath)
 
 ## Decision
 

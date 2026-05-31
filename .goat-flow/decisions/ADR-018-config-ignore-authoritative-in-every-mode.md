@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-30
 **Author(s):** Claude, on user direction
-**Ticket/Context:** 1.0.0 M13; coding-agent-hook correctness; follows ADR-004 (discovery) and ADR-009 (suppression/diff layering)
+**Ticket/Context:** 0.3.0 M13; coding-agent-hook correctness; follows ADR-004 (discovery) and ADR-009 (suppression/diff layering)
 
 ## Decision
 
@@ -31,7 +31,7 @@ not bumped.
 
 ## Context
 
-gruff's 1.0.0 mission is to run as a coding-agent hook (ADR-015). A hook passes
+gruff's 0.3.0 mission is to run as a coding-agent hook (ADR-015). A hook passes
 the agent's just-changed files to gruff as **explicit paths** (or as a diff).
 Before this decision, `paths.ignore` was applied only during the discovery walk
 (ADR-004); explicit file arguments and the patch-input diff path short-circuited
