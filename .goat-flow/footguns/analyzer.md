@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-30
+last_reviewed: 2026-05-31
 ---
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
@@ -135,6 +135,16 @@ The non-obvious failure mode is that the rule appears correct (calibration passe
 - After every new text-pattern rule, run `cargo run --quiet -- analyse src/built_in_rules/<new_rule_file>.rs --format json --fail-on none --no-baseline` as the first verification. If the rule fires on its own file, fix it before calibration.
 
 Regression coverage for this specific case: `src/tests/calibration/cases_pillar_expansion.rs` (search: `security.hardcoded-bind-all-interfaces`); the positive case is a Rust fn returning a `"0.0.0.0:8080"` literal, the negative returns `"127.0.0.1:8080"`. Calibration would not have caught the self-fire because calibration runs in a tempdir; only dogfood revealed it. Pairs with [[rule-precision]] for the broader candidate-rule defence pattern.
+
+## Footgun: Candidate Taint Rules Can Taint Their Own Predicate Booleans
+
+**Status:** active | **Created:** 2026-05-31 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/network_security_rules.rs` (search: `fn analyse_template_injection_xss`) uses a bounded same-function taint model. A first cut treated every function parameter as tainted and propagated taint through any local binding whose RHS mentioned a tainted name. The rule then self-fired on its own helper because `fn template_sink_argument(line: &str, ...)` has a tainted `line` parameter, `let has_sink = line.contains("Html(format!") ...` became a tainted local, and the later `if !has_sink` line looked like an unescaped template sink candidate.
+
+The non-obvious failure mode is that candidate taint rules can create findings from detector-control booleans, not from user data. This is different from literal self-fire: calibration fixtures still pass, but dogfood reports the analyzer source as a security finding.
+
+Calibrate taint propagation so predicate/control bindings (`has_`, `is_`, `should_`, `matches_`, etc.) do not become tainted sink arguments, and keep source scans in the verification loop after every taint-style rule. The current guard lives in `src/built_in_rules/network_security_rules.rs` (search: `fn binding_name_is_predicate`). The same verification pass also caught `serde_yaml::from_str` in analyzer config parsing; local config/YAML parsing should stay silent unless the source evidence is actually request/env-derived.
 
 ## Footgun: Wrapper-Module Fan-Out Hits 8 When Adding New Rule Files
 

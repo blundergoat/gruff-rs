@@ -49,6 +49,7 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     findings
         .into_iter()
         .filter(|finding| config.is_rule_enabled(&finding.rule_id))
+        .map(|finding| apply_configured_severity(finding, config))
         .collect()
 }
 
@@ -66,10 +67,19 @@ fn analyse_rust_rules(
     analyse_weak_crypto(unit.file, unit.source, findings);
     analyse_hardcoded_bind_all_interfaces(unit.file, unit.source, findings);
     analyse_path_traversal_candidate(unit.file, unit.source, findings);
+    analyse_ssrf_candidate(unit.file, &blocks, findings);
+    analyse_unsafe_deserialization(unit.file, &blocks, findings);
+    analyse_xxe_candidate(unit.file, unit.source, findings);
+    analyse_template_injection_xss(unit.file, &blocks, findings);
     analyse_modernisation_rules(unit.file, unit.source, findings);
     analyse_line_rules(unit.file, unit.source, &blocks, findings);
     analyse_item_rules(unit.file, ast, findings);
     analyse_dead_code(unit.file, ast, unit.source, findings);
     analyse_comment_rules(unit.file, unit.source, findings);
     analyse_naming_patterns(unit.file, ast, config, findings);
+}
+
+fn apply_configured_severity(mut finding: Finding, config: &Config) -> Finding {
+    finding.severity = config.severity(&finding.rule_id, finding.severity);
+    finding
 }

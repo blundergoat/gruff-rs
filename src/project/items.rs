@@ -53,6 +53,9 @@ pub(crate) fn collect_project_item(
         Item::Struct(item_struct) => collect_project_struct(scope, item_struct, items),
         Item::Enum(item_enum) => collect_project_enum(scope, item_enum, items),
         Item::Trait(item_trait) => collect_project_trait(scope, item_trait, items),
+        Item::Const(item_const) => collect_project_const(scope, item_const, items),
+        Item::Static(item_static) => collect_project_static(scope, item_static, items),
+        Item::Type(item_type) => collect_project_type_alias(scope, item_type, items),
         Item::Impl(item_impl) => collect_project_impl(scope, item_impl, items),
         Item::Mod(item_mod) => collect_project_module(scope, item_mod, modules, items),
         _ => {}
@@ -76,6 +79,8 @@ pub(crate) fn collect_project_function(
             test_context: scope.test_context
                 || has_test_attr(&item_fn.attrs)
                 || has_cfg_test_attr(&item_fn.attrs),
+            container: None,
+            trait_impl: false,
         },
     ));
 }
@@ -95,6 +100,8 @@ pub(crate) fn collect_project_struct(
             externally_public: visibility_is_externally_public(&item_struct.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_struct.attrs),
             test_context: scope.test_context || has_cfg_test_attr(&item_struct.attrs),
+            container: None,
+            trait_impl: false,
         },
     ));
 }
@@ -114,6 +121,8 @@ pub(crate) fn collect_project_enum(
             externally_public: visibility_is_externally_public(&item_enum.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_enum.attrs),
             test_context: scope.test_context || has_cfg_test_attr(&item_enum.attrs),
+            container: None,
+            trait_impl: false,
         },
     ));
 }
@@ -133,6 +142,71 @@ pub(crate) fn collect_project_trait(
             externally_public: visibility_is_externally_public(&item_trait.vis),
             cfg_gated: scope.cfg_context || has_cfg_attr(&item_trait.attrs),
             test_context: scope.test_context || has_cfg_test_attr(&item_trait.attrs),
+            container: None,
+            trait_impl: false,
+        },
+    ));
+}
+
+pub(crate) fn collect_project_const(
+    scope: ProjectItemScope<'_>,
+    item_const: &syn::ItemConst,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope,
+        item_const.ident.to_string(),
+        "const",
+        line_from_span(item_const.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_const.vis),
+            externally_public: visibility_is_externally_public(&item_const.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_const.attrs),
+            test_context: scope.test_context || has_cfg_test_attr(&item_const.attrs),
+            container: None,
+            trait_impl: false,
+        },
+    ));
+}
+
+pub(crate) fn collect_project_static(
+    scope: ProjectItemScope<'_>,
+    item_static: &syn::ItemStatic,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope,
+        item_static.ident.to_string(),
+        "static",
+        line_from_span(item_static.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_static.vis),
+            externally_public: visibility_is_externally_public(&item_static.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_static.attrs),
+            test_context: scope.test_context || has_cfg_test_attr(&item_static.attrs),
+            container: None,
+            trait_impl: false,
+        },
+    ));
+}
+
+pub(crate) fn collect_project_type_alias(
+    scope: ProjectItemScope<'_>,
+    item_type: &syn::ItemType,
+    items: &mut Vec<ItemSummary>,
+) {
+    items.push(project_item(
+        scope,
+        item_type.ident.to_string(),
+        "type alias",
+        line_from_span(item_type.ident.span().start()),
+        ProjectItemContext {
+            public: visibility_is_public(&item_type.vis),
+            externally_public: visibility_is_externally_public(&item_type.vis),
+            cfg_gated: scope.cfg_context || has_cfg_attr(&item_type.attrs),
+            test_context: scope.test_context || has_cfg_test_attr(&item_type.attrs),
+            container: None,
+            trait_impl: false,
         },
     ));
 }
@@ -171,6 +245,8 @@ pub(crate) fn collect_project_method(
                 || has_cfg_test_attr(&item_impl.attrs)
                 || has_test_attr(&method.attrs)
                 || has_cfg_test_attr(&method.attrs),
+            container: impl_self_type_name(item_impl),
+            trait_impl: item_impl.trait_.is_some(),
         },
     ));
 }
@@ -215,12 +291,24 @@ pub(crate) fn project_item(
         module_path: scope.module_path.to_string(),
         name,
         kind: kind.to_string(),
+        container: context.container,
         line,
         public: context.public,
         externally_public: context.externally_public,
         cfg_gated: context.cfg_gated,
         test_context: context.test_context,
+        trait_impl: context.trait_impl,
     }
+}
+
+fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
+    let syn::Type::Path(path) = item_impl.self_ty.as_ref() else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
 }
 
 pub(crate) fn module_name(parent: &str, name: &str) -> String {

@@ -4,7 +4,7 @@
 **Date:** 2026-05-18
 **Author(s):** Codex, after human review feedback
 **Ticket/Context:** M32 follow-up; gruff-php threshold contract comparison
-**Updated:** 2026-05-30 (added agent-hook rationale — see Addendum)
+**Updated:** 2026-05-31 (added standalone severity override addendum below)
 
 ## Decision
 
@@ -22,8 +22,9 @@ rules:
 
 Named threshold bands such as `warn` and `error` are not part of the gruff-rs
 rubric contract. Config validation must reject `thresholds:` maps, reject
-`threshold` without `severity`, reject `severity` without `threshold`, and reject
-threshold configuration for rules that do not expose a numeric threshold.
+`threshold` without `severity`, and reject threshold configuration for rules
+that do not expose a numeric threshold. Non-threshold rules may use a standalone
+`severity` override to set their one emitted severity for the run.
 
 Rule metadata must expose at most one threshold value for a built-in rule. A
 rubric may still choose advisory, warning, or error as its default emitted
@@ -62,7 +63,7 @@ configure.
 | --- | --- | --- |
 | Keep warning/error threshold ranges | One rubric has multiple policy values and may emit different severities for the same metric family | Rejected; the human-approved contract is one value and one severity for all thresholded rubrics. |
 | Keep both `threshold` and legacy `thresholds` map support | Users can express the same policy two ways, examples drift, and strict config validation becomes weaker | Rejected; gruff-rs should fail closed on unsupported shapes before public release. |
-| Allow `severity` without `threshold` | Severity override becomes an independent policy surface for non-threshold rules | Rejected; this ADR only accepts severity as part of the thresholded-rubric pair. |
+| Allow `severity` without `threshold` | Severity override becomes an independent policy surface for non-threshold rules | Accepted for non-threshold rules only as a fixed emitted-severity override; rejected as any kind of severity band or second cutoff. |
 | Use one `threshold` plus one `severity` for each thresholded rubric | Each rubric has one visible cutoff and one emitted severity | Accepted; this is deterministic, easy to document, and matches the requested contract. |
 
 ## Consequences
@@ -92,6 +93,15 @@ rule is enabled. Severity still matters for the human reviewer, the `--fail-on`
 gate, and severity-ordered triage — but not as a per-rubric escalation band.
 Reaffirmed by the user 2026-05-30: "one severity type and value per rubric …
 choose `warning: 200` OR `error: 500`, not both."
+
+## Addendum (2026-05-31): Standalone severity overrides for non-threshold rules
+
+M11 added standalone `rules.<id>.severity` overrides for built-in rules that do
+not expose a numeric threshold, so operators can tune default severity without
+disabling a security, dependency, or sensitive-data signal. This does not
+reintroduce severity bands: each rule still emits exactly one severity for a
+given run. Thresholded rules keep the paired `threshold` + `severity` contract,
+and `threshold` without `severity` remains invalid.
 
 ## Reversibility
 

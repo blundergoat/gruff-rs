@@ -189,7 +189,7 @@ fn group_indexed_items_by_module(
     for item in context
         .items
         .iter()
-        .filter(|item| !item.cfg_gated && !item.test_context)
+        .filter(|item| item.public && !item.cfg_gated && !item.test_context)
     {
         by_module
             .entry((item.file_path.clone(), item.module_path.clone()))

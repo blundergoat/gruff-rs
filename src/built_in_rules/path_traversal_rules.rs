@@ -153,7 +153,8 @@ fn window_has_validation_after(lines: &[&str], line: usize) -> bool {
     let zero_based = line.saturating_sub(1);
     let end = (zero_based + 25).min(lines.len());
     let window: String = lines[zero_based..end].join("\n");
-    window.contains(".canonicalize(") && window.contains(".starts_with(")
+    (window.contains(".canonicalize(") && window.contains(".starts_with("))
+        || window.contains(".strip_prefix(")
 }
 
 /// True iff `arg` was passed to a `(validate|verify|sanitize|check)_*`

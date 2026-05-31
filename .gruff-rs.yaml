@@ -210,6 +210,21 @@ rules:
   # Flags Regex::new calls inside loop bodies.
   performance.regex-in-loop:
     enabled: true
+  # Flags workflow permissions that grant broad write access.
+  security.github-actions-broad-permissions:
+    enabled: true
+  # Flags pull_request_target workflows for manual secret and checkout review.
+  security.github-actions-pull-request-target:
+    enabled: true
+  # Flags workflow shell steps that pipe remote downloads into an interpreter.
+  security.github-actions-remote-shell:
+    enabled: true
+  # Flags pull request workflows that reference repository secrets.
+  security.github-actions-secrets-in-pr:
+    enabled: true
+  # Flags third-party workflow actions that are not pinned to a full commit SHA.
+  security.github-actions-unpinned-action:
+    enabled: true
   # Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.
   security.hardcoded-bind-all-interfaces:
     enabled: true
@@ -225,14 +240,26 @@ rules:
   # Flags direct dynamic SQL query arguments such as query(format!(...)).
   security.sql-dynamic-query:
     enabled: true
+  # Flags request URLs derived from local input without nearby allow-list evidence.
+  security.ssrf-candidate:
+    enabled: true
+  # Flags HTML/template output that includes request-derived values without local escaping evidence.
+  security.template-injection-xss:
+    enabled: true
   # Flags explicit TLS certificate or hostname verification bypasses.
   security.tls-verification-disabled:
     enabled: true
   # Flags unsafe blocks without a nearby SAFETY rationale.
   security.unsafe-block:
     enabled: true
+  # Flags YAML or binary deserialization of data derived from local input.
+  security.unsafe-deserialization:
+    enabled: true
   # Flags explicit weak cryptographic primitive imports or constructors for review.
   security.weak-crypto:
+    enabled: true
+  # Flags XML parser options that enable external entity or DTD resolution.
+  security.xxe-candidate:
     enabled: true
   # Flags common API key patterns.
   sensitive-data.api-key-pattern:
@@ -243,6 +270,9 @@ rules:
   # Flags database URLs that appear to include passwords.
   sensitive-data.database-url-password:
     enabled: true
+  # Flags committed GCP service-account private key material.
+  sensitive-data.gcp-service-account-key:
+    enabled: true
   # Flags secret-like KEY=value literals committed in source or config.
   sensitive-data.hardcoded-env-value:
     enabled: true
@@ -251,6 +281,9 @@ rules:
     enabled: true
   # Flags JWT-looking token strings.
   sensitive-data.jwt-token:
+    enabled: true
+  # Flags SSN, MRN, and Medicare-style health identifiers with redacted previews.
+  sensitive-data.phi-pattern:
     enabled: true
   # Flags realistic emails, SSN-shaped strings, or US phone numbers in fixture or sample files.
   sensitive-data.pii-test-fixture:

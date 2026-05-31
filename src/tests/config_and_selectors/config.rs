@@ -191,14 +191,14 @@ rules:
         dir.path(),
         r#"
 rules:
-  complexity.cognitive:
-    severity: warning
+  security.process-command:
+    severity: error
 "#,
     );
-    let error = load_config(dir.path(), &options).expect_err("threshold required");
-    assert!(
-        error.contains("config key `rules.complexity.cognitive.severity` requires `threshold`"),
-        "{error}"
+    let config = load_config(dir.path(), &options).expect("standalone severity accepted");
+    assert_eq!(
+        config.severity("security.process-command", Severity::Warning),
+        Severity::Error
     );
 }
 
@@ -248,6 +248,89 @@ pub(crate) fn config_disables_rules_and_overrides_threshold() {
         .collect();
     assert!(!rule_ids.contains("security.process-command"));
     assert!(!rule_ids.contains("size.parameter-count"));
+}
+
+#[test]
+pub(crate) fn standalone_severity_override_changes_security_finding() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("sample.rs"),
+        [
+            "/// Probe.\npub fn entry(argument: &str) {\n    ",
+            PROCESS_COMMAND_NEW,
+            "(\"sh\").arg(\"-c\").arg(argument).spawn().unwrap();\n}\n",
+        ]
+        .concat(),
+    )
+    .expect("fixture write");
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  security.process-command:
+    severity: error
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "security.process-command")
+        .expect("process command finding");
+    assert_eq!(finding.severity, Severity::Error);
+}
+
+#[test]
+pub(crate) fn standalone_severity_override_changes_dependency_finding() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "dependency-severity-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Dependency severity fixture."
+license = "MIT"
+
+[dependencies]
+gitdep = { git = "https://example.invalid/repo.git" }
+"#,
+    )
+    .expect("manifest write");
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  dependency.git-source:
+    severity: error
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule_id == "dependency.git-source")
+        .expect("git source finding");
+    assert_eq!(finding.severity, Severity::Error);
 }
 
 #[test]

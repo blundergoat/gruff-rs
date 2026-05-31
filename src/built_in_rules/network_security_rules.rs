@@ -78,3 +78,298 @@ fn bind_all_interfaces_finding(file: &SourceFile, line: usize, addr: &str) -> Fi
         metadata: json!({ "address": addr }),
     })
 }
+
+pub(crate) fn analyse_ssrf_candidate(
+    file: &SourceFile,
+    blocks: &[FunctionBlock],
+    findings: &mut Vec<Finding>,
+) {
+    if path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
+    for block in blocks {
+        let mut taint = FunctionTaint::from_block(block);
+        for (line_index, line) in block.body.lines().enumerate() {
+            taint.observe_line(line);
+            let Some(argument) = ssrf_sink_argument(line, &taint) else {
+                continue;
+            };
+            findings.push(network_candidate_finding(
+                file,
+                "security.ssrf-candidate",
+                "HTTP request URL is derived from local input; review host allow-listing.",
+                block.start_line + line_index,
+                &argument,
+            ));
+        }
+    }
+}
+
+pub(crate) fn analyse_unsafe_deserialization(
+    file: &SourceFile,
+    blocks: &[FunctionBlock],
+    findings: &mut Vec<Finding>,
+) {
+    for block in blocks {
+        let mut taint = FunctionTaint::from_block(block);
+        for (line_index, line) in block.body.lines().enumerate() {
+            taint.observe_line(line);
+            if yaml_config_parse_is_intentional(block, line) {
+                continue;
+            }
+            let Some(argument) = unsafe_deserialization_argument(line, &taint) else {
+                continue;
+            };
+            findings.push(network_candidate_finding(
+                file,
+                "security.unsafe-deserialization",
+                "Binary or YAML deserialization reads data derived from local input.",
+                block.start_line + line_index,
+                &argument,
+            ));
+        }
+    }
+}
+
+pub(crate) fn analyse_xxe_candidate(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
+    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    for (line_index, line) in searchable.lines().enumerate() {
+        if line.contains("ParserOption::NOENT")
+            || line.contains("ParserOption::DTDLOAD")
+            || line.contains(".resolve_entities(true)")
+        {
+            findings.push(network_candidate_finding(
+                file,
+                "security.xxe-candidate",
+                "XML parser configuration enables external entity or DTD resolution.",
+                line_index + 1,
+                "xml-parser",
+            ));
+        }
+    }
+}
+
+pub(crate) fn analyse_template_injection_xss(
+    file: &SourceFile,
+    blocks: &[FunctionBlock],
+    findings: &mut Vec<Finding>,
+) {
+    for block in blocks {
+        let mut taint = FunctionTaint::from_block(block);
+        for (line_index, line) in block.body.lines().enumerate() {
+            taint.observe_line(line);
+            let Some(argument) = template_sink_argument(line, &taint) else {
+                continue;
+            };
+            findings.push(network_candidate_finding(
+                file,
+                "security.template-injection-xss",
+                "HTML or template output includes request-derived data without local escaping evidence.",
+                block.start_line + line_index,
+                &argument,
+            ));
+        }
+    }
+}
+
+#[derive(Default)]
+struct FunctionTaint {
+    tainted: BTreeSet<String>,
+    validated: BTreeSet<String>,
+}
+
+impl FunctionTaint {
+    fn from_block(block: &FunctionBlock) -> Self {
+        Self {
+            tainted: function_param_names(&block.body)
+                .into_iter()
+                .filter(|name| !name_is_sanitized(name))
+                .collect(),
+            validated: BTreeSet::new(),
+        }
+    }
+
+    fn observe_line(&mut self, line: &str) {
+        for name in self.tainted.clone() {
+            if line_has_validation_evidence(line, &name) || name_is_sanitized(&name) {
+                self.validated.insert(name);
+            }
+        }
+        if let Some((binding, rhs)) = let_binding(line) {
+            if binding_name_is_predicate(&binding) {
+                return;
+            }
+            self.observe_binding(binding, rhs);
+        }
+    }
+
+    fn observe_binding(&mut self, binding: String, rhs: &str) {
+        if rhs_is_input_source(rhs) || self.tainted.iter().any(|name| rhs_contains_name(rhs, name))
+        {
+            if name_is_sanitized(&binding) || line_has_validation_evidence(rhs, &binding) {
+                self.validated.insert(binding.clone());
+            }
+            self.tainted.insert(binding);
+        }
+    }
+
+    fn is_tainted(&self, name: &str) -> bool {
+        self.tainted.contains(name) && !self.validated.contains(name) && !name_is_sanitized(name)
+    }
+}
+
+fn function_param_names(body: &str) -> Vec<String> {
+    static SIGNATURE_REGEX: OnceLock<Regex> = OnceLock::new();
+    static PARAM_REGEX: OnceLock<Regex> = OnceLock::new();
+    let signature = static_regex(
+        &SIGNATURE_REGEX,
+        r"fn\s+[A-Za-z_][A-Za-z0-9_]*\s*\((?P<params>(?s:.*?))\)",
+    );
+    let param = static_regex(
+        &PARAM_REGEX,
+        r"(?:^|,)\s*(?:mut\s+)?(?P<name>[a-z_][a-z0-9_]*)\s*:",
+    );
+    let Some(params) = signature
+        .captures(body)
+        .and_then(|captures| captures.name("params"))
+    else {
+        return Vec::new();
+    };
+    param
+        .captures_iter(params.as_str())
+        .filter_map(|captures| captures.name("name").map(|name| name.as_str().to_string()))
+        .collect()
+}
+
+fn let_binding(line: &str) -> Option<(String, &str)> {
+    static LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = static_regex(
+        &LET_BINDING_REGEX,
+        r"\blet\s+(?:mut\s+)?(?P<name>[a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*(?P<rhs>[^;]+)",
+    );
+    let captures = regex.captures(line)?;
+    Some((
+        captures.name("name")?.as_str().to_string(),
+        captures.name("rhs")?.as_str(),
+    ))
+}
+
+fn rhs_is_input_source(rhs: &str) -> bool {
+    rhs.contains("std::env::var")
+        || rhs.contains("env::var")
+        || rhs.contains(".uri()")
+        || rhs.contains(".query(")
+        || rhs.contains(".headers(")
+        || rhs.contains(".path(")
+}
+
+fn rhs_contains_name(rhs: &str, name: &str) -> bool {
+    let pattern = format!(r"\b{}\b", regex::escape(name));
+    Regex::new(&pattern)
+        .map(|compiled| compiled.is_match(rhs))
+        .unwrap_or(false)
+}
+
+fn line_has_validation_evidence(line: &str, name: &str) -> bool {
+    line_uses_url_validation(line, name)
+        || line_uses_allowlist(line, name)
+        || line_uses_html_escape(line, name)
+}
+
+fn line_uses_url_validation(line: &str, name: &str) -> bool {
+    (line.contains("Url::parse") || line.contains("validate_url")) && rhs_contains_name(line, name)
+}
+
+fn line_uses_allowlist(line: &str, name: &str) -> bool {
+    (line.contains("allowed_host") || line.contains("allowlist")) && rhs_contains_name(line, name)
+}
+
+fn line_uses_html_escape(line: &str, name: &str) -> bool {
+    (line.contains("html_escape") || line.contains("escape_html")) && rhs_contains_name(line, name)
+}
+
+fn binding_name_is_predicate(name: &str) -> bool {
+    name.starts_with("has_")
+        || name.starts_with("is_")
+        || name.starts_with("does_")
+        || name.starts_with("can_")
+        || name.starts_with("should_")
+        || name.starts_with("contains_")
+        || name.starts_with("matches_")
+}
+
+fn name_is_sanitized(name: &str) -> bool {
+    name.contains("safe")
+        || name.contains("sanitized")
+        || name.contains("validated")
+        || name.contains("allowed")
+        || name.contains("escaped")
+}
+
+fn ssrf_sink_argument(line: &str, taint: &FunctionTaint) -> Option<String> {
+    static SSRF_SINK_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = static_regex(
+        &SSRF_SINK_REGEX,
+        r"(?:reqwest::get|(?:client|http_client)\.(?:get|post|put|delete)|\.uri|hyper::Uri::from_maybe_shared)\s*\(\s*&?(?P<arg>[a-z_][a-z0-9_]*)",
+    );
+    let argument = regex.captures(line)?.name("arg")?.as_str();
+    taint.is_tainted(argument).then(|| argument.to_string())
+}
+
+fn unsafe_deserialization_argument(line: &str, taint: &FunctionTaint) -> Option<String> {
+    static DESERIALIZATION_SINK_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = static_regex(
+        &DESERIALIZATION_SINK_REGEX,
+        r"(?:serde_yaml::from_(?:str|reader|slice)|bincode::(?:deserialize|deserialize_from)|rmp_serde::from_(?:slice|read)|serde_pickle::from_(?:slice|reader))\s*\(\s*&?(?P<arg>[a-z_][a-z0-9_]*)",
+    );
+    let argument = regex.captures(line)?.name("arg")?.as_str();
+    taint.is_tainted(argument).then(|| argument.to_string())
+}
+
+fn yaml_config_parse_is_intentional(block: &FunctionBlock, line: &str) -> bool {
+    line.contains("serde_yaml::from_str")
+        && (block.name.contains("config") || block.name.contains("yaml"))
+}
+
+fn template_sink_argument(line: &str, taint: &FunctionTaint) -> Option<String> {
+    if line.contains("html_escape") || line.contains("escape_html") || line.contains("| escape") {
+        return None;
+    }
+    let has_sink = line.contains("Html(format!")
+        || line.contains(".body(format!")
+        || line.contains("PreEscaped(format!")
+        || line.contains("Markup::new(format!")
+        || line.contains("render_str(");
+    if !has_sink {
+        return None;
+    }
+    taint
+        .tainted
+        .iter()
+        .find(|name| taint.is_tainted(name) && rhs_contains_name(line, name))
+        .cloned()
+}
+
+fn network_candidate_finding(
+    file: &SourceFile,
+    rule_id: &str,
+    message: &str,
+    line: usize,
+    argument: &str,
+) -> Finding {
+    Finding::new(FindingDescriptor {
+        rule_id: rule_id.to_string(),
+        message: message.to_string(),
+        file_path: file.display_path.clone(),
+        line: Some(line),
+        severity: Severity::Warning,
+        pillar: Pillar::Security,
+        confidence: Confidence::Medium,
+        symbol: Some(argument.to_string()),
+        remediation: Some(
+            "Validate, constrain, or escape untrusted input at the boundary before passing it to the sink."
+                .to_string(),
+        ),
+        metadata: json!({ "candidate": true, "argument": argument }),
+    })
+}

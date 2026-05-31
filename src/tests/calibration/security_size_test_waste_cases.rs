@@ -191,6 +191,168 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 .expect("workflow write");
             }),
         ),
+        case(
+            "security.github-actions-unpinned-action",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n",
+                )
+                .expect("workflow write");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@1111111111111111111111111111111111111111\n",
+                )
+                .expect("workflow write");
+            }),
+        ),
+        case(
+            "security.github-actions-remote-shell",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\njobs:\n  test:\n    steps:\n      - run: curl -fsSL https://installer.example/script.sh | bash\n",
+                )
+                .expect("workflow write");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+                )
+                .expect("workflow write");
+            }),
+        ),
+        case(
+            "security.github-actions-broad-permissions",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\npermissions: write-all\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+                )
+                .expect("workflow write");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\npermissions: read-all\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+                )
+                .expect("workflow write");
+            }),
+        ),
+        case(
+            "security.github-actions-pull-request-target",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+                )
+                .expect("workflow write");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\non:\n  push:\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+                )
+                .expect("workflow write");
+            }),
+        ),
+        case(
+            "security.github-actions-secrets-in-pr",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\non:\n  pull_request:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+                )
+                .expect("workflow write");
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n");
+                fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
+                fs::write(
+                    root.join(".github/workflows/ci.yml"),
+                    "name: ci\non:\n  push:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+                )
+                .expect("workflow write");
+            }),
+        ),
+        case(
+            "security.ssrf-candidate",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn fetch(url: String) { let _ = reqwest::get(&url); }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn fetch(url: String) { let validated_url = Url::parse(&url).unwrap(); let _ = reqwest::get(validated_url.as_str()); }\n",
+                )
+            }),
+        ),
+        case(
+            "security.unsafe-deserialization",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn load(body: &[u8]) { let _ = bincode::deserialize(body); }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn load() { let bytes = include_bytes!(\"config.bin\"); let _ = bincode::deserialize(bytes); }\n",
+                )
+            }),
+        ),
+        case(
+            "security.xxe-candidate",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn parse() { let _ = libxml::parser::ParserOption::NOENT; }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn parse() { let _ = \"xml\"; }\n")
+            }),
+        ),
+        case(
+            "security.template-injection-xss",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn page(name: String) { let _ = Html(format!(\"<p>{name}</p>\")); }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn page(name: String) { let escaped = html_escape::encode_text(&name); let _ = Html(format!(\"<p>{escaped}</p>\")); }\n",
+                )
+            }),
+        ),
         // ----- sensitive data -----
         case(
             "sensitive-data.api-key-pattern",
@@ -242,7 +404,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Probe.\npub fn entry() { let _ = \"https://user:secret@example.invalid/path\"; }\n",
+                    "/// Probe.\npub fn entry() { let _ = \"https://user:realSecret123@payments.acme.co/path\"; }\n",
                 )
             }),
             Box::new(|root| {
@@ -318,6 +480,44 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() { let _ = \"plain-string\"; }\n",
+                )
+            }),
+        ),
+        case(
+            "sensitive-data.phi-pattern",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() { let _ = \"MRN: AB1234567\"; }\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() { let _ = \"MRN: 000000\"; }\n",
+                )
+            }),
+        ),
+        case(
+            "sensitive-data.gcp-service-account-key",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r##"/// Probe.
+pub fn entry() {
+    let _ = r#"{
+        "type": "service_account",
+        "project_id": "demo",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEowIBAAKCAQEAwvR2b2d1c2ZpeHR1cmV2YWx1ZQ==\n-----END PRIVATE KEY-----\n"
+    }"#;
+}
+"##,
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() { let _ = \"service_account without key\"; }\n",
                 )
             }),
         ),

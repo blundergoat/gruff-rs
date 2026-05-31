@@ -157,14 +157,23 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "dependency.git-unpinned-revision",
             "dependency.path-source",
             "dependency.wildcard-version",
+            "security.github-actions-broad-permissions",
+            "security.github-actions-pull-request-target",
+            "security.github-actions-remote-shell",
+            "security.github-actions-secrets-in-pr",
+            "security.github-actions-unpinned-action",
             "security.hardcoded-bind-all-interfaces",
             "security.insecure-rng-for-secrets",
             "security.path-traversal-candidate",
             "security.process-command",
             "security.sql-dynamic-query",
+            "security.ssrf-candidate",
+            "security.template-injection-xss",
             "security.tls-verification-disabled",
             "security.unsafe-block",
-            "security.weak-crypto"
+            "security.unsafe-deserialization",
+            "security.weak-crypto",
+            "security.xxe-candidate"
         ]
     );
 
@@ -186,9 +195,11 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "sensitive-data.api-key-pattern",
             "sensitive-data.aws-access-key",
             "sensitive-data.database-url-password",
+            "sensitive-data.gcp-service-account-key",
             "sensitive-data.hardcoded-env-value",
             "sensitive-data.high-entropy-string",
             "sensitive-data.jwt-token",
+            "sensitive-data.phi-pattern",
             "sensitive-data.pii-test-fixture",
             "sensitive-data.private-key",
             "sensitive-data.url-embedded-credentials"
