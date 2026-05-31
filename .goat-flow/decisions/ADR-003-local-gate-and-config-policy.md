@@ -116,3 +116,47 @@ via **counts, not retained rows** — the default render continues to drop
 
 **Reversibility:** `scope` is additive and pre-public; configs without it are
 byte-identical. Per-pillar `fail-on-new` and `--fail-on-resolved` are deferred.
+
+## Addendum 2026-05-31 — Count Gates vs "the score is not the target" (family-coordination position)
+
+The shared cross-port design foundation states **"the composite score is not the
+target"** — progress is reported as per-rule deltas, not score movement — and
+gruff-ts rejects count-based gates on that basis. gruff-rs ships a count-based
+`gate:` block (the M02/M03 addenda above). This addendum records gruff-rs's
+position for the cross-port decision; it changes no gate behavior and does not
+alter the gate unilaterally.
+
+**Why a count gate is consistent with "the score is not the target":**
+
+1. **The principle targets the *score*, and the gate deliberately ignores it.**
+   The concern is that the weighted composite — where high-count accepted-debt
+   rules dominate the penalty — is a poor, Goodhart-prone optimization target.
+   `Gate::evaluate` is a pure function over the severity summary and **never
+   consults the score model** (M02 addendum). The gate therefore cannot turn the
+   score into a target; it sidesteps the exact metric the principle warns about.
+2. **A count cap is a different primitive from a score index.** It is a hard
+   ceiling on the number of real, individually-listed findings in a severity
+   bucket — the same buckets `--fail-on` already gates on — not a proxy number to
+   optimize. Every counted finding stays visible in the report and is a concrete
+   question to answer (fix / configure / accept).
+3. **The cheapest way to pass is the genuine fix, because "fix, don't silence"
+   is enforced, not assumed.** `enabled: false` is config-visible and
+   discouraged; `excludeFromScore` keeps findings visible and emits a diagnostic
+   for Security/SensitiveData rules (ADR-014); a baseline is legitimate only
+   after cleanup; and `scope: new` **fails closed** (exit 2) without an applied
+   baseline rather than silently treating everything as new. The count cannot be
+   quietly gamed down.
+4. **Progress measurement and the CI fail-decision are different roles.** "The
+   score is not the target" governs how cleanup *progress* is measured (per-rule
+   deltas, ADR-014). The gate is a CI *fail policy* a repo opts into — a ceiling,
+   not a KPI. Keeping the two roles separate is what lets both hold at once.
+
+**Open Goodhart caveat for the family.** A count cap can still create perverse
+incentives (splitting one symbol to dodge a per-symbol count, or suppressing to
+pass). gruff-rs mitigates via penalty clustering (correlated findings score once,
+ADR-014) and required-reason suppressions, but per-rule or confidence-aware caps
+may be warranted. gruff-rs's position: a **severity-bucketed count ceiling,
+decoupled from the score and paired with the fix-don't-silence guardrails above,
+is consistent with the foundation** — but whether the family standardizes on it
+or adopts the gruff-ts no-count-gate position is a cross-port decision, not a
+unilateral one. No gate behavior changes pending that decision.

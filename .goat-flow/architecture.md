@@ -30,7 +30,7 @@ For dashboard scans, `run_dashboard` binds the requested host and port, `handle_
 
 There is no authentication layer. The dashboard defaults to loopback through `scripts/start-dev.sh`, so exposing it on a non-loopback host should be treated as a trust-boundary change.
 
-The analyzer reads user-selected files and does not execute analyzed source. Patch-input diff mode reads unified diff text as data and does not run Git or external diff drivers, following `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md`. The older Git-backed `--diff` path is gated behind `--diff-git-unsafe` and emits a run diagnostic when used. Fixture files deliberately contain command execution, secret-looking strings, parser edge cases, and noisy rule examples so the scanner can prove those rules fire; those fixture strings are test inputs, not runtime credentials.
+The analyzer reads user-selected files and does not execute analyzed source. Patch-input diff mode reads unified diff text as data and does not run Git or external diff drivers, following `.goat-flow/decisions/ADR-009-suppression-baseline-and-diff-layering.md`. The Git-backed `--diff`/`--since` modes are gated behind `--diff-git-unsafe` — a hard error without that opt-in, and the flag is hidden from `--help`. They are the documented opt-in exception to the no-execute posture (ADR-008), recorded with their residual risk in ADR-019; the Git-free `--diff-patch`/`--changed-ranges` modes need no opt-in and are the default-safe path. Fixture files deliberately contain command execution, secret-looking strings, parser edge cases, and noisy rule examples so the scanner can prove those rules fire; those fixture strings are test inputs, not runtime credentials.
 
 ## Data Flow
 
