@@ -135,7 +135,11 @@ fn parse_gate(value: &Value) -> Result<Gate, String> {
     let mapping = value
         .as_object()
         .ok_or_else(|| "config key `gate` must be an object".to_string())?;
-    reject_unknown_keys(mapping, &["total", "severity", "onMatch"], "gate")?;
+    reject_unknown_keys(
+        mapping,
+        &["total", "severity", "onMatch", "scope"],
+        "gate",
+    )?;
     let mut gate = Gate {
         total: parse_gate_count(mapping, "total", "gate.total")?,
         ..Gate::default()
@@ -145,6 +149,9 @@ fn parse_gate(value: &Value) -> Result<Gate, String> {
     }
     if let Some(on_match) = mapping.get("onMatch") {
         gate.on_match = parse_gate_on_match(on_match)?;
+    }
+    if let Some(scope) = mapping.get("scope") {
+        gate.scope = parse_gate_scope(scope)?;
     }
     Ok(gate)
 }
@@ -182,6 +189,16 @@ fn parse_gate_on_match(value: &Value) -> Result<GateOnMatch, String> {
         Some("fail") => Ok(GateOnMatch::Fail),
         Some("warn") => Ok(GateOnMatch::Warn),
         _ => Err("config key `gate.onMatch` must be `fail` or `warn`".to_string()),
+    }
+}
+
+/// Parse `gate.scope`. Only `new` and `all` are accepted; the default (key absent)
+/// stays `GateScope::Current`, which preserves the historical gate behavior.
+fn parse_gate_scope(value: &Value) -> Result<GateScope, String> {
+    match value.as_str() {
+        Some("new") => Ok(GateScope::New),
+        Some("all") => Ok(GateScope::All),
+        _ => Err("config key `gate.scope` must be `new` or `all`".to_string()),
     }
 }
 

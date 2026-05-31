@@ -175,10 +175,21 @@ pub(crate) fn run_analysis_in_project(
         &analysed_paths,
     )?;
     let mut report = build_report(project_root, options, config, inputs);
-    // Surface the per-severity gate decision (ADR-003 M02 addendum) as a non-fatal
-    // diagnostic; the exit-code effect is applied by `RunOutcome::classify`.
+    // Surface the gate decision (ADR-003 addenda). `scope: new`/`--fail-on-new`
+    // without a baseline is a fatal config error (exit 2 via `is_failure`);
+    // otherwise a non-fatal `gate` diagnostic whose exit effect is applied by
+    // `RunOutcome::classify`.
     if let Some(gate) = &config.gate {
-        report.diagnostics.push(gate.diagnostic(&report.summary));
+        let diagnostic = match gate.scope_precondition_error(&report) {
+            Some(message) => RunDiagnostic {
+                diagnostic_type: "gate-config-error".to_string(),
+                message,
+                file_path: None,
+                line: None,
+            },
+            None => gate.diagnostic(&report),
+        };
+        report.diagnostics.push(diagnostic);
     }
     record_history_if_requested(project_root, options, config, &mut report);
     Ok(report)
@@ -204,6 +215,9 @@ fn collect_report_inputs(
     );
     // Dedupe before baseline so perRuleDeltas match the final report (footguns/report.md).
     sort_and_dedupe_findings(&mut findings);
+    // Severity summary over the full set BEFORE baseline suppression drops `unchanged`,
+    // so `gate.scope: all` can count the pre-baseline findings (ADR-003 addendum).
+    let all_findings_summary = Some(summarize(&findings));
     let baseline_resolution = resolve_baseline(project_root, options, &mut findings)?;
     let (findings, summaries, suppressed_findings) =
         apply_report_exclusions(findings, &config.exclusions);
@@ -219,6 +233,7 @@ fn collect_report_inputs(
         },
         per_rule_deltas,
         suppressed_count: None,
+        all_findings_summary,
     };
     match diff_filter {
         Some(diff_filter) => Ok(apply_changed_region_to_inputs(
@@ -260,6 +275,7 @@ fn apply_changed_region_to_inputs(
     );
     ReportInputs {
         discovery,
+        all_findings_summary: report.all_findings_summary,
         diagnostics: report.diagnostics,
         findings: report.findings,
         baseline_report,
@@ -416,6 +432,7 @@ pub(crate) struct ReportInputs {
     pub(crate) suppressions: ReportSuppressions,
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     pub(crate) suppressed_count: Option<usize>,
+    pub(crate) all_findings_summary: Option<Summary>,
 }
 
 pub(crate) fn build_report(
@@ -432,6 +449,7 @@ pub(crate) fn build_report(
         suppressions,
         per_rule_deltas,
         suppressed_count,
+        all_findings_summary,
     } = inputs;
     let summary = summarize(&findings);
     let score = score_report(&findings, config);
@@ -462,5 +480,6 @@ pub(crate) fn build_report(
         baseline: baseline_report,
         per_rule_deltas,
         suppressed_findings: suppressions.suppressed_findings,
+        all_findings_summary,
     }
 }

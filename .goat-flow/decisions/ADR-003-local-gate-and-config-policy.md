@@ -2,7 +2,7 @@
 
 **Status:** Implemented
 **Date:** 2026-05-13
-**Updated:** 2026-05-30 (M02 per-severity gate addendum below)
+**Updated:** 2026-05-31 (per-severity gate + baseline-aware fail-on-new addenda below)
 
 ## Decision
 
@@ -68,3 +68,51 @@ renders in text/json without the diagnostic itself forcing exit 2.
 can change before external users exist. Per-pillar gates, confidence-aware gates,
 and coverage gates are explicitly deferred (see M02 Deferred). `--fail-on-new`
 (M03) composes this gate with baseline tri-state and is a separate decision.
+
+## Addendum 2026-05-31 — Baseline-Aware Gate Scope (`--fail-on-new`)
+
+Composes the per-severity gate above with baseline tri-state classification so CI
+can fail on newly-introduced findings while keeping baselined debt visible.
+
+**Key implementation fact that shapes this decision:** `apply_baseline` drops
+findings matched by the baseline (`unchanged`) from the finding set *before* the
+report summary is computed and *before* the gate evaluates. So when a baseline is
+applied, the gate already counts **new findings only**. That is the correct
+default — freezing existing debt is the baseline's entire purpose — so the
+default gate behavior is **unchanged** by this addendum.
+
+**New `scope` knob (additive; default preserves current behavior):**
+
+```yaml
+gate:
+  scope: new            # optional: `new` | `all`. Unset = current behavior
+  severity:
+    error: 0
+```
+
+- Unset (default): the gate evaluates over the report summary as today — i.e.
+  new-only when a baseline is applied, all findings when none is. **No behavior
+  change** for existing configs.
+- `scope: new`: gate over `new`-classified findings (the post-baseline summary).
+  **Requires a baseline**; resolving `scope: new` with no baseline loaded is a
+  **config error (exit 2)** naming the missing baseline (a silent no-op — where
+  every finding is "new" — is the rejected alternative).
+- `scope: all`: gate over the full pre-baseline finding set (`new` + `unchanged`).
+  Implemented by capturing an "all" per-severity summary before baseline
+  suppression; `unchanged`-by-severity is then `all − new`.
+- `absent` findings (baseline entries with no current match) **never** count
+  toward any threshold under any scope — they are resolved, and are never present
+  in the current finding set.
+
+**`--fail-on-new` flag:** a CLI alias for `gate.scope: new` with a default
+`severity.error: 0` (warning/advisory unlimited). Flag and config must produce
+identical exit codes and diagnostics. Same missing-baseline rule: exit 2.
+
+**Debt visibility:** the gate diagnostic always reports both the gated count and
+the baselined `unchanged` count (sourced from the baseline report's counts), so a
+passing `scope: new` run still communicates legacy-debt size. Debt is surfaced
+via **counts, not retained rows** — the default render continues to drop
+`unchanged`/`absent` findings (the backward-compatible baseline render decision).
+
+**Reversibility:** `scope` is additive and pre-public; configs without it are
+byte-identical. Per-pillar `fail-on-new` and `--fail-on-resolved` are deferred.

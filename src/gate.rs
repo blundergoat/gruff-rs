@@ -10,6 +10,7 @@ pub(crate) struct Gate {
     pub(crate) warning: Option<u64>,
     pub(crate) advisory: Option<u64>,
     pub(crate) on_match: GateOnMatch,
+    pub(crate) scope: GateScope,
 }
 
 /// What a tripped gate does: `Fail` makes the run exit 1, `Warn` only records the
@@ -19,6 +20,20 @@ pub(crate) enum GateOnMatch {
     #[default]
     Fail,
     Warn,
+}
+
+/// Which finding set the gate counts (ADR-003 baseline-aware gate-scope addendum).
+/// `Current` (default / `scope:` unset) preserves the historical behavior: gate over
+/// the report summary, which is new-only when a baseline is applied (baseline
+/// suppression drops `unchanged` before the summary is taken) and all findings
+/// otherwise. `New` gates only on new findings and requires an applied baseline.
+/// `All` gates over the pre-baseline finding set (new + unchanged).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum GateScope {
+    #[default]
+    Current,
+    New,
+    All,
 }
 
 /// Result of evaluating a gate over a report summary.
@@ -58,16 +73,69 @@ impl Gate {
         }
     }
 
-    /// The non-fatal `gate` diagnostic carrying the per-severity breakdown, pushed
-    /// onto the report so the decision renders without forcing a config-error exit.
-    pub(crate) fn diagnostic(&self, summary: &Summary) -> RunDiagnostic {
+    /// Evaluate the gate over the report, selecting the finding set per `scope`.
+    /// This is the report-aware wrapper around the pure `evaluate`; the exit-code
+    /// path (`RunOutcome::classify`) and the diagnostic both go through it so the
+    /// scope choice is applied once, consistently.
+    pub(crate) fn evaluate_report(&self, report: &AnalysisReport) -> GateEvaluation {
+        self.evaluate(self.gated_summary(report))
+    }
+
+    /// The severity summary this gate counts. `All` uses the pre-baseline summary
+    /// (falling back to the report summary when none was captured); `Current` and
+    /// `New` use the report summary (new-only when a baseline is applied).
+    fn gated_summary<'a>(&self, report: &'a AnalysisReport) -> &'a Summary {
+        match self.scope {
+            GateScope::All => report
+                .all_findings_summary
+                .as_ref()
+                .unwrap_or(&report.summary),
+            GateScope::Current | GateScope::New => &report.summary,
+        }
+    }
+
+    /// `Some(message)` when this gate's scope cannot be satisfied for the run:
+    /// `scope: new` (or `--fail-on-new`) with no applied baseline, where "new" is
+    /// undefined. The caller turns this into a fatal config-error diagnostic (exit
+    /// 2) rather than silently treating every finding as new.
+    pub(crate) fn scope_precondition_error(&self, report: &AnalysisReport) -> Option<String> {
+        (self.scope == GateScope::New && !baseline_applied(report)).then(|| {
+            "`gate.scope: new` (and `--fail-on-new`) needs a baseline to define what is \
+             \"new\"; pass `--baseline <path>`, keep a `gruff-baseline.json`, or drop \
+             `scope: new`"
+                .to_string()
+        })
+    }
+
+    /// The non-fatal `gate` diagnostic carrying the per-severity breakdown for the
+    /// gated scope, plus the baseline new/unchanged counts (debt visibility) when a
+    /// baseline is applied. Pushed onto the report so the decision renders without
+    /// forcing a config-error exit.
+    pub(crate) fn diagnostic(&self, report: &AnalysisReport) -> RunDiagnostic {
+        let base = self.evaluate_report(report).message;
+        let message = match report.baseline.as_ref().filter(|baseline| !baseline.generated) {
+            Some(baseline) => format!(
+                "{base} (baseline: {} new, {} unchanged)",
+                baseline.new_count, baseline.unchanged_count
+            ),
+            None => base,
+        };
         RunDiagnostic {
             diagnostic_type: "gate".to_string(),
-            message: self.evaluate(summary).message,
+            message,
             file_path: None,
             line: None,
         }
     }
+}
+
+/// Whether a baseline was *applied* for comparison (not merely generated). Drives
+/// the `scope: new` precondition and the diagnostic's debt-count suffix.
+fn baseline_applied(report: &AnalysisReport) -> bool {
+    report
+        .baseline
+        .as_ref()
+        .is_some_and(|baseline| !baseline.generated)
 }
 
 /// Render one gate dimension as `name count/cap` (with `(over)` when breached) or

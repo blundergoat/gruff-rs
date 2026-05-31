@@ -39,6 +39,7 @@ pub(crate) fn json_report_uses_schema_version() {
         baseline: None,
         per_rule_deltas: None,
         suppressed_findings: Vec::new(),
+        all_findings_summary: None,
     };
 
     let rendered = render_report(&report, OutputFormat::Json);

@@ -302,6 +302,9 @@ pub(crate) fn apply_changed_region_filter(
     let deltas = patch_rule_deltas(&kept, &suppressed);
     report.findings = kept;
     report.summary = summarize(&report.findings);
+    // Under a diff, align the pre-baseline summary with the filtered set so
+    // `gate.scope: all` gates over the changed region too (ADR-003 addendum).
+    report.all_findings_summary = Some(report.summary);
     report.score = score_report(&report.findings, config);
     report.per_rule_deltas = (!deltas.is_empty()).then_some(deltas);
     report.suppressed_count = Some(suppressed_findings);

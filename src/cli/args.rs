@@ -21,6 +21,11 @@ pub(crate) struct AnalyseArgs {
     /// `minimumSeverity.analyse:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,
+    /// Fail only on findings new since the baseline: alias for gate `scope: new`
+    /// with a default `error: 0` cap. Requires a baseline (`--baseline` or a
+    /// `gruff-baseline.json`); without one the run is a config error (exit 2).
+    #[arg(long)]
+    pub(crate) fail_on_new: bool,
     /// Include paths ignored by Git ignore files or built-in default dirs; config `paths.ignore` and VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,

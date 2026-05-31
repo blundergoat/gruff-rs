@@ -28,6 +28,76 @@ None of these patterns existed in gruff-rs's own source. Calibration was green; 
 
 **How to apply:** For every new default-on rule, add a one-line note to the rule's `Created:` PR description: "External scan: <repo path>, <N> findings, <X> TPs / <Y> FPs / <Z> ambiguous." If <Y> exceeds 10% of <N>, tighten the rule or downgrade it to non-default-on before merge.
 
+## Lesson: Run Fresh Git Status Before Giving Git Next Steps
+
+**Created:** 2026-05-31
+
+When advising on commits, staging, or "what's next" for a dirty-looking workspace,
+run `git status --short --untracked-files=all` or `git status -sb` in every
+repo being discussed immediately before answering. Do not reuse a status snapshot
+from earlier in the session, especially after other agents, hooks, commits, or
+context compaction may have changed the tree.
+
+**Concrete example (this repo, 2026-05-31):** After working across `gruff-rs`
+and `gruff-ts`, I told the user the next step was to commit the current work
+based on an earlier dirty status. A fresh `git status -sb` then showed both
+repos clean (`## dev...origin/dev`), so the commit advice was wrong and stale.
+
+**How to apply:**
+
+- Before saying "commit", "stage", "nothing changed", "working tree is dirty",
+  or "worktree is clean", run status in the relevant repo(s) in the current turn.
+- If multiple repos were touched, status all of them and name each result.
+- If the command was not run, phrase the answer as a caveat or run the command
+  first; do not make a confident git-state claim from memory.
+
+## Lesson: A Complete Milestone Must Have Ticked Checkboxes
+
+**Created:** 2026-05-31
+
+Never mark a milestone `implemented`, `testing-gate`, or `complete` while its
+own task, assumption, exit-criteria, or testing-gate checkboxes remain unticked.
+An implemented status with empty checkboxes is worse than no status update: it
+misleads the next reader into thinking either no work happened or the tracking
+artifact cannot be trusted.
+
+**Concrete example (this repo, 2026-05-31):** a task-tracking file's top-line
+status said its rubric-removal work was implemented, but every checklist item
+was still `- [ ]`. The code and verification had moved, yet the plan looked
+untouched until the user called it out. The corrected task now has ticked
+assumptions, tasks, exit criteria, testing gates, and a `Verification Evidence`
+section.
+
+**How to apply:**
+
+- When completing work from a plan, tick each completed checkbox immediately
+  after the code or verification proves it.
+- Before changing any task `Status:` to `implemented`, `testing-gate`, or
+  `complete`, run `rg -n '^- \[ \]' <task-file>`. If unchecked boxes remain,
+  either tick them with evidence or leave the status as in-progress/deferred.
+- Before final response for plan-backed work, re-open the task file and confirm
+  the checklist, status line, and verification evidence agree.
+- Treat task files as review artifacts, not scratch notes. A stale checklist is
+  a failed handoff even when the code is correct.
+
+**Updated 2026-05-31:** Two failure modes worse than the above surfaced when the
+user found more stale plans. (1) **The status line lies the other way.** Some
+task files read `Status: planned` with zero ticks even though the feature had
+already shipped (confirmed via `git log` and the live source symbols); another
+read `Status: completed` with none of its boxes ticked. So the status line is
+not a trustworthy done-signal — before trusting OR updating it, cross-check
+against `git log` and the actual `src/` symbols (`rg` the structs/fields the
+work introduced), not just "did I tick boxes." (2) **Reconciling a neglected
+checklist is NOT a licence to blanket-tick.** A partially-implemented plan has
+diverged from its spec: the core lands while a peripheral surface (a CLI flag, a
+renderer, docs) does not. Flipping every `- [ ]` to `- [x]` to "finish the
+board" writes false `[x]` on features that do not exist — the exact
+false-attestation this tool exists to catch (mission: `docs/mission.md`). Verify
+each box against the source this session, tick only what is real, and leave the
+rest unchecked with an inline `NOT BUILT`/`NOT DONE` note plus a
+`Verification Evidence` section. A half-true status (`core done … X and Y not
+built`) beats both a bare `planned` and a dishonest `complete`.
+
 ## Lesson: When A Self-Scan Says Zero, Confirm The Rule Still Fires Somewhere
 
 **Created:** 2026-05-24

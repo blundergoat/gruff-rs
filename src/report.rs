@@ -186,6 +186,7 @@ impl RunDiagnostic {
                 | "lockfile-read-error"
                 | "lockfile-parse-error"
                 | "history-error"
+                | "gate-config-error"
         )
     }
 }
@@ -214,6 +215,11 @@ pub(crate) struct AnalysisReport {
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     #[serde(skip)]
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
+    /// Severity summary over the full finding set *before* baseline suppression,
+    /// consumed by `gate.scope: all`. Internal only (`#[serde(skip)]`) so the JSON
+    /// schema is unchanged; equals `summary` when no baseline dropped findings.
+    #[serde(skip)]
+    pub(crate) all_findings_summary: Option<Summary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -240,7 +246,7 @@ pub(crate) struct RunInfo {
     pub(crate) generated_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone, Copy)]
 pub(crate) struct Summary {
     pub(crate) advisory: usize,
     pub(crate) warning: usize,

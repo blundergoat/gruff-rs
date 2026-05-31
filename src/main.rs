@@ -96,7 +96,7 @@ use diff::{
     patch_intersects_finding, patch_range_intersects, read_diff_patch, DiffPatchLineMap,
 };
 use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
-use gate::{Gate, GateOnMatch};
+use gate::{Gate, GateOnMatch, GateScope};
 use ignore_policy::{IgnoreSource, IgnoredPath};
 pub(crate) use render::html_escape;
 use render::render_report_with_scope;
@@ -190,8 +190,9 @@ fn run_analyse_command(
         no_interaction,
     );
     let cli_fail_on = args.fail_on;
+    let fail_on_new = args.fail_on_new;
     let base = options_from_analyse(args, FailThreshold::Advisory);
-    let (project_root, options, config) =
+    let (project_root, options, mut config) =
         match resolve_command_setup(base, cli_fail_on, "analyse", FailThreshold::Advisory) {
             Ok(triple) => triple,
             Err(error) => {
@@ -199,6 +200,9 @@ fn run_analyse_command(
                 return ExitCode::from(2);
             }
         };
+    if fail_on_new {
+        apply_fail_on_new(&mut config);
+    }
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
@@ -213,6 +217,18 @@ fn run_analyse_command(
             eprintln!("gruff-rs: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Fold the `--fail-on-new` flag into the gate as `scope: new` with a default
+/// `error: 0` cap (ADR-003 baseline-aware gate-scope addendum). An existing `gate:`
+/// block keeps its other caps. The missing-baseline precondition is enforced later
+/// by `Gate::scope_precondition_error` during analysis (a config error, exit 2).
+fn apply_fail_on_new(config: &mut Config) {
+    let gate = config.gate.get_or_insert_with(Gate::default);
+    gate.scope = GateScope::New;
+    if gate.error.is_none() {
+        gate.error = Some(0);
     }
 }
 

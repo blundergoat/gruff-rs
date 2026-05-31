@@ -148,4 +148,108 @@ pub(crate) fn gate_block_parses_strictly() {
     write_config(dir.path(), "gate:\n  onMatch: boom\n");
     let err = analyse(dir.path()).expect_err("bad onMatch rejected");
     assert!(err.contains("gate.onMatch"), "{err}");
+
+    // A valid scope (`new`/`all`) parses. (`new`'s missing-baseline check is a
+    // runtime diagnostic, not a parse error, so `all` is used here for a clean run.)
+    write_config(dir.path(), "gate:\n  scope: all\n");
+    assert!(analyse(dir.path()).is_ok());
+
+    // An unknown scope value is rejected, naming the offending path.
+    write_config(dir.path(), "gate:\n  scope: bogus\n");
+    let err = analyse(dir.path()).expect_err("bad scope rejected");
+    assert!(err.contains("gate.scope"), "{err}");
+}
+
+fn test_baseline_report(generated: bool) -> BaselineReport {
+    BaselineReport {
+        path: "gruff-baseline.json".to_string(),
+        source: "explicit".to_string(),
+        suppressed: 0,
+        new_count: 0,
+        unchanged_count: 0,
+        absent_count: 0,
+        generated,
+    }
+}
+
+// ADR-003 baseline-aware gate-scope addendum: `scope: new` (and `--fail-on-new`)
+// needs an *applied* baseline to define "new"; otherwise the run is a config error.
+#[test]
+pub(crate) fn gate_scope_new_requires_applied_baseline() {
+    let new_gate = Gate {
+        error: Some(0),
+        scope: GateScope::New,
+        ..Gate::default()
+    };
+
+    // No baseline -> precondition error naming the baseline requirement.
+    let mut report = sample_report_with(Vec::new(), Vec::new());
+    let error = new_gate
+        .scope_precondition_error(&report)
+        .expect("scope: new without a baseline is a config error");
+    assert!(error.contains("baseline"), "{error}");
+
+    // A *generated* baseline is not an applied comparison -> still an error.
+    report.baseline = Some(test_baseline_report(true));
+    assert!(new_gate.scope_precondition_error(&report).is_some());
+
+    // An applied baseline satisfies the precondition.
+    report.baseline = Some(test_baseline_report(false));
+    assert!(new_gate.scope_precondition_error(&report).is_none());
+
+    // `scope: all` and the default never require a baseline.
+    let no_baseline = sample_report_with(Vec::new(), Vec::new());
+    let all_gate = Gate {
+        scope: GateScope::All,
+        ..Gate::default()
+    };
+    assert!(all_gate.scope_precondition_error(&no_baseline).is_none());
+    assert!(Gate::default()
+        .scope_precondition_error(&no_baseline)
+        .is_none());
+}
+
+// `scope: all` counts the pre-baseline finding set; the default and `new` count the
+// post-baseline report summary (new-only when a baseline is applied).
+#[test]
+pub(crate) fn gate_scope_all_counts_pre_baseline_findings() {
+    let mut report = sample_report_with(Vec::new(), Vec::new());
+    // Post-baseline summary: zero new errors. Pre-baseline: one (baselined) error.
+    report.summary = summary(0, 0, 0);
+    report.all_findings_summary = Some(summary(0, 0, 1));
+
+    let cap = |scope| Gate {
+        error: Some(0),
+        scope,
+        ..Gate::default()
+    };
+
+    // Default/`new` gate the post-baseline summary -> within the cap -> pass.
+    assert!(!cap(GateScope::Current).evaluate_report(&report).fails);
+    assert!(!cap(GateScope::New).evaluate_report(&report).fails);
+    // `all` gates the pre-baseline summary -> over the cap -> fails.
+    assert!(cap(GateScope::All).evaluate_report(&report).fails);
+
+    // With no captured pre-baseline summary, `all` falls back to the report summary.
+    report.all_findings_summary = None;
+    assert!(!cap(GateScope::All).evaluate_report(&report).fails);
+}
+
+// A gate-config-error diagnostic is fatal: exit 2 (DiagnosticsFailed), ahead of any
+// gate or --fail-on evaluation.
+#[test]
+pub(crate) fn gate_config_error_diagnostic_is_exit_2() {
+    let report = sample_report_with(
+        Vec::new(),
+        vec![RunDiagnostic {
+            diagnostic_type: "gate-config-error".to_string(),
+            message: "needs a baseline".to_string(),
+            file_path: None,
+            line: None,
+        }],
+    );
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, Some(&Gate::default())),
+        RunOutcome::DiagnosticsFailed,
+    );
 }
