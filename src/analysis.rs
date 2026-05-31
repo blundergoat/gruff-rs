@@ -215,10 +215,8 @@ fn collect_report_inputs(
     );
     // Dedupe before baseline so perRuleDeltas match the final report (footguns/report.md).
     sort_and_dedupe_findings(&mut findings);
-    // Severity summary over the full set BEFORE baseline suppression drops `unchanged`,
-    // so `gate.scope: all` can count the pre-baseline findings (ADR-003 addendum).
-    let all_findings_summary = Some(summarize(&findings));
-    let baseline_resolution = resolve_baseline(project_root, options, &mut findings)?;
+    let (baseline_resolution, all_findings_summary) =
+        resolve_baseline(project_root, options, &mut findings)?;
     let (findings, summaries, suppressed_findings) =
         apply_report_exclusions(findings, &config.exclusions);
     let (baseline_report, per_rule_deltas) = split_baseline_resolution(baseline_resolution);
@@ -233,35 +231,36 @@ fn collect_report_inputs(
         },
         per_rule_deltas,
         suppressed_count: None,
-        all_findings_summary,
+        all_findings_summary: Some(all_findings_summary),
     };
-    match diff_filter {
-        Some(diff_filter) => Ok(apply_changed_region_to_inputs(
-            project_root,
-            options,
-            config,
-            inputs,
-            diff_filter,
-            analysed_paths,
-            &function_blocks_by_file,
-        )),
-        None => Ok(inputs),
-    }
+    Ok(apply_changed_region_to_inputs(
+        project_root,
+        options,
+        config,
+        inputs,
+        diff_filter,
+        analysed_paths,
+        &function_blocks_by_file,
+    ))
 }
 
 /// Run the changed-region filter over an already-assembled report and re-pack
 /// the filtered findings, suppressions, deltas, and suppressed-count back into
-/// `ReportInputs`. `discovery` and `baseline_report` pass through unchanged - the
-/// filter only narrows findings to the changed region.
+/// `ReportInputs`. With no diff filter the inputs pass through untouched.
+/// `discovery` and `baseline_report` pass through unchanged - the filter only
+/// narrows findings to the changed region.
 fn apply_changed_region_to_inputs(
     project_root: &Path,
     options: &AnalysisOptions,
     config: &Config,
     inputs: ReportInputs,
-    diff_filter: &ResolvedDiffFilter,
+    diff_filter: Option<&ResolvedDiffFilter>,
     analysed_paths: &BTreeSet<String>,
     function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
 ) -> ReportInputs {
+    let Some(diff_filter) = diff_filter else {
+        return inputs;
+    };
     let discovery = inputs.discovery.clone();
     let baseline_report = inputs.baseline_report.clone();
     let report = build_report(project_root, options, config, inputs);

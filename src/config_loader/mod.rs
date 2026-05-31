@@ -135,11 +135,7 @@ fn parse_gate(value: &Value) -> Result<Gate, String> {
     let mapping = value
         .as_object()
         .ok_or_else(|| "config key `gate` must be an object".to_string())?;
-    reject_unknown_keys(
-        mapping,
-        &["total", "severity", "onMatch", "scope"],
-        "gate",
-    )?;
+    reject_unknown_keys(mapping, &["total", "severity", "onMatch", "scope"], "gate")?;
     let mut gate = Gate {
         total: parse_gate_count(mapping, "total", "gate.total")?,
         ..Gate::default()

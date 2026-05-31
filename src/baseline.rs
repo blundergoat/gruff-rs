@@ -149,7 +149,21 @@ pub(crate) struct BaselineResolution {
     pub(crate) deltas: Vec<RuleDelta>,
 }
 
+/// Resolve the baseline AND capture the severity summary of the full finding set
+/// *before* baseline suppression drops `unchanged` findings, so the gate's
+/// `scope: all` can count the pre-baseline set (ADR-003 addendum). The summary is
+/// taken up front because `resolve_baseline_inner` mutates `findings` in place.
 pub(crate) fn resolve_baseline(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    findings: &mut Vec<Finding>,
+) -> Result<(Option<BaselineResolution>, Summary), String> {
+    let all_findings_summary = summarize(findings);
+    let resolution = resolve_baseline_inner(project_root, options, findings)?;
+    Ok((resolution, all_findings_summary))
+}
+
+fn resolve_baseline_inner(
     project_root: &Path,
     options: &AnalysisOptions,
     findings: &mut Vec<Finding>,

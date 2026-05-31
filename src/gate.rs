@@ -99,7 +99,7 @@ impl Gate {
     /// undefined. The caller turns this into a fatal config-error diagnostic (exit
     /// 2) rather than silently treating every finding as new.
     pub(crate) fn scope_precondition_error(&self, report: &AnalysisReport) -> Option<String> {
-        (self.scope == GateScope::New && !baseline_applied(report)).then(|| {
+        (self.scope == GateScope::New && !is_baseline_applied(report)).then(|| {
             "`gate.scope: new` (and `--fail-on-new`) needs a baseline to define what is \
              \"new\"; pass `--baseline <path>`, keep a `gruff-baseline.json`, or drop \
              `scope: new`"
@@ -113,7 +113,11 @@ impl Gate {
     /// forcing a config-error exit.
     pub(crate) fn diagnostic(&self, report: &AnalysisReport) -> RunDiagnostic {
         let base = self.evaluate_report(report).message;
-        let message = match report.baseline.as_ref().filter(|baseline| !baseline.generated) {
+        let message = match report
+            .baseline
+            .as_ref()
+            .filter(|baseline| !baseline.generated)
+        {
             Some(baseline) => format!(
                 "{base} (baseline: {} new, {} unchanged)",
                 baseline.new_count, baseline.unchanged_count
@@ -131,7 +135,7 @@ impl Gate {
 
 /// Whether a baseline was *applied* for comparison (not merely generated). Drives
 /// the `scope: new` precondition and the diagnostic's debt-count suffix.
-fn baseline_applied(report: &AnalysisReport) -> bool {
+fn is_baseline_applied(report: &AnalysisReport) -> bool {
     report
         .baseline
         .as_ref()

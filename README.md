@@ -239,6 +239,13 @@ Baselines suppress reviewed findings by exact fingerprint, rule ID, and file pat
 ./.cargo-tools/bin/gruff-rs analyse src --no-baseline --fail-on none
 ```
 
+A baseline run classifies every finding as **new**, **unchanged** (matched the
+baseline and suppressed from the default list), or **resolved** (a baseline entry no
+longer found). The counts surface in the scan card and in JSON under
+`baseline.newCount` / `unchangedCount` / `absentCount`; the default findings list
+still shows only new findings, so existing reports are byte-identical. See
+[Quality Gates](#quality-gates) to fail CI on new findings only.
+
 Changed-code scans keep findings whose location or enclosing declaration
 overlaps the changed hunk. JSON output includes `suppressedCount` for findings
 excluded as out of scope.
@@ -264,6 +271,42 @@ The JSON output exposes the same data as a `perRuleDeltas[]` array (`{ruleId, in
 **Coding-agent hook.** Coding agents can run gruff-rs after each edit so they only see findings on the code they just changed, not unrelated debt in the same file. The goat-flow project ships a PostToolUse hook (`gruff-code-quality.sh`) that runs `gruff-rs analyse <file> --format json --fail-on none` on the edited file and filters the JSON to the changed line ranges (from the agent's tool payload or `git diff --unified=0`), reporting a suppressed count for pre-existing same-file findings; see its `gruff-code-quality.md` playbook for setup and triage. gruff-rs's side of the contract is the stable per-file JSON (`filePath`, `line`, `severity`, `ruleId`) under `gruff.analysis.v2`; the `--diff-patch` / `--diff <mode>` flags above are the in-binary change-scoping equivalent for CI or single-binary use.
 
 Config `paths.ignore` is authoritative in every invocation mode (walk, explicit file args, and all diff modes), so a hook can pass an ignored file and gruff-rs emits no findings for it — `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`. Ignored paths are reported under `paths.ignoredPathDetails` with their `source` and `pattern`. The `check-ignore` command lets a hook query the same decision per path without analysing (`gruff-rs check-ignore --format json <path>...` → `[{path, ignored, source, pattern}]`, `git check-ignore` exit codes). See [CI Integration](docs/ci-integration.md) and ADR-018.
+
+## Quality Gates
+
+Beyond the binary `--fail-on <severity>`, a `gate:` block in `.gruff-rs.yaml` gates on
+finding **counts** — per severity and/or a total cap:
+
+```yaml
+gate:
+  total: 200            # optional: fail when total findings exceed this
+  severity:
+    error: 0            # optional per-severity caps (omitted = unlimited)
+    warning: 10
+  onMatch: fail         # `fail` (default, exit 1) | `warn` (diagnostic only)
+  scope: new            # optional: `new` | `all` (default: scope unset)
+```
+
+Every gated run records a `gate` diagnostic with the per-severity breakdown and the
+`pass`/`trip`/`warn` decision (rendered in text/json/sarif). When both the `gate:` block
+and `--fail-on` are set, the gate evaluates first; a trip with `onMatch: fail` exits `1`.
+A malformed gate (unknown key, negative count, bad `onMatch`/`scope`) is a config error
+(exit `2`) naming the offending path.
+
+**Fail only on new findings.** `--fail-on-new` (equivalently `gate.scope: new` with a
+default `error: 0` cap) fails the run on findings introduced since the baseline while
+keeping baselined debt visible in the gate diagnostic
+(`… (baseline: N new, M unchanged)`):
+
+```bash
+./.cargo-tools/bin/gruff-rs analyse src --baseline --fail-on-new
+```
+
+`--fail-on-new` requires a baseline; without one it is a config error (exit `2`) — "new"
+is undefined with nothing to compare against. `scope: all` gates over every finding
+(new + baselined); the default (`scope` unset) preserves the historical behavior, which
+already counts only new findings when a baseline is applied. Resolved (`absent`) findings
+never count toward any gate.
 
 ## Dashboard
 
