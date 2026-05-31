@@ -278,9 +278,19 @@ impl Config {
         if self.selectors.has_positive && !self.selectors.positive.contains(rule_id) {
             return false;
         }
-        self.rule_settings
+        if let Some(enabled) = self
+            .rule_settings
             .get(rule_id)
             .and_then(|setting| setting.enabled)
+        {
+            return enabled;
+        }
+        if self.selectors.has_positive {
+            return true;
+        }
+        rules::builtin_registry()
+            .get(rule_id)
+            .map(|definition| definition.default_enabled)
             .unwrap_or(true)
     }
 

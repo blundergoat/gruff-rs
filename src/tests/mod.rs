@@ -207,6 +207,10 @@ fn write_config(dir: &Path, body: &str) {
     fs::write(dir.join(".gruff-rs.yaml"), body).expect("yaml config write");
 }
 
+fn enable_builtin_rule(dir: &Path, rule_id: &str) {
+    write_config(dir, &format!("rules:\n  {rule_id}:\n    enabled: true\n"));
+}
+
 fn project_context_for_test(project_root: &Path) -> ProjectContext {
     let options = AnalysisOptions {
         paths: vec![PathBuf::from(".")],

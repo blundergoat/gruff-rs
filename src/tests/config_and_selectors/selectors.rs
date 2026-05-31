@@ -24,6 +24,40 @@ pub(crate) fn selector_set_matches_registry_with_negative_precedence() {
 }
 
 #[test]
+pub(crate) fn default_disabled_rules_need_explicit_opt_in() {
+    let rule_id = "waste.unnecessary-clone-candidate";
+    let registry = rules::builtin_registry();
+
+    let default_config = Config::default();
+    assert!(
+        !default_config.is_rule_enabled(rule_id),
+        "registry default-disabled rules must stay disabled without config"
+    );
+
+    let mut selected_config = Config::default();
+    selected_config.selectors.positive =
+        expand_rule_selector(rule_id, &registry, "test").expect("exact selector");
+    selected_config.selectors.has_positive = true;
+    assert!(
+        selected_config.is_rule_enabled(rule_id),
+        "positive selectors are an explicit opt-in"
+    );
+
+    let mut explicit_config = Config::default();
+    explicit_config.rule_settings.insert(
+        rule_id.to_string(),
+        RuleSetting {
+            enabled: Some(true),
+            ..RuleSetting::default()
+        },
+    );
+    assert!(
+        explicit_config.is_rule_enabled(rule_id),
+        "`rules.<id>.enabled: true` is an explicit opt-in"
+    );
+}
+
+#[test]
 pub(crate) fn selector_config_supports_empty_pillar_prefix_exact_negative_and_custom_blocks() {
     let dir = tempdir().expect("tempdir");
     let options = default_test_options();

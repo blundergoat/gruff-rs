@@ -126,11 +126,12 @@ pub(crate) fn case(rule_id: &'static str, positive: Setup, negative: Setup) -> C
 pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
     let positive_dir = tempdir().expect("calibration positive tempdir");
     (case.positive)(positive_dir.path());
+    write_calibration_config(positive_dir.path(), case.rule_id);
     let positive_report = run_project_analysis(
         positive_dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -143,11 +144,12 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
 
     let negative_dir = tempdir().expect("calibration negative tempdir");
     (case.negative)(negative_dir.path());
+    write_calibration_config(negative_dir.path(), case.rule_id);
     let negative_report = run_project_analysis(
         negative_dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -159,6 +161,14 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
         .any(|finding| finding.rule_id == case.rule_id);
 
     (positive_fired, negative_fired)
+}
+
+fn write_calibration_config(root: &Path, rule_id: &str) {
+    fs::write(
+        root.join(".gruff-rs.yaml"),
+        format!("schemaVersion: {SCHEMA_VERSION}\nrules:\n  {rule_id}:\n    enabled: true\n"),
+    )
+    .expect("calibration config");
 }
 
 mod cases_pillar_expansion;
