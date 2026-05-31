@@ -33,12 +33,6 @@ pub(crate) enum DiffSelection {
     ExplicitRanges { ranges: String, scope: ChangedScope },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ChangedScope {
-    Symbol,
-    Hunk,
-}
-
 /// Renderer-only view of which paths and diff mode the user asked for.
 ///
 /// This is intentionally not serialised onto `AnalysisReport`. The HTML
@@ -82,6 +76,7 @@ pub(crate) struct Config {
     pub(crate) custom_rules: Vec<CustomRule>,
     pub(crate) rule_settings: HashMap<String, RuleSetting>,
     pub(crate) minimum_severity: BTreeMap<String, FailThreshold>,
+    pub(crate) gate: Option<Gate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -155,6 +150,12 @@ impl PathMatcher {
             PathMatcherKind::Prefix(pattern.trim_end_matches('/').to_string())
         };
         Self { pattern, kind }
+    }
+
+    /// The original glob this matcher was compiled from, reported as the
+    /// `pattern` for `source: config` ignores and by `check-ignore`.
+    pub(crate) fn pattern(&self) -> &str {
+        &self.pattern
     }
 
     pub(crate) fn matches(&self, path: &str) -> bool {
@@ -266,6 +267,7 @@ impl Config {
             custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
             minimum_severity: BTreeMap::new(),
+            gate: None,
         }
     }
 

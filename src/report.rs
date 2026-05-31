@@ -186,6 +186,7 @@ impl RunDiagnostic {
                 | "lockfile-read-error"
                 | "lockfile-parse-error"
                 | "history-error"
+                | "gate-config-error"
         )
     }
 }
@@ -214,6 +215,11 @@ pub(crate) struct AnalysisReport {
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     #[serde(skip)]
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
+    /// Severity summary over the full finding set *before* baseline suppression,
+    /// consumed by `gate.scope: all`. Internal only (`#[serde(skip)]`) so the JSON
+    /// schema is unchanged; equals `summary` when no baseline dropped findings.
+    #[serde(skip)]
+    pub(crate) all_findings_summary: Option<Summary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -240,7 +246,7 @@ pub(crate) struct RunInfo {
     pub(crate) generated_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone, Copy)]
 pub(crate) struct Summary {
     pub(crate) advisory: usize,
     pub(crate) warning: usize,
@@ -252,7 +258,12 @@ pub(crate) struct Summary {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PathSummary {
     pub(crate) analysed_files: usize,
+    /// Backward-compatible flat list of ignored display paths (`gruff.analysis.v2`).
     pub(crate) ignored_paths: Vec<String>,
+    /// Additive per-entry ignore detail: path + why it was ignored. Same data as
+    /// `ignoredPaths` plus `source`/`pattern`; new in the M13 changed-code-scope
+    /// fix (ADR-018). `ignoredPaths` is retained so existing consumers do not break.
+    pub(crate) ignored_path_details: Vec<IgnoredPath>,
     pub(crate) missing_paths: Vec<String>,
 }
 
@@ -261,7 +272,14 @@ pub(crate) struct PathSummary {
 pub(crate) struct BaselineReport {
     pub(crate) path: String,
     pub(crate) source: String,
+    /// Retained for backward compatibility; equals `unchanged_count` (ADR-002 M01 addendum).
     pub(crate) suppressed: usize,
+    /// Current findings not matched by any baseline entry.
+    pub(crate) new_count: usize,
+    /// Current findings matched by a baseline entry (dropped from the default list).
+    pub(crate) unchanged_count: usize,
+    /// Baseline entries that match no current finding (resolved since baselining).
+    pub(crate) absent_count: usize,
     pub(crate) generated: bool,
 }
 

@@ -12,6 +12,7 @@ fn trivial_assertion() {
 #[test]
 fn long_test_body() {
     let value = 1;
+    assert_eq!(value, 1);
     let value = value + 1;
     let value = value + 1;
     let value = value + 1;

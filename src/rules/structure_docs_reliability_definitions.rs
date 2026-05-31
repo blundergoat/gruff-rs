@@ -52,7 +52,6 @@ pub(crate) const COMPLEXITY_RULES: &[RuleDefinition] = &[
         related: &[
             "complexity.cyclomatic",
             "complexity.nesting-depth",
-            "metrics.halstead-volume",
         ],
     ),
     rule_definition!(
@@ -171,16 +170,6 @@ pub(crate) const DEPENDENCY_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "design.god-function",
-        "God function",
-        Pillar::Design,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags functions that are both long and complex.",
-    ),
     rule_definition!(
         "docs.missing-public-doc",
         "Missing public documentation",

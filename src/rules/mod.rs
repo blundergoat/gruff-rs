@@ -142,12 +142,9 @@ const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(12.0));
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(2.0));
-const METRICS_HALSTEAD_VOLUME_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(1500.0));
-const METRICS_MAINTAINABILITY_PRESSURE_THRESHOLD: Option<ThresholdDefinition> =
-    Some(threshold(45.0));
 const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(600.0));
 const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(50.0));
-const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(5.0));
+const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(7.0));
 const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(120.0));
 
 macro_rules! rule_definition {
@@ -204,19 +201,19 @@ macro_rules! rule_definition {
     };
 }
 
-mod definitions_a;
-mod definitions_b;
-mod definitions_c;
+mod idiom_security_size_test_definitions;
+mod structure_docs_reliability_definitions;
+mod waste_definitions;
 
-use definitions_a::{
-    ARCHITECTURE_RULES, COMPLEXITY_RULES, CONCURRENCY_RULES, DEAD_CODE_RULES, DEPENDENCY_RULES,
-    DOCUMENTATION_AND_DESIGN_RULES, ERROR_HANDLING_RULES,
-};
-use definitions_b::{
+use idiom_security_size_test_definitions::{
     METADATA_RULES, NAMING_RULES, PERFORMANCE_AND_SECURITY_RULES, SENSITIVE_DATA_RULES, SIZE_RULES,
     TEST_QUALITY_RULES,
 };
-use definitions_c::WASTE_RULES;
+use structure_docs_reliability_definitions::{
+    ARCHITECTURE_RULES, COMPLEXITY_RULES, CONCURRENCY_RULES, DEAD_CODE_RULES, DEPENDENCY_RULES,
+    DOCUMENTATION_AND_DESIGN_RULES, ERROR_HANDLING_RULES,
+};
+use waste_definitions::WASTE_RULES;
 
 fn builtin_definitions() -> Vec<RuleDefinition> {
     [

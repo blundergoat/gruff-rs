@@ -20,18 +20,18 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.2.0` package line |
+| Release line | Published `0.3.0` package line |
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
-| Rule catalogue | 80 rules across 11 pillars |
+| Rule catalogue | 76 rules across 11 pillars |
 | Primary config | `.gruff-rs.yaml` (requires `schemaVersion: gruff-rs.config.v1`) |
 | Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error`; per-subcommand defaults via `minimumSeverity:` in `.gruff-rs.yaml` |
 | Dashboard | `127.0.0.1:8766` by default |
 
-Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are compatibility-sensitive inside the `0.2.x` line.
+Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are the stable contract for the `0.3.x` line.
 
 ## Requirements
 
@@ -44,7 +44,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 Install into a repository-local tool directory:
 
 ```bash
-cargo install gruff-rs --locked --version 0.2.0 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 0.3.0 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```
@@ -140,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.2.0
+      - uses: blundergoat/gruff-rs@v0.3.0
         with:
           args: analyse . --format sarif --fail-on warning --no-baseline
 ```
@@ -193,15 +193,15 @@ Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minim
 
 ## Rules And Pillars
 
-The v0.1 catalogue contains 79 rules:
+The v1.0 catalogue contains 76 rules:
 
 | Pillar | Rules |
 | --- | ---: |
-| `complexity` | 4 |
+| `complexity` | 3 |
 | `dead-code` | 3 |
-| `design` | 4 |
+| `design` | 3 |
 | `documentation` | 11 |
-| `maintainability` | 12 |
+| `maintainability` | 11 |
 | `modernisation` | 6 |
 | `naming` | 5 |
 | `security` | 14 |
@@ -210,6 +210,8 @@ The v0.1 catalogue contains 79 rules:
 | `test-quality` | 8 |
 
 Use `./.cargo-tools/bin/gruff-rs list-rules --format json` for the exact rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
+
+Generated default config keeps `size.file-length` enabled for Rust source over 600 lines and marks `waste.unnecessary-clone-candidate` as opt-in, because a clone can be the clearer ownership boundary. `test-quality.long-test` counts from the first assertion onward so fixture setup does not dilute the test-signal check.
 
 ## Custom Rules
 
@@ -225,7 +227,7 @@ custom_rules:
     pattern: '(?m)^[ \t]*//[ \t]*HACK\b'
 ```
 
-Custom rules are intentionally regex-only in `0.2.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
+Custom rules are intentionally regex-only in `0.3.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
 
 ## Baselines And Changed-Code Scans
 
@@ -236,6 +238,13 @@ Baselines suppress reviewed findings by exact fingerprint, rule ID, and file pat
 ./.cargo-tools/bin/gruff-rs analyse src --baseline --fail-on warning
 ./.cargo-tools/bin/gruff-rs analyse src --no-baseline --fail-on none
 ```
+
+A baseline run classifies every finding as **new**, **unchanged** (matched the
+baseline and suppressed from the default list), or **resolved** (a baseline entry no
+longer found). The counts surface in the scan card and in JSON under
+`baseline.newCount` / `unchangedCount` / `absentCount`; the default findings list
+still shows only new findings, so existing reports are byte-identical. See
+[Quality Gates](#quality-gates) to fail CI on new findings only.
 
 Changed-code scans keep findings whose location or enclosing declaration
 overlaps the changed hunk. JSON output includes `suppressedCount` for findings
@@ -259,6 +268,46 @@ Top 5 regressed: +4 modernisation.semver-pin, +2 naming.identifier-quality, ...
 
 The JSON output exposes the same data as a `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Both surfaces stay omitted on full-tree scans so the schema remains byte-identical for non-comparison runs.
 
+**Coding-agent hook.** Coding agents can run gruff-rs after each edit so they only see findings on the code they just changed, not unrelated debt in the same file. The goat-flow project ships a PostToolUse hook (`gruff-code-quality.sh`) that runs `gruff-rs analyse <file> --format json --fail-on none` on the edited file and filters the JSON to the changed line ranges (from the agent's tool payload or `git diff --unified=0`), reporting a suppressed count for pre-existing same-file findings; see its `gruff-code-quality.md` playbook for setup and triage. gruff-rs's side of the contract is the stable per-file JSON (`filePath`, `line`, `severity`, `ruleId`) under `gruff.analysis.v2`; the `--diff-patch` / `--diff <mode>` flags above are the in-binary change-scoping equivalent for CI or single-binary use.
+
+Config `paths.ignore` is authoritative in every invocation mode (walk, explicit file args, and all diff modes), so a hook can pass an ignored file and gruff-rs emits no findings for it — `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`. Ignored paths are reported under `paths.ignoredPathDetails` with their `source` and `pattern`. The `check-ignore` command lets a hook query the same decision per path without analysing (`gruff-rs check-ignore --format json <path>...` → `[{path, ignored, source, pattern}]`, `git check-ignore` exit codes). See [CI Integration](docs/ci-integration.md) and ADR-018.
+
+## Quality Gates
+
+Beyond the binary `--fail-on <severity>`, a `gate:` block in `.gruff-rs.yaml` gates on
+finding **counts** — per severity and/or a total cap:
+
+```yaml
+gate:
+  total: 200            # optional: fail when total findings exceed this
+  severity:
+    error: 0            # optional per-severity caps (omitted = unlimited)
+    warning: 10
+  onMatch: fail         # `fail` (default, exit 1) | `warn` (diagnostic only)
+  scope: new            # optional: `new` | `all` (default: scope unset)
+```
+
+Every gated run records a `gate` diagnostic with the per-severity breakdown and the
+`pass`/`trip`/`warn` decision (rendered in text/json/sarif). When both the `gate:` block
+and `--fail-on` are set, the gate evaluates first; a trip with `onMatch: fail` exits `1`.
+A malformed gate (unknown key, negative count, bad `onMatch`/`scope`) is a config error
+(exit `2`) naming the offending path.
+
+**Fail only on new findings.** `--fail-on-new` (equivalently `gate.scope: new` with a
+default `error: 0` cap) fails the run on findings introduced since the baseline while
+keeping baselined debt visible in the gate diagnostic
+(`… (baseline: N new, M unchanged)`):
+
+```bash
+./.cargo-tools/bin/gruff-rs analyse src --baseline --fail-on-new
+```
+
+`--fail-on-new` requires a baseline; without one it is a config error (exit `2`) — "new"
+is undefined with nothing to compare against. `scope: all` gates over every finding
+(new + baselined); the default (`scope` unset) preserves the historical behavior, which
+already counts only new findings when a baseline is applied. Resolved (`absent`) findings
+never count toward any gate.
+
 ## Dashboard
 
 ```bash
@@ -275,7 +324,7 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 ## Stability Contract
 
-`0.2.x` is the "mostly stable, with caveats" line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are compatibility-sensitive. Breaking changes to those surfaces ship as `0.3.0`, not inside `0.2.x`. See [UPGRADING.md](UPGRADING.md) for the full contract.
+`0.3.x` is the active release line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are the contract for this line. Larger contract changes move to a later release line. See [UPGRADING.md](UPGRADING.md) for the full contract.
 
 ## How It Compares
 

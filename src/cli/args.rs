@@ -21,7 +21,12 @@ pub(crate) struct AnalyseArgs {
     /// `minimumSeverity.analyse:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,
-    /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
+    /// Fail only on findings new since the baseline: alias for gate `scope: new`
+    /// with a default `error: 0` cap. Requires a baseline (`--baseline` or a
+    /// `gruff-baseline.json`); without one the run is a config error (exit 2).
+    #[arg(long)]
+    pub(crate) fail_on_new: bool,
+    /// Include paths ignored by Git ignore files or built-in default dirs; config `paths.ignore` and VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
     #[arg(
@@ -29,11 +34,12 @@ pub(crate) struct AnalyseArgs {
         value_name = "MODE",
         num_args = 0..=1,
         default_missing_value = "working-tree",
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        requires = "diff_git_unsafe"
     )]
     pub(crate) diff: Option<String>,
-    /// Git base ref for changed-region filtering.
-    #[arg(long, value_name = "REF", conflicts_with_all = ["diff", "diff_patch"])]
+    /// Git base ref for changed-region filtering; executes Git, so it needs the unsafe-Git opt-in.
+    #[arg(long, value_name = "REF", conflicts_with_all = ["diff", "diff_patch"], requires = "diff_git_unsafe")]
     pub(crate) since: Option<String>,
     /// Explicit changed line ranges such as 3-3,8-10.
     #[arg(long, value_name = "RANGES", conflicts_with_all = ["diff", "diff_patch", "since"])]
@@ -54,7 +60,9 @@ pub(crate) struct AnalyseArgs {
     /// Do not apply the default gruff-baseline.json file even when it exists.
     #[arg(long)]
     pub(crate) no_baseline: bool,
-    #[arg(long, requires = "diff", hide = true)]
+    /// Opt in to the Git-executing diff modes (`--diff`, `--since`). Git-free
+    /// modes (`--diff-patch`, `--changed-ranges`) never need it.
+    #[arg(long, hide = true)]
     pub(crate) diff_git_unsafe: bool,
 }
 
@@ -76,7 +84,7 @@ pub(crate) struct ReportArgs {
     /// `minimumSeverity.report:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,
-    /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
+    /// Include paths ignored by Git ignore files or built-in default dirs; config `paths.ignore` and VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
     /// Do not apply the default gruff-baseline.json file even when it exists.
@@ -129,9 +137,29 @@ pub(crate) struct SummaryArgs {
     /// How many top rules and file offenders to list.
     #[arg(long, default_value_t = 10)]
     pub(crate) top: usize,
-    /// Include paths ignored by Git ignore files or paths.ignore; VCS internals remain blocked.
+    /// Include paths ignored by Git ignore files or built-in default dirs; config `paths.ignore` and VCS internals remain blocked.
     #[arg(long)]
     pub(crate) include_ignored: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub(crate) enum CheckIgnoreFormat {
+    Text,
+    Json,
+}
+
+#[derive(Args, Clone)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
+pub(crate) struct CheckIgnoreArgs {
+    /// Paths to test against gruff's ignore policy. No analysis is run.
+    #[arg(value_name = "paths", required = true)]
+    pub(crate) paths: Vec<PathBuf>,
+    #[arg(long, default_value = "text")]
+    pub(crate) format: CheckIgnoreFormat,
+    #[arg(long)]
+    pub(crate) config: Option<PathBuf>,
+    #[arg(long, conflicts_with = "config")]
+    pub(crate) no_config: bool,
 }
 
 #[derive(Args, Clone)]

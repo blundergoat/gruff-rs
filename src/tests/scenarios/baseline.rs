@@ -345,3 +345,166 @@ pub(crate) fn baseline_run_emits_per_rule_deltas_with_introduced_and_removed_cou
     assert_eq!(ghost_delta.introduced, 0);
     assert_eq!(ghost_delta.net, -1);
 }
+
+// M01 (ADR-002 addendum): baseline matching classifies each finding as new,
+// unchanged, or absent, and surfaces the counts on `BaselineReport` additively.
+#[test]
+pub(crate) fn baseline_tri_state_counts_classify_new_unchanged_absent() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(
+        dir.path().join("sample.rs"),
+        "pub fn one() {}\npub fn two() {}\npub fn three() {}\n",
+    )
+    .expect("fixture write");
+
+    // Generate a baseline that matches every current finding (all unchanged).
+    let baseline_path = dir.path().join("baseline.json");
+    let generated = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            generate_baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            ..default_test_options()
+        },
+    )
+    .expect("baseline generation succeeds");
+    let total = generated.findings.len();
+    assert!(total >= 2, "fixture must produce >=2 findings, got {total}");
+    // A generate run has no comparison context: counts are zero.
+    let generated_baseline = generated.baseline.as_ref().expect("generated baseline");
+    assert!(generated_baseline.generated);
+    assert_eq!(generated_baseline.new_count, 0);
+    assert_eq!(generated_baseline.unchanged_count, 0);
+    assert_eq!(generated_baseline.absent_count, 0);
+
+    // Re-scan against the unmodified baseline: every finding is unchanged.
+    let all_unchanged = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: false,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let unchanged_baseline = all_unchanged.baseline.as_ref().expect("baseline present");
+    assert_eq!(unchanged_baseline.new_count, 0);
+    assert_eq!(unchanged_baseline.unchanged_count, total);
+    assert_eq!(unchanged_baseline.absent_count, 0);
+    assert_eq!(
+        unchanged_baseline.suppressed,
+        unchanged_baseline.unchanged_count
+    );
+    assert!(
+        all_unchanged.findings.is_empty(),
+        "default list drops unchanged findings"
+    );
+
+    // Drop one baseline entry (its finding becomes new) and append a ghost entry
+    // that matches no current finding (absent).
+    let mut baseline_json: Value =
+        serde_json::from_str(&fs::read_to_string(&baseline_path).expect("baseline read"))
+            .expect("baseline json");
+    baseline_json["entries"]
+        .as_array_mut()
+        .expect("entries array")
+        .remove(0);
+    baseline_json["entries"]
+        .as_array_mut()
+        .expect("entries array")
+        .push(json!({
+            "fingerprint": "deadbeefdeadbeef",
+            "ruleId": "ghost.removed-rule",
+            "filePath": "sample.rs",
+            "line": 1,
+            "symbol": null,
+            "message": "phantom",
+        }));
+    fs::write(
+        &baseline_path,
+        serde_json::to_string_pretty(&baseline_json).expect("baseline serialize"),
+    )
+    .expect("baseline rewrite");
+
+    let mixed = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: false,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let mixed_baseline = mixed.baseline.as_ref().expect("baseline present");
+    assert_eq!(
+        mixed_baseline.new_count, 1,
+        "dropped entry's finding is new"
+    );
+    assert_eq!(mixed_baseline.unchanged_count, total - 1);
+    assert_eq!(mixed_baseline.absent_count, 1, "ghost entry is absent");
+    assert_eq!(mixed_baseline.suppressed, mixed_baseline.unchanged_count);
+    // Default findings list = the new set only (unchanged dropped, absent not rendered).
+    assert_eq!(mixed.findings.len(), mixed_baseline.new_count);
+}
+
+// M01: an empty baseline classifies every current finding as new; `--no-baseline`
+// leaves the tri-state off entirely.
+#[test]
+pub(crate) fn baseline_tri_state_all_new_and_no_baseline_short_circuit() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
+    fs::write(dir.path().join("sample.rs"), "pub fn one() {}\n").expect("fixture write");
+
+    let baseline_path = dir.path().join("baseline.json");
+    fs::write(
+        &baseline_path,
+        json!({
+            "schemaVersion": "gruff.baseline.v1",
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "entries": [],
+        })
+        .to_string(),
+    )
+    .expect("empty baseline write");
+
+    let all_new = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: false,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let baseline = all_new.baseline.as_ref().expect("baseline present");
+    assert_eq!(baseline.new_count, all_new.findings.len());
+    assert_eq!(baseline.unchanged_count, 0);
+    assert_eq!(baseline.absent_count, 0);
+    assert!(baseline.new_count > 0);
+
+    let no_baseline = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        no_baseline.baseline.is_none(),
+        "--no-baseline must leave report.baseline None"
+    );
+}

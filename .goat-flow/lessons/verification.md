@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-30
+last_reviewed: 2026-05-31
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -27,6 +27,76 @@ None of these patterns existed in gruff-rs's own source. Calibration was green; 
 **Why:** Calibration proves a rule does what its author intended; an external scan reveals what the rule *also* does that the author didn't intend. Shipping without the second step ships hidden noise that erodes user trust in every other finding.
 
 **How to apply:** For every new default-on rule, add a one-line note to the rule's `Created:` PR description: "External scan: <repo path>, <N> findings, <X> TPs / <Y> FPs / <Z> ambiguous." If <Y> exceeds 10% of <N>, tighten the rule or downgrade it to non-default-on before merge.
+
+## Lesson: Run Fresh Git Status Before Giving Git Next Steps
+
+**Created:** 2026-05-31
+
+When advising on commits, staging, or "what's next" for a dirty-looking workspace,
+run `git status --short --untracked-files=all` or `git status -sb` in every
+repo being discussed immediately before answering. Do not reuse a status snapshot
+from earlier in the session, especially after other agents, hooks, commits, or
+context compaction may have changed the tree.
+
+**Concrete example (this repo, 2026-05-31):** After working across `gruff-rs`
+and `gruff-ts`, I told the user the next step was to commit the current work
+based on an earlier dirty status. A fresh `git status -sb` then showed both
+repos clean (`## dev...origin/dev`), so the commit advice was wrong and stale.
+
+**How to apply:**
+
+- Before saying "commit", "stage", "nothing changed", "working tree is dirty",
+  or "worktree is clean", run status in the relevant repo(s) in the current turn.
+- If multiple repos were touched, status all of them and name each result.
+- If the command was not run, phrase the answer as a caveat or run the command
+  first; do not make a confident git-state claim from memory.
+
+## Lesson: A Complete Milestone Must Have Ticked Checkboxes
+
+**Created:** 2026-05-31
+
+Never mark a milestone `implemented`, `testing-gate`, or `complete` while its
+own task, assumption, exit-criteria, or testing-gate checkboxes remain unticked.
+An implemented status with empty checkboxes is worse than no status update: it
+misleads the next reader into thinking either no work happened or the tracking
+artifact cannot be trusted.
+
+**Concrete example (this repo, 2026-05-31):** a task-tracking file's top-line
+status said its rubric-removal work was implemented, but every checklist item
+was still `- [ ]`. The code and verification had moved, yet the plan looked
+untouched until the user called it out. The corrected task now has ticked
+assumptions, tasks, exit criteria, testing gates, and a `Verification Evidence`
+section.
+
+**How to apply:**
+
+- When completing work from a plan, tick each completed checkbox immediately
+  after the code or verification proves it.
+- Before changing any task `Status:` to `implemented`, `testing-gate`, or
+  `complete`, run `rg -n '^- \[ \]' <task-file>`. If unchecked boxes remain,
+  either tick them with evidence or leave the status as in-progress/deferred.
+- Before final response for plan-backed work, re-open the task file and confirm
+  the checklist, status line, and verification evidence agree.
+- Treat task files as review artifacts, not scratch notes. A stale checklist is
+  a failed handoff even when the code is correct.
+
+**Updated 2026-05-31:** Two failure modes worse than the above surfaced when the
+user found more stale plans. (1) **The status line lies the other way.** Some
+task files read `Status: planned` with zero ticks even though the feature had
+already shipped (confirmed via `git log` and the live source symbols); another
+read `Status: completed` with none of its boxes ticked. So the status line is
+not a trustworthy done-signal — before trusting OR updating it, cross-check
+against `git log` and the actual `src/` symbols (`rg` the structs/fields the
+work introduced), not just "did I tick boxes." (2) **Reconciling a neglected
+checklist is NOT a licence to blanket-tick.** A partially-implemented plan has
+diverged from its spec: the core lands while a peripheral surface (a CLI flag, a
+renderer, docs) does not. Flipping every `- [ ]` to `- [x]` to "finish the
+board" writes false `[x]` on features that do not exist — the exact
+false-attestation this tool exists to catch (mission: `docs/mission.md`). Verify
+each box against the source this session, tick only what is real, and leave the
+rest unchecked with an inline `NOT BUILT`/`NOT DONE` note plus a
+`Verification Evidence` section. A half-true status (`core done … X and Y not
+built`) beats both a bare `planned` and a dishonest `complete`.
 
 ## Lesson: When A Self-Scan Says Zero, Confirm The Rule Still Fires Somewhere
 
@@ -130,6 +200,16 @@ Prefer a focused scenario module such as `src/tests/scenarios/discovery.rs`
 when new coverage is cohesive. Then rerun `bash scripts/preflight-checks.sh` so
 the dogfood scan proves the repository still clears its own quality gate.
 
+**Updated 2026-05-31:** The same trap applies outside `src/tests/scenarios/`.
+M00c added two rule-behaviour regression tests to
+`src/tests/rule_behaviours/rubric_false_positive_guards.rs` and Rust tests
+passed, but preflight dogfood reported `size.file-length` at 632 lines. Split
+cohesive milestone-specific checks into a focused module such as
+`src/tests/rule_behaviours/mission_retune_guards.rs` before re-running
+preflight. The same dogfood pass also catches helper naming drift, e.g.
+boolean helper names in `src/built_in_rules/docs_rules.rs` must keep accepted
+predicate prefixes like `has_`.
+
 ## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
 
 **Created:** 2026-05-23
@@ -189,12 +269,12 @@ Automated PR reviewers (Codex / CodeRabbit / Copilot bots) generate suggestions 
 
 **Concrete examples from PR #3 review (2026-05-27):**
 
-- **Stale: `pillar_label` duplication** — bot suggested extracting to shared module. Verified `pub(crate) fn pillar_label` already in `src/report.rs:50`. Action: skip.
-- **Stale: `applicable` boolean assertion** — bot suggested adding `is_boolean()` checks. Verified `src/tests/renderers/output.rs:242, 247, 252` already have them. Action: skip.
-- **Stale: schemaVersion grep brittleness** — bot suggested whitespace-tolerant regex. Verified `scripts/preflight-checks.sh:547` already uses `[[:space:]]*`. Action: skip.
-- **False premise: `applicable` decoupled from composite** — bot claimed composite includes non-`SCORE_PILLARS` pillars. Verified `src/scoring.rs:78` filters by `SCORE_PILLARS.contains(...)`. Action: skip — premise is wrong.
-- **False premise: init lacks schemaVersion** — bot claimed `render_default_config` omits the key. Verified `src/init.rs:192` calls `append_schema_version_section`. Action: skip — premise is wrong.
-- **Unreachable: custom security rule with `excludeFromScore`** — bot worried about silent scoring blind spot. Verified `src/config_loader/rule_settings.rs:101-110` rejects `excludeFromScore` for custom rules at load time. Action: pin the restriction with a regression test instead of "fixing" the unreachable code path.
+- **Stale: `pillar_label` duplication** — bot suggested extracting to shared module. Verified `src/report.rs` (search: `pub(crate) fn pillar_label`) already has the shared helper. Action: skip.
+- **Stale: `applicable` boolean assertion** — bot suggested adding `is_boolean()` checks. Verified `src/tests/renderers/output.rs` (search: `is_boolean`) already has them. Action: skip.
+- **Stale: schemaVersion grep brittleness** — bot suggested whitespace-tolerant regex. Verified `scripts/preflight-checks.sh` (search: `[[:space:]]*`) already uses it. Action: skip.
+- **False premise: `applicable` decoupled from composite** — bot claimed composite includes non-`SCORE_PILLARS` pillars. Verified `src/scoring.rs` (search: `SCORE_PILLARS.contains`) filters by the canonical pillar list. Action: skip — premise is wrong.
+- **False premise: init lacks schemaVersion** — bot claimed `render_default_config` omits the key. Verified `src/init.rs` (search: `append_schema_version_section`) calls the schema renderer. Action: skip — premise is wrong.
+- **Unreachable: custom security rule with `excludeFromScore`** — bot worried about silent scoring blind spot. Verified `src/config_loader/rule_settings.rs` (search: `custom rule `{rule_id}` only supports`) rejects `excludeFromScore` for custom rules at load time. Action: pin the restriction with a regression test instead of "fixing" the unreachable code path.
 - **Real: HashMap iteration in security diagnostics** — verified `config.rule_settings: HashMap`. Action: fix.
 - **Real: digest severity from registry default** — verified `build_rule_digest` uses `definition.default_severity`. Action: fix.
 

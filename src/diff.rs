@@ -63,132 +63,6 @@ pub(crate) fn parse_unified_diff(patch: &str) -> DiffPatchLineMap {
     line_map
 }
 
-pub(crate) fn explicit_ranges_patch(
-    ranges: &str,
-    files: &[SourceFile],
-) -> Result<DiffPatchLineMap, String> {
-    let lines = parse_changed_ranges(ranges)?;
-    let mut line_map = DiffPatchLineMap {
-        saw_hunk: true,
-        ..DiffPatchLineMap::default()
-    };
-    for file in files {
-        line_map
-            .lines_by_file
-            .insert(file.display_path.clone(), lines.clone());
-    }
-    Ok(line_map)
-}
-
-pub(crate) fn git_diff_patch(
-    project_root: &Path,
-    mode: &str,
-    paths: &[PathBuf],
-) -> Result<DiffPatchLineMap, String> {
-    let patch = match mode {
-        "working-tree" => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--unified=0", "HEAD"], paths),
-        )?,
-        "staged" => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--cached", "--unified=0"], paths),
-        )?,
-        "unstaged" => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--unified=0"], paths),
-        )?,
-        base => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--unified=0", base], paths),
-        )?,
-    };
-    let mut parsed = parse_unified_diff(&patch);
-    if mode == "working-tree" {
-        for path in git_untracked_files(project_root, paths)? {
-            parsed.whole_files.insert(path.clone());
-            parsed.lines_by_file.entry(path).or_default();
-        }
-    }
-    Ok(parsed)
-}
-
-fn parse_changed_ranges(ranges: &str) -> Result<BTreeSet<usize>, String> {
-    let mut lines = BTreeSet::new();
-    for raw_part in ranges.split(',') {
-        let part = raw_part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        let (start, end) = match part.split_once('-') {
-            Some((start, end)) => (
-                parse_positive_line(start, part)?,
-                parse_positive_line(end, part)?,
-            ),
-            None => {
-                let line = parse_positive_line(part, part)?;
-                (line, line)
-            }
-        };
-        if end < start {
-            return Err(format!(
-                "invalid changed range `{part}`: end must be >= start"
-            ));
-        }
-        lines.extend(start..=end);
-    }
-    if lines.is_empty() {
-        return Err("--changed-ranges must include at least one line or range".to_string());
-    }
-    Ok(lines)
-}
-
-fn parse_positive_line(raw: &str, original: &str) -> Result<usize, String> {
-    let value = raw.parse::<usize>().map_err(|_| {
-        format!("invalid changed range `{original}`: line numbers must be integers")
-    })?;
-    if value == 0 {
-        return Err(format!(
-            "invalid changed range `{original}`: line numbers must be >= 1"
-        ));
-    }
-    Ok(value)
-}
-
-fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<String> {
-    prefix
-        .iter()
-        .map(|value| value.to_string())
-        .chain(std::iter::once("--".to_string()))
-        .chain(paths.iter().map(|path| path.display().to_string()))
-        .collect()
-}
-
-fn git_output(project_root: &Path, args: &[String]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(project_root)
-        .args(args)
-        .output()
-        .map_err(|error| format!("unable to execute git diff: {error}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn git_untracked_files(project_root: &Path, paths: &[PathBuf]) -> Result<Vec<String>, String> {
-    let output = git_output(
-        project_root,
-        &git_args_with_paths(&["ls-files", "--others", "--exclude-standard"], paths),
-    )?;
-    Ok(output
-        .lines()
-        .map(normalize_report_path)
-        .filter(|path| !path.is_empty())
-        .collect())
-}
-
 pub(crate) fn should_handle_diff_header(
     line: &str,
     state: &mut DiffPatchState,
@@ -428,6 +302,9 @@ pub(crate) fn apply_changed_region_filter(
     let deltas = patch_rule_deltas(&kept, &suppressed);
     report.findings = kept;
     report.summary = summarize(&report.findings);
+    // Under a diff, align the pre-baseline summary with the filtered set so
+    // `gate.scope: all` gates over the changed region too (ADR-003 addendum).
+    report.all_findings_summary = Some(report.summary);
     report.score = score_report(&report.findings, config);
     report.per_rule_deltas = (!deltas.is_empty()).then_some(deltas);
     report.suppressed_count = Some(suppressed_findings);
@@ -559,34 +436,10 @@ pub(crate) fn patch_intersects_finding(
     patch_range_intersects(patch, &file_path, line, end_line)
 }
 
-fn patch_intersects_finding_with_scope(
-    finding: &Finding,
-    patch: &DiffPatchLineMap,
-    changed_files: &BTreeSet<String>,
-    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
-    scope: ChangedScope,
-) -> bool {
-    if patch_intersects_finding(finding, patch, changed_files) {
-        return true;
-    }
-    if scope == ChangedScope::Hunk {
-        return false;
-    }
-    let Some(line) = finding.line else {
-        return false;
-    };
-    let file_path = normalize_report_path(&finding.file_path);
-    let Some(blocks) = function_blocks_by_file.get(&file_path) else {
-        return false;
-    };
-    let Some(block) = enclosing_block(line, finding.symbol.as_deref(), blocks) else {
-        return false;
-    };
-    let block_end = block.start_line + block.line_count.saturating_sub(1);
-    patch_range_intersects(patch, &file_path, block.start_line, block_end)
-}
-
-fn patch_range_intersects(
+/// True when any changed line of `file_path` lies in `start..=end`, or the whole
+/// file changed. Shared by `patch_intersects_finding` here and the symbol-scope
+/// check in `changed_region`.
+pub(crate) fn patch_range_intersects(
     patch: &DiffPatchLineMap,
     file_path: &str,
     start: usize,
@@ -599,33 +452,6 @@ fn patch_range_intersects(
         .lines_by_file
         .get(file_path)
         .is_some_and(|lines| (start..=end).any(|line| lines.contains(&line)))
-}
-
-fn enclosing_block<'a>(
-    line: usize,
-    symbol: Option<&str>,
-    blocks: &'a [FunctionBlock],
-) -> Option<&'a FunctionBlock> {
-    blocks
-        .iter()
-        .filter(|block| {
-            let end = block.start_line + block.line_count.saturating_sub(1);
-            line >= block.start_line && line <= end && symbol_matches(symbol, &block.name)
-        })
-        .min_by_key(|block| block.line_count)
-        .or_else(|| {
-            blocks
-                .iter()
-                .filter(|block| {
-                    let end = block.start_line + block.line_count.saturating_sub(1);
-                    line >= block.start_line && line <= end
-                })
-                .min_by_key(|block| block.line_count)
-        })
-}
-
-fn symbol_matches(symbol: Option<&str>, block_name: &str) -> bool {
-    symbol.is_none_or(|symbol| symbol == block_name || symbol.ends_with(&format!(".{block_name}")))
 }
 
 pub(crate) fn patch_filter_message(

@@ -76,7 +76,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                         root,
-                        "/// Loads the value.\n///\n/// # Errors\n///\n/// Returns Err when input is missing.\npub fn load() -> Result<i32, String> { Ok(0) }\n",
+                        "/// Loads the value.\n///\n/// Returns Err when input is missing.\npub fn load() -> Result<i32, String> { Ok(0) }\n",
                     )
             }),
         ),
@@ -117,43 +117,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 0 }\n")),
-        ),
-        // ----- metrics -----
-        case(
-            "metrics.halstead-volume",
-            Box::new(|root| {
-                let mut body = String::from(
-                        "/// Probe.\npub fn dense(a: i32, b: i32, c: i32, d: i32, e: i32) -> i32 {\n    let mut acc = 0;\n",
-                    );
-                for index in 0..60 {
-                    body.push_str(&format!(
-                            "    acc = acc + (a * {index}) - (b ^ {index}) | (c & {index}) + (d % ({index} + 1)) * (e + {index});\n"
-                        ));
-                }
-                body.push_str("    acc\n}\n");
-                baseline_with_lib(root, &body);
-            }),
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn small(a: i32) -> i32 { a + 1 }\n")
-            }),
-        ),
-        case(
-            "metrics.maintainability-pressure",
-            Box::new(|root| {
-                let mut body = String::from(
-                        "/// Probe.\npub fn dense(a: i32, b: i32, c: i32, d: i32, e: i32) -> i32 {\n    let mut acc = 0;\n",
-                    );
-                for index in 0..60 {
-                    body.push_str(&format!(
-                            "    if a == {index} {{ acc += b * {index} - c + d / ({index} + 1) - e; }}\n"
-                        ));
-                }
-                body.push_str("    acc\n}\n");
-                baseline_with_lib(root, &body);
-            }),
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn small(a: i32) -> i32 { a + 1 }\n")
-            }),
         ),
         // ----- modernisation -----
         case(

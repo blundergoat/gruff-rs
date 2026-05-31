@@ -3,13 +3,13 @@
 **Status:** Accepted
 **Date:** 2026-05-30
 **Author(s):** Claude, on user direction
-**Ticket/Context:** 1.0.0 M00; mission ADR-015; rubric audit 2026-05-30
+**Ticket/Context:** 0.3.0 M00; mission ADR-015; rubric audit 2026-05-30
 
 ## Decision
 
 Remove `complexity.npath` from gruff-rs entirely — registry definition
-(`src/rules/definitions_a.rs`), the threshold constant in `src/rules/mod.rs`, the
-scanner `analyse_npath_complexity` and its call site in `analyse_block_complexity`
+(`src/rules/`), the threshold constant in `src/rules/mod.rs`, the scanner
+`analyse_npath_complexity` and its call site in `analyse_block_complexity`
 (`src/built_in_rules/blocks.rs`), the `approximate_npath` computation
 (`src/built_in_rules/function_block_metrics.rs`), the `NPATH_*` regex statics
 (`src/built_in_rules/mod.rs`), the `.gruff-rs.yaml` pin, the calibration case, the
@@ -50,15 +50,19 @@ problem.
 
 ## Consequences
 
-- The complexity pillar drops from 5 rules to 4; catalogue 80 → 79 (reduced
-  further by M00b).
-- `rule_calibration_matrix_covers_every_rule` confirms 79/79 registry/calibration
-  alignment after removal.
+- After removal the complexity pillar is `complexity.cyclomatic` (threshold 10),
+  `complexity.cognitive` (15), and `complexity.nesting-depth` (4); npath leaves no
+  gap these three do not already cover. The removal is part of the 0.3.0 catalogue
+  prune to 76 rules — the redundant maintainability/design metrics removed under
+  ADR-017 account for the remainder.
+- `rule_calibration_matrix_covers_every_rule` (`src/tests/calibration/mod.rs`)
+  confirms every remaining registry rule still has a calibration case after the
+  removal.
 - A future path-explosion / testability signal, if wanted, is a NEW AST-based
   rule — not a revived `2^keywords` approximation.
 - The comment-keyword inflation npath exposed still affects
-  cyclomatic/cognitive/nesting; tracked separately (M00c and the analyzer
-  footgun).
+  cyclomatic/cognitive/nesting; tracked in `.goat-flow/footguns/analyzer.md` and
+  ADR-015's known-divergences list.
 
 ## Reversibility
 

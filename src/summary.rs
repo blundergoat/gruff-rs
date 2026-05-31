@@ -289,11 +289,15 @@ fn render_scan_card(
         report.summary.advisory,
     );
     if let Some(baseline) = &report.baseline {
-        let _ = write!(
-            score_line,
-            "  ·  baseline: {} suppressed",
-            baseline.suppressed
-        );
+        if baseline.generated {
+            let _ = write!(score_line, "  ·  baseline: generated");
+        } else {
+            let _ = write!(
+                score_line,
+                "  ·  baseline: {} new, {} unchanged, {} resolved",
+                baseline.new_count, baseline.unchanged_count, baseline.absent_count
+            );
+        }
     }
     if !report.diagnostics.is_empty() {
         let _ = write!(score_line, "  ·  diagnostics: {}", report.diagnostics.len());

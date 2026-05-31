@@ -52,7 +52,7 @@ A rule option's NAME is not enough to know what setting it does. `naming.generic
 The OptionDefinition.description field encodes the truth (e.g. "Additional generic function names rejected by naming.generic-function"), but those descriptions read past quickly when the option name alone seems self-explanatory. The 0.1.2 M05 first pass populated `false_positive_shapes` mitigations that told users to add their intentional names to the blocklist option, which would have made the false positive worse.
 
 **Where the failure mode surfaces:**
-- `false_positive_shapes` metadata in `src/rules/definitions_a.rs` / `definitions_b.rs` (search: `FalsePositiveShape`).
+- `false_positive_shapes` metadata in rule metadata shards under `src/rules/` (search: `FalsePositiveShape`).
 - Per-rule remediation strings in `src/built_in_rules/*.rs` (search: `remediation: Some`).
 - `list-rules <rule_id>` detail-card mitigations in `src/rules_detail.rs` (search: `fn render_false_positive_block`).
 

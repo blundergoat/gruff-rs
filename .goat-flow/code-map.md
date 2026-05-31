@@ -32,7 +32,7 @@
 `src/render/` = Output formatters: `text.rs` (scan-card header + findings + diagnostics + suppressions), `markdown.rs`, `github.rs` (Actions annotations), `hotspot.rs` (top-offenders JSON), `sarif.rs` (SARIF v2.1.0 emitter and helpers). `mod.rs` dispatches by `OutputFormat` and threads `Option<u128>` scan duration into text only.
 `src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, `/health`, `/favicon.ico` routes, and the form/iframe shell.
-`src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split across `definitions_a.rs` and `definitions_b.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
+`src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split by concern across `structure_docs_reliability_definitions.rs`, `idiom_security_size_test_definitions.rs`, and `waste_definitions.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
 `src/tests/` = Unit and integration tests grouped by concern (`scenarios/`, `rule_behaviours/`, `project_tests/`, `config_and_selectors/`, `renderers/`, `calibration/`).
 
 ## Fixtures

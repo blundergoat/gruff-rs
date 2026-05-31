@@ -130,6 +130,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         paths: PathSummary {
             analysed_files: 1,
             ignored_paths: Vec::new(),
+            ignored_path_details: Vec::new(),
             missing_paths: Vec::new(),
         },
         diagnostics,
@@ -140,6 +141,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         baseline: None,
         per_rule_deltas: None,
         suppressed_findings: Vec::new(),
+        all_findings_summary: None,
     }
 }
 
@@ -175,16 +177,6 @@ fn assert_missing_rule(report: &AnalysisReport, rule_id: &str) {
         "unexpected rule `{rule_id}` in findings: {:?}",
         rule_ids(report)
     );
-}
-
-fn metric_metadata_number(report: &AnalysisReport, rule_id: &str, symbol: &str, key: &str) -> f64 {
-    report
-        .findings
-        .iter()
-        .find(|finding| finding.rule_id == rule_id && finding.symbol.as_deref() == Some(symbol))
-        .and_then(|finding| finding.metadata.get(key))
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("missing `{key}` metadata for `{rule_id}` `{symbol}`"))
 }
 
 fn default_test_options() -> AnalysisOptions {

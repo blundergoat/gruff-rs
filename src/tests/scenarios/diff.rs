@@ -360,7 +360,7 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
         Some("patch-filter")
     );
     assert_eq!(
-        RunOutcome::classify(&report, FailThreshold::None),
+        RunOutcome::classify(&report, FailThreshold::None, None),
         RunOutcome::Success
     );
 }
@@ -390,9 +390,25 @@ pub(crate) fn diff_patch_diagnostics_are_sarif_notifications_without_failed_exec
 
 #[test]
 pub(crate) fn diff_flags_accept_changed_region_forms() {
-    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--diff"]).is_ok());
-    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--diff", "-"]).is_ok());
-    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--since", "HEAD"]).is_ok());
+    // Git-executing modes require the --diff-git-unsafe opt-in (ADR-009 trust boundary).
+    // The opt-in goes first: `--diff` allows hyphen values, so it would otherwise
+    // swallow a trailing `--diff-git-unsafe` as its MODE.
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--diff-git-unsafe", "--diff"]).is_ok());
+    assert!(
+        Cli::try_parse_from(["gruff-rs", "analyse", "--diff-git-unsafe", "--diff", "-"]).is_ok()
+    );
+    assert!(Cli::try_parse_from([
+        "gruff-rs",
+        "analyse",
+        "--diff-git-unsafe",
+        "--since",
+        "HEAD"
+    ])
+    .is_ok());
+    // ...and are rejected without it.
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--diff"]).is_err());
+    assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--since", "HEAD"]).is_err());
+    // Git-free modes need no opt-in.
     assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--changed-ranges", "3-3,8-10"]).is_ok());
     assert!(Cli::try_parse_from(["gruff-rs", "analyse", "--changed-scope", "hunk"]).is_ok());
 

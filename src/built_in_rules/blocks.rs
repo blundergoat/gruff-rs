@@ -26,19 +26,8 @@ pub(crate) fn analyse_block(
     }
 
     analyse_block_size(file, block, config, findings);
-    let cyclomatic = analyse_block_complexity(file, block, &searchable_body, config, findings);
-    analyse_metric_block(
-        BlockAnalysisContext {
-            file,
-            block,
-            config,
-        },
-        &searchable_body,
-        cyclomatic,
-        findings,
-    );
+    analyse_block_complexity(file, block, &searchable_body, config, findings);
     analyse_performance_block(file, block, &searchable_body, findings);
-    analyse_design_block(file, block, cyclomatic, findings);
     analyse_block_naming(file, block, config, findings);
     analyse_public_function_doc(file, block, findings);
     analyse_missing_errors_section(file, block, findings);
@@ -75,7 +64,7 @@ pub(crate) fn analyse_block_size(
 
     let params = block.param_count;
     let rule_id = "size.parameter-count";
-    if params > config.threshold(rule_id, 5.0) as usize {
+    if params > config.threshold(rule_id, 7.0) as usize {
         findings.push(block_finding(BlockFindingDescriptor {
             rule_id,
             message: format!("Function `{}` declares {params} parameters.", block.name),
@@ -94,15 +83,16 @@ pub(crate) fn analyse_block_complexity(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) -> usize {
+    let code_only_body = strip_rust_comments_after_string_mask(searchable_body);
     let cyclomatic = count_regex(
-        searchable_body,
+        &code_only_body,
         static_regex(
             &CYCLOMATIC_COMPLEXITY_REGEX,
-            r"\b(if|else if|match|for|while|loop)\b|\?|&&|\|\|",
+            r"\b(if|else if|match|for|while|loop)\b|&&|\|\|",
         ),
     ) + 1;
     analyse_cyclomatic_complexity(file, block, cyclomatic, config, findings);
-    let nesting = max_nesting_depth(searchable_body);
+    let nesting = max_nesting_depth(&code_only_body);
     analyse_nesting_depth(file, block, nesting, config, findings);
     analyse_cognitive_complexity(
         BlockAnalysisContext {
@@ -199,24 +189,6 @@ pub(crate) fn analyse_cognitive_complexity(
         },
         json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
     ));
-}
-
-pub(crate) fn analyse_design_block(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    cyclomatic: usize,
-    findings: &mut Vec<Finding>,
-) {
-    if block.line_count > 45 && cyclomatic > 10 {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id: "design.god-function",
-            message: format!("Function `{}` is both long and complex.", block.name),
-            file,
-            block,
-            severity: Severity::Warning,
-            pillar: Pillar::Design,
-        }));
-    }
 }
 
 pub(crate) fn analyse_block_naming(

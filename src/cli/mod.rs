@@ -3,7 +3,8 @@ use super::*;
 mod args;
 
 pub(crate) use args::{
-    AnalyseArgs, CompletionArgs, DashboardArgs, InitArgs, ListRulesArgs, ReportArgs, SummaryArgs,
+    AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, CompletionArgs, DashboardArgs, InitArgs,
+    ListRulesArgs, ReportArgs, SummaryArgs,
 };
 
 /// Symfony-Console-style colours for help output: yellow section headers,
@@ -77,9 +78,10 @@ pub(crate) struct GlobalOptions {
     /// Disable ANSI output.
     #[arg(long = "no-ansi", global = true)]
     no_ansi: bool,
-    /// Increase the verbosity of stderr messages (-v, -vv, -vvv).
+    /// Increase the verbosity of stderr messages (-v, -vv, -vvv). `check-ignore`
+    /// also reads this: any `-v` switches its text output to `<path>\t<source>:<pattern>`.
     #[arg(short = 'v', long, action = clap::ArgAction::Count, global = true)]
-    verbose: u8,
+    pub(crate) verbose: u8,
     /// Do not ask any interactive question (accepted for CLI parity; gruff-rs is non-interactive).
     #[arg(short = 'n', long, global = true)]
     no_interaction: bool,
@@ -137,9 +139,20 @@ pub(crate) enum RunOutcome {
 }
 
 impl RunOutcome {
-    pub(crate) fn classify(report: &AnalysisReport, fail_on: FailThreshold) -> Self {
+    /// Classify a run's exit outcome. A fatal diagnostic is exit 2; otherwise the
+    /// `gate:` block evaluates first (a trip with `onMatch: fail` is exit 1), then
+    /// the legacy `--fail-on` flag - the precedence documented in the ADR-003 M02
+    /// addendum.
+    pub(crate) fn classify(
+        report: &AnalysisReport,
+        fail_on: FailThreshold,
+        gate: Option<&Gate>,
+    ) -> Self {
         if report.diagnostics.iter().any(RunDiagnostic::is_failure) {
             return Self::DiagnosticsFailed;
+        }
+        if gate.is_some_and(|gate| gate.evaluate_report(report).fails) {
+            return Self::ThresholdHit;
         }
         if report
             .findings
@@ -177,6 +190,8 @@ pub(crate) enum Commands {
     Dashboard(DashboardArgs),
     /// Print a compact digest of a scan: per-pillar finding counts, top rules, and top file offenders.
     Summary(SummaryArgs),
+    /// Report whether gruff would ignore each path and why, using the same config and ignore engine as `analyse`. Runs no analysis.
+    CheckIgnore(CheckIgnoreArgs),
     /// Dump the shell completion script.
     Completion(CompletionArgs),
     /// Write a default `.gruff-rs.yaml` config derived from the built-in rule registry.
