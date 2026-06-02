@@ -110,7 +110,7 @@ use report::{
     RuleDelta, RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding,
     SuppressionSummary, ToolInfo, SCORE_PILLARS,
 };
-pub(crate) use scoring::{grade, score_report, summarize};
+pub(crate) use scoring::{grade, render_composite_block, score_report, summarize};
 use source::{
     CallNameSummary, DependencySummary, ItemSummary, LockedPackageSummary, LockfileSummary,
     ManifestSummary, ModuleSummary, ParsedSource, ProjectContext, ProjectItemContext,

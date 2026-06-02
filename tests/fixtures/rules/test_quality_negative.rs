@@ -13,3 +13,24 @@ fn meaningful_assertion() {
     let actual = 2 + 2;
     assert_eq!(actual, 4);
 }
+
+#[test]
+fn mutated_binding_is_not_trivial() {
+    let mut total = 1;
+    total += 1;
+    assert_eq!(total, 2);
+}
+
+#[test]
+fn shadowed_binding_is_not_trivial() {
+    let value = 1;
+    let value = value + 9;
+    assert_eq!(value, 10);
+}
+
+#[test]
+fn derived_value_is_not_trivial() {
+    let seed = 5;
+    let doubled = seed * 2;
+    assert_eq!(doubled, 10);
+}

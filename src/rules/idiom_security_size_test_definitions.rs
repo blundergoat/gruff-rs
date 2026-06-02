@@ -630,7 +630,18 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags assertions that prove literals or constants instead of behavior.",
+        "Flags assertions that prove a value the code already fixes instead of behavior: literal tautologies (`assert!(true)`, `assert_eq!(1, 1)`) and an immutable literal binding asserted against its own value (`let x = 5; assert_eq!(x, 5)`).",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Trait or auto-trait witness idioms (`fn _assert_send<T: Send>() {}`, `let _: &dyn Trait = &value;`) that deliberately assert a static fact at compile time.",
+                mitigation: "Not flagged: these carry no runtime assertion macro. Keep them as compile-time checks; if a wrapper macro trips the rule, add an `exclude:` entry in `.gruff-rs.yaml` with a documented reason.",
+            },
+            FalsePositiveShape {
+                shape: "Contract assertions where the value is the behavior under test: a `Default`/constructor value (`assert_eq!(Config::default().retries, 3)`), an ABI guard (`assert_eq!(size_of::<T>(), 8)`), a fallible result (`assert!(parse(s).is_ok())`), or a value computed into a different binding (`let n = seed * 2; assert_eq!(n, 10)`).",
+                mitigation: "Not flagged: the asserted value is produced by a call or computation, not bound directly to the matching literal. Keep them as regression guards.",
+            },
+        ],
+        related: &["test-quality.no-assertions"],
     ),
     rule_definition!(
         "test-quality.unwrap-in-test",

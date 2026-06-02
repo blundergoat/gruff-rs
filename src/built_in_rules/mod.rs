@@ -38,6 +38,7 @@ pub(crate) static UNREACHABLE_TERMINATOR_REGEX: OnceLock<Regex> = OnceLock::new(
 pub(crate) static NON_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static TRIVIAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static SAME_LITERAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static LITERAL_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run enabled text and Rust rules for one parsed source unit.
 pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {

@@ -167,7 +167,10 @@ pub(crate) fn analyse_test_assertions(
     if has_trivial_assertion(searchable_body) {
         findings.push(block_finding(BlockFindingDescriptor {
             rule_id: "test-quality.trivial-assertion",
-            message: format!("Test `{}` contains a trivial assertion.", block.name),
+            message: format!(
+                "Test `{}` asserts a value the code already fixes, not behavior. Assert a computed, parsed, or returned result instead of a literal or a binding's own initializer.",
+                block.name
+            ),
             file,
             block,
             severity: Severity::Warning,

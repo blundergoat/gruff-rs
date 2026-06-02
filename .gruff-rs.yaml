@@ -329,7 +329,7 @@ rules:
   # Flags tests that sleep instead of synchronizing on behavior.
   test-quality.sleep-in-test:
     enabled: true
-  # Flags assertions that prove literals or constants instead of behavior.
+  # Flags assertions that prove a value the code already fixes instead of behavior: literal tautologies (`assert!(true)`, `assert_eq!(1, 1)`) and an immutable literal binding asserted against its own value (`let x = 5; assert_eq!(x, 5)`).
   test-quality.trivial-assertion:
     enabled: true
   # Flags unwrap calls in tests.

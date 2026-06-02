@@ -256,7 +256,9 @@ pub(crate) fn analyse_text_renders_rule_deltas_before_the_composite_score_line()
     let improved_offset = rendered
         .find("Top 5 improved:")
         .expect("improved block present");
-    let score_offset = rendered.find("Score:").expect("score line present");
+    let score_offset = rendered
+        .find("Composite:")
+        .expect("composite line present");
     assert!(improved_offset < score_offset);
 }
 
@@ -355,7 +357,7 @@ pub(crate) fn summary_omits_per_rule_deltas_when_absent() {
 #[test]
 pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
     // PR #3 review: summary text emitted the `Top 5` delta block AFTER
-    // the `Score:` line, opposite of ADR-014 (the analyse text and
+    // the composite-score line, opposite of ADR-014 (the analyse text and
     // Markdown reporters both put deltas BEFORE the score line). Pin
     // the position so the comparison signal stays above the score.
     let mut report = sample_report_with(Vec::new(), Vec::new());
@@ -365,9 +367,11 @@ pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
     let improved_offset = summary_text
         .find("Top 5 improved:")
         .expect("improved block present");
-    let score_offset = summary_text.find("Score:").expect("score line present");
+    let score_offset = summary_text
+        .find("Composite:")
+        .expect("composite line present");
     assert!(
         improved_offset < score_offset,
-        "summary delta block must render above the Score line, got:\n{summary_text}",
+        "summary delta block must render above the Composite line, got:\n{summary_text}",
     );
 }

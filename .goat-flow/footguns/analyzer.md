@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-05-31
+last_reviewed: 2026-06-03
 ---
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
@@ -116,6 +116,26 @@ The non-obvious failure mode is masking strings but not comments for loop-scoped
 `src/built_in_rules/test_rules.rs` (search: `fn body_contains_only_assertion_subject_unwraps`) exempts `test-quality.unwrap-in-test` only when every `.unwrap()` is inside an assertion macro and the unwrap receiver is a call result. A broad "inside assert macro" exemption hides setup variables such as `assert_eq!(v.unwrap(), 2)`, which existing regression coverage expects to remain visible.
 
 The non-obvious failure mode is treating all assertion unwraps as equivalent. Unwrapping a direct function call in an assertion can be the subject under test; unwrapping a local variable inside an assertion can still hide setup intent. Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (search: `unwrap_expect_skips_cfg_test_module`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap`).
+
+## Footgun: Test-Quality Assertion Rules Must Mask Comments
+
+**Status:** active | **Created:** 2026-06-03 | **Evidence:** OBSERVED
+
+`src/built_in_rules/test_rules.rs` (search: `let searchable_body = strip_rust_string_literals(&block.body);`) passes a string-masked but comment-preserved body into `analyse_test_assertions`. `src/built_in_rules/helpers.rs` (search: `fn has_trivial_assertion`) then runs assertion regexes over that comment-preserved body. Unlike `long_test_effective_line_count` in `src/built_in_rules/test_rules.rs` (search: `strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body))`), the trivial-assertion path does not strip comments before matching.
+
+Concrete review probes from 2026-06-03 showed the failure mode: `let x = 5; // assert_eq!(x, 5); assert_eq!(x + 1, 6);` produced `test-quality.trivial-assertion`, and even fully commented-out `// let ghost = 5; // assert_eq!(ghost, 5);` produced the same finding. This is a false positive, not a harmless implementation detail, because gruff findings are commands to change code in hook mode.
+
+When adding or widening test-quality assertion regexes, feed them a comment-masked view unless the rule intentionally reads comments. Regression coverage should include both a commented-out assertion after a real binding and a fully commented-out binding-plus-assertion pair. String and raw-string probes are still required separately because `src/parser/mod.rs` (search: `fn strip_rust_string_literals`) masks those before comments are considered.
+
+## Footgun: Regex Shadow Windows Miss Rust Binding Patterns
+
+**Status:** active | **Created:** 2026-06-03 | **Evidence:** OBSERVED
+
+`src/built_in_rules/helpers.rs` (search: `fn literal_is_asserted_before_shadow`) treats shadowing as a textual `let name` occurrence. That catches `let x = ...` but misses valid Rust binding patterns such as `let (x) = ...`, destructuring, and some scope-sensitive cases. The helper is used by `has_literal_binding_tautology` (search: `has_literal_binding_tautology(source)`), so a missed shadow can make the rule attribute a later assertion to an older literal initializer.
+
+Concrete review probe from 2026-06-03: `let x = 5; let (x) = (6); assert_eq!(x, 5);` produced `test-quality.trivial-assertion`. The asserted `x` is the parenthesized shadow binding, so this is a false positive. A related false negative also exists: `let x = 5; { let x = 6; assert_eq!(x + 1, 7); } assert_eq!(x, 5);` stayed silent because the inner `let x` cut off the scan window for the outer binding even though the later outer assertion is a tautology.
+
+Any future "binding then later use before shadow" rule should either use syntax-aware local analysis or carry explicit negative probes for parenthesized bindings, destructuring, inner-scope shadows, and commented shadows. If regex remains the local choice, document the supported binding grammar and prefer false negatives over false positives.
 
 ## Footgun: Text-Pattern Rules Self-Fire On Their Own Sentinel Values
 

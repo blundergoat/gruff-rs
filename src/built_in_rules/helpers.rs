@@ -63,7 +63,61 @@ pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     let has_same_literal = same_literal.captures_iter(source).any(|captures| {
         captures.get(1).map(|left| left.as_str()) == captures.get(2).map(|right| right.as_str())
     });
-    has_same_literal
+    if has_same_literal {
+        return true;
+    }
+
+    has_literal_binding_tautology(source)
+}
+
+/// Detects the "literal-binding tautology": an immutable binding to a
+/// numeric or boolean literal (`let answer = 42;`) whose value is then
+/// asserted to equal that same literal (`assert_eq!(answer, 42)`), with no
+/// shadowing of the name in between. The assertion proves only what the
+/// binding already fixed, so it exercises no behavior.
+///
+/// Sound without dataflow analysis: an immutable, non-`mut` binding to a
+/// `Copy` literal cannot be reassigned or mutated (the compiler forbids
+/// both), so the only way the asserted name could differ from its
+/// initializer is a later `let name = ...` shadow. `source` is already
+/// string-masked, so only numeric and boolean literals survive to be
+/// compared textually; `let mut`, computed initializers (`2 + 2`), and
+/// values derived into a different name therefore stay silent.
+fn has_literal_binding_tautology(source: &str) -> bool {
+    let binding = static_regex(
+        &LITERAL_BINDING_REGEX,
+        r"\blet\s+(mut\s+)?([A-Za-z_]\w*)\s*(?::[^=;\n]+)?=\s*(true|false|[0-9][0-9_]*(?:\.[0-9][0-9_]*)?)\s*;",
+    );
+    binding.captures_iter(source).any(|captures| {
+        if captures.get(1).is_some() {
+            return false; // `let mut` — the value may change before the assert.
+        }
+        let (Some(name), Some(literal), Some(whole)) =
+            (captures.get(2), captures.get(3), captures.get(0))
+        else {
+            return false;
+        };
+        literal_is_asserted_before_shadow(&source[whole.end()..], name.as_str(), literal.as_str())
+    })
+}
+
+/// True when `rest` (the body after a `let name = literal;` binding)
+/// asserts `name` equal to `literal` before any `let name` shadow rebinds
+/// it. Both `assert_eq!` argument orders count; the trailing `[,)]` allows
+/// the optional message form `assert_eq!(name, literal, "...")`.
+fn literal_is_asserted_before_shadow(rest: &str, name: &str, literal: &str) -> bool {
+    let escaped_name = regex::escape(name);
+    let escaped_literal = regex::escape(literal);
+
+    let shadow = Regex::new(&format!(r"\blet\s+(?:mut\s+)?{escaped_name}\b"))
+        .expect("literal-binding shadow regex compiles");
+    let window_end = shadow.find(rest).map_or(rest.len(), |found| found.start());
+
+    let assertion = Regex::new(&format!(
+        r"\bassert_eq!\s*\(\s*(?:\b{escaped_name}\b\s*,\s*\b{escaped_literal}\b|\b{escaped_literal}\b\s*,\s*\b{escaped_name}\b)\s*[,)]"
+    ))
+    .expect("literal-binding assertion regex compiles");
+    assertion.is_match(&rest[..window_end])
 }
 
 pub(crate) struct SimpleFindingDescriptor<'a> {
