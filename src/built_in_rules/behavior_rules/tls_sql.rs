@@ -13,8 +13,18 @@ pub(crate) fn analyse_tls_verification_disabled(
         &TLS_VERIFICATION_DISABLED_REGEX,
         r"\.(?:danger_accept_invalid_certs|accept_invalid_hostnames)\s*\(\s*true\s*\)",
     );
-    let true_bindings = true_boolean_bindings(&searchable);
+    // `let x = true;` bindings are tracked only within the function currently being
+    // scanned: a new `fn` clears the set, and a binding counts only once it has
+    // appeared above the sink. This stops a `true` binding in one function from
+    // flagging a same-named parameter or shadowed binding in another (false positive).
+    let mut true_bindings: BTreeSet<String> = BTreeSet::new();
     for (line_index, line) in searchable.lines().enumerate() {
+        if is_function_start_line(line) {
+            true_bindings.clear();
+        }
+        if let Some(name) = true_boolean_binding_name(line) {
+            true_bindings.insert(name);
+        }
         if direct_regex.is_match(line) || tls_bypass_uses_true_binding(line, &true_bindings) {
             findings.push(tls_verification_disabled_finding(file, line_index + 1));
         }
@@ -39,16 +49,23 @@ fn tls_verification_disabled_finding(file: &SourceFile, line: usize) -> Finding 
     })
 }
 
-fn true_boolean_bindings(source: &str) -> BTreeSet<String> {
+/// A line that opens a function body (`fn name`), used to scope `true` bindings to
+/// a single function so they cannot leak into a later, unrelated function.
+fn is_function_start_line(line: &str) -> bool {
+    static FUNCTION_START_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(&FUNCTION_START_REGEX, r"\bfn\s+[A-Za-z_]").is_match(line)
+}
+
+/// The `name` bound by a `let name = true;` statement on this line, if any.
+fn true_boolean_binding_name(line: &str) -> Option<String> {
     static TRUE_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
         &TRUE_BINDING_REGEX,
         r"\blet\s+(?P<name>[a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*true\s*;",
     );
     regex
-        .captures_iter(source)
-        .filter_map(|captures| captures.name("name").map(|name| name.as_str().to_string()))
-        .collect()
+        .captures(line)
+        .and_then(|captures| captures.name("name").map(|name| name.as_str().to_string()))
 }
 
 fn tls_bypass_uses_true_binding(line: &str, true_bindings: &BTreeSet<String>) -> bool {

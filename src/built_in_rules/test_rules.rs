@@ -132,7 +132,7 @@ pub(crate) fn analyse_test_size(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!(
-                    "Test `{}` has {effective_lines} lines after the first assertion, above the threshold of {threshold}.",
+                    "Test `{}` has {effective_lines} lines from its first assertion onward, above the threshold of {threshold}.",
                     block.name
                 ),
                 file,

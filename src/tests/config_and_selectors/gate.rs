@@ -253,3 +253,23 @@ pub(crate) fn gate_config_error_diagnostic_is_exit_2() {
         RunOutcome::DiagnosticsFailed,
     );
 }
+
+// `--fail-on-new` is documented to *fail* on new findings, so it must force fail
+// semantics even when a pre-existing gate block opted into `onMatch: warn`.
+#[test]
+pub(crate) fn fail_on_new_forces_fail_over_warn_gate() {
+    let mut config = crate::config::Config::default();
+    config.gate = Some(Gate {
+        on_match: GateOnMatch::Warn,
+        ..Gate::default()
+    });
+    crate::apply_fail_on_new(&mut config);
+    let gate = config.gate.expect("gate present after --fail-on-new");
+    assert_eq!(gate.scope, GateScope::New);
+    assert_eq!(gate.error, Some(0));
+    assert_eq!(
+        gate.on_match,
+        GateOnMatch::Fail,
+        "--fail-on-new must override a warn-only gate so new findings fail the build"
+    );
+}

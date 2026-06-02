@@ -24,7 +24,7 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
-| Rule catalogue | 76 rules across 11 pillars |
+| Rule catalogue | 87 rules across 11 pillars |
 | Primary config | `.gruff-rs.yaml` (requires `schemaVersion: gruff-rs.config.v1`) |
 | Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
@@ -193,7 +193,7 @@ Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minim
 
 ## Rules And Pillars
 
-The v1.0 catalogue contains 76 rules:
+The v1.0 catalogue contains 87 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -204,8 +204,8 @@ The v1.0 catalogue contains 76 rules:
 | `maintainability` | 11 |
 | `modernisation` | 6 |
 | `naming` | 5 |
-| `security` | 14 |
-| `sensitive-data` | 9 |
+| `security` | 23 |
+| `sensitive-data` | 11 |
 | `size` | 3 |
 | `test-quality` | 8 |
 
@@ -252,8 +252,8 @@ excluded as out of scope.
 
 ```bash
 ./.cargo-tools/bin/gruff-rs analyse --format json --changed-ranges "3-3,8-10" src/foo.rs
-./.cargo-tools/bin/gruff-rs analyse --format json --since HEAD src/foo.rs
-git diff | ./.cargo-tools/bin/gruff-rs analyse --format json --diff - src/foo.rs
+./.cargo-tools/bin/gruff-rs analyse --format json --since HEAD --diff-git-unsafe src/foo.rs
+git diff | ./.cargo-tools/bin/gruff-rs analyse --format json --diff-patch - src/foo.rs
 ```
 
 Use `--changed-scope=hunk` for line/hunk-only filtering; the default is

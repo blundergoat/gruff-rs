@@ -222,11 +222,14 @@ fn run_analyse_command(
 
 /// Fold the `--fail-on-new` flag into the gate as `scope: new` with a default
 /// `error: 0` cap (ADR-003 baseline-aware gate-scope addendum). An existing `gate:`
-/// block keeps its other caps. The missing-baseline precondition is enforced later
-/// by `Gate::scope_precondition_error` during analysis (a config error, exit 2).
-fn apply_fail_on_new(config: &mut Config) {
+/// block keeps its other caps but is forced to fail-on-match: the flag is named and
+/// documented to *fail* on new findings, so it overrides a prior `onMatch: warn`. The
+/// missing-baseline precondition is enforced later by `Gate::scope_precondition_error`
+/// during analysis (a config error, exit 2).
+pub(crate) fn apply_fail_on_new(config: &mut Config) {
     let gate = config.gate.get_or_insert_with(Gate::default);
     gate.scope = GateScope::New;
+    gate.on_match = GateOnMatch::Fail;
     if gate.error.is_none() {
         gate.error = Some(0);
     }
@@ -515,7 +518,9 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = started.elapsed().as_millis();
-            let outcome = RunOutcome::classify(&report, FailThreshold::None, config.gate.as_ref());
+            // `summary` is a read-only reporting command: like `--fail-on` (passed as
+            // `None` above), the `gate:` block must not change its exit code.
+            let outcome = RunOutcome::classify(&report, FailThreshold::None, None);
             let rendered = summary::render(&report, args.top, args.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()

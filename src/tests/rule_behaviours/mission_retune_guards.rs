@@ -82,3 +82,74 @@ pub(crate) fn long_test_ignores_setup_before_first_assertion() {
         report.findings
     );
 }
+
+#[test]
+pub(crate) fn tls_true_binding_flags_within_one_function() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Build a client.
+pub fn make_client() {
+    let insecure = true;
+    let _ = reqwest::Client::builder().danger_accept_invalid_certs(insecure);
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "security.tls-verification-disabled"),
+        "a `let x = true;` bypass inside the same function must still flag; findings={:?}",
+        report.findings
+    );
+}
+
+#[test]
+pub(crate) fn tls_true_binding_does_not_leak_across_functions() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// A truthy flag used elsewhere.
+pub fn defaults() {
+    let insecure = true;
+    let _ = insecure;
+}
+
+/// Build a client from a caller-supplied flag.
+pub fn make_client(insecure: bool) {
+    let _ = reqwest::Client::builder().danger_accept_invalid_certs(insecure);
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "security.tls-verification-disabled"),
+        "a `true` binding in another function must not flag a same-named parameter; findings={:?}",
+        report.findings
+    );
+}
