@@ -50,6 +50,11 @@ pub(crate) fn has_nearby_invariant_comment(source: &str) -> bool {
         .any(|line| line.contains("PANIC:") || line.contains("INVARIANT:"))
 }
 
+/// Detects a trivial assertion - a literal tautology (`assert!(true)`,
+/// `assert_eq!(1, 1)`) or a literal-binding tautology (`let x = 5;
+/// assert_eq!(x, 5)`). `source` must already be string- AND comment-masked (as
+/// `analyse_test_block` prepares it); an unmasked comment would let a
+/// commented-out assertion be mistaken for real code.
 pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     let literal_assert = static_regex(&TRIVIAL_ASSERT_REGEX, r"\bassert!\s*\(\s*(true|false)\s*\)");
     if literal_assert.is_match(source) {
@@ -101,15 +106,26 @@ fn has_literal_binding_tautology(source: &str) -> bool {
     })
 }
 
-/// True when `rest` (the body after a `let name = literal;` binding)
-/// asserts `name` equal to `literal` before any `let name` shadow rebinds
-/// it. Both `assert_eq!` argument orders count; the trailing `[,)]` allows
-/// the optional message form `assert_eq!(name, literal, "...")`.
+/// True when `rest` (the body after a `let name = literal;` binding) asserts
+/// `name` equal to `literal` before any later `let` rebinds `name`. The shadow
+/// guard matches `name` in the binding position of any later `let` - including
+/// pattern forms such as `let (name) = ...`, `let mut name = ...`, or
+/// `let Foo { name } = ...` - because a rebind hides the original literal.
+/// Both `assert_eq!` argument orders count; the trailing `[,)]` allows the
+/// message form `assert_eq!(name, literal, "...")`.
+///
+/// Conservative by design: an inner-scope shadow (`{ let name = ...; }`) also
+/// stops the scan, so an outer tautology after the block is a miss, not a false
+/// positive. Type-suffixed (`1u32`), hex/negative, and separator-different
+/// (`1000` vs `1_000`) literals are compared textually and likewise missed -
+/// all safe directions for a rule whose findings command code changes.
 fn literal_is_asserted_before_shadow(rest: &str, name: &str, literal: &str) -> bool {
     let escaped_name = regex::escape(name);
     let escaped_literal = regex::escape(literal);
 
-    let shadow = Regex::new(&format!(r"\blet\s+(?:mut\s+)?{escaped_name}\b"))
+    // Match `name` bound in the pattern of any later `let` (before its `=`),
+    // covering `let (name)`, `let mut name`, `let Foo { name }`, etc.
+    let shadow = Regex::new(&format!(r"\blet\b[^;=]*\b{escaped_name}\b[^;=]*="))
         .expect("literal-binding shadow regex compiles");
     let window_end = shadow.find(rest).map_or(rest.len(), |found| found.start());
 

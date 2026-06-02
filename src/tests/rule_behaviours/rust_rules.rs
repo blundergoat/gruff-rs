@@ -435,5 +435,7 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.long-test");
     assert_missing_rule(&test_negative, "test-quality.trivial-assertion");
     assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
+    assert_missing_rule(&test_negative, "test-quality.conditional-logic");
+    assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
     assert_missing_rule(&test_negative, "test-quality.no-assertions");
 }

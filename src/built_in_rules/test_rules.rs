@@ -41,7 +41,11 @@ pub(crate) fn analyse_test_block(
     analyse_ignored_test(file, block, findings);
     analyse_test_size(file, block, config, findings);
     analyse_should_panic_without_expected(file, block, findings);
-    let searchable_body = strip_rust_string_literals(&block.body);
+    // Mask both string/char literals and comments so every per-test regex
+    // check (assertions, sleep, conditional, unwrap) sees real code only - a
+    // commented-out `sleep`/`if`/`.unwrap()`/`assert_eq!` must not fire.
+    let searchable_body =
+        strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
     analyse_test_assertions(file, block, &searchable_body, findings);
     analyse_test_regex_checks(file, block, &searchable_body, findings);
 }
