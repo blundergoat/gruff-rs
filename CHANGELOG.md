@@ -1,10 +1,6 @@
 # Changelog
 
-## [Unreleased]
-
-- **JSON finding path alias** - `analyse --format json` now emits canonical `findings[].file` alongside the existing `findings[].filePath`; `filePath` is deprecated and will be removed in the next release. `score.topOffenders[]` also emits `file` beside `filePath` for the transition. Fingerprints, baselines, and the in-memory report model are unchanged.
-
-## v0.3.0 - 2026-06-01
+## v0.3.0 - 2026-06-04
 
 0.3.0 makes gruff easier to adopt and sharpens its rules: tri-state baselines, count-based gates, a "fail-on-new" mode, eleven new security/secret rules, and four low-value rubrics dropped. JSON stays additive; new gates are opt-in.
 
@@ -22,7 +18,9 @@
 - **`waste.unnecessary-clone-candidate` is now off by default** - the only rule that ships disabled; enable it if you want it.
 - **Rule catalogue 80 → 87** (four removed, eleven added). Schemas, rule IDs, and fingerprints are unchanged.
 - **Project mission documented** across the README, `CLAUDE.md`, and `docs/mission.md`: gruff governs AI-written code for human-reviewer trust.
+- **JSON finding path alias** - `analyse --format json` now emits canonical `findings[].file` alongside the existing `findings[].filePath`; `filePath` is deprecated and will be removed in the next release. `score.topOffenders[]` also emits `file` beside `filePath` for the transition. Fingerprints, baselines, and the in-memory report model are unchanged.
 - **Internal:** rule/calibration files renamed for clarity; no behaviour change.
+- **Internal:** split the renderer-output tests into `output.rs` + `pillar_sections.rs` so the dogfood scan stays under the `size.file-length` threshold; no behaviour change.
 
 ## v0.2.0 - 2026-05-28
 
