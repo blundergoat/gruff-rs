@@ -312,7 +312,10 @@ fn render_scan_annotations(out: &mut String, report: &AnalysisReport) {
         annotations.push(format!("diagnostics: {}", report.diagnostics.len()));
     }
     if !report.paths.missing_paths.is_empty() {
-        annotations.push(format!("missing paths: {}", report.paths.missing_paths.len()));
+        annotations.push(format!(
+            "missing paths: {}",
+            report.paths.missing_paths.len()
+        ));
     }
     if !annotations.is_empty() {
         let _ = writeln!(out, "{}", annotations.join("  ·  "));

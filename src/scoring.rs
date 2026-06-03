@@ -44,10 +44,7 @@ pub(crate) fn render_composite_block(out: &mut String, report: &AnalysisReport) 
     let _ = writeln!(
         out,
         "Findings: {} total · {} error · {} warning · {} advisory",
-        report.summary.total,
-        report.summary.error,
-        report.summary.warning,
-        report.summary.advisory,
+        report.summary.total, report.summary.error, report.summary.warning, report.summary.advisory,
     );
 }
 

@@ -256,9 +256,7 @@ pub(crate) fn analyse_text_renders_rule_deltas_before_the_composite_score_line()
     let improved_offset = rendered
         .find("Top 5 improved:")
         .expect("improved block present");
-    let score_offset = rendered
-        .find("Composite:")
-        .expect("composite line present");
+    let score_offset = rendered.find("Composite:").expect("composite line present");
     assert!(improved_offset < score_offset);
 }
 
