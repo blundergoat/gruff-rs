@@ -8,6 +8,13 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     let decoded: Value = serde_json::from_str(&json_output).expect("json report");
     assert_eq!(decoded["schemaVersion"], "gruff.analysis.v2");
     assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
+    assert_eq!(decoded["findings"][0]["file"], "src/lib.rs");
+    assert_eq!(decoded["findings"][0]["filePath"], "src/lib.rs");
+    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert_eq!(
+        decoded["score"]["topOffenders"][0]["filePath"],
+        "src/lib.rs"
+    );
 
     let sarif: Value =
         serde_json::from_str(&render_report(&report, OutputFormat::Sarif)).expect("sarif report");

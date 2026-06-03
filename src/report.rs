@@ -1,4 +1,5 @@
 use super::*;
+use serde::ser::{SerializeStruct, Serializer};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
@@ -64,8 +65,7 @@ pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub(crate) struct Finding {
     pub(crate) rule_id: String,
     pub(crate) message: String,
@@ -88,6 +88,33 @@ pub(crate) struct Finding {
     /// remains line-sensitive so the baseline matcher in
     /// `src/baseline.rs` keeps its existing semantics.
     pub(crate) stable_identity: String,
+}
+
+impl Serialize for Finding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Finding", 17)?;
+        state.serialize_field("ruleId", &self.rule_id)?;
+        state.serialize_field("message", &self.message)?;
+        state.serialize_field("file", &self.file_path)?;
+        state.serialize_field("filePath", &self.file_path)?;
+        state.serialize_field("line", &self.line)?;
+        state.serialize_field("endLine", &self.end_line)?;
+        state.serialize_field("column", &self.column)?;
+        state.serialize_field("severity", &self.severity)?;
+        state.serialize_field("pillar", &self.pillar)?;
+        state.serialize_field("secondaryPillars", &self.secondary_pillars)?;
+        state.serialize_field("tier", &self.tier)?;
+        state.serialize_field("confidence", &self.confidence)?;
+        state.serialize_field("symbol", &self.symbol)?;
+        state.serialize_field("remediation", &self.remediation)?;
+        state.serialize_field("metadata", &self.metadata)?;
+        state.serialize_field("fingerprint", &self.fingerprint)?;
+        state.serialize_field("stableIdentity", &self.stable_identity)?;
+        state.end()
+    }
 }
 
 pub(crate) struct FindingDescriptor {
@@ -323,12 +350,25 @@ pub(crate) struct PillarScore {
     pub(crate) findings: usize,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub(crate) struct FileScore {
     pub(crate) file_path: String,
     pub(crate) score: f64,
     pub(crate) findings: usize,
+}
+
+impl Serialize for FileScore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileScore", 4)?;
+        state.serialize_field("file", &self.file_path)?;
+        state.serialize_field("filePath", &self.file_path)?;
+        state.serialize_field("score", &self.score)?;
+        state.serialize_field("findings", &self.findings)?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Deserialize)]
