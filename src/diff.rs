@@ -318,6 +318,29 @@ pub(crate) fn apply_changed_region_filter(
     report
 }
 
+pub(crate) fn summarize_changed_findings(
+    findings: &[Finding],
+    patch: &DiffPatchLineMap,
+    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+    scope: ChangedScope,
+) -> Summary {
+    let changed_files = patch.changed_files();
+    let changed_findings: Vec<Finding> = findings
+        .iter()
+        .filter(|finding| {
+            patch_intersects_finding_with_scope(
+                finding,
+                patch,
+                &changed_files,
+                function_blocks_by_file,
+                scope,
+            )
+        })
+        .cloned()
+        .collect();
+    summarize(&changed_findings)
+}
+
 fn patch_rule_deltas(kept: &[Finding], suppressed: &[Finding]) -> Vec<RuleDelta> {
     let mut introduced_per_rule: BTreeMap<String, usize> = BTreeMap::new();
     for finding in kept {

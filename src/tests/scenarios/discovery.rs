@@ -296,6 +296,37 @@ pub(crate) fn check_ignore_engine_matches_discovery() {
     assert_eq!(discovery.ignored_path_details, vec![ignored]);
 }
 
+#[test]
+pub(crate) fn check_ignore_gitignore_matcher_loads_nested_gitignore_files() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(dir.path().join("src/.gitignore"), "generated.rs\n").expect("gitignore write");
+    fs::write(
+        dir.path().join("src/generated.rs"),
+        "pub fn generated() {}\n",
+    )
+    .expect("generated write");
+
+    let gitignore =
+        crate::check_ignore::gitignore_for_path(dir.path(), &dir.path().join("src/generated.rs"));
+
+    assert_eq!(
+        ignored_gitignore_pattern(&gitignore, "src/generated.rs"),
+        Some("generated.rs".to_string())
+    );
+}
+
+fn ignored_gitignore_pattern(
+    gitignore: &ignore::gitignore::Gitignore,
+    path: &str,
+) -> Option<String> {
+    match gitignore.matched_path_or_any_parents(path, false) {
+        ignore::Match::Ignore(glob) => Some(glob.original().to_string()),
+        _ => None,
+    }
+}
+
 // ADR-018 req 5(d): `--include-ignored` opts into git/default ignores only and
 // must never reveal config-ignored paths.
 #[test]

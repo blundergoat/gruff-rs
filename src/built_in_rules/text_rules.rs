@@ -380,7 +380,7 @@ fn is_remote_download_piped_to_shell(value: &str) -> bool {
 fn workflow_line_contains_event(trimmed: &str, event: &str) -> bool {
     let event_pattern = regex::escape(event);
     let pattern = format!(
-        r#"(^on:\s*\[[^\]]*\b{event_pattern}\b|^-?\s*{event_pattern}\s*:|^-?\s*{event_pattern}\s*$)"#
+        r#"(^on:\s*(?:\[[^\]]*\b{event_pattern}\b|["']?{event_pattern}["']?\s*(?:#.*)?$)|^-?\s*{event_pattern}\s*:|^-?\s*{event_pattern}\s*$)"#
     );
     Regex::new(&pattern)
         .map(|compiled| compiled.is_match(trimmed))

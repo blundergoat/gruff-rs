@@ -175,24 +175,24 @@ pub(crate) fn run_analysis_in_project(
         &analysed_paths,
     )?;
     let mut report = build_report(project_root, options, config, inputs);
-    // Surface the gate decision (ADR-003 addenda). `scope: new`/`--fail-on-new`
-    // without a baseline is a fatal config error (exit 2 via `is_failure`);
-    // otherwise a non-fatal `gate` diagnostic whose exit effect is applied by
-    // `RunOutcome::classify`.
-    if let Some(gate) = &config.gate {
-        let diagnostic = match gate.scope_precondition_error(&report) {
-            Some(message) => RunDiagnostic {
-                diagnostic_type: "gate-config-error".to_string(),
-                message,
-                file_path: None,
-                line: None,
-            },
-            None => gate.diagnostic(&report),
-        };
-        report.diagnostics.push(diagnostic);
-    }
     record_history_if_requested(project_root, options, config, &mut report);
     Ok(report)
+}
+
+pub(crate) fn apply_gate_diagnostic(report: &mut AnalysisReport, gate: Option<&Gate>) {
+    let Some(gate) = gate else {
+        return;
+    };
+    let diagnostic = match gate.scope_precondition_error(report) {
+        Some(message) => RunDiagnostic {
+            diagnostic_type: "gate-config-error".to_string(),
+            message,
+            file_path: None,
+            line: None,
+        },
+        None => gate.diagnostic(report),
+    };
+    report.diagnostics.push(diagnostic);
 }
 
 fn collect_report_inputs(
@@ -207,14 +207,10 @@ fn collect_report_inputs(
     let AnalysisArtifacts {
         mut findings,
         function_blocks_by_file,
-    } = analyse_discovered_sources_with_artifacts(
-        project_root,
-        &discovery.files,
-        config,
-        &mut diagnostics,
-    );
+    } = analyse_report_artifacts(project_root, &discovery, config, &mut diagnostics);
     // Dedupe before baseline so perRuleDeltas match the final report (footguns/report.md).
     sort_and_dedupe_findings(&mut findings);
+    let all_findings = findings.clone();
     let (baseline_resolution, all_findings_summary) =
         resolve_baseline(project_root, options, &mut findings)?;
     let (findings, summaries, suppressed_findings) =
@@ -232,6 +228,7 @@ fn collect_report_inputs(
         per_rule_deltas,
         suppressed_count: None,
         all_findings_summary: Some(all_findings_summary),
+        all_findings,
     };
     Ok(apply_changed_region_to_inputs(
         project_root,
@@ -263,6 +260,7 @@ fn apply_changed_region_to_inputs(
     };
     let discovery = inputs.discovery.clone();
     let baseline_report = inputs.baseline_report.clone();
+    let all_findings = inputs.all_findings.clone();
     let report = build_report(project_root, options, config, inputs);
     let report = apply_changed_region_filter(
         report,
@@ -272,9 +270,11 @@ fn apply_changed_region_to_inputs(
         function_blocks_by_file,
         diff_filter.scope,
     );
+    let all_findings_summary =
+        changed_scope_all_summary(&all_findings, diff_filter, function_blocks_by_file);
     ReportInputs {
         discovery,
-        all_findings_summary: report.all_findings_summary,
+        all_findings_summary: Some(all_findings_summary),
         diagnostics: report.diagnostics,
         findings: report.findings,
         baseline_report,
@@ -284,7 +284,30 @@ fn apply_changed_region_to_inputs(
         },
         per_rule_deltas: report.per_rule_deltas,
         suppressed_count: report.suppressed_count,
+        all_findings,
     }
+}
+
+fn analyse_report_artifacts(
+    project_root: &Path,
+    discovery: &DiscoveryResult,
+    config: &Config,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> AnalysisArtifacts {
+    analyse_discovered_sources_with_artifacts(project_root, &discovery.files, config, diagnostics)
+}
+
+fn changed_scope_all_summary(
+    all_findings: &[Finding],
+    diff_filter: &ResolvedDiffFilter,
+    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+) -> Summary {
+    summarize_changed_findings(
+        all_findings,
+        &diff_filter.patch,
+        function_blocks_by_file,
+        diff_filter.scope,
+    )
 }
 
 fn split_baseline_resolution(
@@ -432,6 +455,7 @@ pub(crate) struct ReportInputs {
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     pub(crate) suppressed_count: Option<usize>,
     pub(crate) all_findings_summary: Option<Summary>,
+    pub(crate) all_findings: Vec<Finding>,
 }
 
 pub(crate) fn build_report(
@@ -449,6 +473,7 @@ pub(crate) fn build_report(
         per_rule_deltas,
         suppressed_count,
         all_findings_summary,
+        all_findings: _,
     } = inputs;
     let summary = summarize(&findings);
     let score = score_report(&findings, config);

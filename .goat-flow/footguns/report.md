@@ -1,6 +1,6 @@
 ---
 category: report
-last_reviewed: 2026-05-27
+last_reviewed: 2026-06-05
 ---
 
 ## Footgun: Per-Format Renderer Helpers Tend To Duplicate
@@ -87,11 +87,28 @@ Watch list (HashMap fields in `Config` whose iteration ever surfaces): `rule_set
 
 Concrete instance from 2026-05-27 (PR #3, post-b837080 review): the pipeline was `analyse → resolve_baseline → sort_and_dedupe`. `apply_baseline` computed `perRuleDeltas.introduced` by counting findings not matched by the baseline. Then `sort_and_dedupe_findings` (which exists precisely because raw rule emission can produce duplicate findings by `fingerprint`) collapsed duplicates. Result: `perRuleDeltas.introduced` over-counted by the number of duplicates dropped in the next step. codex caught it post-commit. Fixed by swapping `sort_and_dedupe_findings` ahead of `resolve_baseline`.
 
+Concrete instance from 2026-06-05 (0.3.0 release check): `src/diff.rs` (search: `pub(crate) fn apply_changed_region_filter`) overwrote the pre-baseline severity summary after `--diff-patch` filtered the post-baseline visible findings. With `gate.scope: all`, a changed-region scan with `security.process-command` already in `gruff-baseline.json` rendered `warning 0/0` and exited 0 even though `scope: all` is documented to count new + unchanged findings. Fixed by preserving a pre-baseline finding list in `src/analysis.rs` (search: `let all_findings = findings.clone()`) and recomputing the changed-region `all_findings_summary` from that list via `src/diff.rs` (search: `pub(crate) fn summarize_changed_findings`). Regression coverage: `src/tests/scenarios/diff/filter.rs` (search: `diff_patch_scope_all_gate_counts_baselined_findings_in_changed_region`).
+
 The same trap applies to any future step that derives per-rule / per-pillar / per-severity counts mid-pipeline: if `apply_report_exclusions` or a future suppression-policy step lands between the count and the final report, the count is stale.
 
 **How to apply:**
 
 - When introducing a new mid-pipeline aggregate, audit every step that runs after it. Each subsequent step that mutates `findings` is a potential drift source.
+- For changed-region filters, do not rebuild an "all" aggregate from the visible post-baseline report list unless the aggregate is explicitly new-only. `scope: all` needs the pre-baseline list filtered by the same patch/symbol logic.
 - Prefer computing aggregates AFTER all mutations are done — at `build_report` time, on the final findings list. Where that is not possible (because an earlier step is the only one with access to the right inputs — e.g. `apply_baseline` needs the baseline entries to compute `removed`), capture only what cannot be reconstructed later and recompute the rest at the end.
 - Add a regression test that constructs the failure mode the ordering bug would produce. For the baseline-then-dedupe case, the failing input is "raw findings with duplicates by fingerprint + empty baseline"; the assertion is "introduced count equals final per-rule count". See `baseline_deltas_do_not_over_count_duplicate_findings` (search: in `src/tests/scenarios/baseline.rs`).
 - When reading `run_analysis_in_project` in code review, treat the comment annotations on the dedupe/baseline order as load-bearing. They are documenting a constraint the code's structure cannot itself enforce.
+
+## Footgun: Shared Analysis Core Must Stay Command-Neutral
+
+**Status:** active | **Created:** 2026-06-05 | **Evidence:** OBSERVED
+
+`src/analysis.rs` (search: `pub(crate) fn run_analysis_in_project`) feeds `analyse`, `report`, `summary`, dashboard scans, and tests. Diagnostics appended there affect every consumer before a command has a chance to choose its own exit semantics. `summary` is explicitly non-gating (`src/main.rs`, search: `RunOutcome::classify(&report, FailThreshold::None, None)`), while `analyse` and `report` opt into gate exits.
+
+Concrete instance from 2026-06-05: adding `gate.scope: new` precondition diagnostics inside `run_analysis_in_project` made `gruff-rs summary` exit 2 when no baseline existed, even though `summary` passes `None` for the gate. The fatal `gate-config-error` diagnostic had already been pushed onto the report, so `RunOutcome::classify` saw a fatal diagnostic before it could ignore the gate. Fixed by moving gate diagnostic injection to `src/analysis.rs` (search: `pub(crate) fn apply_gate_diagnostic`) and calling it only from `src/main.rs` `run_analyse_command` and `run_report`. Regression coverage: `src/tests/config_and_selectors/gate.rs` (search: `shared_analysis_does_not_force_gate_diagnostics_on_summary_consumers`).
+
+**How to apply:**
+
+- Keep `run_analysis_in_project` command-neutral: source/read/parse/config/diff/baseline diagnostics belong there; command policy diagnostics belong at the command boundary.
+- Before adding a fatal `RunDiagnostic` in shared analysis, grep all `run_analysis_in_project` consumers and name which commands should inherit it. If any non-gating consumer should not, inject at the command site instead.
+- Pair every command-specific diagnostic with a test that exercises a non-gating consumer as well as the gated command path.

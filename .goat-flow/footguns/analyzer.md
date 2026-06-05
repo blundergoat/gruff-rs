@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-06-03
+last_reviewed: 2026-06-05
 ---
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
@@ -76,6 +76,20 @@ The non-obvious failure mode is testing multi-secret JSON on one physical line a
 `src/built_in_rules/text_rules.rs` (search: `fn analyse_ci_github_event_shell_interpolation`) scans GitHub Actions YAML as deterministic text, not with a YAML parser. Workflow shell steps commonly appear as list-item mappings (`- run: ...`), not only as bare `run:` keys, so key-oriented string checks can miss the most common positive shape.
 
 M54 calibration first caught this as `ci.github-event-shell-interpolation: positive=MISS negative=silent`. Regression coverage now lives in `src/tests/calibration/security_size_test_waste_cases.rs` (search: `ci.github-event-shell-interpolation`) and `src/tests/scenarios/calibration_extras.rs` (search: `calibration_security_rubric_improvements_have_false_positive_guards`). When adding workflow text rules without a YAML parser, include both `run:` and `- run:` positive/negative fixtures, plus a block scalar case if continuation lines matter.
+
+2026-06-05 extension: event detection has the same YAML-shape trap. `src/built_in_rules/text_rules.rs` (search: `fn workflow_line_contains_event`) originally matched `on: [pull_request]`, mapping keys (`on:\n  pull_request:`), and list items, but missed scalar events (`on: pull_request` / `on: pull_request_target`). That made `security.github-actions-secrets-in-pr` and `security.github-actions-pull-request-target` silent for a common valid workflow form. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_security_events_accept_scalar_on_values`).
+
+**How to apply:** every new GitHub Actions text rule needs fixtures for scalar, mapping, and list event syntax where event gating matters. Prefer a real YAML parser only if the rule needs nesting semantics; otherwise keep the text matcher deterministic but enumerate common YAML surface forms.
+
+## Footgun: check-ignore Needs Hierarchical Gitignore Context
+
+**Status:** active | **Created:** 2026-06-05 | **Evidence:** OBSERVED
+
+`src/check_ignore.rs` (search: `pub(crate) fn run_check_ignore`) is the hook-facing contract for "would gruff ignore this path?" The discovery walk gets hierarchical `.gitignore` handling from `ignore::WalkBuilder`, but a direct path query has no traversal context unless `check-ignore` rebuilds it. A matcher built only from project-root `.gitignore` silently misses nested policies such as `src/.gitignore`.
+
+Concrete instance from the 0.3.0 release check: `git check-ignore src/generated.rs` returned ignored for a temp repo with `src/.gitignore` containing `generated.rs`; `gruff-rs analyse` produced no findings for that file; `gruff-rs check-ignore --format json src/generated.rs` returned `"ignored": false` because the old query matcher loaded only the root `.gitignore`. Fixed by `src/check_ignore.rs` (search: `pub(crate) fn gitignore_for_path`) walking ancestors from project root to the queried path's parent and adding each `.gitignore` to the same `ignore` crate builder. Regression coverage: `src/tests/scenarios/discovery.rs` (search: `check_ignore_gitignore_matcher_loads_nested_gitignore_files`).
+
+**How to apply:** any direct ignore query must reconstruct the path's ignore hierarchy before answering. Do not replace this with an ad hoc glob matcher; use the same `ignore` crate semantics as discovery, and include a nested `.gitignore` regression whenever `check-ignore` changes.
 
 ## Footgun: Dead-Code Reference Masking Must Preserve Structured Attribute References
 

@@ -254,6 +254,49 @@ pub(crate) fn gate_config_error_diagnostic_is_exit_2() {
     );
 }
 
+#[test]
+pub(crate) fn shared_analysis_does_not_force_gate_diagnostics_on_summary_consumers() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "/// Ready.\npub fn ready() {}\n",
+    )
+    .expect("source");
+    write_config(dir.path(), "gate:\n  scope: new\n");
+    let options = AnalysisOptions {
+        paths: vec![PathBuf::from(".")],
+        no_config: false,
+        no_baseline: false,
+        ..default_test_options()
+    };
+    let config = load_config(dir.path(), &options).expect("config loads");
+    let mut report =
+        run_analysis_in_project(dir.path(), &options, &config).expect("analysis succeeds");
+
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.diagnostic_type == "gate-config-error"),
+        "shared analysis must not inject gate diagnostics before a command opts in"
+    );
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, None),
+        RunOutcome::Success,
+        "summary-style classification ignores gates and should stay successful"
+    );
+
+    apply_gate_diagnostic(&mut report, config.gate.as_ref());
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, config.gate.as_ref()),
+        RunOutcome::DiagnosticsFailed,
+        "analyse/report opt into the missing-baseline gate precondition"
+    );
+}
+
 // `--fail-on-new` is documented to *fail* on new findings, so it must force fail
 // semantics even when a pre-existing gate block opted into `onMatch: warn`.
 #[test]

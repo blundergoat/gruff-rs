@@ -59,7 +59,7 @@ pub(crate) use project::{
 pub(crate) use analyse_project::analyse_project;
 #[cfg(test)]
 use analysis::apply_report_exclusions;
-pub(crate) use analysis::run_analysis_in_project;
+pub(crate) use analysis::{apply_gate_diagnostic, run_analysis_in_project};
 #[cfg(test)]
 pub(crate) use baseline::write_baseline;
 pub(crate) use baseline::{
@@ -93,7 +93,8 @@ use dashboard::run_dashboard;
 use diff::apply_diff_patch_filter;
 use diff::{
     apply_changed_region_filter, normalize_report_path, parse_unified_diff,
-    patch_intersects_finding, patch_range_intersects, read_diff_patch, DiffPatchLineMap,
+    patch_intersects_finding, patch_range_intersects, read_diff_patch, summarize_changed_findings,
+    DiffPatchLineMap,
 };
 use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
 use gate::{Gate, GateOnMatch, GateScope};
@@ -206,8 +207,9 @@ fn run_analyse_command(
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(report) => {
+        Ok(mut report) => {
             let duration_ms = Some(started.elapsed().as_millis());
+            apply_gate_diagnostic(&mut report, config.gate.as_ref());
             let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             writer.emit(outcome, &rendered);
@@ -310,8 +312,9 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(report) => {
+        Ok(mut report) => {
             let duration_ms = Some(started.elapsed().as_millis());
+            apply_gate_diagnostic(&mut report, config.gate.as_ref());
             let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             match emit_report_output(writer, output, outcome, &rendered) {

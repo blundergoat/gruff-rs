@@ -36,11 +36,10 @@ pub(crate) fn run_check_ignore(
         }
     };
 
-    let gitignore = project_gitignore(&project_root);
     let entries: Vec<CheckIgnoreEntry> = args
         .paths
         .iter()
-        .map(|path| check_ignore_entry(&project_root, path, &config, &gitignore))
+        .map(|path| check_ignore_entry(&project_root, path, &config))
         .collect();
     let any_ignored = entries.iter().any(|entry| entry.ignored);
 
@@ -52,12 +51,7 @@ pub(crate) fn run_check_ignore(
     }
 }
 
-fn check_ignore_entry(
-    project_root: &Path,
-    path: &Path,
-    config: &Config,
-    gitignore: &ignore::gitignore::Gitignore,
-) -> CheckIgnoreEntry {
+fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> CheckIgnoreEntry {
     let absolute = absolutize(project_root, path);
     if let Some(ignored) = classify_ignored_path(project_root, &absolute, config, false) {
         return CheckIgnoreEntry {
@@ -68,7 +62,8 @@ fn check_ignore_entry(
         };
     }
     let relative = display_path(project_root, &absolute);
-    if let Some(pattern) = gitignore_match(gitignore, &relative, &absolute) {
+    let gitignore = gitignore_for_path(project_root, &absolute);
+    if let Some(pattern) = gitignore_match(&gitignore, &relative, &absolute) {
         return CheckIgnoreEntry {
             path: relative,
             ignored: true,
@@ -86,11 +81,41 @@ fn check_ignore_entry(
 
 // The discovery walk applies gitignore via the `ignore` crate during traversal;
 // check-ignore queries the same crate's matcher per path so it can report the
-// gitignore source for an arbitrary path without a hierarchy. Built once from
-// the project-root .gitignore (no second glob engine).
-fn project_gitignore(project_root: &Path) -> ignore::gitignore::Gitignore {
-    let (gitignore, _io_error) = ignore::gitignore::Gitignore::new(project_root.join(".gitignore"));
-    gitignore
+// gitignore source for an arbitrary path. Build the same hierarchy of
+// `.gitignore` files that the walk would encounter from project root to the
+// queried path's parent.
+pub(crate) fn gitignore_for_path(
+    project_root: &Path,
+    absolute: &Path,
+) -> ignore::gitignore::Gitignore {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(project_root);
+    for directory in gitignore_directories(project_root, absolute) {
+        let gitignore_path = directory.join(".gitignore");
+        if gitignore_path.is_file() {
+            let _error = builder.add(gitignore_path);
+        }
+    }
+    builder
+        .build()
+        .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty())
+}
+
+fn gitignore_directories(project_root: &Path, absolute: &Path) -> Vec<PathBuf> {
+    let Ok(relative) = absolute.strip_prefix(project_root) else {
+        return Vec::new();
+    };
+    let mut directories = vec![project_root.to_path_buf()];
+    let mut current = project_root.to_path_buf();
+    if let Some(relative_parent) = relative.parent() {
+        for component in relative_parent.components() {
+            let std::path::Component::Normal(component) = component else {
+                continue;
+            };
+            current.push(component);
+            directories.push(current.to_path_buf());
+        }
+    }
+    directories
 }
 
 fn gitignore_match(

@@ -287,6 +287,82 @@ diff --git a/fixtures/sample.rs b/fixtures/sample.rs\n\
 }
 
 #[test]
+pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_region() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn run(cmd: &str) { let _ = std::process::Command::new(cmd).spawn(); }\n",
+    )
+    .expect("source write");
+    run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            generate_baseline: Some(PathBuf::from("gruff-baseline.json")),
+            ..default_test_options()
+        },
+    )
+    .expect("baseline generation succeeds");
+    write_config(
+        dir.path(),
+        "gate:\n  scope: all\n  severity:\n    warning: 0\n",
+    );
+    let patch_path = dir.path().join("change.patch");
+    fs::write(
+        &patch_path,
+        concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "--- a/src/lib.rs\n",
+            "+++ b/src/lib.rs\n",
+            "@@ -1,1 +1,1 @@\n",
+            "+pub fn run(cmd: &str) { let _ = std::process::Command::new(cmd).spawn(); }\n",
+        ),
+    )
+    .expect("patch write");
+    let options = AnalysisOptions {
+        paths: vec![PathBuf::from(".")],
+        no_config: false,
+        baseline: Some(PathBuf::from("gruff-baseline.json")),
+        no_baseline: false,
+        diff: Some(DiffSelection::Patch {
+            path: patch_path,
+            scope: ChangedScope::Symbol,
+        }),
+        ..default_test_options()
+    };
+    let config = load_config(dir.path(), &options).expect("config loads");
+    let mut report =
+        run_analysis_in_project(dir.path(), &options, &config).expect("analysis succeeds");
+
+    assert_eq!(report.summary.warning, 0, "baselined warnings stay hidden");
+    assert_eq!(
+        report
+            .baseline
+            .as_ref()
+            .map(|baseline| baseline.unchanged_count),
+        Some(4),
+        "baseline should classify the current findings as unchanged"
+    );
+    assert!(
+        config
+            .gate
+            .as_ref()
+            .expect("gate configured")
+            .evaluate_report(&report)
+            .fails,
+        "scope: all must count the baselined warning in the changed region"
+    );
+    apply_gate_diagnostic(&mut report, config.gate.as_ref());
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, config.gate.as_ref()),
+        RunOutcome::ThresholdHit
+    );
+}
+
+#[test]
 pub(crate) fn diff_patch_diagnostics_are_sarif_notifications_without_failed_execution() {
     let report = sample_report_with(
             Vec::new(),
