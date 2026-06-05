@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || { printf 'gruff-code-quality: git repository root unavailable; skipping\\n' >&2; exit 0; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
+            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
           }
         ]
       },
@@ -92,7 +92,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || { printf 'gruff-code-quality: git repository root unavailable; skipping\\n' >&2; exit 0; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
+            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
           }
         ]
       },
@@ -101,7 +101,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || { printf 'gruff-code-quality: git repository root unavailable; skipping\\n' >&2; exit 0; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
+            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
           }
         ]
       }

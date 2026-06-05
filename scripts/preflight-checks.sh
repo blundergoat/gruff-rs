@@ -51,6 +51,7 @@ Runs the local gruff-rs preflight suite:
   - RustSec dependency audit, auto-installing cargo-audit when missing
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
   - gruff-rs dogfood scan (analyse the whole project, gated by minimumSeverity.analyse in .gruff-rs.yaml)
+  - documentation drift guard (architecture.md schema string and CLI command list match the code)
 
 Options:
   --release-check  Also require the crate version to be newer than the latest
@@ -646,6 +647,60 @@ YAML
   grep -q 'custom.fixture-marker' "$report_file"
 }
 
+docs_drift_check() {
+  local arch="$REPO_ROOT/.goat-flow/architecture.md"
+  local glossary="$REPO_ROOT/.goat-flow/glossary.md"
+  local analysis_src="$REPO_ROOT/src/analysis.rs"
+  local bt='`'
+  local live_schema
+  local doc
+  local found
+  local cmd
+  local help_text
+  local checked=0
+  local stale=()
+  local missing=()
+
+  [[ -f "$arch" && -f "$glossary" && -f "$analysis_src" ]] || {
+    printf 'docs drift: expected architecture.md, glossary.md, and src/analysis.rs\n' >&2
+    return 1
+  }
+
+  # Schema-version drift: the orientation docs must not name a stale
+  # gruff.analysis.v* that differs from the live schema string in the code.
+  live_schema=$(grep -oE 'gruff\.analysis\.v[0-9]+' "$analysis_src" | sort -u | head -1)
+  if [[ -z "$live_schema" ]]; then
+    printf 'docs drift: could not read live analysis schema from src/analysis.rs\n' >&2
+    return 1
+  fi
+  for doc in "$arch" "$glossary"; do
+    while IFS= read -r found; do
+      [[ -z "$found" || "$found" == "$live_schema" ]] && continue
+      stale+=("${doc##*/}:$found")
+    done < <(grep -oE 'gruff\.analysis\.v[0-9]+' "$doc" | sort -u)
+  done
+
+  # Command-surface drift: every command the binary exposes must be named in
+  # architecture.md (the System Overview enumerates the user-facing modes).
+  help_text=$(cargo run --quiet -- help 2>/dev/null) || {
+    printf 'docs drift: could not run gruff-rs help for command enumeration\n' >&2
+    return 1
+  }
+  while IFS= read -r cmd; do
+    [[ -z "$cmd" || "$cmd" == "help" ]] && continue
+    checked=$((checked + 1))
+    grep -qF "${bt}${cmd}${bt}" "$arch" || missing+=("$cmd")
+  done < <(printf '%s\n' "$help_text" | awk '/^Available commands:/{f=1;next} f&&/^$/{f=0} f&&/^  [a-z]/{print $1}')
+
+  if ((${#stale[@]} > 0 || ${#missing[@]} > 0)); then
+    ((${#stale[@]} > 0)) && printf 'docs drift: stale analysis schema (live=%s): %s\n' "$live_schema" "${stale[*]}" >&2
+    ((${#missing[@]} > 0)) && printf 'docs drift: commands missing from architecture.md: %s\n' "${missing[*]}" >&2
+    return 1
+  fi
+
+  printf '%s + %d CLI commands match orientation docs\n' "$live_schema" "$checked"
+}
+
 dogfood_scan() {
   bin/gruff-rs analyse . --format text --no-baseline
 }
@@ -692,6 +747,7 @@ main() {
   run_step "selector smoke" selector_smoke
   run_step "exclusion smoke" exclusion_smoke
   run_step "custom rule smoke" custom_rule_smoke
+  run_step "docs drift" docs_drift_check
   run_step "gruff-rs dogfood scan" dogfood_scan
 
   summary

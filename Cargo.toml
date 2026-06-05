@@ -27,9 +27,13 @@ exclude = [
     "docs/coding-standards/",
     "package.json",
     "package-lock.json",
+    "scripts/bump-version.sh",
+    "scripts/dependency-install.sh",
+    "scripts/dependency-update.sh",
+    "scripts/preflight-checks.sh",
+    "scripts/publish-crates.sh",
     "scripts/start-dev.sh",
     "scripts/test-performance.sh",
-    "scripts/preflight-checks.sh",
 ]
 
 [package.metadata.binstall]
