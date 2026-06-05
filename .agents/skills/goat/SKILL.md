@@ -1,7 +1,7 @@
 ---
 name: goat
 description: "Use when you describe an outcome and need the right goat-* workflow chosen for you."
-goat-flow-skill-version: "1.7.0"
+goat-flow-skill-version: "1.9.1"
 ---
 # /goat
 
@@ -42,6 +42,7 @@ Rationale: [concrete signals that justified this route]
 | Bug, failure, unexpected behaviour | `/goat-debug` |
 | Verify a fix worked | `/goat-debug` (post-fix verification) |
 | Browser-visible issue | Browser evidence first; `/goat-debug` Investigate if diagnosis needed |
+| Understand, explain, explore unfamiliar code | `/goat-debug` (Investigate mode) |
 | Quality review, audit, diff check | `/goat-review` |
 | Verify a diff/PR before merge | `/goat-review` |
 | Multi-perspective critique | `/goat-critique` |

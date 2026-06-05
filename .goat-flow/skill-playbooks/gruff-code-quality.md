@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.9.0"
+goat-flow-reference-version: "1.9.1"
 ---
 # Gruff Code Quality
 
@@ -410,7 +410,7 @@ Treat test-quality findings as questions about signal:
 
 Do not blindly abstract test setup. A little explicit setup is often better than a helper that makes the failing contract invisible.
 
-Never add no-op helpers, fake SUT calls, or meaningless wrappers just to satisfy a test-quality heuristic. Extraction is valid only when it improves the test's signal: clearer setup, isolated I/O, reusable fixtures, or a more direct assertion.
+Never add no-op helpers, fake System Under Test (SUT) calls, or meaningless wrappers just to satisfy a test-quality heuristic. Extraction is valid only when it improves the test's signal: clearer setup, isolated I/O, reusable fixtures, or a more direct assertion.
 
 When a mock-expectation test is flagged as assertion-free, treat the warning as "no explicit assertion call found" - some gruff rules count only explicit assertion calls. To clear without weakening the test, capture collaborator arguments in a spy/callback and assert them outside the mock, or assert an externally observable return value/state.
 

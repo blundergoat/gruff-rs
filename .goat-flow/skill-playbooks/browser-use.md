@@ -1,9 +1,7 @@
 ---
-goat-flow-reference-version: "1.7.0"
+goat-flow-reference-version: "1.9.1"
 ---
 # Browser Evidence Reference
-
-Last verified against: browser-use v0.2.x (2026-04-26)
 
 Use this when a task involves a URL, local HTML file, localhost page, screenshot request, browser-visible behavior, visual rendering issue, browser DevTools output, or browser console/network symptom.
 
@@ -17,7 +15,7 @@ Before first use in a session, verify the tool is installed:
 command -v browser-use || command -v browser-use-python
 ```
 
-If found, run `browser-use doctor` (or `browser-use-python -c "import browser_use; print('ok')"` for the venv wrapper). If missing, offer to install: "browser-use is not installed. Want me to install it (`pip install browser-use` or `scripts/install-browser-tools.sh`)? Or I can work from manual evidence (screenshots, DevTools output) instead." Never install it without approval. If the user declines or installation fails, use the manual fallback section below.
+If found, run `browser-use doctor` (or `browser-use-python -c "import browser_use; print('ok')"` for the venv wrapper). If missing, offer to install: "browser-use is not installed. Want me to install it (`pip install browser-use`)? Or I can work from manual evidence (screenshots, DevTools output) instead." Never install it without approval. If the user declines or installation fails, use the manual fallback section below.
 
 ## Observation Workflow
 
@@ -74,12 +72,12 @@ Use `--headed` when headless output is ambiguous. Do not use `connect`, `--profi
 
 ### When `browser-use connect` fails
 
-If `connect` cannot find a running Chrome with remote debugging, do not silently fall back. Surface the choice to the user with both options and let them pick — installed-Chrome and managed-Chromium are not equivalent because each touches different state:
+If `connect` cannot find a running Chrome with remote debugging, do not silently fall back. Surface the choice to the user with both options and let them pick - installed-Chrome and managed-Chromium are not equivalent because each touches different state:
 
 1. **Use the user's real Chrome.** They must enable remote debugging first: open `chrome://inspect/#remote-debugging` or relaunch Chrome with `--remote-debugging-port=9222`. Then retry `browser-use connect`.
 2. **Use managed Chromium with a Chrome profile.** Run `browser-use profile list` to show available profiles, ask which one, then run `browser-use --profile "ProfileName" open <url>`. This launches a separate Chromium instance with the chosen profile (cookies, logins, extensions); no Chrome relaunch needed.
 
-Both paths require explicit user approval — they read login state. Never pick one autonomously.
+Both paths require explicit user approval - they read login state. Never pick one autonomously.
 
 ## Navigation and Sessions
 
@@ -133,3 +131,8 @@ browser-use tunnel stop --all      # Only if you started a tunnel earlier
 ```
 
 Leaving the daemon running is harmless but consumes memory and keeps any open Chromium / cloud session alive.
+
+## Related References
+
+- `page-capture.md` - batch capture across many known pages (screenshot each, emit one MD record per page); load it instead when the task is multi-page evidence rather than a single observation
+- `skill-preamble.md` - the Proof Gate and the OBSERVED / INFERRED evidence tagging this playbook applies to browser output

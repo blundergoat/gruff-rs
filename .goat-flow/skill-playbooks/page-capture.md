@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.7.0"
+goat-flow-reference-version: "1.9.1"
 ---
 # Page Capture Reference
 
@@ -43,11 +43,11 @@ For JS/TS projects, prefer this tier over the Python wrapper - project-local Pla
 
 ```bash
 browser-use-python -c "from playwright.sync_api import sync_playwright; print('ok')"
-# or if the project documents a different wrapper:
+# or the standard Playwright CLI if the venv wrapper is not present:
 python -m playwright --version
 ```
 
-`scripts/install-browser-tools.sh` installs Python Playwright into a user-local venv at `~/.local/share/goatflow-browser-tools/venv` and exposes it through `~/.local/bin/browser-use-python`. If `command -v playwright` fails, check this wrapper before declaring Playwright unavailable.
+If a Python venv exposes Playwright through a `browser-use-python` wrapper (some environments place one on `PATH`, e.g. at `~/.local/bin/browser-use-python`), check it before declaring Playwright unavailable. Otherwise install Python Playwright the standard way — `pip install playwright && python -m playwright install chromium`.
 
 The agent writes a Python capture script using `playwright.sync_api`, executes it, and reads the output. See "Writing a capture script" below.
 

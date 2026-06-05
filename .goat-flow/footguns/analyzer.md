@@ -45,7 +45,7 @@ The non-obvious failure mode is losing analyzer coverage while making the reposi
 
 **Status:** active | **Created:** 2026-05-13 | **Evidence:** ACTUAL_MEASURED
 
-`src/parser.rs` (search: `fn strip_rust_string_literals`) masks Rust string literals before code-shape checks such as complexity, unwrap, process command, unsafe, and test-quality scans. Secret scanners intentionally still inspect raw text.
+`src/parser/mod.rs` (search: `fn strip_rust_string_literals`) masks Rust string literals before code-shape checks such as complexity, unwrap, process command, unsafe, and test-quality scans. Secret scanners intentionally still inspect raw text.
 
 Without that split, self-scan can report rule examples embedded inside unit-test fixture strings as if they were real analyzer code. M03 caught this when test-quality checks flagged raw fixture snippets in analyzer source tests.
 
@@ -95,9 +95,9 @@ Concrete instance from the 0.3.0 release check: `git check-ignore src/generated.
 
 **Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
 
-`src/parser.rs` (search: `fn rust_code_reference_source`) masks arbitrary comments and strings before dead-code reference counting, then appends only structured references such as `serde(default = "function_name")`. Comments and ordinary prose strings should not keep private functions alive, but serde default function strings are real call sites from generated deserialization code.
+`src/parser/mod.rs` (search: `fn rust_code_reference_source`) masks arbitrary comments and strings before dead-code reference counting, then appends only structured references such as `serde(default = "function_name")`. Comments and ordinary prose strings should not keep private functions alive, but serde default function strings are real call sites from generated deserialization code.
 
-The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/project_rules.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
+The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/dead_code.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
 
 ## Footgun: Secret-Key Case Sensitivity Depends On File Kind
 
@@ -135,7 +135,7 @@ The non-obvious failure mode is treating all assertion unwraps as equivalent. Un
 
 **Status:** active | **Created:** 2026-06-03 | **Evidence:** OBSERVED
 
-`src/built_in_rules/test_rules.rs` (search: `let searchable_body = strip_rust_string_literals(&block.body);`) passes a string-masked but comment-preserved body into `analyse_test_assertions`. `src/built_in_rules/helpers.rs` (search: `fn has_trivial_assertion`) then runs assertion regexes over that comment-preserved body. Unlike `long_test_effective_line_count` in `src/built_in_rules/test_rules.rs` (search: `strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body))`), the trivial-assertion path does not strip comments before matching.
+`src/built_in_rules/blocks.rs` (search: `let searchable_body = strip_rust_string_literals(&block.body);`) passes a string-masked but comment-preserved body into `analyse_test_assertions`. `src/built_in_rules/helpers.rs` (search: `fn has_trivial_assertion`) then runs assertion regexes over that comment-preserved body. Unlike `long_test_effective_line_count` in `src/built_in_rules/test_rules.rs` (search: `strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body))`), the trivial-assertion path does not strip comments before matching.
 
 Concrete review probes from 2026-06-03 showed the failure mode: `let x = 5; // assert_eq!(x, 5); assert_eq!(x + 1, 6);` produced `test-quality.trivial-assertion`, and even fully commented-out `// let ghost = 5; // assert_eq!(ghost, 5);` produced the same finding. This is a false positive, not a harmless implementation detail, because gruff findings are commands to change code in hook mode.
 
@@ -231,7 +231,7 @@ The non-obvious failure mode: the more faithfully an agent follows the doc-comme
 **Status:** resolved | **Created:** 2026-05-16 | **Resolved:** 2026-05-18 | **Evidence:** ACTUAL_MEASURED
 **hallucination-risk:** high
 **Symptoms:** Treating `--diff` as a pure report filter could accidentally preserve or expand a trust-boundary violation.
-**Why it happened:** `src/main.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument. M23 research in `.goat-flow/scratchpad/related-projects/semgrep/STUDY.md` (search: `Baseline setup executes Git`) and `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `New-code-only mode is a line-level diff filter`) showed that safer new-code filtering can be modeled from patch data after analysis instead of executing Git during ordinary scans.
+**Why it happened:** `src/diff.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument. M23 research in `.goat-flow/scratchpad/related-projects/semgrep/STUDY.md` (search: `Baseline setup executes Git`) and `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `New-code-only mode is a line-level diff filter`) showed that safer new-code filtering can be modeled from patch data after analysis instead of executing Git during ordinary scans.
 **Resolution:** `src/main.rs` (search: `DiffSelection::Patch`) adds `--diff-patch` as the safe no-execute path and gates the Git-backed mode behind explicit `--diff-git-unsafe`, with a `diff-git-unsafe` run diagnostic when that path is used.
 **Prevention:** Keep patch-input line filtering as the default diff route. If direct Git/ref diff needs more behavior, add a separate trust-boundary ADR covering hooks, external diff drivers, path normalization, timeouts, and failure diagnostics.
 
@@ -241,7 +241,7 @@ The non-obvious failure mode: the more faithfully an agent follows the doc-comme
 
 Before M04, dashboard `/scan` changed the process working directory before calling `run_analysis`, then restored the previous directory afterward.
 
-M04 replaced that with `src/analysis.rs` (search: `fn run_analysis_in_project`) and `src/dashboard.rs` (search: `fn dashboard_response`), so dashboard scans pass an explicit project root and do not mutate cwd. Regression coverage lives in `src/tests/renderers/output.rs` (search: `dashboard_scan_preserves_cwd_and_report_paths`).
+M04 replaced that with `src/analysis.rs` (search: `fn run_analysis_in_project`) and `src/dashboard.rs` (search: `fn dashboard_response`), so dashboard scans pass an explicit project root and do not mutate cwd. Regression coverage lives in `src/tests/renderers/dashboard.rs` (search: `dashboard_scan_preserves_cwd_and_report_paths`).
 
 ## Footgun: Rust Parsing Was Regex And Brace Counting
 

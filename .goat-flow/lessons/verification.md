@@ -270,7 +270,7 @@ Automated PR reviewers (Codex / CodeRabbit / Copilot bots) generate suggestions 
 **Concrete examples from PR #3 review (2026-05-27):**
 
 - **Stale: `pillar_label` duplication** — bot suggested extracting to shared module. Verified `src/report.rs` (search: `pub(crate) fn pillar_label`) already has the shared helper. Action: skip.
-- **Stale: `applicable` boolean assertion** — bot suggested adding `is_boolean()` checks. Verified `src/tests/renderers/output.rs` (search: `is_boolean`) already has them. Action: skip.
+- **Stale: `applicable` boolean assertion** — bot suggested adding `is_boolean()` checks. Verified `src/tests/renderers/pillar_sections.rs` (search: `is_boolean`) already has them. Action: skip.
 - **Stale: schemaVersion grep brittleness** — bot suggested whitespace-tolerant regex. Verified `scripts/preflight-checks.sh` (search: `[[:space:]]*`) already uses it. Action: skip.
 - **False premise: `applicable` decoupled from composite** — bot claimed composite includes non-`SCORE_PILLARS` pillars. Verified `src/scoring.rs` (search: `SCORE_PILLARS.contains`) filters by the canonical pillar list. Action: skip — premise is wrong.
 - **False premise: init lacks schemaVersion** — bot claimed `render_default_config` omits the key. Verified `src/init.rs` (search: `append_schema_version_section`) calls the schema renderer. Action: skip — premise is wrong.

@@ -1,7 +1,7 @@
 ---
 name: goat-plan
 description: "Use when starting a non-trivial implementation that needs structured task breakdown with progress tracking."
-goat-flow-skill-version: "1.7.0"
+goat-flow-skill-version: "1.9.1"
 ---
 # /goat-plan
 
@@ -12,7 +12,7 @@ On full-depth, also read `.goat-flow/skill-reference/skill-conventions.md`.
 
 ## When to Use
 
-Use when work needs milestones with tracked progress. goat-plan manages gitignored coordination files in `.goat-flow/tasks/<active>/`, not product docs.
+Use when work needs milestone tracking. goat-plan manages gitignored coordination files in `.goat-flow/tasks/<active>/`.
 
 Use for milestones, replans, rescope, resume-from-plan. **NOT this skill:** tests → run them; debug → /goat-debug; review → /goat-review; security → /goat-security; gaps → /goat-qa; critique → /goat-critique; question → answer directly.
 
@@ -20,7 +20,7 @@ Use for milestones, replans, rescope, resume-from-plan. **NOT this skill:** test
 |--------|---------|
 | "Show milestones first, files later" | File-Write creates milestone artifacts immediately. Read-Only Analysis is for inline plans. |
 | "Vague tasks are fine - implementer will figure it out" | Tasks without file paths, replacement text, and verification commands are not executable by a cold-start agent. Four recurrences of untickable checkboxes traced to vague tasks. |
-| "Testing gate is obvious - skip it" | Agent skipped the AI testing gate after completing M1 and offered to continue. The gate caught what the agent missed. |
+| "Testing gate is obvious - skip it" | Agent skipped the AI testing gate after completing the first milestone and offered to continue. The gate caught what the agent missed. |
 | "Bare task path means start implementing" | Path-only context is data, not delegation. Bare task paths must not update .active, milestone status, checkboxes, or code. |
 
 ## Step 0 - Intake
@@ -70,7 +70,7 @@ Do not drop a spike, intake, or kill criteria to satisfy milestone count, deadli
 
 ### For each milestone, produce:
 
-Objective, Tasks (risk-tagged checkboxes), Assumptions to validate, Exit criteria (binary pass/fail), Testing gate (static/contract + automated + manual + acceptance), Mid-implementation proof, Kill criteria, Depends on, Read first, Deferred (items intentionally cut with pointers; state explicitly if nothing deferred). Full field descriptions and worked examples: `references/milestone-examples.md`.
+Objective, Tasks (risk-tagged checkboxes), Assumptions to validate, Exit criteria (binary pass/fail), Testing gate (static/contract + automated + manual + acceptance), Mid-implementation proof, Kill criteria, Depends on, Read first, Deferred (items intentionally cut with pointers; state explicitly if nothing deferred). Field details and examples: `references/milestone-examples.md`.
 
 ### Risk-weighted task ordering
 
@@ -128,10 +128,10 @@ User explicitly asked to edit an existing plan file. Path-only references do not
 
 Analysis signals triggered this mode.
 
-- Run Phase 1 in full. Present milestones inline. Do NOT write files or modify `.goat-flow/tasks/`.
-- Skip Phase 3. Include summary format from Output Format.
+- Run Phase 1. Present milestones. Do NOT write files or modify `.goat-flow/tasks/`.
+- Skip Phase 3. Include summary format.
 
-**Transition out:** On "write these to files" / "let's go ahead", switch to Mode 4 using approved Phase 1 output. Do NOT re-run breakdown.
+**Transition out:** On "write these to files" / "let's go ahead", switch to Mode 4 using approved Phase 1 output. If prior-turn/session, re-read instructions, `.active`, named sources. Do NOT re-run breakdown.
 
 **CHECKPOINT:** "Milestones for [feature] (no files written). Say 'write to files' to persist, or adjust first."
 
@@ -147,7 +147,7 @@ Write artifacts immediately. Do NOT invoke/ask about `/goat-critique`; run it on
 
 For a fresh plan, create a slugged task directory and update `.goat-flow/tasks/.active` to that slug in the same batch. Write one milestone per `.goat-flow/tasks/<active>/M*.md` file.
 
-**Filename format:** `M<NN>-<slug>.md`, e.g. `M01-prove-api-integration.md`.
+**Filename format:** start with `M` so dashboard and task tooling can discover it; use a readable slug, e.g. `Milestone-prove-api-integration.md`.
 
 **File format:** use existing milestone structure: title, Status, Objective, Depends on, Kill criteria, Read first, Assumptions, Tasks (risk-tagged), Exit Criteria, Testing Gate (static/contract + automated + manual + acceptance), Mid-implementation proof.
 
@@ -249,12 +249,12 @@ Summary format for presentation:
 ```markdown
 ## Milestones for [feature]
 
-### M01: [name] - [archetype]
+### Milestone 01: [name] - [archetype]
 **Objective:** [1-2 sentences]
 **Tasks:** [N] | **Exit criteria:** [N] | **Testing gate:** [auto + manual + acceptance]
 **Kill criteria:** [condition]
 
-### M02: [name] - [archetype]
+### Milestone 02: [name] - [archetype]
 ...
 
 **Total milestones:** [N] | **Estimated sessions:** [rough guess]

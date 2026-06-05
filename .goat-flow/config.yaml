@@ -1,4 +1,11 @@
-version: "1.7.0"
+version: "1.9.1"
 
 skills:
   install: all
+
+# Hook toggles for goat-flow-shipped hooks.
+hooks:
+  deny-dangerous:
+    enabled: true
+  gruff-code-quality:
+    enabled: true

@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/deny-dangerous.sh\"",
-            "statusMessage": "Checking command safety"
+            "command": ".codex/hooks/deny-dangerous.sh",
+            "statusMessage": "Deny dangerous hook"
           }
         ]
       }

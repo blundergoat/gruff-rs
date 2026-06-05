@@ -53,7 +53,7 @@ The OptionDefinition.description field encodes the truth (e.g. "Additional gener
 
 **Where the failure mode surfaces:**
 - `false_positive_shapes` metadata in rule metadata shards under `src/rules/` (search: `FalsePositiveShape`).
-- Per-rule remediation strings in `src/built_in_rules/*.rs` (search: `remediation: Some`).
+- Per-rule remediation strings in `src/built_in_rules/naming_rules.rs` (search: `remediation: Some`).
 - `list-rules <rule_id>` detail-card mitigations in `src/rules_detail.rs` (search: `fn render_false_positive_block`).
 
 **How to apply:**

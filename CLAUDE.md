@@ -1,4 +1,4 @@
-# gruff-rs - goat-flow 1.7.0
+# gruff-rs - goat-flow 1.9.1
 
 Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
 

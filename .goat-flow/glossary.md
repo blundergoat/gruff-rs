@@ -28,7 +28,7 @@ The certainty tier attached to a finding: `low`, `medium`, or `high`. It helps s
 
 ### Dashboard
 
-The local browser UI served by `gruff-rs dashboard`. It binds to `127.0.0.1:8766` by default and has no authentication; use `--port` when another gruff dashboard is already using the port.
+The local browser UI served by `gruff-rs dashboard`. It binds to 127.0.0.1:8766 by default and has no authentication; use `--port` when another gruff dashboard is already using the port.
 
 ### Diagnostic
 
