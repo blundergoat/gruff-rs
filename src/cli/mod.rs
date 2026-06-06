@@ -141,8 +141,7 @@ pub(crate) enum RunOutcome {
 impl RunOutcome {
     /// Classify a run's exit outcome. A fatal diagnostic is exit 2; otherwise the
     /// `gate:` block evaluates first (a trip with `onMatch: fail` is exit 1), then
-    /// the legacy `--fail-on` flag - the precedence documented in the ADR-003 M02
-    /// addendum.
+    /// the legacy `--fail-on` flag - the precedence documented in ADR-003.
     pub(crate) fn classify(
         report: &AnalysisReport,
         fail_on: FailThreshold,

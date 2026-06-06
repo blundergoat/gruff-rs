@@ -40,7 +40,7 @@ Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, 
 
 ## Threshold calibration
 
-Threshold defaults are anchored to documented peer analyzers where one exists, and called out as gruff-specific where no peer ships a comparable numeric default. Peer references come from the M19-M22 neighbor study notes under `.goat-flow/scratchpad/related-projects/`.
+Threshold defaults are anchored to documented peer analyzers where one exists, and called out as gruff-specific where no peer ships a comparable numeric default.
 
 | Rule | Default | Peer anchor | Note |
 | --- | --- | --- | --- |

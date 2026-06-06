@@ -80,7 +80,7 @@ pub(crate) struct ReportArgs {
     pub(crate) config: Option<PathBuf>,
     #[arg(long)]
     pub(crate) no_config: bool,
-    /// Severity gate. Defaults to `none` (M08a). Falls back to
+    /// Severity gate. Defaults to `none`. Falls back to
     /// `minimumSeverity.report:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,
