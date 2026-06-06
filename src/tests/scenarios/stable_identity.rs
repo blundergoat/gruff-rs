@@ -403,7 +403,7 @@ pub(crate) fn excluded_security_rule_diagnostics_are_sorted_by_rule_id() {
 
 #[test]
 pub(crate) fn custom_rules_cannot_set_exclude_from_score() {
-    // ADR-014 + the M04a config-loader restriction together mean custom
+    // ADR-014 + the config-loader restriction together mean custom
     // rules can only carry `enabled` under `rules.<id>:`. PR #3 review
     // worried about a "silent scoring blind spot" when a custom
     // Security/SensitiveData rule sets `excludeFromScore: true`, but the

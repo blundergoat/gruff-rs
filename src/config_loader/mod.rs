@@ -121,7 +121,7 @@ pub(crate) fn apply_schema_version_section(
     Ok(())
 }
 
-/// Parse the optional `gate:` block (ADR-003 M02 addendum) into `config.gate`.
+/// Parse the optional `gate:` block (ADR-003 addendum) into `config.gate`.
 /// Strict: rejects unknown keys, non-integer/negative counts, and an `onMatch`
 /// other than `fail`/`warn`. An omitted cap stays unlimited; `gate: {}` is valid.
 pub(crate) fn apply_gate_section(value: &Value, config: &mut Config) -> Result<(), String> {

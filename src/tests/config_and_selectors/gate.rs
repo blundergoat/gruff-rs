@@ -9,7 +9,7 @@ fn summary(advisory: usize, warning: usize, error: usize) -> Summary {
     }
 }
 
-// M02 Mid-Implementation Proof: Gate::evaluate is a pure function over the report
+// Gate::evaluate is a pure function over the report
 // summary, classifying each configured shape deterministically.
 #[test]
 pub(crate) fn gate_evaluate_is_pure_over_severity_counts() {
@@ -55,7 +55,7 @@ pub(crate) fn gate_evaluate_is_pure_over_severity_counts() {
     assert!(!error_gate.evaluate(&summary(0, 0, 0)).fails);
 }
 
-// ADR-003 M02 addendum: the gate block evaluates before --fail-on; a trip with
+// ADR-003 addendum: the gate block evaluates before --fail-on; a trip with
 // onMatch: fail is exit 1 (ThresholdHit), warn mode leaves the exit unchanged.
 #[test]
 pub(crate) fn gate_drives_classify_precedence_over_fail_on() {

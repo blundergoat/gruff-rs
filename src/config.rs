@@ -8,7 +8,7 @@ pub(crate) const DEFAULT_ABBREVIATIONS: &[&str] = &[
 ];
 
 // The only accepted value for `.gruff-rs.yaml`'s required `schemaVersion:` field.
-// Introduced by ADR-013 / M08a; bumped only when the config schema breaks compatibility.
+// Introduced by ADR-013; bumped only when the config schema breaks compatibility.
 pub(crate) const SCHEMA_VERSION: &str = "gruff-rs.config.v1";
 
 #[derive(Clone)]

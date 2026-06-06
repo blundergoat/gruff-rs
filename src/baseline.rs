@@ -53,7 +53,7 @@ fn load_baseline_entries(path: &Path) -> Result<Vec<BaselineEntry>, String> {
     Ok(data.entries)
 }
 
-/// Tri-state classification counts for a baseline comparison (ADR-002 M01
+/// Tri-state classification counts for a baseline comparison (ADR-002
 /// addendum). `new` = current findings matched by no baseline entry,
 /// `unchanged` = current findings matched by a baseline entry (dropped from the
 /// default list), `absent` = baseline entries matched by no current finding
@@ -66,7 +66,7 @@ pub(crate) struct BaselineCounts {
 }
 
 /// Apply a baseline file to `findings`, returning the per-rule
-/// introduced/removed deltas (ADR-014) and the tri-state counts (ADR-002 M01
+/// introduced/removed deltas (ADR-014) and the tri-state counts (ADR-002
 /// addendum) computed against the baseline snapshot. "Introduced"/`new` =
 /// current findings not matched by any baseline entry (the surviving findings
 /// after `retain`). "Removed"/`absent` = baseline entries that did not match any

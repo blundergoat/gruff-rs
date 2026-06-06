@@ -1,7 +1,7 @@
 use super::*;
 
 /// Per-severity / total finding-count gate from the `gate:` config block (ADR-003
-/// M02 addendum). An omitted cap means unlimited for that dimension; gating is
+/// addendum). An omitted cap means unlimited for that dimension; gating is
 /// count-based and never consults the score model.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Gate {

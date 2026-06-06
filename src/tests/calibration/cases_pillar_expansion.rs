@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
-        // ----- modernisation: M01/M07 batch -----
+        // ----- modernisation batch -----
         case(
             "modernisation.manual-is-empty",
             Box::new(|root| {
@@ -63,7 +63,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- docs: M02/M07 batch -----
+        // ----- docs batch -----
         case(
             "docs.missing-panics-section",
             Box::new(|root| {
@@ -124,7 +124,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- security: M03 batch -----
+        // ----- security batch -----
         case(
             "security.path-traversal-candidate",
             Box::new(|root| {
@@ -140,7 +140,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- test-quality: M04/M07 batch -----
+        // ----- test-quality batch -----
         case(
             "test-quality.should-panic-without-expected",
             Box::new(|root| {

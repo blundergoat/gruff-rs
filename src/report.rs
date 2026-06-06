@@ -288,7 +288,7 @@ pub(crate) struct PathSummary {
     /// Backward-compatible flat list of ignored display paths (`gruff.analysis.v2`).
     pub(crate) ignored_paths: Vec<String>,
     /// Additive per-entry ignore detail: path + why it was ignored. Same data as
-    /// `ignoredPaths` plus `source`/`pattern`; new in the M13 changed-code-scope
+    /// `ignoredPaths` plus `source`/`pattern`; new in the changed-code-scope
     /// fix (ADR-018). `ignoredPaths` is retained so existing consumers do not break.
     pub(crate) ignored_path_details: Vec<IgnoredPath>,
     pub(crate) missing_paths: Vec<String>,
@@ -299,7 +299,7 @@ pub(crate) struct PathSummary {
 pub(crate) struct BaselineReport {
     pub(crate) path: String,
     pub(crate) source: String,
-    /// Retained for backward compatibility; equals `unchanged_count` (ADR-002 M01 addendum).
+    /// Retained for backward compatibility; equals `unchanged_count` (ADR-002 addendum).
     pub(crate) suppressed: usize,
     /// Current findings not matched by any baseline entry.
     pub(crate) new_count: usize,

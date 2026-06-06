@@ -346,7 +346,7 @@ pub(crate) fn baseline_run_emits_per_rule_deltas_with_introduced_and_removed_cou
     assert_eq!(ghost_delta.net, -1);
 }
 
-// M01 (ADR-002 addendum): baseline matching classifies each finding as new,
+// ADR-002 addendum: baseline matching classifies each finding as new,
 // unchanged, or absent, and surfaces the counts on `BaselineReport` additively.
 #[test]
 pub(crate) fn baseline_tri_state_counts_classify_new_unchanged_absent() {
@@ -454,7 +454,7 @@ pub(crate) fn baseline_tri_state_counts_classify_new_unchanged_absent() {
     assert_eq!(mixed.findings.len(), mixed_baseline.new_count);
 }
 
-// M01: an empty baseline classifies every current finding as new; `--no-baseline`
+// An empty baseline classifies every current finding as new; `--no-baseline`
 // leaves the tri-state off entirely.
 #[test]
 pub(crate) fn baseline_tri_state_all_new_and_no_baseline_short_circuit() {
