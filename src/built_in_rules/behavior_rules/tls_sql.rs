@@ -22,8 +22,15 @@ pub(crate) fn analyse_tls_verification_disabled(
         if is_function_start_line(line) {
             true_bindings.clear();
         }
-        if let Some(name) = true_boolean_binding_name(line) {
-            true_bindings.insert(name);
+        // Track which locals are currently bound to `true`. A later `let name = false;`
+        // (or any non-`true` rebinding) clears it, so a shadowed binding no longer
+        // looks like an explicit bypass at the sink.
+        if let Some((name, is_true)) = boolean_let_binding(line) {
+            if is_true {
+                true_bindings.insert(name);
+            } else {
+                true_bindings.remove(&name);
+            }
         }
         if direct_regex.is_match(line) || tls_bypass_uses_true_binding(line, &true_bindings) {
             findings.push(tls_verification_disabled_finding(file, line_index + 1));
@@ -56,16 +63,19 @@ fn is_function_start_line(line: &str) -> bool {
     static_regex(&FUNCTION_START_REGEX, r"\bfn\s+[A-Za-z_]").is_match(line)
 }
 
-/// The `name` bound by a `let name = true;` statement on this line, if any.
-fn true_boolean_binding_name(line: &str) -> Option<String> {
-    static TRUE_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+/// A `let name = <value>;` binding on this line: returns `(name, value_is_true)`.
+/// Used to insert `true` bindings and to clear them when the same name is rebound
+/// to a non-`true` value within the function.
+fn boolean_let_binding(line: &str) -> Option<(String, bool)> {
+    static LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
-        &TRUE_BINDING_REGEX,
-        r"\blet\s+(?P<name>[a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*true\s*;",
+        &LET_BINDING_REGEX,
+        r"\blet\s+(?P<name>[a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*(?P<value>[^;]+);",
     );
-    regex
-        .captures(line)
-        .and_then(|captures| captures.name("name").map(|name| name.as_str().to_string()))
+    let captures = regex.captures(line)?;
+    let name = captures.name("name")?.as_str().to_string();
+    let value = captures.name("value")?.as_str().trim();
+    Some((name, value == "true"))
 }
 
 fn tls_bypass_uses_true_binding(line: &str, true_bindings: &BTreeSet<String>) -> bool {
@@ -106,8 +116,17 @@ pub(crate) fn analyse_sql_dynamic_query(
         }
     }
 
-    let dynamic_bindings = dynamic_sql_bindings(&searchable);
+    // Track format!-bound locals per function (cleared at each `fn`, inserted only
+    // once seen above the sink) so a dynamic binding in one function cannot flag a
+    // same-named static or parameter binding in another - mirroring the TLS path.
+    let mut dynamic_bindings: BTreeSet<String> = BTreeSet::new();
     for (line_index, line) in searchable.lines().enumerate() {
+        if is_function_start_line(line) {
+            dynamic_bindings.clear();
+        }
+        if let Some(name) = dynamic_format_binding_name(line) {
+            dynamic_bindings.insert(name);
+        }
         let Some((method, binding)) = sql_sink_binding(line) else {
             continue;
         };
@@ -141,16 +160,15 @@ fn sql_dynamic_query_finding(file: &SourceFile, line: usize, method: &str) -> Fi
     })
 }
 
-fn dynamic_sql_bindings(source: &str) -> BTreeSet<String> {
+fn dynamic_format_binding_name(line: &str) -> Option<String> {
     static SQL_FORMAT_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
         &SQL_FORMAT_BINDING_REGEX,
         r"\blet\s+(?P<name>[a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*&?\s*format!\s*\(",
     );
     regex
-        .captures_iter(source)
-        .filter_map(|captures| captures.name("name").map(|name| name.as_str().to_string()))
-        .collect()
+        .captures(line)
+        .and_then(|captures| captures.name("name").map(|name| name.as_str().to_string()))
 }
 
 fn sql_sink_binding(line: &str) -> Option<(&str, &str)> {

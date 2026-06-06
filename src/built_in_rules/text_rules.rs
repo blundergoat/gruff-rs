@@ -174,6 +174,7 @@ fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut Vec<Findin
         return;
     }
     let mut state = WorkflowRunState::default();
+    let mut permissions = WorkflowPermissionsState::default();
     let mut summary = WorkflowSecuritySummary::default();
 
     for (line_index, line) in unit.source.lines().enumerate() {
@@ -181,6 +182,7 @@ fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut Vec<Findin
             unit,
             findings,
             &mut state,
+            &mut permissions,
             &mut summary,
             line_index + 1,
             line,
@@ -220,6 +222,7 @@ fn analyse_github_actions_line(
     unit: &SourceUnit<'_>,
     findings: &mut Vec<Finding>,
     state: &mut WorkflowRunState,
+    permissions: &mut WorkflowPermissionsState,
     summary: &mut WorkflowSecuritySummary,
     line_number: usize,
     line: &str,
@@ -228,7 +231,7 @@ fn analyse_github_actions_line(
     if let Some(action) = workflow_uses_value(trimmed) {
         maybe_push_unpinned_action(unit, findings, line_number, action);
     }
-    if line_has_broad_permission(trimmed) {
+    if permissions.line_grants_broad_permission(line) {
         push_workflow_finding(
             unit,
             findings,
@@ -307,11 +310,25 @@ impl WorkflowRunState {
 }
 
 fn workflow_uses_value(trimmed: &str) -> Option<&str> {
-    trimmed
+    let value = trimmed
         .strip_prefix("- ")
         .unwrap_or(trimmed)
-        .strip_prefix("uses:")
-        .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+        .strip_prefix("uses:")?;
+    Some(
+        strip_inline_comment(value)
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\''),
+    )
+}
+
+/// Strip a trailing YAML inline comment (` #...`). YAML requires whitespace before
+/// `#` to start a comment, so a `#` embedded in the value itself is preserved.
+fn strip_inline_comment(value: &str) -> &str {
+    match value.find(" #") {
+        Some(index) => &value[..index],
+        None => value,
+    }
 }
 
 fn maybe_push_unpinned_action(
@@ -356,10 +373,51 @@ fn push_unpinned_action(
     );
 }
 
-fn line_has_broad_permission(trimmed: &str) -> bool {
-    if trimmed == "permissions: write-all" || trimmed == "permissions: \"write-all\"" {
-        return true;
+#[derive(Default)]
+struct WorkflowPermissionsState {
+    in_permissions_block: bool,
+    permissions_indent: usize,
+}
+
+impl WorkflowPermissionsState {
+    /// Whether `line` grants a broad write permission. Inline `permissions: write-all`
+    /// (any quoting / trailing comment) always counts; a per-permission `<perm>: write`
+    /// counts only inside a `permissions:` mapping block, so step `with:`/`env:` keys
+    /// named like permissions don't false-positive.
+    fn line_grants_broad_permission(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        let indent = line_indent(line);
+        if self.in_permissions_block && !trimmed.is_empty() && indent <= self.permissions_indent {
+            self.in_permissions_block = false;
+        }
+        if let Some(value) = permissions_mapping_value(trimmed) {
+            if value.is_empty() {
+                // `permissions:` with nothing after opens a mapping block.
+                self.in_permissions_block = true;
+                self.permissions_indent = indent;
+                return false;
+            }
+            // Inline scalar such as `permissions: write-all`.
+            self.in_permissions_block = false;
+            return value == "write-all";
+        }
+        self.in_permissions_block && line_is_write_permission(trimmed)
     }
+}
+
+/// The scalar after a top-level `permissions:` key (quotes and inline comment
+/// stripped), or `None` when the line is not a `permissions:` key.
+fn permissions_mapping_value(trimmed: &str) -> Option<&str> {
+    let value = trimmed.strip_prefix("permissions:")?;
+    Some(
+        strip_inline_comment(value)
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\''),
+    )
+}
+
+fn line_is_write_permission(trimmed: &str) -> bool {
     static PERMISSION_WRITE_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(
         &PERMISSION_WRITE_REGEX,

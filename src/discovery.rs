@@ -79,7 +79,10 @@ fn collect_input_path_sources(
 // check has to happen here too. A coding-agent hook passes changed files
 // directly, and config-ignored files must never produce findings however they
 // were supplied (ADR-018). Git/default ignores still do not apply to explicit
-// paths (ADR-004): an operator can inspect those by naming the file.
+// paths (ADR-004): an operator can inspect those by naming the file - except VCS
+// internals (`.git`/`.hg`/`.svn`), which `classify_ignored_relative` and
+// `check-ignore` treat as always blocked, so naming one explicitly stays blocked
+// here too (no reading or analysing repository internals from an untrusted tree).
 fn collect_input_file_source(
     session: &DiscoverySession<'_>,
     absolute: &Path,
@@ -93,6 +96,17 @@ fn collect_input_file_source(
                 path: relative,
                 source: IgnoreSource::Config,
                 pattern: Some(matcher.pattern().to_string()),
+            },
+        );
+        return;
+    }
+    if let Some(component) = vcs_internal_component(&relative) {
+        record_ignored_path(
+            session.ignored_paths,
+            IgnoredPath {
+                path: relative,
+                source: IgnoreSource::Default,
+                pattern: Some(component),
             },
         );
         return;

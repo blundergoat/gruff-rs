@@ -212,7 +212,7 @@ fn push_regex_pattern_matches(
     findings: &mut Vec<Finding>,
 ) {
     for capture in static_regex(rule.regex, rule.pattern).find_iter(unit.source) {
-        if regex_match_should_be_suppressed(unit.source, rule.rule_id, &capture) {
+        if regex_match_should_be_suppressed(unit.source, config, rule.rule_id, &capture) {
             continue;
         }
         let preview = redact(capture.as_str());
@@ -238,6 +238,7 @@ fn push_regex_pattern_matches(
 
 fn regex_match_should_be_suppressed(
     source: &str,
+    config: &Config,
     rule_id: &str,
     capture: &regex::Match<'_>,
 ) -> bool {
@@ -245,9 +246,11 @@ fn regex_match_should_be_suppressed(
         "sensitive-data.database-url-password" | "sensitive-data.url-embedded-credentials" => {
             credential_url_is_placeholder(capture.as_str())
         }
-        "sensitive-data.private-key" => {
-            has_gcp_service_account_context_near(source, capture.start())
-        }
+        // Suppress the generic private-key finding only when the GCP-specific rule
+        // will actually emit a finding covering this key: it must be enabled AND its
+        // pattern must match here. Otherwise a reordered-field or disabled-GCP key
+        // would be dropped by both rules and produce no finding at all.
+        "sensitive-data.private-key" => private_key_covered_by_gcp_finding(source, config, capture),
         _ => false,
     }
 }
@@ -262,13 +265,18 @@ fn credential_url_is_placeholder(value: &str) -> bool {
         || lower.contains(":placeholder@")
 }
 
-fn has_gcp_service_account_context_near(source: &str, byte_index: usize) -> bool {
-    let start = byte_index.saturating_sub(1500);
-    let end = (byte_index + 1500).min(source.len());
-    let window = &source[start..end];
-    window.contains(r#""type""#)
-        && window.contains("service_account")
-        && window.contains(r#""private_key""#)
+fn private_key_covered_by_gcp_finding(
+    source: &str,
+    config: &Config,
+    capture: &regex::Match<'_>,
+) -> bool {
+    if !config.is_rule_enabled("sensitive-data.gcp-service-account-key") {
+        return false;
+    }
+    let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
+    regex
+        .find_iter(source)
+        .any(|gcp| gcp.start() <= capture.start() && capture.start() < gcp.end())
 }
 
 fn analyse_phi_patterns(unit: &SourceUnit<'_>, config: &Config, findings: &mut Vec<Finding>) {
@@ -356,15 +364,17 @@ fn phi_value_is_placeholder(category: &str, value: &str) -> bool {
     }
 }
 
+// Order-sensitive shape of a GCP service-account JSON key. Shared by the
+// GCP-specific rule and the generic private-key suppression check so both agree
+// on exactly when a GCP finding exists.
+const GCP_SERVICE_ACCOUNT_PATTERN: &str = r#"(?s)"type"\s*:\s*"service_account".{0,2500}"private_key"\s*:\s*"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----"#;
+
 fn analyse_gcp_service_account_keys(
     unit: &SourceUnit<'_>,
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    let regex = static_regex(
-        &GCP_SERVICE_ACCOUNT_REGEX,
-        r#"(?s)"type"\s*:\s*"service_account".{0,2500}"private_key"\s*:\s*"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----"#,
-    );
+    let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
     for capture in regex.find_iter(unit.source) {
         let preview = "service_account private key (redacted)".to_string();
         if config.secret_previews.contains(&preview) {
