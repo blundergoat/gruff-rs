@@ -21,6 +21,7 @@
 - **JSON finding path alias** - `analyse --format json` now emits canonical `findings[].file` alongside the existing `findings[].filePath`; `filePath` is deprecated and will be removed in the next release. `score.topOffenders[]` also emits `file` beside `filePath` for the transition. Fingerprints, baselines, and the in-memory report model are unchanged.
 - **Internal:** rule/calibration files renamed for clarity; no behaviour change.
 - **Internal:** split the renderer-output tests into `output.rs` + `pillar_sections.rs` so the dogfood scan stays under the `size.file-length` threshold; no behaviour change.
+- **Internal:** added direct invariant tests for the source masker (string, char, raw-string, and comment masking) over an exhaustive deterministic input set - byte-length and newline-offset preservation, idempotence, and the quote-in-char-literal, lifetime, and doc-comment edge cases - plus `Debug` on the internal `RustComment`; no behaviour change.
 
 ## v0.2.0 - 2026-05-28
 

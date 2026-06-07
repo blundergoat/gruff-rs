@@ -231,7 +231,7 @@ fn analyse_github_actions_line(
     if let Some(action) = workflow_uses_value(trimmed) {
         maybe_push_unpinned_action(unit, findings, line_number, action);
     }
-    if permissions.line_grants_broad_permission(line) {
+    if permissions.line_allows_broad_permission(line) {
         push_workflow_finding(
             unit,
             findings,
@@ -380,11 +380,11 @@ struct WorkflowPermissionsState {
 }
 
 impl WorkflowPermissionsState {
-    /// Whether `line` grants a broad write permission. Inline `permissions: write-all`
+    /// Whether `line` allows a broad write permission. Inline `permissions: write-all`
     /// (any quoting / trailing comment) always counts; a per-permission `<perm>: write`
     /// counts only inside a `permissions:` mapping block, so step `with:`/`env:` keys
     /// named like permissions don't false-positive.
-    fn line_grants_broad_permission(&mut self, line: &str) -> bool {
+    fn line_allows_broad_permission(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
         let indent = line_indent(line);
         if self.in_permissions_block && !trimmed.is_empty() && indent <= self.permissions_indent {

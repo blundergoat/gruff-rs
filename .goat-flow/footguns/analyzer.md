@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-06-05
+last_reviewed: 2026-06-07
 ---
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
@@ -190,10 +190,13 @@ Concrete instance from 2026-05-24: adding `network_security_rules.rs` to `rust_o
 
 The non-obvious failure mode is treating the wrapper organisation as fixed. The split is: `rust_block_rules` for per-`FunctionBlock` analyzers, `rust_other_rules` for per-file / per-line analyzers. When fan-out tension appears, look for modules in the wrong wrapper before reaching for the threshold dial or for file-merging.
 
+2026-06-07 extension: the rule also fires on the top-level `src/built_in_rules/mod.rs` itself, not only the two wrappers — it sat at exactly 8 direct `mod` declarations. Extracting a cohesive concern out of an over-long top-level module to clear `size.file-length` (here, splitting the `sensitive-data.pii-test-fixture` rule out of `secret_rules.rs`) tripped fan-out when the extraction was added as a 9th top-level sibling in `mod.rs`. Fix: nest the new sub-file under its semantic owner via `#[path]` instead of adding a top-level sibling — `secret_rules.rs` mounts it with `#[path = "pii_rules.rs"] mod pii_rules;` and re-exports the entry point (search: `pub(crate) use pii_rules::analyse_pii_test_fixture;`), mirroring how `behavior_rules.rs` nests `tls_sql` (search: `#[path = "behavior_rules/tls_sql.rs"]`). The file stays flat in the directory; only the module tree gains a level. Re-classification therefore also covers "nest under the owning module", not just "move between the two wrappers".
+
 **How to apply:**
 
 - Before adding a new built-in rule file, check `wc -l src/built_in_rules/rust_block_rules.rs src/built_in_rules/rust_other_rules.rs` and count the `#[path]` declarations. If the wrapper is already at 7 or 8, the next addition will break the rule.
 - Prefer re-classification (move a module to the wrapper that semantically fits) over threshold bumping or file merging.
+- Count fan-out on `mod.rs` too, not only the wrappers. When splitting a top-level module (e.g. `secret_rules`, `text_rules`), nest the extracted file under its semantic owner via `#[path = "..."] mod ...;` rather than adding a new top-level sibling — a `sensitive-data.*` sub-file belongs under `secret_rules`, not beside it.
 - The decision criterion: does the rule's analyzer operate on a `FunctionBlock` argument, or on `&SourceFile` + `&str source`? The former goes in `rust_block_rules`, the latter in `rust_other_rules`.
 
 Regression coverage: this footgun re-fires every time the catalogue grows and a new rule file lands. No dedicated regression test — dogfood scan catches it.
