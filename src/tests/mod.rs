@@ -4,6 +4,7 @@ use tempfile::tempdir;
 
 mod calibration;
 mod config_and_selectors;
+mod parser;
 mod project_tests;
 mod renderers;
 mod rule_behaviours;

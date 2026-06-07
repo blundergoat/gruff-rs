@@ -77,6 +77,7 @@ fn advance_mask_block_comment(
 /// payload text (with marker bytes stripped), and whether the comment is a
 /// rustdoc form (`///` or `//!` for line, `/**` for block). Block comments
 /// keep their first-line index so findings point to the opening byte.
+#[derive(Debug)]
 pub(crate) struct RustComment {
     pub(crate) line: usize,
     pub(crate) text: String,
