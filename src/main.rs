@@ -33,6 +33,7 @@ mod dashboard;
 mod diff;
 mod discovery;
 mod gate;
+mod hook;
 mod html_report;
 mod ignore_policy;
 mod init;
@@ -40,6 +41,7 @@ mod parser;
 mod project;
 mod render;
 mod report;
+mod report_identity;
 mod rules;
 mod rules_detail;
 mod scoring;
@@ -111,6 +113,7 @@ use report::{
     RuleDelta, RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding,
     SuppressionSummary, ToolInfo, SCORE_PILLARS,
 };
+use report_identity::FindingScope;
 pub(crate) use scoring::{grade, render_composite_block, score_report, summarize};
 use source::{
     CallNameSummary, DependencySummary, ItemSummary, LockedPackageSummary, LockfileSummary,
@@ -154,6 +157,7 @@ fn main() -> ExitCode {
     let root = project_root.as_deref();
     match cli.command {
         Commands::Analyse(args) => run_analyse_command(args, writer, root, no_interaction),
+        Commands::Hook(args) => hook::run_hook_command(args, writer),
         Commands::Report(args) => {
             init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
             run_report(args, writer)

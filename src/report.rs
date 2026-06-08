@@ -1,4 +1,5 @@
 use super::*;
+use crate::report_identity::{compute_stable_identity, infer_finding_scope, FindingScope};
 use serde::ser::{SerializeStruct, Serializer};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,10 +82,11 @@ pub(crate) struct Finding {
     pub(crate) symbol: Option<String>,
     pub(crate) remediation: Option<String>,
     pub(crate) metadata: Value,
+    pub(crate) scope: FindingScope,
     pub(crate) fingerprint: String,
     /// Line-insensitive identity intended for external diff tooling.
-    /// Computed from `rule_id`, `file_path`, and either `symbol` (when
-    /// available) or `message`. Independent of `fingerprint`, which
+    /// Computed from `rule_id`, `file_path`, and a stable subject based on
+    /// scope/symbol. Independent of `fingerprint`, which
     /// remains line-sensitive so the baseline matcher in
     /// `src/baseline.rs` keeps its existing semantics.
     pub(crate) stable_identity: String,
@@ -95,7 +97,7 @@ impl Serialize for Finding {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("Finding", 17)?;
+        let mut state = serializer.serialize_struct("Finding", 18)?;
         state.serialize_field("ruleId", &self.rule_id)?;
         state.serialize_field("message", &self.message)?;
         state.serialize_field("file", &self.file_path)?;
@@ -111,6 +113,7 @@ impl Serialize for Finding {
         state.serialize_field("symbol", &self.symbol)?;
         state.serialize_field("remediation", &self.remediation)?;
         state.serialize_field("metadata", &self.metadata)?;
+        state.serialize_field("scope", &self.scope)?;
         state.serialize_field("fingerprint", &self.fingerprint)?;
         state.serialize_field("stableIdentity", &self.stable_identity)?;
         state.end()
@@ -144,6 +147,7 @@ impl Finding {
             remediation,
             metadata,
         } = descriptor;
+        let scope = infer_finding_scope(&rule_id, symbol.as_deref(), line);
         let mut hasher = Sha256::new();
         hasher.update(rule_id.as_bytes());
         hasher.update(b"\0");
@@ -154,7 +158,7 @@ impl Finding {
         hasher.update(symbol.clone().unwrap_or_default().as_bytes());
         let fingerprint = format!("{:x}", hasher.finalize())[..16].to_string();
         let stable_identity =
-            compute_stable_identity(&rule_id, &file_path, symbol.as_deref(), &message);
+            compute_stable_identity(&rule_id, &file_path, scope, symbol.as_deref(), &message);
 
         Self {
             rule_id,
@@ -171,25 +175,11 @@ impl Finding {
             symbol,
             remediation,
             metadata,
+            scope,
             fingerprint,
             stable_identity,
         }
     }
-}
-
-fn compute_stable_identity(
-    rule_id: &str,
-    file_path: &str,
-    symbol: Option<&str>,
-    message: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(rule_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(file_path.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(symbol.unwrap_or(message).as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

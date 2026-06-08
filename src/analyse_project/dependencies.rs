@@ -253,12 +253,12 @@ fn duplicate_locked_version_finding(
     allowed_versions: usize,
     config: &Config,
 ) -> Finding {
+    let measured = summary.versions.len();
     Finding::new(FindingDescriptor {
         rule_id: rule_id.to_string(),
         message: format!(
             "Package `{}` is locked at {} versions, above the threshold of {allowed_versions}.",
-            summary.name,
-            summary.versions.len()
+            summary.name, measured
         ),
         file_path: file_path.to_string(),
         line: Some(summary.first_line),
@@ -270,6 +270,12 @@ fn duplicate_locked_version_finding(
             "Align dependency requirements so Cargo can resolve a single version when possible."
                 .to_string(),
         ),
-        metadata: json!({ "versions": summary.versions }),
+        metadata: json!({
+            "versions": summary.versions,
+            "measured": measured,
+            "threshold": allowed_versions,
+            "unit": "versions",
+            "direction": "above"
+        }),
     })
 }

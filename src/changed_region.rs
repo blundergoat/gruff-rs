@@ -186,7 +186,7 @@ fn parse_positive_line(raw: &str, original: &str) -> Result<usize, String> {
 
 /// Build a git argv: `prefix` tokens, a `--` separator, then the paths. Keeps the
 /// path operands after `--` so a path that looks like a flag is never misread.
-fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<String> {
+pub(crate) fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<String> {
     prefix
         .iter()
         .map(|value| value.to_string())
@@ -207,9 +207,10 @@ fn git_command(project_root: &Path, args: &[String]) -> std::process::Command {
 }
 
 /// Run a git command under `project_root` and return its stdout, mapping a
-/// non-zero exit or spawn failure to an `Err` with git's stderr. Only reached
-/// from the Git-backed diff modes, which require `--diff-git-unsafe`.
-fn git_output(project_root: &Path, args: &[String]) -> Result<String, String> {
+/// non-zero exit or spawn failure to an `Err` with git's stderr. Callers build
+/// argv with `git_args_with_paths` or fixed argument vectors so refs and paths
+/// remain inert argv data, never shell input.
+pub(crate) fn git_output(project_root: &Path, args: &[String]) -> Result<String, String> {
     let output = git_command(project_root, args)
         .output()
         .map_err(|error| format!("unable to execute git diff: {error}"))?;

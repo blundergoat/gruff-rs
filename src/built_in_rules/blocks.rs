@@ -49,30 +49,37 @@ pub(crate) fn analyse_block_size(
     let rule_id = "size.function-length";
     let threshold = config.threshold(rule_id, 50.0) as usize;
     if block.line_count > threshold && !block.body_is_declarative_literal {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id,
-            message: format!(
-                "Function `{}` has {} lines, above the threshold of {threshold}.",
-                block.name, block.line_count
-            ),
-            file,
-            block,
-            severity: config.severity(rule_id, Severity::Warning),
-            pillar: Pillar::Size,
-        }));
+        findings.push(block_finding_with_metadata(
+            BlockFindingDescriptor {
+                rule_id,
+                message: format!(
+                    "Function `{}` has {} lines, above the threshold of {threshold}.",
+                    block.name, block.line_count
+                ),
+                file,
+                block,
+                severity: config.severity(rule_id, Severity::Warning),
+                pillar: Pillar::Size,
+            },
+            threshold_metadata(block.line_count, threshold, "lines"),
+        ));
     }
 
     let params = block.param_count;
     let rule_id = "size.parameter-count";
-    if params > config.threshold(rule_id, 7.0) as usize {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id,
-            message: format!("Function `{}` declares {params} parameters.", block.name),
-            file,
-            block,
-            severity: config.severity(rule_id, Severity::Warning),
-            pillar: Pillar::Size,
-        }));
+    let threshold = config.threshold(rule_id, 7.0) as usize;
+    if params > threshold {
+        findings.push(block_finding_with_metadata(
+            BlockFindingDescriptor {
+                rule_id,
+                message: format!("Function `{}` declares {params} parameters.", block.name),
+                file,
+                block,
+                severity: config.severity(rule_id, Severity::Warning),
+                pillar: Pillar::Size,
+            },
+            threshold_metadata(params, threshold, "parameters"),
+        ));
     }
 }
 
@@ -115,7 +122,8 @@ pub(crate) fn analyse_cyclomatic_complexity(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "complexity.cyclomatic";
-    if cyclomatic <= config.threshold(rule_id, 10.0) as usize {
+    let threshold = config.threshold(rule_id, 10.0) as usize;
+    if cyclomatic <= threshold {
         return;
     }
     findings.push(block_finding_with_metadata(
@@ -130,7 +138,13 @@ pub(crate) fn analyse_cyclomatic_complexity(
             severity: config.severity(rule_id, Severity::Warning),
             pillar: Pillar::Complexity,
         },
-        json!({ "complexity": cyclomatic }),
+        json!({
+            "complexity": cyclomatic,
+            "measured": cyclomatic,
+            "threshold": threshold,
+            "unit": "branches",
+            "direction": "above"
+        }),
     ));
 }
 
@@ -142,7 +156,8 @@ pub(crate) fn analyse_nesting_depth(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "complexity.nesting-depth";
-    if nesting <= config.threshold(rule_id, 4.0) as usize {
+    let threshold = config.threshold(rule_id, 4.0) as usize;
+    if nesting <= threshold {
         return;
     }
     findings.push(block_finding_with_metadata(
@@ -154,7 +169,13 @@ pub(crate) fn analyse_nesting_depth(
             severity: config.severity(rule_id, Severity::Warning),
             pillar: Pillar::Complexity,
         },
-        json!({ "nestingDepth": nesting }),
+        json!({
+            "nestingDepth": nesting,
+            "measured": nesting,
+            "threshold": threshold,
+            "unit": "levels",
+            "direction": "above"
+        }),
     ));
 }
 
@@ -172,7 +193,8 @@ pub(crate) fn analyse_cognitive_complexity(
 ) {
     let cognitive = cyclomatic + nesting.saturating_mul(2);
     let rule_id = "complexity.cognitive";
-    if cognitive <= ctx.config.threshold(rule_id, 15.0) as usize {
+    let threshold = ctx.config.threshold(rule_id, 15.0) as usize;
+    if cognitive <= threshold {
         return;
     }
     findings.push(block_finding_with_metadata(
@@ -187,7 +209,15 @@ pub(crate) fn analyse_cognitive_complexity(
             severity: ctx.config.severity(rule_id, Severity::Warning),
             pillar: Pillar::Complexity,
         },
-        json!({ "complexity": cognitive, "cyclomatic": cyclomatic, "nestingDepth": nesting }),
+        json!({
+            "complexity": cognitive,
+            "cyclomatic": cyclomatic,
+            "nestingDepth": nesting,
+            "measured": cognitive,
+            "threshold": threshold,
+            "unit": "points",
+            "direction": "above"
+        }),
     ));
 }
 

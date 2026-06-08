@@ -144,7 +144,14 @@ pub(crate) fn analyse_test_size(
                 severity: config.severity(rule_id, Severity::Advisory),
                 pillar: Pillar::TestQuality,
             },
-            json!({ "lines": effective_lines, "totalLines": block.line_count }),
+            json!({
+                "lines": effective_lines,
+                "totalLines": block.line_count,
+                "measured": effective_lines,
+                "threshold": threshold,
+                "unit": "lines",
+                "direction": "above"
+            }),
         ));
     }
 }

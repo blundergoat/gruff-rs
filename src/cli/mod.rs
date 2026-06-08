@@ -3,8 +3,8 @@ use super::*;
 mod args;
 
 pub(crate) use args::{
-    AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, CompletionArgs, DashboardArgs, InitArgs,
-    ListRulesArgs, ReportArgs, SummaryArgs,
+    AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, CompletionArgs, DashboardArgs, HookArgs,
+    InitArgs, ListRulesArgs, ReportArgs, SummaryArgs,
 };
 
 /// Symfony-Console-style colours for help output: yellow section headers,
@@ -180,6 +180,8 @@ impl RunOutcome {
 pub(crate) enum Commands {
     /// Run gruff analysis.
     Analyse(AnalyseArgs),
+    /// Emit gruff.hook.v1 JSON for coding-agent hooks.
+    Hook(HookArgs),
     /// Render a gruff report to stdout or a file.
     Report(ReportArgs),
     /// List gruff rule metadata.

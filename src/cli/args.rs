@@ -66,6 +66,50 @@ pub(crate) struct AnalyseArgs {
     pub(crate) diff_git_unsafe: bool,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub(crate) enum HookFormat {
+    Json,
+}
+
+#[derive(Args, Clone)]
+#[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
+pub(crate) struct HookArgs {
+    /// Files or directories to scan. Defaults to the current directory.
+    #[arg(value_name = "paths")]
+    pub(crate) paths: Vec<PathBuf>,
+    #[arg(long)]
+    pub(crate) config: Option<PathBuf>,
+    #[arg(long)]
+    pub(crate) no_config: bool,
+    #[arg(long, default_value = "json")]
+    pub(crate) format: HookFormat,
+    /// Emit gruff.hook.v1 capability metadata and do not scan.
+    #[arg(long)]
+    pub(crate) capabilities: bool,
+    /// Explicit changed line ranges such as 3-3,8-10.
+    #[arg(long, value_name = "RANGES")]
+    pub(crate) changed_ranges: Option<String>,
+    /// Changed-region scope: symbol or hunk.
+    #[arg(long, default_value = "symbol")]
+    pub(crate) changed_scope: ChangedScope,
+    /// Git base ref for native new-only comparison; executes Git, so it needs the unsafe-Git opt-in.
+    #[arg(
+        long,
+        value_name = "REF",
+        conflicts_with = "baseline",
+        allow_hyphen_values = true,
+        requires = "diff_git_unsafe"
+    )]
+    pub(crate) diff: Option<String>,
+    /// Apply a baseline file for native new-only comparison.
+    #[arg(long, value_name = "PATH", conflicts_with = "diff")]
+    pub(crate) baseline: Option<PathBuf>,
+    /// Opt in to the Git-executing `--diff` mode. The Git-free modes
+    /// (`--changed-ranges`, `--baseline`) never need it.
+    #[arg(long, hide = true)]
+    pub(crate) diff_git_unsafe: bool,
+}
+
 #[derive(Args)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct ReportArgs {

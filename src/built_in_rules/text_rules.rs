@@ -25,14 +25,19 @@ fn analyse_file_length(
     let rule_id = "size.file-length";
     let threshold = config.threshold(rule_id, 600.0) as usize;
     if line_count > threshold {
-        findings.push(finding(SimpleFindingDescriptor {
-            rule_id,
-            message: format!("File has {line_count} lines, above the threshold of {threshold}."),
-            file,
-            line: Some(1),
-            severity: config.severity(rule_id, Severity::Warning),
-            pillar: Pillar::Size,
-        }));
+        findings.push(finding_with_metadata(
+            SimpleFindingDescriptor {
+                rule_id,
+                message: format!(
+                    "File has {line_count} lines, above the threshold of {threshold}."
+                ),
+                file,
+                line: Some(1),
+                severity: config.severity(rule_id, Severity::Warning),
+                pillar: Pillar::Size,
+            },
+            threshold_metadata(line_count, threshold, "lines"),
+        ));
     }
 }
 

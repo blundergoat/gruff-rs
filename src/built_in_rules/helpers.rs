@@ -146,6 +146,13 @@ pub(crate) struct SimpleFindingDescriptor<'a> {
 }
 
 pub(crate) fn finding(descriptor: SimpleFindingDescriptor<'_>) -> Finding {
+    finding_with_metadata(descriptor, json!({}))
+}
+
+pub(crate) fn finding_with_metadata(
+    descriptor: SimpleFindingDescriptor<'_>,
+    metadata: Value,
+) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: descriptor.rule_id.to_string(),
         message: descriptor.message,
@@ -156,7 +163,16 @@ pub(crate) fn finding(descriptor: SimpleFindingDescriptor<'_>) -> Finding {
         confidence: Confidence::High,
         symbol: None,
         remediation: None,
-        metadata: json!({}),
+        metadata,
+    })
+}
+
+pub(crate) fn threshold_metadata(measured: usize, threshold: usize, unit: &str) -> Value {
+    json!({
+        "measured": measured,
+        "threshold": threshold,
+        "unit": unit,
+        "direction": "above"
     })
 }
 
