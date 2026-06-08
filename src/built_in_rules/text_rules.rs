@@ -413,22 +413,46 @@ impl WorkflowPermissionsState {
 /// The scalar after a top-level `permissions:` key (quotes and inline comment
 /// stripped), or `None` when the line is not a `permissions:` key.
 fn permissions_mapping_value(trimmed: &str) -> Option<&str> {
-    let value = trimmed.strip_prefix("permissions:")?;
-    Some(
-        strip_inline_comment(value)
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\''),
-    )
+    Some(normalize_yaml_scalar(trimmed.strip_prefix("permissions:")?))
 }
 
+/// Strip a YAML scalar's trailing inline comment, surrounding whitespace, and
+/// matching quotes, so `write`, `"write"`, `'write'`, and `write  # note` all
+/// normalise to the same token.
+fn normalize_yaml_scalar(value: &str) -> &str {
+    strip_inline_comment(value)
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+}
+
+/// Whether a line inside a `permissions:` mapping grants write to a known scope,
+/// e.g. `contents: write`. The value is normalised first, so quoted
+/// (`contents: "write"`) and commented (`contents: write  # release`) forms —
+/// all valid YAML granting the same access — are detected too.
 fn line_is_write_permission(trimmed: &str) -> bool {
-    static PERMISSION_WRITE_REGEX: OnceLock<Regex> = OnceLock::new();
-    static_regex(
-        &PERMISSION_WRITE_REGEX,
-        r"^(actions|checks|contents|deployments|discussions|issues|packages|pages|pull-requests|repository-projects|security-events|statuses):\s*write\b",
+    let Some((scope, value)) = trimmed.split_once(':') else {
+        return false;
+    };
+    is_known_permission_scope(scope.trim()) && normalize_yaml_scalar(value) == "write"
+}
+
+fn is_known_permission_scope(scope: &str) -> bool {
+    matches!(
+        scope,
+        "actions"
+            | "checks"
+            | "contents"
+            | "deployments"
+            | "discussions"
+            | "issues"
+            | "packages"
+            | "pages"
+            | "pull-requests"
+            | "repository-projects"
+            | "security-events"
+            | "statuses"
     )
-    .is_match(trimmed)
 }
 
 fn is_remote_download_piped_to_shell(value: &str) -> bool {
@@ -473,4 +497,77 @@ fn push_workflow_finding(
         ),
         metadata,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Replay `lines` through one permissions state, reporting whether any line
+    /// is judged to grant broad write access.
+    fn grants_broad_permission(lines: &[&str]) -> bool {
+        let mut state = WorkflowPermissionsState::default();
+        lines
+            .iter()
+            .any(|line| state.line_allows_broad_permission(line))
+    }
+
+    #[test]
+    fn per_permission_write_is_detected_regardless_of_quoting() {
+        // Unquoted baseline plus the valid-YAML quoted and commented variants
+        // that all grant the same write access.
+        assert!(grants_broad_permission(&[
+            "permissions:",
+            "  contents: write"
+        ]));
+        assert!(grants_broad_permission(&[
+            "permissions:",
+            "  contents: \"write\"",
+        ]));
+        assert!(grants_broad_permission(&[
+            "permissions:",
+            "  contents: 'write'",
+        ]));
+        assert!(grants_broad_permission(&[
+            "permissions:",
+            "  contents: write  # needed for release",
+        ]));
+        assert!(grants_broad_permission(&[
+            "permissions:",
+            "  contents: \"write\"  # needed for release",
+        ]));
+        assert!(grants_broad_permission(&[
+            "permissions:",
+            "  packages: \"write\"",
+        ]));
+    }
+
+    #[test]
+    fn narrow_or_out_of_block_permissions_stay_silent() {
+        assert!(!grants_broad_permission(&[
+            "permissions:",
+            "  contents: read"
+        ]));
+        assert!(!grants_broad_permission(&[
+            "permissions:",
+            "  contents: 'read'",
+        ]));
+        // `id-token: write` is a narrow, expected grant, not a broad one.
+        assert!(!grants_broad_permission(&[
+            "permissions:",
+            "  id-token: write",
+        ]));
+        // A step input named like a permission, outside any permissions block.
+        assert!(!grants_broad_permission(&["with:", "  contents: write"]));
+    }
+
+    #[test]
+    fn inline_write_all_scalar_is_detected_regardless_of_quoting() {
+        assert!(grants_broad_permission(&["permissions: write-all"]));
+        assert!(grants_broad_permission(&["permissions: \"write-all\""]));
+        assert!(grants_broad_permission(&[
+            "permissions: write-all  # broad",
+        ]));
+        assert!(!grants_broad_permission(&["permissions: read-all"]));
+    }
 }

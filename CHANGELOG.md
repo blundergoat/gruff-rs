@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 - 2026-06-08
+## v0.3.0 - 2026-06-09
 
 0.3.0 makes gruff easier to adopt and sharpens its rules: a new `hook` command that speaks the cross-analyzer `gruff.hook.v1` contract, tri-state baselines, count-based gates, a "fail-on-new" mode, eleven new security/secret rules, and four low-value rubrics dropped. JSON stays additive; new gates are opt-in.
 
