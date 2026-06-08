@@ -4,31 +4,21 @@
 
 0.3.0 makes gruff easier to adopt and sharpens its rules: a new `hook` command that speaks the cross-analyzer `gruff.hook.v1` contract, tri-state baselines, count-based gates, a "fail-on-new" mode, eleven new security/secret rules, and four low-value rubrics dropped. JSON stays additive; new gates are opt-in.
 
-- **New `hook` command for coding-agent feedback.** `gruff-rs hook --format json` emits the cross-analyzer `gruff.hook.v1` contract, and `gruff-rs hook --capabilities --format json` advertises supported flags, `flagOrder: "any"`, stable identities, ignore reporting, metadata, baseline, and diff/new-only support.
-- **Hook JSON is analyzer-owned and render-ready.** Findings use normative fields (`file`, `scope`, `stableIdentity`, non-null `remediation`, and `metadata`), plus top-level `suppressed.count`, `ignored.paths`, and `config.schemaOk`/`config.error` so consumers no longer need gruff-rs-specific output adapters.
-- **Changed-region hook fairness.** In hook mode, `line`/`symbol` findings are still scoped to changed ranges, but `file`/`project` findings are omitted and counted in `suppressed.count` instead of leaking through synthetic anchor lines.
-- **Native new-only hook support.** `hook --baseline` and `hook --diff <ref>` surface only findings whose `stableIdentity` is new versus the base; file-level threshold findings remain suppressed when only the measured value changes and appear when the threshold is newly crossed. `hook --diff` executes Git, so it requires the hidden `--diff-git-unsafe` opt-in (matching `analyse --diff`/`--since` per ADR-019); the Git-free `--changed-ranges` and `--baseline` paths never need it. Base-tree export uses NUL-separated `git ls-tree -z` so non-ASCII filenames do not break the diff. New-only suppression is count-based: when several findings share one `stableIdentity` (e.g. two same-message secrets in a file, or a crate flagged in two manifest sections), only the count present in the base is suppressed, so a newly added duplicate still surfaces.
-- **Additive finding enrichment.** Findings now carry additive `scope`; threshold rules populate machine-readable `metadata.measured`, `metadata.threshold`, `metadata.unit`, and `metadata.direction`; file/project stable identities are value-independent while fingerprints and legacy baseline matching stay unchanged.
-- **Conformance coverage.** Added hook contract tests for capabilities, flag ordering, advisory exit behavior, changed-region suppression, baseline/diff new-only behavior, ignored paths, config errors, stable identity, remediation fallback, threshold metadata, the `--diff-git-unsafe` gate, non-ASCII base-tree export, and count-based new-only suppression of duplicate findings.
-- **Internal:** `Config::is_rule_enabled` now reads default enablement from a process-cached rule registry (`builtin_registry_cached`) instead of rebuilding and sorting the registry on every lookup; behaviour is unchanged.
-- **Changed-region scoping.** `analyse` can limit findings to changed lines via `--diff-patch`/`--changed-ranges` (no Git) or `--since`/`--diff` (Git, needs `--diff-git-unsafe`).
-- **`paths.ignore` now applies everywhere** - the walk, explicit file args, and diff modes - so a hook can't flag a deliberately-ignored file. VCS internals stay blocked.
+- **New `hook` command.** `gruff-rs hook --format json` emits the cross-analyzer `gruff.hook.v1` contract — render-ready findings (`file`, `scope`, `stableIdentity`, non-null `remediation`, `metadata`) plus `suppressed.count`, `ignored.paths`, and `config`; `--capabilities` advertises support.
+- **Changed-region hook fairness.** `line`/`symbol` findings stay scoped to changed ranges; `file`/`project` findings are dropped and counted in `suppressed.count` instead of leaking via synthetic anchors.
+- **Native new-only hook.** `hook --baseline`/`--diff <ref>` surface only findings new vs. the base, with count-based suppression so a newly added duplicate still shows. `--diff` runs Git, so it needs the hidden `--diff-git-unsafe` opt-in (per ADR-019).
+- **Additive finding enrichment.** Findings gain `scope`; threshold rules emit `metadata.measured`/`threshold`/`unit`/`direction`. File/project stable identities are value-independent; fingerprints and baselines unchanged.
+- **Changed-region scoping for `analyse`.** Limit findings to changed lines via `--diff-patch`/`--changed-ranges` (no Git) or `--since`/`--diff` (Git, needs `--diff-git-unsafe`).
+- **`paths.ignore` applies everywhere** — the walk, explicit file args, and diff modes — so a hook can't flag a deliberately-ignored file.
 - **New `check-ignore` command.** Reports whether gruff would ignore a path and why, matching `git check-ignore` exit codes.
-- **Tri-state baselines.** Each finding is labelled `new`, `unchanged`, or `resolved`; the default findings list is unchanged.
-- **Per-severity quality gates.** An optional `gate:` block caps findings by count (e.g. "up to 10 warnings, no errors") instead of the all-or-nothing `--fail-on`.
-- **`--fail-on-new`.** Gates only on findings new since the baseline while still tracking existing debt. Needs a baseline.
-- **Removed four low-value rubrics:** `complexity.npath`, `metrics.halstead-volume`, `metrics.maintainability-pressure`, and `design.god-function` - each redundant or unactionable.
-- **Nine new security rules** - five GitHub Actions checks plus SSRF, unsafe-deserialization, XXE, and template/XSS. SQL/TLS/RNG checks now survive an intermediate `let`, and `severity:` overrides apply to security/dependency rules.
-- **Two new secret checks** - `phi-pattern` (health IDs) and `gcp-service-account-key`, plus wider token/credential coverage. Output stays redacted.
-- **Sharper dead-code detection** - now flags unused private `const`s, `static`s, and type aliases, still skipping cfg/test/trait-impl cases.
-- **Quieter complexity and style rules** - complexity ignores comments and `?`, `parameter-count` rises 5 → 7 (Clippy), and `long-test`/`docs.missing-*` shed ceremony false-positives.
-- **`waste.unnecessary-clone-candidate` is now off by default** - the only rule that ships disabled; enable it if you want it.
-- **Rule catalogue 80 → 87** (four removed, eleven added). Schemas, rule IDs, and fingerprints are unchanged.
-- **Project mission documented** across the README, `CLAUDE.md`, and `docs/mission.md`: gruff governs AI-written code for human-reviewer trust.
-- **JSON finding path alias** - `analyse --format json` now emits canonical `findings[].file` alongside the existing `findings[].filePath`; `filePath` is deprecated and will be removed in the next release. `score.topOffenders[]` also emits `file` beside `filePath` for the transition. Fingerprints, baselines, and the in-memory report model are unchanged.
-- **Internal:** rule/calibration files renamed for clarity; no behaviour change.
-- **Internal:** split the renderer-output tests into `output.rs` + `pillar_sections.rs` so the dogfood scan stays under the `size.file-length` threshold; no behaviour change.
-- **Internal:** added direct invariant tests for the source masker (string, char, raw-string, and comment masking) over an exhaustive deterministic input set - byte-length and newline-offset preservation, idempotence, and the quote-in-char-literal, lifetime, and doc-comment edge cases - plus `Debug` on the internal `RustComment`; no behaviour change.
+- **Tri-state baselines.** Findings are labelled `new`/`unchanged`/`resolved`; the default list is unchanged.
+- **Count-based gates + `--fail-on-new`.** A `gate:` block caps findings by count (e.g. "10 warnings, no errors"); `--fail-on-new` gates only on findings new since the baseline.
+- **Nine new security rules** — five GitHub Actions checks plus SSRF, unsafe-deserialization, XXE, and template/XSS; `severity:` overrides now apply to security/dependency rules.
+- **Two new secret checks** — `phi-pattern` (health IDs) and `gcp-service-account-key`, with wider token coverage. Output stays redacted.
+- **Removed four low-value rubrics:** `complexity.npath`, `metrics.halstead-volume`, `metrics.maintainability-pressure`, and `design.god-function`.
+- **Sharper, quieter rules** — dead-code now flags unused private `const`s/`static`s/type aliases (skipping cfg/test/trait-impl); complexity ignores comments and `?`; `parameter-count` 5 → 7.
+- **Rule catalogue 80 → 87** (four removed, eleven added); `waste.unnecessary-clone-candidate` ships disabled. Schemas, rule IDs, and fingerprints unchanged.
+- **JSON `file` alias.** `analyse --format json` emits canonical `findings[].file` (and `score.topOffenders[].file`) alongside the deprecated `filePath`.
 
 ## v0.2.0 - 2026-05-28
 
