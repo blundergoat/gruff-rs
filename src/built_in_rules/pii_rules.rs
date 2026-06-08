@@ -74,7 +74,7 @@ fn push_pii_phone_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &m
     let regex = static_regex(&PII_PHONE_REGEX, r"\b\d{3}-\d{3}-\d{4}\b");
     for capture in regex.find_iter(unit.source) {
         let value = capture.as_str();
-        if value.starts_with("555-") || value.starts_with("000-") {
+        if phone_is_obvious_placeholder(value) {
             continue;
         }
         findings.push(pii_finding(
@@ -84,6 +84,14 @@ fn push_pii_phone_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &m
             value,
         ));
     }
+}
+
+/// Common synthetic NANP placeholders: the reserved `555` exchange
+/// (`AAA-555-NNNN`, e.g. `212-555-0100`) plus the non-assignable `555` and
+/// `000` area codes. The regex guarantees the `AAA-EEE-NNNN` shape, so `-555-`
+/// can only be the exchange segment.
+fn phone_is_obvious_placeholder(value: &str) -> bool {
+    value.starts_with("555-") || value.starts_with("000-") || value.contains("-555-")
 }
 
 fn email_is_obvious_placeholder(address: &str) -> bool {
@@ -122,4 +130,28 @@ fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str, value: &str) -> F
         ),
         metadata: json!({ "kind": kind }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phone_placeholder_covers_555_exchange_and_reserved_area_codes() {
+        // Standard reserved-for-fiction 555 exchange (the common case the
+        // area-code-only check used to miss).
+        assert!(phone_is_obvious_placeholder("212-555-0100"));
+        assert!(phone_is_obvious_placeholder("415-555-0123"));
+        // Non-assignable placeholder area codes.
+        assert!(phone_is_obvious_placeholder("555-123-4567"));
+        assert!(phone_is_obvious_placeholder("000-123-4567"));
+    }
+
+    #[test]
+    fn phone_placeholder_leaves_realistic_numbers_flagged() {
+        assert!(!phone_is_obvious_placeholder("212-867-5309"));
+        assert!(!phone_is_obvious_placeholder("415-123-4567"));
+        // `555` only in the subscriber segment is not the reserved exchange.
+        assert!(!phone_is_obvious_placeholder("212-867-5550"));
+    }
 }
