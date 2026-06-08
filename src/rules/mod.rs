@@ -1,6 +1,7 @@
 use crate::{Confidence, Pillar, Severity};
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -131,6 +132,16 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
             panic!("invalid built-in rule definitions: {error}");
         }
     }
+}
+
+/// Process-lifetime cache of [`builtin_registry`] for hot-path lookups such as
+/// `Config::is_rule_enabled`, which checks default enablement once per rule on
+/// every `--no-config` scan. Building the registry sorts and validates every
+/// definition, so rebuilding it per call is wasted work; callers that need an
+/// owned registry keep using [`builtin_registry`].
+pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
+    static REGISTRY: OnceLock<RuleRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(builtin_registry)
 }
 
 const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));

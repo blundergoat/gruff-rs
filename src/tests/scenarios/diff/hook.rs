@@ -363,6 +363,42 @@ pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
     );
 }
 
+#[test]
+pub(crate) fn hook_diff_new_only_keeps_a_newly_added_duplicate_line_finding() {
+    let _guard = analysis_lock();
+    let repo = tempdir().expect("tempdir");
+    init_git_repo(repo.path());
+    // Base: one AWS key. Its line-scope finding has a constant message and no
+    // symbol, so a second copy in the same file collides on stableIdentity.
+    write_aws_key_file(repo.path(), 1);
+    git(repo.path(), &["add", "-A"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+
+    // Working tree: two AWS keys -> two findings sharing one stableIdentity.
+    write_aws_key_file(repo.path(), 2);
+    let mut current = analyse_lib_no_config(repo.path());
+    assert_eq!(
+        aws_key_count(&current),
+        2,
+        "both AWS keys are detected before new-only filtering"
+    );
+
+    let base_counts = crate::hook::diff_base_stable_identities(
+        repo.path(),
+        &hook_diff_test_options(),
+        &Config::default(),
+        "HEAD",
+    )
+    .expect("base counts");
+    crate::hook::apply_stable_identity_new_only(&mut current, &base_counts);
+
+    assert_eq!(
+        aws_key_count(&current),
+        1,
+        "count-based new-only suppresses only the pre-existing occurrence; the new duplicate survives"
+    );
+}
+
 fn render_hook_value(
     report: AnalysisReport,
     changed_region_active: bool,
@@ -409,6 +445,24 @@ fn write_named_oversized_rust_file(root: &Path, rel: &str, lines: usize) {
         .map(|index| format!("// filler {index}\n"))
         .collect::<String>();
     fs::write(&path, source).expect("named lib write");
+}
+
+fn write_aws_key_file(root: &Path, count: usize) {
+    fs::create_dir_all(root.join("src")).expect("src dir");
+    // Distinct const names, identical AWS key value: each line yields a
+    // line-scope finding with the same constant message and no symbol.
+    let source = (0..count)
+        .map(|index| format!("const KEY_{index}: &str = \"AKIA1234567890ABCDEF\";\n"))
+        .collect::<String>();
+    fs::write(root.join("src/lib.rs"), source).expect("lib write");
+}
+
+fn aws_key_count(report: &AnalysisReport) -> usize {
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.aws-access-key")
+        .count()
 }
 
 fn analyse_lib_no_config(root: &Path) -> AnalysisReport {

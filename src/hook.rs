@@ -111,21 +111,41 @@ fn apply_hook_new_only(
     Ok(())
 }
 
+/// Drop findings that already existed in the base, keyed on stable identity but
+/// honouring how many times each identity occurred. Stable identities are not
+/// unique: several findings can share `(rule_id, file_path, subject)` - e.g. two
+/// secret matches with the same constant message in one file, or one crate
+/// flagged in two manifest sections. A plain set-membership check would then
+/// drop a newly added duplicate as if it were pre-existing, hiding a real new
+/// finding. Consuming per-identity counts keeps `current - base` occurrences of
+/// each identity, so a freshly introduced one still surfaces.
 pub(crate) fn apply_stable_identity_new_only(
     report: &mut AnalysisReport,
-    base_identities: &BTreeSet<String>,
+    base_counts: &BTreeMap<String, usize>,
 ) {
+    let mut remaining = base_counts.clone();
     report
         .findings
-        .retain(|finding| !base_identities.contains(&finding.stable_identity));
+        .retain(
+            |finding| match remaining.get_mut(&finding.stable_identity) {
+                Some(count) if *count > 0 => {
+                    *count -= 1;
+                    false
+                }
+                _ => true,
+            },
+        );
 }
 
+/// Count occurrences of each stable identity in the base tree at `mode`, so
+/// [`apply_stable_identity_new_only`] can suppress exactly the pre-existing
+/// count and let genuinely new duplicates through.
 pub(crate) fn diff_base_stable_identities(
     project_root: &Path,
     options: &AnalysisOptions,
     config: &Config,
     mode: &str,
-) -> Result<BTreeSet<String>, String> {
+) -> Result<BTreeMap<String, usize>, String> {
     let base_ref = hook_diff_base_ref(mode);
     let base_tree = TempBaseTree::create()?;
     export_git_base_tree(project_root, base_ref, &options.paths, base_tree.path())?;
@@ -143,11 +163,11 @@ pub(crate) fn diff_base_stable_identities(
         no_baseline: true,
     };
     let base_report = run_analysis_in_project(base_tree.path(), &base_options, config)?;
-    Ok(base_report
-        .findings
-        .into_iter()
-        .map(|finding| finding.stable_identity)
-        .collect())
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in base_report.findings {
+        *counts.entry(finding.stable_identity).or_default() += 1;
+    }
+    Ok(counts)
 }
 
 fn hook_diff_base_ref(mode: &str) -> &str {

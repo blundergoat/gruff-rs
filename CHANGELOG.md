@@ -1,18 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-06-08
+
+0.3.0 makes gruff easier to adopt and sharpens its rules: a new `hook` command that speaks the cross-analyzer `gruff.hook.v1` contract, tri-state baselines, count-based gates, a "fail-on-new" mode, eleven new security/secret rules, and four low-value rubrics dropped. JSON stays additive; new gates are opt-in.
 
 - **New `hook` command for coding-agent feedback.** `gruff-rs hook --format json` emits the cross-analyzer `gruff.hook.v1` contract, and `gruff-rs hook --capabilities --format json` advertises supported flags, `flagOrder: "any"`, stable identities, ignore reporting, metadata, baseline, and diff/new-only support.
 - **Hook JSON is analyzer-owned and render-ready.** Findings use normative fields (`file`, `scope`, `stableIdentity`, non-null `remediation`, and `metadata`), plus top-level `suppressed.count`, `ignored.paths`, and `config.schemaOk`/`config.error` so consumers no longer need gruff-rs-specific output adapters.
 - **Changed-region hook fairness.** In hook mode, `line`/`symbol` findings are still scoped to changed ranges, but `file`/`project` findings are omitted and counted in `suppressed.count` instead of leaking through synthetic anchor lines.
-- **Native new-only hook support.** `hook --baseline` and `hook --diff <ref>` surface only findings whose `stableIdentity` is new versus the base; file-level threshold findings remain suppressed when only the measured value changes and appear when the threshold is newly crossed. `hook --diff` executes Git, so it requires the hidden `--diff-git-unsafe` opt-in (matching `analyse --diff`/`--since` per ADR-019); the Git-free `--changed-ranges` and `--baseline` paths never need it. Base-tree export uses NUL-separated `git ls-tree -z` so non-ASCII filenames do not break the diff.
+- **Native new-only hook support.** `hook --baseline` and `hook --diff <ref>` surface only findings whose `stableIdentity` is new versus the base; file-level threshold findings remain suppressed when only the measured value changes and appear when the threshold is newly crossed. `hook --diff` executes Git, so it requires the hidden `--diff-git-unsafe` opt-in (matching `analyse --diff`/`--since` per ADR-019); the Git-free `--changed-ranges` and `--baseline` paths never need it. Base-tree export uses NUL-separated `git ls-tree -z` so non-ASCII filenames do not break the diff. New-only suppression is count-based: when several findings share one `stableIdentity` (e.g. two same-message secrets in a file, or a crate flagged in two manifest sections), only the count present in the base is suppressed, so a newly added duplicate still surfaces.
 - **Additive finding enrichment.** Findings now carry additive `scope`; threshold rules populate machine-readable `metadata.measured`, `metadata.threshold`, `metadata.unit`, and `metadata.direction`; file/project stable identities are value-independent while fingerprints and legacy baseline matching stay unchanged.
-- **Conformance coverage.** Added hook contract tests for capabilities, flag ordering, advisory exit behavior, changed-region suppression, baseline/diff new-only behavior, ignored paths, config errors, stable identity, remediation fallback, and threshold metadata.
-
-## v0.3.0 - 2026-06-04
-
-0.3.0 makes gruff easier to adopt and sharpens its rules: tri-state baselines, count-based gates, a "fail-on-new" mode, eleven new security/secret rules, and four low-value rubrics dropped. JSON stays additive; new gates are opt-in.
-
+- **Conformance coverage.** Added hook contract tests for capabilities, flag ordering, advisory exit behavior, changed-region suppression, baseline/diff new-only behavior, ignored paths, config errors, stable identity, remediation fallback, threshold metadata, the `--diff-git-unsafe` gate, non-ASCII base-tree export, and count-based new-only suppression of duplicate findings.
+- **Internal:** `Config::is_rule_enabled` now reads default enablement from a process-cached rule registry (`builtin_registry_cached`) instead of rebuilding and sorting the registry on every lookup; behaviour is unchanged.
 - **Changed-region scoping.** `analyse` can limit findings to changed lines via `--diff-patch`/`--changed-ranges` (no Git) or `--since`/`--diff` (Git, needs `--diff-git-unsafe`).
 - **`paths.ignore` now applies everywhere** - the walk, explicit file args, and diff modes - so a hook can't flag a deliberately-ignored file. VCS internals stay blocked.
 - **New `check-ignore` command.** Reports whether gruff would ignore a path and why, matching `git check-ignore` exit codes.

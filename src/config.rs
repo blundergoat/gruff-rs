@@ -288,7 +288,7 @@ impl Config {
         if self.selectors.has_positive {
             return true;
         }
-        rules::builtin_registry()
+        rules::builtin_registry_cached()
             .get(rule_id)
             .map(|definition| definition.default_enabled)
             .unwrap_or(true)
