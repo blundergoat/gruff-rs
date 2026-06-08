@@ -13,19 +13,6 @@
       "Bash(*git reset --hard*)",
       "Read(**/.env*)",
       "Edit(**/.env*)",
-      "MultiEdit(**/.env*)",
-      "MultiEdit(**/secrets/**)",
-      "MultiEdit(**/*.pem)",
-      "MultiEdit(**/*.key)",
-      "MultiEdit(**/.ssh/**)",
-      "MultiEdit(**/.aws/**)",
-      "MultiEdit(**/.docker/config.json)",
-      "MultiEdit(**/.gnupg/**)",
-      "MultiEdit(**/.npmrc)",
-      "MultiEdit(**/.pypirc)",
-      "MultiEdit(**/*.pfx)",
-      "MultiEdit(**/credentials*)",
-      "MultiEdit(**/.kube/config)",
       "Write(**/.env*)",
       "Read(**/secrets/**)",
       "Read(**/*.pem)",
@@ -72,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/deny-dangerous.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/deny-dangerous.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/deny-dangerous.sh\""
+            "command": "bash -c 'gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*|[A-Za-z]:/*|[A-Za-z]:\\\\*) gcd=\"${gcd//\\\\//}\"; root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.goat-flow/hooks/deny-dangerous.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.goat-flow/hooks/deny-dangerous.sh\" ] || { printf '\\''BLOCKED: Policy hook unavailable: git repository root unavailable.\\n'\\'' >&2; exit 2; }; cd \"$root\" || { printf '\\''BLOCKED: Policy hook unavailable: git repository root unavailable.\\n'\\'' >&2; exit 2; }; bash \"$root/.goat-flow/hooks/deny-dangerous.sh\"'"
           }
         ]
       }
@@ -83,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
+            "command": "bash -c 'gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*|[A-Za-z]:/*|[A-Za-z]:\\\\*) gcd=\"${gcd//\\\\//}\"; root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.goat-flow/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.goat-flow/hooks/gruff-code-quality.sh\" ] || { printf '\\''BLOCKED: Policy hook unavailable: git repository root unavailable.\\n'\\'' >&2; exit 2; }; cd \"$root\" || { printf '\\''BLOCKED: Policy hook unavailable: git repository root unavailable.\\n'\\'' >&2; exit 2; }; bash \"$root/.goat-flow/hooks/gruff-code-quality.sh\"'"
           }
         ]
       },
@@ -92,16 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
-          }
-        ]
-      },
-      {
-        "matcher": "MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*) root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.claude/hooks/gruff-code-quality.sh\" ] || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; cd \"$root\" || { printf 'BLOCKED: Policy hook unavailable: git repository root unavailable.\\n' >&2; exit 2; }; bash \"$root/.claude/hooks/gruff-code-quality.sh\""
+            "command": "bash -c 'gcd=\"$(git rev-parse --git-common-dir 2>/dev/null)\"; root=\"\"; case \"$gcd\" in */.git/modules/*|.git/modules/*) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; /*|[A-Za-z]:/*|[A-Za-z]:\\\\*) gcd=\"${gcd//\\\\//}\"; root=\"$(dirname \"$gcd\")\" ;; *) root=\"$(git rev-parse --show-toplevel 2>/dev/null || true)\" ;; esac; [ -f \"$root/.goat-flow/hooks/gruff-code-quality.sh\" ] || root=\"${CLAUDE_PROJECT_DIR:-}\"; [ -f \"$root/.goat-flow/hooks/gruff-code-quality.sh\" ] || { printf '\\''BLOCKED: Policy hook unavailable: git repository root unavailable.\\n'\\'' >&2; exit 2; }; cd \"$root\" || { printf '\\''BLOCKED: Policy hook unavailable: git repository root unavailable.\\n'\\'' >&2; exit 2; }; bash \"$root/.goat-flow/hooks/gruff-code-quality.sh\"'"
           }
         ]
       }

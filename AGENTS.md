@@ -1,4 +1,4 @@
-# gruff-rs - goat-flow 1.9.1
+# gruff-rs - goat-flow 1.10.1
 
 Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
 
@@ -34,10 +34,14 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 - Do not add features, abstractions, or error handling beyond the request.
 - Ambiguous requirements: present interpretations before writing.
 
+## Commit Messages
+
+Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit.md`.
+
 ## Key Resources
 
-- Learning loop: grep `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, and `.goat-flow/decisions/` before changes.
-- Tool playbooks: read `.goat-flow/skill-playbooks/browser-use.md`, `.goat-flow/skill-playbooks/page-capture.md`, or `.goat-flow/skill-playbooks/skill-quality-testing.md` before declaring those tools unavailable.
+- Learning loop: grep `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, and `.goat-flow/learning-loop/decisions/` before changes.
+- Tool playbooks: read `.goat-flow/skill-docs/playbooks/browser-use.md`, `.goat-flow/skill-docs/playbooks/page-capture.md`, or `.goat-flow/skill-docs/skill-quality-testing/README.md` before declaring those tools unavailable.
 - Orientation: use `.goat-flow/code-map.md` and `.goat-flow/glossary.md` before broad repo edits.
 
 ## Essential Commands
@@ -46,7 +50,7 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 bash scripts/preflight-checks.sh
 cargo build
 cargo run -- analyse fixtures --format json --fail-on none
-shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .codex/hooks/deny-dangerous.sh .codex/hooks/deny-dangerous.self-test.sh
+shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .goat-flow/hooks/deny-dangerous.sh .goat-flow/hooks/deny-dangerous/deny-dangerous-self-test.sh
 ```
 
 Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.
@@ -57,7 +61,7 @@ When a goat-* skill is active, the skill's Step 0 replaces READ and selects the 
 
 ### READ
 
-MUST read relevant files before changes. Never fabricate codebase facts. Check browser evidence first for URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour. Use grep-first retrieval across learning-loop dirs; include decisions for architecture, policy, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
+MUST read relevant files before changes. Never fabricate codebase facts. Check browser evidence first for URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour. Use grep-first retrieval across learning-loop dirs; include decisions for architecture, policy, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
 
 ### SCOPE
 
@@ -69,7 +73,15 @@ Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`. Mode must be Pla
 
 ### VERIFY
 
-Run required checks for changed files. Check cross-references after renames. Tick milestone checkboxes immediately. Do not claim checks passed without the literal pass/fail line from this session. Stop the line when tests break, builds fail, or behaviour regresses. If VERIFY caught a failure or corrected course, update the learning loop before DoD.
+Run required checks for changed files. Check cross-references after renames. Tick milestone checkboxes immediately. Stop the line when tests break, builds fail, or behaviour regresses. If VERIFY caught a failure or corrected course, update the learning loop before DoD.
+
+**Hallucination red-flags:**
+1. **Checks passed.** Do not claim tests pass or any check passed (shellcheck, typecheck, preflight, audit) without showing the literal pass/fail line copied verbatim from this session's run. Paraphrase, cached output, or prior-session results do not count.
+2. **Completion.** Do not claim completion without listing the specific files changed in this turn. If no files were changed, say so explicitly.
+3. **Fix verification.** Do not claim a fix works without running the reproduction steps that originally demonstrated the bug. "Looks correct" is not verification.
+4. **Hedged claims.** Do not use "should work", "probably fine", "looks good" as verification. These are guesses, not evidence.
+
+Rationalisations to reject: see `.goat-flow/skill-docs/skill-preamble.md`.
 
 ## Definition of Done
 
@@ -77,7 +89,7 @@ Confirm all gates: relevant checks pass, no broken cross-references, no unapprov
 
 ## Artifact Routing
 
-Route "add a footgun" to `.goat-flow/footguns/`, "add a lesson" to `.goat-flow/lessons/`, "add a decision" to `.goat-flow/decisions/`, and "add a pattern" to `.goat-flow/patterns/`. Read the target directory's `README.md` before editing.
+Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to `.goat-flow/learning-loop/lessons/`, "add a decision" to `.goat-flow/learning-loop/decisions/`, and "add a pattern" to `.goat-flow/learning-loop/patterns/`. Read the target directory's `README.md` before editing.
 
 ## Router Table
 
@@ -88,11 +100,12 @@ Route "add a footgun" to `.goat-flow/footguns/`, "add a lesson" to `.goat-flow/l
 | Fixtures | `fixtures/` |
 | Scripts | `scripts/` |
 | Rust manifest | `Cargo.toml`, `Cargo.lock` |
-| Tool playbooks (CLI/MCP availability checks: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-playbooks/` - read BEFORE declaring a tool unavailable |
-| Skill reference (meta) | `.goat-flow/skill-reference/` |
-| Learning loop | `.goat-flow/footguns/`, `.goat-flow/lessons/`, `.goat-flow/patterns/`, `.goat-flow/decisions/` |
+| Tool playbooks (README index for CLI/MCP availability checks; examples: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Skill reference (meta) | `.goat-flow/skill-docs/` |
+| Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Orientation | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
 | Architecture | `.goat-flow/architecture.md` |
-| Codex skills/config | `.agents/skills/`, `.codex/config.toml`, `.codex/hooks.json`, `.codex/hooks/` |
+| Codex skills/config | `.agents/skills/`, `.codex/config.toml`, `.codex/hooks.json` |
+| Hooks (deny + quality) | `.goat-flow/hooks/` |
 | Commit guidance | `docs/coding-standards/git-commit.md` |
-| Workspace notes | `.goat-flow/tasks/`, `.goat-flow/logs/sessions/` |
+| Workspace notes | `.goat-flow/plans/`, `.goat-flow/logs/sessions/` |

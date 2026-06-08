@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.9.1"
+goat-flow-reference-version: "1.10.1"
 ---
 # Automated-Review Overlap Protocol
 

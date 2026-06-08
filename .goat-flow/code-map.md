@@ -63,21 +63,27 @@
 `.goat-flow/architecture.md` = Current system architecture and trust boundaries.
 `.goat-flow/code-map.md` = This repository map.
 `.goat-flow/glossary.md` = Project-specific terms.
-`.goat-flow/footguns/` = Durable codebase traps with evidence.
-`.goat-flow/lessons/` = Durable agent-behavior lessons.
-`.goat-flow/patterns/` = Reusable successful approaches.
-`.goat-flow/decisions/` = Architecture decision records.
-`.goat-flow/skill-reference/` = Shared goat-flow skill conventions.
-`.goat-flow/skill-playbooks/` = Tool availability and usage playbooks.
-`.goat-flow/tasks/` = Local milestone/task tracking path; contents are mostly local state.
+`.goat-flow/learning-loop/footguns/` = Durable codebase traps with evidence.
+`.goat-flow/learning-loop/lessons/` = Durable agent-behavior lessons.
+`.goat-flow/learning-loop/patterns/` = Reusable successful approaches.
+`.goat-flow/learning-loop/decisions/` = Architecture decision records.
+`.goat-flow/skill-docs/` = Shared goat-flow skill conventions and meta references.
+`.goat-flow/skill-docs/playbooks/` = Tool availability and usage playbooks.
+`.goat-flow/hooks/` = Installed deny + quality hooks and deny-dangerous policy modules.
+`.goat-flow/plans/` = Local milestone/task tracking path; contents are mostly local state.
 `.goat-flow/logs/` = Local session, quality, critique, and security log paths.
 
 ## Codex Harness
 
 `.agents/skills/` = Installed goat-flow skills shared by Codex/Gemini style agents.
 `.codex/config.toml` = Codex feature and filesystem permission template for this project.
-`.codex/hooks.json` = Codex hook registration for command safety.
-`.codex/hooks/` = Installed deny hook and self-test script.
+`.codex/hooks.json` = Codex hook registration pointing at the shared `.goat-flow/hooks/` scripts.
+
+## Copilot Harness
+
+`.github/copilot-instructions.md` = Copilot instruction file (standalone).
+`.github/skills/` = Installed goat-flow skills for Copilot.
+`.github/hooks/hooks.json` = Copilot hook registration pointing at the shared `.goat-flow/hooks/` scripts.
 
 ## Generated Or Local-Only
 
