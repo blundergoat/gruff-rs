@@ -26,6 +26,7 @@ fn is_private_item_candidate(item: &ItemSummary) -> bool {
     !item.public
         && !item.cfg_gated
         && !item.test_context
+        && !item.trait_impl
         && matches!(
             item.kind.as_str(),
             "function" | "struct" | "enum" | "trait" | "const" | "static" | "type alias"

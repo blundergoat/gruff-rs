@@ -20,7 +20,7 @@
 - **Removed four low-value rubrics:** `complexity.npath`, `metrics.halstead-volume`, `metrics.maintainability-pressure`, and `design.god-function` - each redundant or unactionable.
 - **Nine new security rules** - five GitHub Actions checks plus SSRF, unsafe-deserialization, XXE, and template/XSS. SQL/TLS/RNG checks now survive an intermediate `let`, and `severity:` overrides apply to security/dependency rules.
 - **Two new secret checks** - `phi-pattern` (health IDs) and `gcp-service-account-key`, plus wider token/credential coverage. Output stays redacted.
-- **Sharper dead-code detection** - now flags unused private `const`s, `static`s, type aliases, and low-noise methods, still skipping cfg/test/trait-impl cases.
+- **Sharper dead-code detection** - now flags unused private `const`s, `static`s, and type aliases, still skipping cfg/test/trait-impl cases.
 - **Quieter complexity and style rules** - complexity ignores comments and `?`, `parameter-count` rises 5 → 7 (Clippy), and `long-test`/`docs.missing-*` shed ceremony false-positives.
 - **`waste.unnecessary-clone-candidate` is now off by default** - the only rule that ships disabled; enable it if you want it.
 - **Rule catalogue 80 → 87** (four removed, eleven added). Schemas, rule IDs, and fingerprints are unchanged.

@@ -124,17 +124,15 @@ pub(crate) fn apply_stable_identity_new_only(
     base_counts: &BTreeMap<String, usize>,
 ) {
     let mut remaining = base_counts.clone();
-    report
-        .findings
-        .retain(
-            |finding| match remaining.get_mut(&finding.stable_identity) {
-                Some(count) if *count > 0 => {
-                    *count -= 1;
-                    false
-                }
-                _ => true,
-            },
-        );
+    report.findings.retain(
+        |finding| match remaining.get_mut(&finding.stable_identity) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                false
+            }
+            _ => true,
+        },
+    );
 }
 
 /// Count occurrences of each stable identity in the base tree at `mode`, so
