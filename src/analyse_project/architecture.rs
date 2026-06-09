@@ -76,7 +76,13 @@ fn module_fan_out_finding(
             "Split module declarations across clearer parent modules when the fan-out grows."
                 .to_string(),
         ),
-        metadata: json!({ "modules": modules.len(), "threshold": threshold }),
+        metadata: json!({
+            "modules": modules.len(),
+            "measured": modules.len(),
+            "threshold": threshold,
+            "unit": "modules",
+            "direction": "above"
+        }),
     })
 }
 
@@ -151,7 +157,14 @@ fn public_api_surface_finding(
         remediation: Some(
             "Group related public API items behind smaller modules or facade types.".to_string(),
         ),
-        metadata: json!({ "publicItems": group.items.len(), "threshold": threshold, "module": module }),
+        metadata: json!({
+            "publicItems": group.items.len(),
+            "module": module,
+            "measured": group.items.len(),
+            "threshold": threshold,
+            "unit": "items",
+            "direction": "above"
+        }),
     })
 }
 
@@ -189,7 +202,7 @@ fn group_indexed_items_by_module(
     for item in context
         .items
         .iter()
-        .filter(|item| !item.cfg_gated && !item.test_context)
+        .filter(|item| item.public && !item.cfg_gated && !item.test_context)
     {
         by_module
             .entry((item.file_path.clone(), item.module_path.clone()))
@@ -222,6 +235,13 @@ fn large_module_finding(
         remediation: Some(
             "Split unrelated responsibilities into smaller modules with narrower APIs.".to_string(),
         ),
-        metadata: json!({ "items": group.items.len(), "threshold": threshold, "module": module }),
+        metadata: json!({
+            "items": group.items.len(),
+            "module": module,
+            "measured": group.items.len(),
+            "threshold": threshold,
+            "unit": "items",
+            "direction": "above"
+        }),
     })
 }

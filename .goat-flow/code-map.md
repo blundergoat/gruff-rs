@@ -13,11 +13,11 @@
 
 `src/` = Rust source directory.
 `src/main.rs` = Entry point and command dispatch: `main`, `run_summary`, `run_report`, `options_from_analyse`/`options_from_report`, the `analyse_source` rule-dispatch shim, scan-timing instrumentation (`Instant::now()` around `run_analysis`), and a few orchestration helpers (`changed_files`, etc.). Most subsystem responsibilities live in dedicated modules below.
-`src/cli/` = Clap argument structs (`AnalyseArgs`, `ReportArgs`, `SummaryArgs`, `DashboardArgs`, `ListRulesArgs`, `CompletionArgs`) in `args.rs`; CLI enum, `GlobalOptions`, `OutputWriter`, and `RunOutcome::classify` in `mod.rs`. Owns the `--help` template and the `paths` positional whose default is the current directory.
-`src/analysis.rs` = `run_analysis` entry point: builds `AnalysisOptions`, drives discovery + per-source analysis + project-wide analysis, assembles the final `AnalysisReport` (schema `gruff.analysis.v1`).
+`src/cli/` = Clap argument structs (`AnalyseArgs`, `ReportArgs`, `SummaryArgs`, `DashboardArgs`, `ListRulesArgs`, `CheckIgnoreArgs`, `CompletionArgs`, `InitArgs`) in `args.rs`; CLI enum, `GlobalOptions`, `OutputWriter`, and `RunOutcome::classify` in `mod.rs`. Owns the `--help` template and the `paths` positional whose default is the current directory.
+`src/analysis.rs` = `run_analysis` entry point: builds `AnalysisOptions`, drives discovery + per-source analysis + project-wide analysis, assembles the final `AnalysisReport` (schema `gruff.analysis.v2`).
 `src/discovery.rs` = Git-ignore-aware source discovery; `resolve_input_paths` defaults empty paths to `["."]` and routes through the `ignore` crate's `WalkBuilder`.
 `src/source.rs` = `SourceFile` and `SourceUnit` types plus parser invocation.
-`src/parser.rs` = Rust file parsing via `syn`; emits `parse-error` diagnostics on failure while preserving text-only rule coverage.
+`src/parser/` = Rust file parsing via `syn` (`mod.rs`) and comment/string masking (`comments.rs`); emits `parse-error` diagnostics on failure while preserving text-only rule coverage.
 `src/project/` = Project-wide aggregation (`mod.rs` builds `ProjectContext` and the identifier-count index used by cross-file dead-code analysis via `count_rust_identifiers`; `items.rs` collects project-wide item definitions; `manifest.rs`/`lockfile.rs` parse `Cargo.toml`/`Cargo.lock`).
 `src/analyse_project/` = Project-wide rule pillars: `mod.rs` orchestrator, `architecture.rs`, `dead_code.rs`, `dependencies.rs`.
 `src/built_in_rules/` = Per-source built-in rules organised by concern: `behavior_rules`, `naming_rules`, `secret_rules`, `text_rules`, `waste_rules`, `concurrency_rules`, `perf_rules`, `test_rules`, plus shared `helpers`, `predicates`, `function_block_metrics`, etc. `mod.rs` exposes the `analyse` entry point.
@@ -32,7 +32,7 @@
 `src/render/` = Output formatters: `text.rs` (scan-card header + findings + diagnostics + suppressions), `markdown.rs`, `github.rs` (Actions annotations), `hotspot.rs` (top-offenders JSON), `sarif.rs` (SARIF v2.1.0 emitter and helpers). `mod.rs` dispatches by `OutputFormat` and threads `Option<u128>` scan duration into text only.
 `src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, `/health`, `/favicon.ico` routes, and the form/iframe shell.
-`src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split across `definitions_a.rs` and `definitions_b.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
+`src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split by concern across `structure_docs_reliability_definitions.rs`, `idiom_security_size_test_definitions.rs`, and `waste_definitions.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
 `src/tests/` = Unit and integration tests grouped by concern (`scenarios/`, `rule_behaviours/`, `project_tests/`, `config_and_selectors/`, `renderers/`, `calibration/`).
 
 ## Fixtures
@@ -51,33 +51,39 @@
 `scripts/` = Project shell entrypoints.
 `scripts/preflight-checks.sh` = Shell syntax/lint, formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff, selector, exclusion/custom-rule smokes, and a whole-project dogfood scan gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
-`scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes `target/perf/last-run.json`, supports `--update-baseline` and `--check` with configurable time/RSS budgets.
+`scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes per-run perf metrics to target/perf/last-run.json (gitignored build output), supports `--update-baseline` and `--check` with configurable time/RSS budgets.
 
 ## Documentation And Harness
 
 `docs/` = Project documentation added outside the hot-path instruction file.
-`docs/rust-rubric.md` = Standalone v0.1 Rust rule matrix and deferred-rule notes.
+`docs/rules.md` = Rust/text rule reference: pillars, rule scope, and the advisory/warning/error severity model.
 `docs/coding-standards/` = Local engineering policy docs.
 `docs/coding-standards/git-commit.md` = Commit-message guidance used by goat-flow harness checks.
 `.goat-flow/` = Goat-flow setup, project memory, and local continuity structure.
 `.goat-flow/architecture.md` = Current system architecture and trust boundaries.
 `.goat-flow/code-map.md` = This repository map.
 `.goat-flow/glossary.md` = Project-specific terms.
-`.goat-flow/footguns/` = Durable codebase traps with evidence.
-`.goat-flow/lessons/` = Durable agent-behavior lessons.
-`.goat-flow/patterns/` = Reusable successful approaches.
-`.goat-flow/decisions/` = Architecture decision records.
-`.goat-flow/skill-reference/` = Shared goat-flow skill conventions.
-`.goat-flow/skill-playbooks/` = Tool availability and usage playbooks.
-`.goat-flow/tasks/` = Local milestone/task tracking path; contents are mostly local state.
+`.goat-flow/learning-loop/footguns/` = Durable codebase traps with evidence.
+`.goat-flow/learning-loop/lessons/` = Durable agent-behavior lessons.
+`.goat-flow/learning-loop/patterns/` = Reusable successful approaches.
+`.goat-flow/learning-loop/decisions/` = Architecture decision records.
+`.goat-flow/skill-docs/` = Shared goat-flow skill conventions and meta references.
+`.goat-flow/skill-docs/playbooks/` = Tool availability and usage playbooks.
+`.goat-flow/hooks/` = Installed deny + quality hooks and deny-dangerous policy modules.
+`.goat-flow/plans/` = Local milestone/task tracking path; contents are mostly local state.
 `.goat-flow/logs/` = Local session, quality, critique, and security log paths.
 
 ## Codex Harness
 
 `.agents/skills/` = Installed goat-flow skills shared by Codex/Gemini style agents.
 `.codex/config.toml` = Codex feature and filesystem permission template for this project.
-`.codex/hooks.json` = Codex hook registration for command safety.
-`.codex/hooks/` = Installed deny hook and self-test script.
+`.codex/hooks.json` = Codex hook registration pointing at the shared `.goat-flow/hooks/` scripts.
+
+## Copilot Harness
+
+`.github/copilot-instructions.md` = Copilot instruction file (standalone).
+`.github/skills/` = Installed goat-flow skills for Copilot.
+`.github/hooks/hooks.json` = Copilot hook registration pointing at the shared `.goat-flow/hooks/` scripts.
 
 ## Generated Or Local-Only
 

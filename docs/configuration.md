@@ -11,13 +11,18 @@ with built-in defaults. Explicit `.json` config paths are rejected; use YAML.
 
 ## Root Keys
 
-Supported top-level sections are:
+Every config must declare `schemaVersion: gruff-rs.config.v1` as its first key;
+configs without it are rejected at load time (run `gruff-rs init --force` to
+regenerate). The supported top-level sections are:
 
+- `schemaVersion` (required) — config schema version; must be `gruff-rs.config.v1`.
 - `paths`
 - `allowlists`
 - `rules`
 - `custom_rules`
 - `exclude`
+- `minimumSeverity` — per-subcommand `--fail-on` defaults for `analyse` and `report`.
+- `gate` — count-based quality gate (per-severity and total caps).
 
 Unknown sections are rejected so config mistakes fail early.
 

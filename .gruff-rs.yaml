@@ -129,9 +129,6 @@ rules:
   # Flags dependency requirements that use wildcard versions.
   dependency.wildcard-version:
     enabled: true
-  # Flags functions that are both long and complex.
-  design.god-function:
-    enabled: true
   # Flags comments whose payload looks like a disabled Rust statement or item.
   docs.commented-out-code:
     enabled: true
@@ -171,16 +168,6 @@ rules:
   # Flags todo! and unimplemented! placeholders in non-test functions.
   error-handling.unimplemented-placeholder:
     enabled: true
-  # Flags functions whose deterministic token volume exceeds the configured threshold.
-  metrics.halstead-volume:
-    enabled: true
-    threshold: 1500
-    severity: advisory
-  # Flags functions whose maintainability pressure score falls below the configured minimum.
-  metrics.maintainability-pressure:
-    enabled: true
-    threshold: 45
-    severity: advisory
   # Flags `iter().any(|x| *x == y)` patterns that should use `.contains(&y)`.
   modernisation.manual-contains:
     enabled: true
@@ -223,6 +210,21 @@ rules:
   # Flags Regex::new calls inside loop bodies.
   performance.regex-in-loop:
     enabled: true
+  # Flags workflow permissions that grant broad write access.
+  security.github-actions-broad-permissions:
+    enabled: true
+  # Flags pull_request_target workflows for manual secret and checkout review.
+  security.github-actions-pull-request-target:
+    enabled: true
+  # Flags workflow shell steps that pipe remote downloads into an interpreter.
+  security.github-actions-remote-shell:
+    enabled: true
+  # Flags pull request workflows that reference repository secrets.
+  security.github-actions-secrets-in-pr:
+    enabled: true
+  # Flags third-party workflow actions that are not pinned to a full commit SHA.
+  security.github-actions-unpinned-action:
+    enabled: true
   # Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.
   security.hardcoded-bind-all-interfaces:
     enabled: true
@@ -238,14 +240,26 @@ rules:
   # Flags direct dynamic SQL query arguments such as query(format!(...)).
   security.sql-dynamic-query:
     enabled: true
+  # Flags request URLs derived from local input without nearby allow-list evidence.
+  security.ssrf-candidate:
+    enabled: true
+  # Flags HTML/template output that includes request-derived values without local escaping evidence.
+  security.template-injection-xss:
+    enabled: true
   # Flags explicit TLS certificate or hostname verification bypasses.
   security.tls-verification-disabled:
     enabled: true
   # Flags unsafe blocks without a nearby SAFETY rationale.
   security.unsafe-block:
     enabled: true
+  # Flags YAML or binary deserialization of data derived from local input.
+  security.unsafe-deserialization:
+    enabled: true
   # Flags explicit weak cryptographic primitive imports or constructors for review.
   security.weak-crypto:
+    enabled: true
+  # Flags XML parser options that enable external entity or DTD resolution.
+  security.xxe-candidate:
     enabled: true
   # Flags common API key patterns.
   sensitive-data.api-key-pattern:
@@ -256,6 +270,9 @@ rules:
   # Flags database URLs that appear to include passwords.
   sensitive-data.database-url-password:
     enabled: true
+  # Flags committed GCP service-account private key material.
+  sensitive-data.gcp-service-account-key:
+    enabled: true
   # Flags secret-like KEY=value literals committed in source or config.
   sensitive-data.hardcoded-env-value:
     enabled: true
@@ -264,6 +281,9 @@ rules:
     enabled: true
   # Flags JWT-looking token strings.
   sensitive-data.jwt-token:
+    enabled: true
+  # Flags SSN, MRN, and Medicare-style health identifiers with redacted previews.
+  sensitive-data.phi-pattern:
     enabled: true
   # Flags realistic emails, SSN-shaped strings, or US phone numbers in fixture or sample files.
   sensitive-data.pii-test-fixture:
@@ -287,7 +307,7 @@ rules:
   # Flags functions with too many parameters.
   size.parameter-count:
     enabled: true
-    threshold: 5
+    threshold: 7
     severity: warning
   # Flags tests that contain conditional logic.
   test-quality.conditional-logic:
@@ -309,7 +329,7 @@ rules:
   # Flags tests that sleep instead of synchronizing on behavior.
   test-quality.sleep-in-test:
     enabled: true
-  # Flags assertions that prove literals or constants instead of behavior.
+  # Flags assertions that prove a value the code already fixes instead of behavior: literal tautologies (`assert!(true)`, `assert_eq!(1, 1)`) and an immutable literal binding asserted against its own value (`let x = 5; assert_eq!(x, 5)`).
   test-quality.trivial-assertion:
     enabled: true
   # Flags unwrap calls in tests.
@@ -317,7 +337,7 @@ rules:
     enabled: true
   # Flags clone calls that may be avoidable.
   waste.unnecessary-clone-candidate:
-    enabled: true
+    enabled: false
   # Flags statements after terminating statements.
   waste.unreachable-code:
     enabled: true

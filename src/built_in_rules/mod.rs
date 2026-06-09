@@ -28,7 +28,6 @@ pub(crate) static UNWRAP_EXPECT_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CYCLOMATIC_COMPLEXITY_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static METRIC_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -39,6 +38,7 @@ pub(crate) static UNREACHABLE_TERMINATOR_REGEX: OnceLock<Regex> = OnceLock::new(
 pub(crate) static NON_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static TRIVIAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static SAME_LITERAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static LITERAL_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run enabled text and Rust rules for one parsed source unit.
 pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
@@ -50,6 +50,7 @@ pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     findings
         .into_iter()
         .filter(|finding| config.is_rule_enabled(&finding.rule_id))
+        .map(|finding| apply_configured_severity(finding, config))
         .collect()
 }
 
@@ -67,10 +68,19 @@ fn analyse_rust_rules(
     analyse_weak_crypto(unit.file, unit.source, findings);
     analyse_hardcoded_bind_all_interfaces(unit.file, unit.source, findings);
     analyse_path_traversal_candidate(unit.file, unit.source, findings);
+    analyse_ssrf_candidate(unit.file, &blocks, findings);
+    analyse_unsafe_deserialization(unit.file, &blocks, findings);
+    analyse_xxe_candidate(unit.file, unit.source, findings);
+    analyse_template_injection_xss(unit.file, &blocks, findings);
     analyse_modernisation_rules(unit.file, unit.source, findings);
     analyse_line_rules(unit.file, unit.source, &blocks, findings);
     analyse_item_rules(unit.file, ast, findings);
     analyse_dead_code(unit.file, ast, unit.source, findings);
     analyse_comment_rules(unit.file, unit.source, findings);
     analyse_naming_patterns(unit.file, ast, config, findings);
+}
+
+fn apply_configured_severity(mut finding: Finding, config: &Config) -> Finding {
+    finding.severity = config.severity(&finding.rule_id, finding.severity);
+    finding
 }

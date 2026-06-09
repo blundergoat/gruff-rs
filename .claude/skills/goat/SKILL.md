@@ -1,13 +1,13 @@
 ---
 name: goat
 description: "Use when you describe an outcome and need the right goat-* workflow chosen for you."
-goat-flow-skill-version: "1.7.0"
+goat-flow-skill-version: "1.10.1"
 ---
 # /goat
 
 ## Shared Conventions
 
-Read `.goat-flow/skill-reference/skill-preamble.md` for shared conventions.
+Read `.goat-flow/skill-docs/skill-preamble.md` for shared conventions.
 
 Use when the user describes an outcome and wants the right workflow chosen. **If the user names a skill explicitly (`/goat-debug`, `/goat-review`, etc.), route to it immediately - no classification, no GATHER.**
 
@@ -24,7 +24,7 @@ Use when the user describes an outcome and wants the right workflow chosen. **If
 
 1. **UNDERSTAND** - classify intent and target. If multiple intents, number each and route independently. Ask only if ordering matters.
 2. **GATHER** - before routing, check:
-   - Footgun matches: grep `.goat-flow/footguns/` for the target area
+   - Footgun matches: grep `.goat-flow/learning-loop/footguns/` for the target area
    - Ask-first boundaries: scan the active instruction file's Ask First boundaries for the target files
    - If any check fails or is unavailable, note `gather-degraded` and route anyway
 3. **ROUTE** - dispatch using the route map. Emit a Route Snapshot:
@@ -42,6 +42,7 @@ Rationale: [concrete signals that justified this route]
 | Bug, failure, unexpected behaviour | `/goat-debug` |
 | Verify a fix worked | `/goat-debug` (post-fix verification) |
 | Browser-visible issue | Browser evidence first; `/goat-debug` Investigate if diagnosis needed |
+| Understand, explain, explore unfamiliar code | `/goat-debug` (Investigate mode) |
 | Quality review, audit, diff check | `/goat-review` |
 | Verify a diff/PR before merge | `/goat-review` |
 | Multi-perspective critique | `/goat-critique` |

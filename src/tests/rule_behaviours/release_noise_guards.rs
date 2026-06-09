@@ -55,6 +55,38 @@ pub fn run_shell(command: &str) {
 }
 
 #[test]
+pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join(".github/workflows")).expect("workflow dir");
+    fs::write(
+        dir.path().join(".github/workflows/pr.yml"),
+        "name: pr\non: pull_request\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+    )
+    .expect("pr workflow write");
+    fs::write(
+        dir.path().join(".github/workflows/target.yml"),
+        "name: target\non: pull_request_target\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+    )
+    .expect("target workflow write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_has_rule(&report, "security.github-actions-secrets-in-pr");
+    assert_has_rule(&report, "security.github-actions-pull-request-target");
+}
+
+#[test]
 pub(crate) fn file_length_skips_markdown_shell_and_agent_hooks_not_source() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");

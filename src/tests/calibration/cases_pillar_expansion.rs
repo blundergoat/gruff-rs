@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
-        // ----- modernisation: M01/M07 batch -----
+        // ----- modernisation batch -----
         case(
             "modernisation.manual-is-empty",
             Box::new(|root| {
@@ -63,7 +63,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- docs: M02/M07 batch -----
+        // ----- docs batch -----
         case(
             "docs.missing-panics-section",
             Box::new(|root| {
@@ -75,7 +75,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Loads the value.\n///\n/// # Panics\n///\n/// Panics when `payload` is negative.\npub fn load(payload: i32) -> i32 {\n    if payload < 0 { panic!(\"negative payload\"); }\n    payload\n}\n",
+                    "/// Loads the value.\n///\n/// Panics when `payload` is negative.\npub fn load(payload: i32) -> i32 {\n    if payload < 0 { panic!(\"negative payload\"); }\n    payload\n}\n",
                 )
             }),
         ),
@@ -99,13 +99,13 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Processes input.\npub fn process(payload: &str) -> usize { payload.len() }\n",
+                    "/// Processes records.\npub fn process(payload: &str) -> usize { payload.len() }\n",
                 )
             }),
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Processes the `payload` string.\n///\n/// Returns the byte length.\npub fn process(payload: &str) -> usize { payload.len() }\n",
+                    "/// Processes caller input.\n///\n/// Returns the byte length.\npub fn process(payload: &str) -> usize { payload.len() }\n",
                 )
             }),
         ),
@@ -120,11 +120,11 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Computes a thing for `seed`.\n///\n/// Returns the incremented seed.\npub fn compute(seed: i32) -> i32 { seed + 1 }\n",
+                    "/// Computes a thing for `seed`.\n///\n/// Yields the incremented seed.\npub fn compute(seed: i32) -> i32 { seed + 1 }\n",
                 )
             }),
         ),
-        // ----- security: M03 batch -----
+        // ----- security batch -----
         case(
             "security.path-traversal-candidate",
             Box::new(|root| {
@@ -140,7 +140,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- test-quality: M04/M07 batch -----
+        // ----- test-quality batch -----
         case(
             "test-quality.should-panic-without-expected",
             Box::new(|root| {

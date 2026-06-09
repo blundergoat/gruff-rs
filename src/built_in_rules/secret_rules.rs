@@ -1,5 +1,12 @@
 use super::*;
 
+// PII-in-fixtures detection is a sensitive-data sub-concern kept in its own
+// file; nested here (rather than a top-level sibling) so `built_in_rules`
+// keeps a low module fan-out.
+#[path = "pii_rules.rs"]
+mod pii_rules;
+pub(crate) use pii_rules::analyse_pii_test_fixture;
+
 pub(crate) struct RegexRule {
     pub(crate) rule_id: &'static str,
     pub(crate) regex: &'static OnceLock<Regex>,
@@ -13,6 +20,10 @@ pub(crate) static JWT_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static DATABASE_URL_PASSWORD_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static URL_EMBEDDED_CREDENTIALS_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static API_KEY_PATTERN_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static PHI_SSN_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static PHI_MRN_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static PHI_MEDICARE_REGEX: OnceLock<Regex> = OnceLock::new();
+pub(crate) static GCP_SERVICE_ACCOUNT_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     RegexRule {
@@ -48,7 +59,7 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     RegexRule {
         rule_id: "sensitive-data.api-key-pattern",
         regex: &API_KEY_PATTERN_REGEX,
-        pattern: r"(sk_(?:live|test)_[A-Za-z0-9]{16,}|pk_(?:live|test)_[A-Za-z0-9]{16,}|rk_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{32,}|Endpoint=sb://[^;\s]+;[^\s]*SharedAccessKey=[A-Za-z0-9+/=]{20,}|DefaultEndpointsProtocol=[^;\s]+;[^\s]*AccountKey=[A-Za-z0-9+/=]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
+        pattern: r"(sk_(?:live|test)_[A-Za-z0-9]{16,}|pk_(?:live|test)_[A-Za-z0-9]{16,}|rk_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|lin_api_[A-Za-z0-9]{20,}|https://discord(?:app)?\.com/api/webhooks/[0-9]{8,}/[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{32,}|Endpoint=sb://[^;\s]+;[^\s]*SharedAccessKey=[A-Za-z0-9+/=]{20,}|DefaultEndpointsProtocol=[^;\s]+;[^\s]*AccountKey=[A-Za-z0-9+/=]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})",
         message: "API key pattern detected.",
     },
 ];
@@ -57,9 +68,6 @@ pub(crate) static ENV_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static STRUCTURED_CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static PII_EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static PII_SSN_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static PII_PHONE_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) fn analyse_sensitive_data(
     unit: &SourceUnit<'_>,
@@ -75,132 +83,10 @@ pub(crate) fn analyse_sensitive_data(
         push_regex_pattern_matches(unit, config, rule, findings);
     }
 
+    analyse_phi_patterns(unit, config, findings);
+    analyse_gcp_service_account_keys(unit, config, findings);
     analyse_env_like_secrets(unit, config, findings);
     analyse_high_entropy_strings(unit, config, findings);
-}
-
-/// `sensitive-data.pii-test-fixture` — flags realistic emails, SSN-shaped
-/// strings, and US-format phone numbers in fixture or sample files.
-/// Scope: file path must contain `fixture`, `sample`, `seed`, or `mock`.
-/// Skips obvious placeholders (`@example.com`, `@test.com`, `@foo.*`).
-pub(crate) fn analyse_pii_test_fixture(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
-    if !path_is_test_fixture(&unit.file.display_path) {
-        return;
-    }
-    let starts = unit.line_starts();
-    push_pii_email_findings(unit, starts, findings);
-    push_pii_ssn_findings(unit, starts, findings);
-    push_pii_phone_findings(unit, starts, findings);
-}
-
-fn path_is_test_fixture(display_path: &str) -> bool {
-    const FIXTURE_DIR_NAMES: &[&str] = &[
-        "fixture",
-        "fixtures",
-        "sample",
-        "samples",
-        "seed",
-        "seeds",
-        "mock",
-        "mocks",
-        "testdata",
-        "test_data",
-    ];
-    let normalized = display_path.to_ascii_lowercase().replace('\\', "/");
-    normalized
-        .split('/')
-        .any(|segment| FIXTURE_DIR_NAMES.contains(&segment))
-}
-
-fn push_pii_email_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {
-    let regex = static_regex(
-        &PII_EMAIL_REGEX,
-        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
-    );
-    for capture in regex.find_iter(unit.source) {
-        let address = capture.as_str();
-        if email_is_obvious_placeholder(address) {
-            continue;
-        }
-        findings.push(pii_finding(
-            unit,
-            byte_line_from_starts(starts, capture.start()),
-            "email",
-            address,
-        ));
-    }
-}
-
-fn push_pii_ssn_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {
-    let regex = static_regex(&PII_SSN_REGEX, r"\b\d{3}-\d{2}-\d{4}\b");
-    for capture in regex.find_iter(unit.source) {
-        let value = capture.as_str();
-        if value.starts_with("000") || value.starts_with("666") || value.starts_with('9') {
-            // Reserved / invalid SSN prefixes — almost certainly placeholder
-            continue;
-        }
-        findings.push(pii_finding(
-            unit,
-            byte_line_from_starts(starts, capture.start()),
-            "ssn",
-            value,
-        ));
-    }
-}
-
-fn push_pii_phone_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {
-    let regex = static_regex(&PII_PHONE_REGEX, r"\b\d{3}-\d{3}-\d{4}\b");
-    for capture in regex.find_iter(unit.source) {
-        let value = capture.as_str();
-        if value.starts_with("555-") || value.starts_with("000-") {
-            // 555-prefix US phone numbers are the Hollywood reserved range
-            continue;
-        }
-        findings.push(pii_finding(
-            unit,
-            byte_line_from_starts(starts, capture.start()),
-            "phone",
-            value,
-        ));
-    }
-}
-
-fn email_is_obvious_placeholder(address: &str) -> bool {
-    let lower = address.to_ascii_lowercase();
-    let Some((_, domain)) = lower.split_once('@') else {
-        return false;
-    };
-    matches!(
-        domain,
-        "example.com" | "example.org" | "example.net" | "test.com" | "test.org" | "localhost"
-    ) || domain.starts_with("foo.")
-        || domain.starts_with("bar.")
-        || domain.starts_with("baz.")
-        || domain.ends_with(".local")
-        || domain.ends_with(".invalid")
-        || domain.ends_with(".test")
-        || domain.ends_with(".example")
-}
-
-fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str, value: &str) -> Finding {
-    Finding::new(FindingDescriptor {
-        rule_id: "sensitive-data.pii-test-fixture".to_string(),
-        message: format!(
-            "Realistic {kind} value `{}` found in a fixture/sample file; replace with synthetic placeholder.",
-            redact(value)
-        ),
-        file_path: unit.file.display_path.clone(),
-        line: Some(line),
-        severity: Severity::Error,
-        pillar: Pillar::SensitiveData,
-        confidence: Confidence::High,
-        symbol: None,
-        remediation: Some(
-            "Use placeholder domains (`@example.com`), 555-prefix phone numbers, or 000-prefix SSNs in committed sample data."
-                .to_string(),
-        ),
-        metadata: json!({ "kind": kind }),
-    })
 }
 
 fn push_regex_pattern_matches(
@@ -210,6 +96,9 @@ fn push_regex_pattern_matches(
     findings: &mut Vec<Finding>,
 ) {
     for capture in static_regex(rule.regex, rule.pattern).find_iter(unit.source) {
+        if regex_match_should_be_suppressed(unit.source, config, rule.rule_id, &capture) {
+            continue;
+        }
         let preview = redact(capture.as_str());
         if config.secret_previews.contains(&preview) {
             continue;
@@ -227,6 +116,167 @@ fn push_regex_pattern_matches(
                 "Remove the secret and load it from a secure runtime source.".to_string(),
             ),
             metadata: json!({ "preview": preview }),
+        }));
+    }
+}
+
+fn regex_match_should_be_suppressed(
+    source: &str,
+    config: &Config,
+    rule_id: &str,
+    capture: &regex::Match<'_>,
+) -> bool {
+    match rule_id {
+        "sensitive-data.database-url-password" | "sensitive-data.url-embedded-credentials" => {
+            credential_url_is_placeholder(capture.as_str())
+        }
+        // Suppress the generic private-key finding only when the GCP-specific rule
+        // will actually emit a finding covering this key: it must be enabled AND its
+        // pattern must match here. Otherwise a reordered-field or disabled-GCP key
+        // would be dropped by both rules and produce no finding at all.
+        "sensitive-data.private-key" => gcp_finding_contains_private_key(source, config, capture),
+        _ => false,
+    }
+}
+
+fn credential_url_is_placeholder(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("@example.")
+        || lower.contains("@localhost")
+        || lower.contains("@127.0.0.1")
+        || lower.contains(":password@")
+        || lower.contains(":changeme@")
+        || lower.contains(":placeholder@")
+}
+
+fn gcp_finding_contains_private_key(
+    source: &str,
+    config: &Config,
+    capture: &regex::Match<'_>,
+) -> bool {
+    if !config.is_rule_enabled("sensitive-data.gcp-service-account-key") {
+        return false;
+    }
+    let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
+    regex
+        .find_iter(source)
+        .any(|gcp| gcp.start() <= capture.start() && capture.start() < gcp.end())
+}
+
+fn analyse_phi_patterns(unit: &SourceUnit<'_>, config: &Config, findings: &mut Vec<Finding>) {
+    push_phi_matches(
+        unit,
+        config,
+        "ssn",
+        static_regex(
+            &PHI_SSN_REGEX,
+            r#"(?i)\b(?:SSN|social_security_number|patient_ssn)\b\s*[:=]\s*["']?(?P<value>\d{3}-\d{2}-\d{4})"#,
+        ),
+        findings,
+    );
+    push_phi_matches(
+        unit,
+        config,
+        "mrn",
+        static_regex(
+            &PHI_MRN_REGEX,
+            r#"(?i)\b(?:MRN|medical_record(?:_number)?|patient_id)\b\s*[:=]\s*["']?(?P<value>[A-Z]{0,3}\d{6,10})"#,
+        ),
+        findings,
+    );
+    push_phi_matches(
+        unit,
+        config,
+        "medicare",
+        static_regex(
+            &PHI_MEDICARE_REGEX,
+            r#"(?i)\b(?:MBI|Medicare)\b\s*[:=]\s*["']?(?P<value>[1-9][A-Z0-9]{10})"#,
+        ),
+        findings,
+    );
+}
+
+fn push_phi_matches(
+    unit: &SourceUnit<'_>,
+    config: &Config,
+    category: &str,
+    regex: &Regex,
+    findings: &mut Vec<Finding>,
+) {
+    for captures in regex.captures_iter(unit.source) {
+        let Some(value) = captures.name("value") else {
+            continue;
+        };
+        if phi_value_is_placeholder(category, value.as_str()) {
+            continue;
+        }
+        let preview = redact(value.as_str());
+        if config.secret_previews.contains(&preview) {
+            continue;
+        }
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "sensitive-data.phi-pattern".to_string(),
+            message: format!("Protected health identifier pattern detected for {category}."),
+            file_path: unit.file.display_path.clone(),
+            line: Some(byte_line_from_starts(unit.line_starts(), value.start())),
+            severity: Severity::Error,
+            pillar: Pillar::SensitiveData,
+            confidence: Confidence::High,
+            symbol: None,
+            remediation: Some(
+                "Replace committed health identifiers with standards-reserved placeholders."
+                    .to_string(),
+            ),
+            metadata: json!({ "category": category, "preview": preview }),
+        }));
+    }
+}
+
+fn phi_value_is_placeholder(category: &str, value: &str) -> bool {
+    let normalized = value.trim_matches('"').trim_matches('\'');
+    match category {
+        "ssn" => {
+            normalized.starts_with("000")
+                || normalized.starts_with("666")
+                || normalized.starts_with('9')
+        }
+        "mrn" => normalized
+            .chars()
+            .all(|character| matches!(character, '0' | 'X' | 'x')),
+        "medicare" => normalized.eq_ignore_ascii_case("1EG4TE5MK73"),
+        _ => false,
+    }
+}
+
+// Order-sensitive shape of a GCP service-account JSON key. Shared by the
+// GCP-specific rule and the generic private-key suppression check so both agree
+// on exactly when a GCP finding exists.
+const GCP_SERVICE_ACCOUNT_PATTERN: &str = r#"(?s)"type"\s*:\s*"service_account".{0,2500}"private_key"\s*:\s*"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----"#;
+
+fn analyse_gcp_service_account_keys(
+    unit: &SourceUnit<'_>,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
+    for capture in regex.find_iter(unit.source) {
+        let preview = "service_account private key (redacted)".to_string();
+        if config.secret_previews.contains(&preview) {
+            continue;
+        }
+        findings.push(Finding::new(FindingDescriptor {
+            rule_id: "sensitive-data.gcp-service-account-key".to_string(),
+            message: "GCP service account private key material detected.".to_string(),
+            file_path: unit.file.display_path.clone(),
+            line: Some(byte_line_from_starts(unit.line_starts(), capture.start())),
+            severity: Severity::Error,
+            pillar: Pillar::SensitiveData,
+            confidence: Confidence::High,
+            symbol: None,
+            remediation: Some(
+                "Remove the service account key and rotate it in Google Cloud IAM.".to_string(),
+            ),
+            metadata: json!({ "provider": "gcp", "preview": preview }),
         }));
     }
 }

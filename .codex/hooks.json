@@ -6,8 +6,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/deny-dangerous.sh\"",
-            "statusMessage": "Checking command safety"
+            "command": ".goat-flow/hooks/deny-dangerous.sh",
+            "statusMessage": "Deny dangerous hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".goat-flow/hooks/gruff-code-quality.sh",
+            "statusMessage": "gruff code quality"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".goat-flow/hooks/gruff-code-quality.sh",
+            "statusMessage": "gruff code quality"
           }
         ]
       }

@@ -31,11 +31,12 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
 }
 "##,
     );
+    enable_builtin_rule(dir.path(), "waste.unnecessary-clone-candidate");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -49,45 +50,6 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
     assert!(
         clones.is_empty(),
         "consumed/owned clones must stay silent; findings={clones:?}"
-    );
-}
-
-/// Regression guard: `metrics.halstead-volume` must not count string-literal
-/// content as tokens. A long `format!(concat!(...))` HTML template with
-/// dense string fragments inside should still stay below the threshold -
-/// only the wrapping `format`, `concat`, punctuation, and `{}` placeholder
-/// tokens count.
-#[test]
-pub(crate) fn halstead_volume_skips_string_literal_tokens() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    let mut body =
-        String::from("/// Probe.\npub fn render(name: &str) -> String {\n    format!(concat!(\n");
-    for _ in 0..120 {
-        body.push_str(
-                "        \"<div class=\\\"row\\\"><span>some literal text inside that should not count toward tokens at all</span></div>\\n\",\n",
-            );
-    }
-    body.push_str("        \"{}\"\n    ), name)\n}\n");
-    baseline_with_lib(dir.path(), &body);
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let halstead_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "metrics.halstead-volume")
-        .collect();
-    assert!(
-        halstead_findings.is_empty(),
-        "long format!(concat!(...)) template must stay below halstead threshold; findings={halstead_findings:?}"
     );
 }
 
@@ -345,11 +307,12 @@ pub fn well_documented(name: String) -> String {
 }
 "##,
     );
+    enable_builtin_rule(dir.path(), "waste.unnecessary-clone-candidate");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -490,11 +453,12 @@ mod tests {
 }
 "##,
     );
+    enable_builtin_rule(dir.path(), "waste.unnecessary-clone-candidate");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },

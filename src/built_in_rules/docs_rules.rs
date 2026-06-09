@@ -44,7 +44,8 @@ pub(crate) fn analyse_missing_errors_section(
     if !block.is_externally_public || !block.returns_result {
         return;
     }
-    if doc_comment_text(&block.body).contains_section("Errors") {
+    let docs = doc_comment_text(&block.body);
+    if docs.contains_section("Errors") || docs.has_error_contract_prose() {
         return;
     }
     findings.push(block_finding_with_extras(
@@ -89,7 +90,7 @@ pub(crate) fn analyse_missing_panics_section(
         return;
     }
     let docs = doc_comment_text(&block.body);
-    if docs.is_empty() || docs.contains_section("Panics") {
+    if docs.is_empty() || docs.contains_section("Panics") || docs.has_panic_contract_prose() {
         return;
     }
     findings.push(missing_panics_section_finding(file, block));
@@ -196,9 +197,15 @@ pub(crate) fn analyse_missing_param_doc(
 }
 
 fn collect_undocumented_params(body: &str, docs: &DocCommentText) -> Vec<String> {
-    extract_param_names(body)
+    let params: Vec<String> = extract_param_names(body)
         .into_iter()
         .filter(|name| !name.starts_with('_'))
+        .collect();
+    if params.len() == 1 && docs.has_single_parameter_contract_prose() {
+        return Vec::new();
+    }
+    params
+        .into_iter()
         .filter(|name| !docs.has_identifier_mention(name))
         .collect()
 }
@@ -341,8 +348,102 @@ impl DocCommentText {
             return true;
         }
         let lower = self.0.to_ascii_lowercase();
-        lower.contains("returns ") || lower.contains("returning ") || lower.contains("yields ")
+        lower.contains("returns ")
+            || lower.contains("returning ")
+            || lower.contains("yields ")
+            || lower.contains("produces ")
+            || lower.contains("provides ")
     }
+
+    fn has_error_contract_prose(&self) -> bool {
+        let normalized = normalized_contract_text(&self.0);
+        contains_any_phrase(
+            &normalized,
+            &[
+                "returns err",
+                "returns an error",
+                "return error",
+                "fails when",
+                "fails if",
+                "fail when",
+                "fail if",
+                "errors when",
+                "errors if",
+                "error when",
+                "error if",
+            ],
+        )
+    }
+
+    fn has_panic_contract_prose(&self) -> bool {
+        let normalized = normalized_contract_text(&self.0);
+        if contains_any_phrase(
+            &normalized,
+            &[
+                "never panic",
+                "never panics",
+                "does not panic",
+                "doesnt panic",
+            ],
+        ) {
+            return false;
+        }
+        contains_any_phrase(
+            &normalized,
+            &[
+                "panics when",
+                "panics if",
+                "panic when",
+                "panic if",
+                "will panic when",
+                "will panic if",
+            ],
+        )
+    }
+
+    fn has_single_parameter_contract_prose(&self) -> bool {
+        let normalized = normalized_contract_text(&self.0);
+        contains_any_phrase(
+            &normalized,
+            &[
+                "input",
+                "argument",
+                "parameter",
+                "payload",
+                "request",
+                "source",
+                "target",
+                "path",
+                "name",
+                "identifier",
+                "buffer",
+                "bytes",
+                "text",
+                "slice",
+            ],
+        )
+    }
+}
+
+fn normalized_contract_text(input: &str) -> String {
+    let raw: String = input
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn contains_any_phrase(haystack: &str, phrases: &[&str]) -> bool {
+    let padded = format!(" {haystack} ");
+    phrases
+        .iter()
+        .any(|phrase| padded.contains(&format!(" {phrase} ")))
 }
 
 fn is_word_boundary_match(bytes: &[u8], absolute: usize, pattern_len: usize) -> bool {

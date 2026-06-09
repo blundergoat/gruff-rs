@@ -71,28 +71,31 @@ fn render_output_volume_hint(output: &mut String, report: &AnalysisReport) {
 }
 
 fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms: Option<u128>) {
-    let mut header = format!(
-        "gruff-rs {}  ·  project: {}  ·  files: {}{}",
-        report.tool.version,
-        display_project_root(&report.run.project_root),
+    // Cross-port canonical masthead: first line is exactly
+    // `gruff-rs <version> analyse`. The scan-card detail that used to share the
+    // masthead (project root, file count, duration) drops onto following lines.
+    let _ = writeln!(output, "gruff-rs {} analyse", report.tool.version);
+    let _ = writeln!(
+        output,
+        "Path: {}",
+        display_project_root(&report.run.project_root)
+    );
+    let _ = writeln!(
+        output,
+        "Files: {}{}",
         report.paths.analysed_files,
         ignored_count_label(report),
     );
     if let Some(ms) = duration_ms {
-        header.push_str(&format!("  ·  duration: {}", format_duration(ms)));
+        let _ = writeln!(output, "Duration: {}", format_duration(ms));
     }
-    header.push('\n');
-    output.push_str(&header);
+    // ADR-014: per-rule delta blocks sit between the header detail and the
+    // composite-score line.
     render_rule_delta_blocks(output, report);
 
-    output.push_str(&format!(
-        "Score: {:.1} ({}) | Findings: {} advisory, {} warning, {} error\n",
-        report.score.composite,
-        report.score.grade,
-        report.summary.advisory,
-        report.summary.warning,
-        report.summary.error
-    ));
+    // Canonical composite block, shared verbatim with `summary` so the two
+    // surfaces no longer diverge on separator/order/decimals.
+    crate::render_composite_block(output, report);
     render_ignored_guidance(output, report);
 }
 
@@ -100,7 +103,7 @@ fn ignored_count_label(report: &AnalysisReport) -> String {
     if report.paths.ignored_paths.is_empty() {
         String::new()
     } else {
-        format!("  ·  ignored: {}", report.paths.ignored_paths.len())
+        format!(" (ignored: {})", report.paths.ignored_paths.len())
     }
 }
 

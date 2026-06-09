@@ -260,61 +260,73 @@ mod rule_delta_blocks {
     }
 }
 
-// `mid` runs between the header line and the Score line so callers can
-// inject content there (per-rule deltas per ADR-014 in the comparison
-// case). When the caller has nothing to inject, pass a no-op closure.
+// `mid` runs between the header detail and the canonical composite block so
+// callers can inject content there (per-rule deltas per ADR-014 in the
+// comparison case). When the caller has nothing to inject, pass a no-op closure.
 fn render_scan_card(
     out: &mut String,
     report: &AnalysisReport,
     duration_ms: u128,
     mid: impl FnOnce(&mut String),
 ) {
+    // Cross-port canonical masthead: first line is exactly
+    // `gruff-rs <version> summary`. The scan-card detail (project root, file
+    // count, duration) drops onto following lines.
+    let _ = writeln!(out, "{} {} summary", report.tool.name, report.tool.version);
     let _ = writeln!(
         out,
-        "{} {}  ·  project: {}  ·  files: {}{}  ·  duration: {}",
-        report.tool.name,
-        report.tool.version,
-        display_project_root(&report.run.project_root),
+        "Path: {}",
+        display_project_root(&report.run.project_root)
+    );
+    let _ = writeln!(
+        out,
+        "Files: {}{}",
         report.paths.analysed_files,
         ignored_count_label(report),
-        format_duration(duration_ms),
     );
+    let _ = writeln!(out, "Duration: {}", format_duration(duration_ms));
     mid(out);
-    let mut score_line = format!(
-        "Score: {:.1} ({})  ·  Findings: {} error · {} warning · {} advisory",
-        report.score.composite,
-        report.score.grade,
-        report.summary.error,
-        report.summary.warning,
-        report.summary.advisory,
-    );
+    // Canonical composite block, shared verbatim with `analyse` text so the two
+    // surfaces no longer diverge on separator/order/decimals.
+    crate::render_composite_block(out, report);
+    render_scan_annotations(out, report);
+    render_scan_guidance(out, report);
+}
+
+// Baseline / diagnostics / missing-path context that previously trailed the
+// `Score:` line. Kept off the canonical composite block (which must stay
+// byte-aligned across ports) by emitting a single annotation line after it.
+fn render_scan_annotations(out: &mut String, report: &AnalysisReport) {
+    let mut annotations: Vec<String> = Vec::new();
     if let Some(baseline) = &report.baseline {
-        let _ = write!(
-            score_line,
-            "  ·  baseline: {} suppressed",
-            baseline.suppressed
-        );
+        if baseline.generated {
+            annotations.push("baseline: generated".to_string());
+        } else {
+            annotations.push(format!(
+                "baseline: {} new, {} unchanged, {} resolved",
+                baseline.new_count, baseline.unchanged_count, baseline.absent_count
+            ));
+        }
     }
     if !report.diagnostics.is_empty() {
-        let _ = write!(score_line, "  ·  diagnostics: {}", report.diagnostics.len());
+        annotations.push(format!("diagnostics: {}", report.diagnostics.len()));
     }
     if !report.paths.missing_paths.is_empty() {
-        let _ = write!(
-            score_line,
-            "  ·  missing paths: {}",
+        annotations.push(format!(
+            "missing paths: {}",
             report.paths.missing_paths.len()
-        );
+        ));
     }
-    out.push_str(&score_line);
-    out.push('\n');
-    render_scan_guidance(out, report);
+    if !annotations.is_empty() {
+        let _ = writeln!(out, "{}", annotations.join("  ·  "));
+    }
 }
 
 fn ignored_count_label(report: &AnalysisReport) -> String {
     if report.paths.ignored_paths.is_empty() {
         String::new()
     } else {
-        format!("  ·  ignored: {}", report.paths.ignored_paths.len())
+        format!(" (ignored: {})", report.paths.ignored_paths.len())
     }
 }
 

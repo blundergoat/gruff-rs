@@ -1,0 +1,112 @@
+# gruff-rs - goat-flow 1.10.1
+
+Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
+
+## Mission
+
+gruff governs AI-generated code so a human who didn't write it can read, review, and trust it. Run as a coding-agent hook, it guides — or forces — the agent toward code a person can actually sign off on: **verifiable** (legible enough to review by reading), **secure** (hardened where the eye fails), and **genuinely tested** (real tests that exercise the contract, never low-signal bloat or ceremony). Doc comments are a verifiability anchor: stating intent, usage, contract, and failure behaviour in prose gives the reviewer something to check the implementation against, and a doc/code mismatch flags the change for a deeper look. Judge every rule, threshold, and report against verifiability + security + test-signal first, not generic "code health". Because gruff runs as a hook, a false positive is a command to change code the agent may have gotten right — so finding correctness outranks breadth of coverage.
+
+## Truth Order
+
+1. User's explicit instruction for the current session.
+2. This `.github/copilot-instructions.md` file.
+3. `.goat-flow/architecture.md`, `.goat-flow/code-map.md`, and `.goat-flow/glossary.md`.
+4. Loaded goat-flow skills and local project files.
+
+## Workspace Boundary
+
+Treat this repository root as the selected target workspace. Parent workspaces, npm package internals, and other agent surfaces (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.codex/`, `.agents/`) are context only unless the user explicitly widens scope.
+
+## Autonomy Tiers
+
+**Always:** Read relevant files before edits, keep changes scoped, make in-place file edits, run the smallest real verification command that covers the change, and update `.goat-flow/` memory when verification changes the approach.
+
+**Ask First:** Before changing report schemas, rule IDs, fingerprints, baseline/history behavior, dashboard cwd handling, `fixtures/`, `.goat-flow/config.yaml`, hooks, or 3+ docs/scripts, state the boundary, files read, matching footgun/lesson checked, local instruction checked, and rollback command.
+
+**Never:** Do not edit secrets, push, commit, run destructive git commands, overwrite existing instruction content, delete fixtures as "bad code", or edit peer agent files (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.codex/`, `.agents/`) without explicit user direction.
+
+## Hard Rules
+
+- If a file exists, modify it in place; no `_new`, `_modified`, `_backup`, or `_v2` variants.
+- Severity order: SECURITY > CORRECTNESS > INTEGRATION > PERFORMANCE > STYLE.
+- Keep cross-file concepts consistent across `src/main.rs`, fixtures, docs, and CLI output examples.
+- Preserve evidence with semantic anchors, not brittle line numbers.
+- Do not add features, abstractions, or error handling beyond the request.
+- Ambiguous requirements: present interpretations before writing.
+
+## Commit Messages
+
+Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit.md`.
+
+## Key Resources
+
+- Learning loop: grep `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, and `.goat-flow/learning-loop/decisions/` before changes.
+- Tool playbooks: read `.goat-flow/skill-docs/playbooks/browser-use.md`, `.goat-flow/skill-docs/playbooks/page-capture.md`, or `.goat-flow/skill-docs/skill-quality-testing/README.md` before declaring those tools unavailable.
+- Orientation: use `.goat-flow/code-map.md` and `.goat-flow/glossary.md` before broad repo edits.
+
+## Essential Commands
+
+```bash
+bash scripts/preflight-checks.sh
+cargo build
+cargo run -- analyse fixtures --format json --fail-on none
+shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .goat-flow/hooks/deny-dangerous.sh .goat-flow/hooks/gruff-code-quality.sh
+```
+
+Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.
+
+## Execution Loop: READ -> SCOPE -> ACT -> VERIFY
+
+When a goat-* skill is active, the skill's Step 0 replaces READ and selects the skill's mode/depth. SCOPE still applies before writes: a skill may write when its selected mode permits writes or the user explicitly approves them. `/goat-plan` File-Write may create gitignored milestone files without a separate approval gate; `/goat-debug` D3 still requires approval before fixes. Resume at ACT after Step 0 output or when a blocking gate releases.
+
+### READ
+
+MUST read relevant files before changes. Never fabricate codebase facts. Check browser evidence first for URL, local HTML, localhost, screenshot, rendered UI, or browser-visible behaviour. Use grep-first retrieval across learning-loop dirs; include decisions for architecture, policy, or setup work. Before declaring any tool or capability unavailable, read the matching playbook in `.goat-flow/skill-docs/playbooks/` (e.g. `browser-use.md`, `page-capture.md`) and run that doc's "Availability Check" section verbatim - project-local CLI tools at `~/.local/bin/` are valid; do not conflate "no harness/MCP tool" with "no tool".
+
+### SCOPE
+
+Declare intent, complexity tier, mode, files allowed to change, non-goals, and blast radius. Expanding beyond scope means stop and re-scope.
+
+### ACT
+
+Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`. Mode must be Plan, Implement, Explain, Debug, or Review.
+
+### VERIFY
+
+Run required checks for changed files. Check cross-references after renames. Tick milestone checkboxes immediately. Stop the line when tests break, builds fail, or behaviour regresses. If VERIFY caught a failure or corrected course, update the learning loop before DoD.
+
+**Hallucination red-flags:**
+1. **Checks passed.** Do not claim tests pass or any check passed (shellcheck, typecheck, preflight, audit) without showing the literal pass/fail line copied verbatim from this session's run. Paraphrase, cached output, or prior-session results do not count.
+2. **Completion.** Do not claim completion without listing the specific files changed in this turn. If no files were changed, say so explicitly.
+3. **Fix verification.** Do not claim a fix works without running the reproduction steps that originally demonstrated the bug. "Looks correct" is not verification.
+4. **Hedged claims.** Do not use "should work", "probably fine", "looks good" as verification. These are guesses, not evidence.
+
+Rationalisations to reject: see `.goat-flow/skill-docs/skill-preamble.md`.
+
+## Definition of Done
+
+Confirm all gates: relevant checks pass, no broken cross-references, no unapproved boundary changes, learning-loop notes updated if tripped, working notes current when useful, and old paths/patterns grepped after renames.
+
+## Artifact Routing
+
+Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to `.goat-flow/learning-loop/lessons/`, "add a decision" to `.goat-flow/learning-loop/decisions/`, and "add a pattern" to `.goat-flow/learning-loop/patterns/`. Read the target directory's `README.md` before editing.
+
+## Router Table
+
+| Resource | Path |
+| --- | --- |
+| Instruction file | `.github/copilot-instructions.md` |
+| Source | `src/` |
+| Fixtures | `fixtures/` |
+| Scripts | `scripts/` |
+| Rust manifest | `Cargo.toml`, `Cargo.lock` |
+| Tool playbooks (README index for CLI/MCP availability checks; examples: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Skill reference (meta) | `.goat-flow/skill-docs/` |
+| Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
+| Orientation | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
+| Architecture | `.goat-flow/architecture.md` |
+| Copilot skills/config | `.github/skills/`, `.github/hooks/` |
+| Hooks (deny + quality) | `.goat-flow/hooks/` |
+| Peer instruction files | `CLAUDE.md`, `AGENTS.md` |
+| Commit guidance | `docs/coding-standards/git-commit.md` |
+| Workspace notes | `.goat-flow/plans/`, `.goat-flow/logs/sessions/` |

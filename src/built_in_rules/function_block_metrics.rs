@@ -170,41 +170,6 @@ pub(crate) fn max_nesting_depth(source: &str) -> usize {
     max_depth.saturating_sub(1)
 }
 
-pub(crate) fn function_metrics(source: &str, cyclomatic: usize) -> FunctionMetrics {
-    let tokens = metric_tokens(source);
-    let unique_tokens: BTreeSet<&str> = tokens.iter().map(String::as_str).collect();
-    let total_tokens = tokens.len();
-    let unique_count = unique_tokens.len();
-    let halstead_volume = if unique_count <= 1 {
-        0.0
-    } else {
-        total_tokens as f64 * (unique_count as f64).log2()
-    };
-    let pressure = total_tokens as f64 * 0.08 + cyclomatic as f64 * 2.0 + halstead_volume / 60.0;
-    let maintainability_score = 100.0 - pressure.min(100.0);
-
-    FunctionMetrics {
-        total_tokens,
-        unique_tokens: unique_count,
-        halstead_volume,
-        maintainability_score,
-    }
-}
-
-pub(crate) fn metric_tokens(source: &str) -> Vec<String> {
-    static_regex(
-            &METRIC_TOKEN_REGEX,
-            r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||::|->|=>|[{}()\[\];,.:+\-*/%&|^!<>?=]",
-        )
-        .find_iter(source)
-        .map(|token| token.as_str().to_string())
-        .collect()
-}
-
-pub(crate) fn round_one_decimal(value: f64) -> f64 {
-    (value * 10.0).round() / 10.0
-}
-
 /// Counts occurrences of `pattern` that appear inside a loop body in
 /// `source`. `count_line` lets callers skip structurally exempt lines
 /// (struct-field clones, owned API arguments) so the performance rules

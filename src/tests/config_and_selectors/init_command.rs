@@ -50,6 +50,20 @@ pub(crate) fn default_config_emits_every_built_in_rule() {
 }
 
 #[test]
+pub(crate) fn default_config_marks_clone_candidate_opt_in() {
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+    let clone_entry = body
+        .split("  waste.unnecessary-clone-candidate:")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  waste.").next())
+        .expect("clone candidate rule entry exists");
+    assert!(
+        clone_entry.contains("    enabled: false"),
+        "clone-candidate should be opt-in in generated defaults; entry={clone_entry}"
+    );
+}
+
+#[test]
 pub(crate) fn default_config_explains_ignores_and_baseline_starting_point() {
     let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
 

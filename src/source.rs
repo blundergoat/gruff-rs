@@ -111,19 +111,23 @@ pub(crate) struct ItemSummary {
     pub(crate) module_path: String,
     pub(crate) name: String,
     pub(crate) kind: String,
+    pub(crate) container: Option<String>,
     pub(crate) line: usize,
     pub(crate) public: bool,
     pub(crate) externally_public: bool,
     pub(crate) cfg_gated: bool,
     pub(crate) test_context: bool,
+    pub(crate) trait_impl: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProjectItemContext {
     pub(crate) public: bool,
     pub(crate) externally_public: bool,
     pub(crate) cfg_gated: bool,
     pub(crate) test_context: bool,
+    pub(crate) container: Option<String>,
+    pub(crate) trait_impl: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.7.0"
+goat-flow-reference-version: "1.10.1"
 ---
 # Milestone Template - Detailed Field Reference
 
@@ -29,9 +29,9 @@ Assumptions are not tasks - they're beliefs about the system that affect the pla
 
 ```markdown
 ## Assumptions
-- [x] Background job queue handles 500-item batches (benchmarked in M1)
+- [x] Background job queue handles 500-item batches (benchmarked in the spike)
 - [ ] File upload endpoint accepts multipart form data (untested)
-- [x] Database migration runs without downtime (spike confirmed in M1)
+- [x] Database migration runs without downtime (spike confirmed in the first milestone)
 - [ ] Rate limiting handles concurrent requests correctly (assumed, not tested)
 ```
 

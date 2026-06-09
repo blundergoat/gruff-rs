@@ -33,6 +33,14 @@ pub(crate) fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<
     analyse_project_dead_code_rules(context, config, &mut findings);
 
     findings
+        .into_iter()
+        .map(|finding| apply_configured_severity(finding, config))
+        .collect()
+}
+
+fn apply_configured_severity(mut finding: Finding, config: &Config) -> Finding {
+    finding.severity = config.severity(&finding.rule_id, finding.severity);
+    finding
 }
 
 pub(crate) fn project_has_readme(root_path: &Path) -> bool {
@@ -57,6 +65,17 @@ pub(crate) fn module_label(file_path: &str, module_path: &str) -> String {
 }
 
 pub(crate) fn item_symbol(item: &ItemSummary) -> String {
+    if item.kind == "method" {
+        let qualified_method = match &item.container {
+            Some(container) => format!("{container}::{}", item.name),
+            None => item.name.to_string(),
+        };
+        return if item.module_path.is_empty() {
+            qualified_method
+        } else {
+            format!("{}::{qualified_method}", item.module_path)
+        };
+    }
     if item.module_path.is_empty() {
         item.name.to_string()
     } else {

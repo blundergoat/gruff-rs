@@ -1,4 +1,6 @@
 use super::*;
+use crate::report_identity::{compute_stable_identity, infer_finding_scope, FindingScope};
+use serde::ser::{SerializeStruct, Serializer};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
@@ -64,8 +66,7 @@ pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub(crate) struct Finding {
     pub(crate) rule_id: String,
     pub(crate) message: String,
@@ -81,13 +82,42 @@ pub(crate) struct Finding {
     pub(crate) symbol: Option<String>,
     pub(crate) remediation: Option<String>,
     pub(crate) metadata: Value,
+    pub(crate) scope: FindingScope,
     pub(crate) fingerprint: String,
     /// Line-insensitive identity intended for external diff tooling.
-    /// Computed from `rule_id`, `file_path`, and either `symbol` (when
-    /// available) or `message`. Independent of `fingerprint`, which
+    /// Computed from `rule_id`, `file_path`, and a stable subject based on
+    /// scope/symbol. Independent of `fingerprint`, which
     /// remains line-sensitive so the baseline matcher in
     /// `src/baseline.rs` keeps its existing semantics.
     pub(crate) stable_identity: String,
+}
+
+impl Serialize for Finding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Finding", 18)?;
+        state.serialize_field("ruleId", &self.rule_id)?;
+        state.serialize_field("message", &self.message)?;
+        state.serialize_field("file", &self.file_path)?;
+        state.serialize_field("filePath", &self.file_path)?;
+        state.serialize_field("line", &self.line)?;
+        state.serialize_field("endLine", &self.end_line)?;
+        state.serialize_field("column", &self.column)?;
+        state.serialize_field("severity", &self.severity)?;
+        state.serialize_field("pillar", &self.pillar)?;
+        state.serialize_field("secondaryPillars", &self.secondary_pillars)?;
+        state.serialize_field("tier", &self.tier)?;
+        state.serialize_field("confidence", &self.confidence)?;
+        state.serialize_field("symbol", &self.symbol)?;
+        state.serialize_field("remediation", &self.remediation)?;
+        state.serialize_field("metadata", &self.metadata)?;
+        state.serialize_field("scope", &self.scope)?;
+        state.serialize_field("fingerprint", &self.fingerprint)?;
+        state.serialize_field("stableIdentity", &self.stable_identity)?;
+        state.end()
+    }
 }
 
 pub(crate) struct FindingDescriptor {
@@ -117,6 +147,7 @@ impl Finding {
             remediation,
             metadata,
         } = descriptor;
+        let scope = infer_finding_scope(&rule_id, symbol.as_deref(), line);
         let mut hasher = Sha256::new();
         hasher.update(rule_id.as_bytes());
         hasher.update(b"\0");
@@ -127,7 +158,7 @@ impl Finding {
         hasher.update(symbol.clone().unwrap_or_default().as_bytes());
         let fingerprint = format!("{:x}", hasher.finalize())[..16].to_string();
         let stable_identity =
-            compute_stable_identity(&rule_id, &file_path, symbol.as_deref(), &message);
+            compute_stable_identity(&rule_id, &file_path, scope, symbol.as_deref(), &message);
 
         Self {
             rule_id,
@@ -144,25 +175,11 @@ impl Finding {
             symbol,
             remediation,
             metadata,
+            scope,
             fingerprint,
             stable_identity,
         }
     }
-}
-
-fn compute_stable_identity(
-    rule_id: &str,
-    file_path: &str,
-    symbol: Option<&str>,
-    message: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(rule_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(file_path.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(symbol.unwrap_or(message).as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -186,6 +203,7 @@ impl RunDiagnostic {
                 | "lockfile-read-error"
                 | "lockfile-parse-error"
                 | "history-error"
+                | "gate-config-error"
         )
     }
 }
@@ -214,6 +232,11 @@ pub(crate) struct AnalysisReport {
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     #[serde(skip)]
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
+    /// Severity summary over the full finding set *before* baseline suppression,
+    /// consumed by `gate.scope: all`. Internal only (`#[serde(skip)]`) so the JSON
+    /// schema is unchanged; equals `summary` when no baseline dropped findings.
+    #[serde(skip)]
+    pub(crate) all_findings_summary: Option<Summary>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -240,7 +263,7 @@ pub(crate) struct RunInfo {
     pub(crate) generated_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone, Copy)]
 pub(crate) struct Summary {
     pub(crate) advisory: usize,
     pub(crate) warning: usize,
@@ -252,7 +275,12 @@ pub(crate) struct Summary {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PathSummary {
     pub(crate) analysed_files: usize,
+    /// Backward-compatible flat list of ignored display paths (`gruff.analysis.v2`).
     pub(crate) ignored_paths: Vec<String>,
+    /// Additive per-entry ignore detail: path + why it was ignored. Same data as
+    /// `ignoredPaths` plus `source`/`pattern`; new in the changed-code-scope
+    /// fix (ADR-018). `ignoredPaths` is retained so existing consumers do not break.
+    pub(crate) ignored_path_details: Vec<IgnoredPath>,
     pub(crate) missing_paths: Vec<String>,
 }
 
@@ -261,7 +289,14 @@ pub(crate) struct PathSummary {
 pub(crate) struct BaselineReport {
     pub(crate) path: String,
     pub(crate) source: String,
+    /// Retained for backward compatibility; equals `unchanged_count` (ADR-002 addendum).
     pub(crate) suppressed: usize,
+    /// Current findings not matched by any baseline entry.
+    pub(crate) new_count: usize,
+    /// Current findings matched by a baseline entry (dropped from the default list).
+    pub(crate) unchanged_count: usize,
+    /// Baseline entries that match no current finding (resolved since baselining).
+    pub(crate) absent_count: usize,
     pub(crate) generated: bool,
 }
 
@@ -305,12 +340,25 @@ pub(crate) struct PillarScore {
     pub(crate) findings: usize,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub(crate) struct FileScore {
     pub(crate) file_path: String,
     pub(crate) score: f64,
     pub(crate) findings: usize,
+}
+
+impl Serialize for FileScore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("FileScore", 4)?;
+        state.serialize_field("file", &self.file_path)?;
+        state.serialize_field("filePath", &self.file_path)?;
+        state.serialize_field("score", &self.score)?;
+        state.serialize_field("findings", &self.findings)?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Deserialize)]

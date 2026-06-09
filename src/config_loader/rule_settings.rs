@@ -157,14 +157,27 @@ pub(crate) fn apply_rule_thresholds(
                 "config key `rules.{rule_id}.severity` is required when `threshold` is configured"
             ));
         }
-        (None, Some(_)) => {
-            return Err(format!(
-                "config key `rules.{rule_id}.severity` requires `threshold`"
-            ));
+        (None, Some(severity_value)) => {
+            // ADR-011: a standalone `severity` override is for non-threshold rules
+            // only. For a thresholded rule it must be paired with `threshold` (the
+            // mirror of the `(threshold, None)` error above) so a lone severity
+            // can't silently leave the default threshold in place.
+            if rule_is_thresholded(rule_id, registry) {
+                return Err(format!(
+                    "config key `rules.{rule_id}.threshold` is required when `severity` is configured for a thresholded rule"
+                ));
+            }
+            apply_severity_override(rule_id, severity_value, setting)?;
         }
         (None, None) => {}
     }
     Ok(())
+}
+
+fn rule_is_thresholded(rule_id: &str, registry: &rules::RuleRegistry) -> bool {
+    registry
+        .get(rule_id)
+        .is_some_and(|definition| definition.threshold.is_some())
 }
 
 pub(crate) fn validate_optional_rule_options(
@@ -198,6 +211,21 @@ pub(crate) fn apply_threshold(
             format!("config key `rules.{rule_id}.severity` must be advisory, warning, or error")
         })?;
     setting.threshold = Some(number);
+    setting.severity = Some(severity);
+    Ok(())
+}
+
+pub(crate) fn apply_severity_override(
+    rule_id: &str,
+    severity_value: &Value,
+    setting: &mut RuleSetting,
+) -> Result<(), String> {
+    let severity = severity_value
+        .as_str()
+        .and_then(parse_severity_name)
+        .ok_or_else(|| {
+            format!("config key `rules.{rule_id}.severity` must be advisory, warning, or error")
+        })?;
     setting.severity = Some(severity);
     Ok(())
 }

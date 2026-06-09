@@ -13,3 +13,64 @@ fn meaningful_assertion() {
     let actual = 2 + 2;
     assert_eq!(actual, 4);
 }
+
+#[test]
+fn mutated_binding_is_not_trivial() {
+    let mut total = 1;
+    total += 1;
+    assert_eq!(total, 2);
+}
+
+#[test]
+fn shadowed_binding_is_not_trivial() {
+    let value = 1;
+    let value = value + 9;
+    assert_eq!(value, 10);
+}
+
+#[test]
+fn derived_value_is_not_trivial() {
+    let seed = 5;
+    let doubled = seed * 2;
+    assert_eq!(doubled, 10);
+}
+
+#[test]
+fn commented_assertion_is_not_trivial() {
+    let x = 5;
+    // assert_eq!(x, 5);
+    assert_eq!(x + 1, 6);
+}
+
+#[test]
+fn fully_commented_binding_is_not_trivial() {
+    // let ghost = 5;
+    // assert_eq!(ghost, 5);
+    let y = 2;
+    assert_eq!(y + 1, 3);
+}
+
+#[test]
+fn parenthesized_shadow_is_not_trivial() {
+    let x = 5;
+    let (x) = (6);
+    assert_eq!(x, 5);
+}
+
+#[test]
+fn commented_sleep_is_not_flagged() {
+    // std::thread::sleep(std::time::Duration::from_millis(1));
+    assert_eq!(2 + 2, 4);
+}
+
+#[test]
+fn commented_conditional_is_not_flagged() {
+    // if 2 + 2 == 4 { panic!() }
+    assert_eq!(2 + 2, 4);
+}
+
+#[test]
+fn commented_unwrap_is_not_flagged() {
+    // let v = "3".parse::<u8>().unwrap();
+    assert_eq!(2 + 2, 4);
+}

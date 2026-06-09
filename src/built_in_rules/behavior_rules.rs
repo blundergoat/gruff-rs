@@ -1,12 +1,15 @@
 use super::*;
 
+#[path = "behavior_rules/tls_sql.rs"]
+mod tls_sql;
+
+pub(crate) use tls_sql::{analyse_sql_dynamic_query, analyse_tls_verification_disabled};
+
 static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
 static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
-static SQL_DYNAMIC_QUERY_REGEX: OnceLock<Regex> = OnceLock::new();
-static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
 
@@ -201,38 +204,6 @@ pub(crate) fn analyse_process_commands(
     }
 }
 
-pub(crate) fn analyse_tls_verification_disabled(
-    file: &SourceFile,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
-    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
-    let regex = static_regex(
-        &TLS_VERIFICATION_DISABLED_REGEX,
-        r"\.(?:danger_accept_invalid_certs|accept_invalid_hostnames)\s*\(\s*true\s*\)",
-    );
-    for (line_index, line) in searchable.lines().enumerate() {
-        if regex.is_match(line) {
-            findings.push(Finding::new(FindingDescriptor {
-                rule_id: "security.tls-verification-disabled".to_string(),
-                message: "TLS certificate or hostname verification is explicitly disabled."
-                    .to_string(),
-                file_path: file.display_path.clone(),
-                line: Some(line_index + 1),
-                severity: Severity::Warning,
-                pillar: Pillar::Security,
-                confidence: Confidence::High,
-                symbol: None,
-                remediation: Some(
-                    "Remove the TLS verification bypass or gate it behind non-production test code."
-                        .to_string(),
-                ),
-                metadata: json!({}),
-            }));
-        }
-    }
-}
-
 pub(crate) fn analyse_insecure_rng_for_secrets(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -312,45 +283,6 @@ fn is_secret_like_rng_function_name(name: &str) -> bool {
                     | "salts"
             )
         })
-}
-
-pub(crate) fn analyse_sql_dynamic_query(
-    file: &SourceFile,
-    source: &str,
-    findings: &mut Vec<Finding>,
-) {
-    let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
-    let regex = static_regex(
-        &SQL_DYNAMIC_QUERY_REGEX,
-        r"(?:^|[^\w])(?P<method>query|execute|prepare)\s*\(\s*&?\s*format!\s*\(",
-    );
-    let starts = line_starts(source);
-    for captures in regex.captures_iter(&searchable) {
-        let Some(full_match) = captures.get(0) else {
-            continue;
-        };
-        let method = captures
-            .name("method")
-            .map(|method| method.as_str())
-            .unwrap_or("query");
-        findings.push(Finding::new(FindingDescriptor {
-            rule_id: "security.sql-dynamic-query".to_string(),
-            message: format!(
-                "Direct dynamic SQL argument passed to `{method}(...)`; review query construction."
-            ),
-            file_path: file.display_path.clone(),
-            line: Some(byte_line_from_starts(&starts, full_match.start())),
-            severity: Severity::Warning,
-            pillar: Pillar::Security,
-            confidence: Confidence::High,
-            symbol: Some(method.to_string()),
-            remediation: Some(
-                "Use static SQL with bind parameters instead of formatting query text. If the formatted query is non-production (test fixture, migration scratch), add the host path to `paths.ignore` in `.gruff-rs.yaml`."
-                    .to_string(),
-            ),
-            metadata: json!({ "method": method }),
-        }));
-    }
 }
 
 pub(crate) fn analyse_weak_crypto(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {

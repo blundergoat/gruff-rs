@@ -41,7 +41,11 @@ pub(crate) fn analyse_test_block(
     analyse_ignored_test(file, block, findings);
     analyse_test_size(file, block, config, findings);
     analyse_should_panic_without_expected(file, block, findings);
-    let searchable_body = strip_rust_string_literals(&block.body);
+    // Mask both string/char literals and comments so every per-test regex
+    // check (assertions, sleep, conditional, unwrap) sees real code only - a
+    // commented-out `sleep`/`if`/`.unwrap()`/`assert_eq!` must not fire.
+    let searchable_body =
+        strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
     analyse_test_assertions(file, block, &searchable_body, findings);
     analyse_test_regex_checks(file, block, &searchable_body, findings);
 }
@@ -126,22 +130,43 @@ pub(crate) fn analyse_test_size(
     }
     let rule_id = "test-quality.long-test";
     let threshold = config.threshold(rule_id, 120.0) as usize;
-    if block.line_count > threshold {
+    let effective_lines = long_test_effective_line_count(block);
+    if effective_lines > threshold {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!(
-                    "Test `{}` has {} lines, above the threshold of {threshold}.",
-                    block.name, block.line_count
+                    "Test `{}` has {effective_lines} lines from its first assertion onward, above the threshold of {threshold}.",
+                    block.name
                 ),
                 file,
                 block,
                 severity: config.severity(rule_id, Severity::Advisory),
                 pillar: Pillar::TestQuality,
             },
-            json!({ "lines": block.line_count }),
+            json!({
+                "lines": effective_lines,
+                "totalLines": block.line_count,
+                "measured": effective_lines,
+                "threshold": threshold,
+                "unit": "lines",
+                "direction": "above"
+            }),
         ));
     }
+}
+
+fn long_test_effective_line_count(block: &FunctionBlock) -> usize {
+    let searchable =
+        strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
+    let assertion = static_regex(
+        &TEST_ASSERTION_REGEX,
+        r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
+    );
+    let Some(first_assertion) = searchable.lines().position(|line| assertion.is_match(line)) else {
+        return block.line_count;
+    };
+    block.body.lines().count().saturating_sub(first_assertion)
 }
 
 pub(crate) fn analyse_test_assertions(
@@ -153,7 +178,10 @@ pub(crate) fn analyse_test_assertions(
     if has_trivial_assertion(searchable_body) {
         findings.push(block_finding(BlockFindingDescriptor {
             rule_id: "test-quality.trivial-assertion",
-            message: format!("Test `{}` contains a trivial assertion.", block.name),
+            message: format!(
+                "Test `{}` asserts a value the code already fixes, not behavior. Assert a computed, parsed, or returned result instead of a literal or a binding's own initializer.",
+                block.name
+            ),
             file,
             block,
             severity: Severity::Warning,

@@ -23,6 +23,8 @@ use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 mod analyse_project;
 mod analysis;
 mod baseline;
+mod changed_region;
+mod check_ignore;
 mod cli;
 mod command_setup;
 mod config;
@@ -30,12 +32,16 @@ mod config_loader;
 mod dashboard;
 mod diff;
 mod discovery;
+mod gate;
+mod hook;
 mod html_report;
+mod ignore_policy;
 mod init;
 mod parser;
 mod project;
 mod render;
 mod report;
+mod report_identity;
 mod rules;
 mod rules_detail;
 mod scoring;
@@ -55,38 +61,46 @@ pub(crate) use project::{
 pub(crate) use analyse_project::analyse_project;
 #[cfg(test)]
 use analysis::apply_report_exclusions;
-pub(crate) use analysis::run_analysis_in_project;
+pub(crate) use analysis::{apply_gate_diagnostic, run_analysis_in_project};
 #[cfg(test)]
 pub(crate) use baseline::write_baseline;
 pub(crate) use baseline::{
     record_history, resolve_baseline, rule_deltas_from_counts, BaselineResolution,
 };
+use changed_region::{
+    apply_diff_file_selection, patch_intersects_finding_with_scope, resolve_diff_filter,
+    ChangedScope, ResolvedDiffFilter,
+};
+use check_ignore::run_check_ignore;
 use cli::{
-    AnalyseArgs, Cli, Commands, CompletionArgs, DashboardArgs, FailThreshold, ListRulesArgs,
-    OutputFormat, OutputWriter, ReportArgs, ReportFormat, RuleListFormat, RunOutcome, SummaryArgs,
-    SummaryFormat,
+    AnalyseArgs, CheckIgnoreArgs, CheckIgnoreFormat, Cli, Commands, CompletionArgs, DashboardArgs,
+    FailThreshold, ListRulesArgs, OutputFormat, OutputWriter, ReportArgs, ReportFormat,
+    RuleListFormat, RunOutcome, SummaryArgs, SummaryFormat,
 };
 #[cfg(test)]
 use command_setup::resolve_fail_on;
 use command_setup::{emit_report_output, resolve_command_setup, resolve_project_root_and_config};
 use config::{
-    compile_path_matchers, AnalysisOptions, ChangedScope, Config, CustomRule, CustomRuleScope,
-    DiffSelection, ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting,
-    SelectorSet, SCHEMA_VERSION,
+    compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DiffSelection,
+    ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting, SelectorSet,
+    SCHEMA_VERSION,
 };
 #[cfg(test)]
 use config_loader::expand_rule_selector;
-use config_loader::{expand_rule_selector_with_custom, load_config};
+use config_loader::{expand_rule_selector_with_custom, load_config, load_config_for};
 #[cfg(test)]
 pub(crate) use dashboard::dashboard_response;
 use dashboard::run_dashboard;
 #[cfg(test)]
 use diff::apply_diff_patch_filter;
 use diff::{
-    apply_changed_region_filter, explicit_ranges_patch, git_diff_patch, normalize_report_path,
-    parse_unified_diff, read_diff_patch, DiffPatchLineMap,
+    apply_changed_region_filter, normalize_report_path, parse_unified_diff,
+    patch_intersects_finding, patch_range_intersects, read_diff_patch, summarize_changed_findings,
+    DiffPatchLineMap,
 };
-use discovery::{discover_sources, DiscoveryResult};
+use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
+use gate::{Gate, GateOnMatch, GateScope};
+use ignore_policy::{IgnoreSource, IgnoredPath};
 pub(crate) use render::html_escape;
 use render::render_report_with_scope;
 #[cfg(test)]
@@ -99,7 +113,8 @@ use report::{
     RuleDelta, RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding,
     SuppressionSummary, ToolInfo, SCORE_PILLARS,
 };
-pub(crate) use scoring::{grade, score_report, summarize};
+use report_identity::FindingScope;
+pub(crate) use scoring::{grade, render_composite_block, score_report, summarize};
 use source::{
     CallNameSummary, DependencySummary, ItemSummary, LockedPackageSummary, LockfileSummary,
     ManifestSummary, ModuleSummary, ParsedSource, ProjectContext, ProjectItemContext,
@@ -127,13 +142,6 @@ struct FunctionBlock {
     body_is_declarative_literal: bool,
 }
 
-struct FunctionMetrics {
-    total_tokens: usize,
-    unique_tokens: usize,
-    halstead_volume: f64,
-    maintainability_score: f64,
-}
-
 impl FunctionBlock {
     pub(crate) fn is_test_context(&self) -> bool {
         self.is_test || self.test_context
@@ -149,6 +157,7 @@ fn main() -> ExitCode {
     let root = project_root.as_deref();
     match cli.command {
         Commands::Analyse(args) => run_analyse_command(args, writer, root, no_interaction),
+        Commands::Hook(args) => hook::run_hook_command(args, writer),
         Commands::Report(args) => {
             init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
             run_report(args, writer)
@@ -167,6 +176,7 @@ fn main() -> ExitCode {
             init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
             run_summary(args, writer)
         }
+        Commands::CheckIgnore(args) => run_check_ignore(args, global.verbose > 0, writer),
         Commands::Completion(args) => run_completion(args, writer),
         Commands::Init(args) => init::run_init(args, writer),
     }
@@ -185,8 +195,9 @@ fn run_analyse_command(
         no_interaction,
     );
     let cli_fail_on = args.fail_on;
+    let fail_on_new = args.fail_on_new;
     let base = options_from_analyse(args, FailThreshold::Advisory);
-    let (project_root, options, config) =
+    let (project_root, options, mut config) =
         match resolve_command_setup(base, cli_fail_on, "analyse", FailThreshold::Advisory) {
             Ok(triple) => triple,
             Err(error) => {
@@ -194,12 +205,16 @@ fn run_analyse_command(
                 return ExitCode::from(2);
             }
         };
+    if fail_on_new {
+        apply_fail_on_new(&mut config);
+    }
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(report) => {
+        Ok(mut report) => {
             let duration_ms = Some(started.elapsed().as_millis());
-            let outcome = RunOutcome::classify(&report, options.fail_on);
+            apply_gate_diagnostic(&mut report, config.gate.as_ref());
+            let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()
@@ -208,6 +223,21 @@ fn run_analyse_command(
             eprintln!("gruff-rs: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Fold the `--fail-on-new` flag into the gate as `scope: new` with a default
+/// `error: 0` cap (ADR-003 baseline-aware gate-scope addendum). An existing `gate:`
+/// block keeps its other caps but is forced to fail-on-match: the flag is named and
+/// documented to *fail* on new findings, so it overrides a prior `onMatch: warn`. The
+/// missing-baseline precondition is enforced later by `Gate::scope_precondition_error`
+/// during analysis (a config error, exit 2).
+pub(crate) fn apply_fail_on_new(config: &mut Config) {
+    let gate = config.gate.get_or_insert_with(Gate::default);
+    gate.scope = GateScope::New;
+    gate.on_match = GateOnMatch::Fail;
+    if gate.error.is_none() {
+        gate.error = Some(0);
     }
 }
 
@@ -286,9 +316,10 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(report) => {
+        Ok(mut report) => {
             let duration_ms = Some(started.elapsed().as_millis());
-            let outcome = RunOutcome::classify(&report, options.fail_on);
+            apply_gate_diagnostic(&mut report, config.gate.as_ref());
+            let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             match emit_report_output(writer, output, outcome, &rendered) {
                 Ok(()) => outcome.exit_code(),
@@ -494,7 +525,9 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(report) => {
             let duration_ms = started.elapsed().as_millis();
-            let outcome = RunOutcome::classify(&report, FailThreshold::None);
+            // `summary` is a read-only reporting command: like `--fail-on` (passed as
+            // `None` above), the `gate:` block must not change its exit code.
+            let outcome = RunOutcome::classify(&report, FailThreshold::None, None);
             let rendered = summary::render(&report, args.top, args.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()

@@ -204,18 +204,22 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
             left.module_path.as_str(),
             left.name.as_str(),
             left.kind.as_str(),
+            left.container.as_deref().unwrap_or(""),
             left.line,
             left.cfg_gated,
             left.test_context,
+            left.trait_impl,
         )
             .cmp(&(
                 right.file_path.as_str(),
                 right.module_path.as_str(),
                 right.name.as_str(),
                 right.kind.as_str(),
+                right.container.as_deref().unwrap_or(""),
                 right.line,
                 right.cfg_gated,
                 right.test_context,
+                right.trait_impl,
             ))
     });
 }

@@ -4,6 +4,7 @@ use tempfile::tempdir;
 
 mod calibration;
 mod config_and_selectors;
+mod parser;
 mod project_tests;
 mod renderers;
 mod rule_behaviours;
@@ -130,6 +131,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         paths: PathSummary {
             analysed_files: 1,
             ignored_paths: Vec::new(),
+            ignored_path_details: Vec::new(),
             missing_paths: Vec::new(),
         },
         diagnostics,
@@ -140,6 +142,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         baseline: None,
         per_rule_deltas: None,
         suppressed_findings: Vec::new(),
+        all_findings_summary: None,
     }
 }
 
@@ -177,16 +180,6 @@ fn assert_missing_rule(report: &AnalysisReport, rule_id: &str) {
     );
 }
 
-fn metric_metadata_number(report: &AnalysisReport, rule_id: &str, symbol: &str, key: &str) -> f64 {
-    report
-        .findings
-        .iter()
-        .find(|finding| finding.rule_id == rule_id && finding.symbol.as_deref() == Some(symbol))
-        .and_then(|finding| finding.metadata.get(key))
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("missing `{key}` metadata for `{rule_id}` `{symbol}`"))
-}
-
 fn default_test_options() -> AnalysisOptions {
     AnalysisOptions {
         paths: vec![PathBuf::from(".")],
@@ -213,6 +206,10 @@ fn write_config(dir: &Path, body: &str) {
         format!("schemaVersion: gruff-rs.config.v1\n{body}")
     };
     fs::write(dir.join(".gruff-rs.yaml"), body).expect("yaml config write");
+}
+
+fn enable_builtin_rule(dir: &Path, rule_id: &str) {
+    write_config(dir, &format!("rules:\n  {rule_id}:\n    enabled: true\n"));
 }
 
 fn project_context_for_test(project_root: &Path) -> ProjectContext {

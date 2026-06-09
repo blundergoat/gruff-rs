@@ -19,3 +19,6 @@
 .DS_Store
 Thumbs.db
 node_modules/
+
+# Claude Code scheduled-tasks lock (local runtime state)
+.claude/scheduled_tasks.lock

@@ -144,8 +144,12 @@ fn line_has_path_typed_param(source_line: &str, needle: &str) -> bool {
         || trimmed.starts_with("&impl AsRef<Path>")
 }
 
-/// True iff the 25 lines after `line` contain both `.canonicalize()` and
-/// `.starts_with(` (validate-then-trust pattern).
+/// True iff the 25 lines after `line` show the validate-then-trust pattern:
+/// `.canonicalize()` (which resolves `..`) paired with a containment check
+/// (`.starts_with(` or `.strip_prefix(`). Canonicalization is required —
+/// `.strip_prefix(root)` on an un-canonicalized path is purely lexical and
+/// does not stop `..` traversal, and a lone `.strip_prefix(` may be an
+/// unrelated `str::strip_prefix`, so neither counts as validation on its own.
 fn window_has_validation_after(lines: &[&str], line: usize) -> bool {
     if line == 0 {
         return false;
@@ -153,7 +157,8 @@ fn window_has_validation_after(lines: &[&str], line: usize) -> bool {
     let zero_based = line.saturating_sub(1);
     let end = (zero_based + 25).min(lines.len());
     let window: String = lines[zero_based..end].join("\n");
-    window.contains(".canonicalize(") && window.contains(".starts_with(")
+    window.contains(".canonicalize(")
+        && (window.contains(".starts_with(") || window.contains(".strip_prefix("))
 }
 
 /// True iff `arg` was passed to a `(validate|verify|sanitize|check)_*`
@@ -272,4 +277,48 @@ fn push_path_traversal_candidate_finding(
         ),
         metadata: json!({ "argument": arg }),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The candidate `.join(...)` sits on line 1; validation is searched from
+    /// there across the following lines.
+    fn validated_after_join(lines: &[&str]) -> bool {
+        window_has_validation_after(lines, 1)
+    }
+
+    #[test]
+    fn canonicalize_with_containment_check_counts_as_validation() {
+        assert!(validated_after_join(&[
+            "let joined = root.join(name);",
+            "let real = joined.canonicalize()?;",
+            "if real.starts_with(&root) { ok() }",
+        ]));
+        assert!(validated_after_join(&[
+            "let joined = root.join(name);",
+            "let real = joined.canonicalize()?;",
+            "real.strip_prefix(&root)?;",
+        ]));
+    }
+
+    #[test]
+    fn strip_prefix_without_canonicalize_is_not_validation() {
+        // Lexical strip_prefix on an un-canonicalized path does not stop `..`.
+        assert!(!validated_after_join(&[
+            "let joined = root.join(name);",
+            "joined.strip_prefix(&root)?;",
+        ]));
+        // An unrelated str::strip_prefix must not suppress the candidate.
+        assert!(!validated_after_join(&[
+            "let joined = root.join(name);",
+            "let token = header.strip_prefix(\"Bearer \");",
+        ]));
+        // canonicalize alone, with no containment check, is not enough.
+        assert!(!validated_after_join(&[
+            "let joined = root.join(name);",
+            "let real = joined.canonicalize()?;",
+        ]));
+    }
 }

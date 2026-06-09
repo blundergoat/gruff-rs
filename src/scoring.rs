@@ -21,6 +21,33 @@ pub(crate) fn summarize(findings: &[Finding]) -> Summary {
     }
 }
 
+/// Cross-port canonical composite-score block. Shared verbatim by the `analyse`
+/// text header (`render::text`) and the `summary` text view (`summary`) so the two
+/// surfaces render byte-identical score lines (they previously diverged on
+/// separator, severity order, decimals, and the `/100` denominator). Emits exactly
+/// two lines, each terminated with `\n`:
+///
+/// ```text
+/// Composite: <GRADE> (<score> / 100)
+/// Findings: <total> total · <e> error · <w> warning · <a> advisory
+/// ```
+///
+/// The score carries two decimals, the findings tally is error-first, and the
+/// separator is the literal middot `·` (U+00B7).
+pub(crate) fn render_composite_block(out: &mut String, report: &AnalysisReport) {
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        out,
+        "Composite: {} ({:.2} / 100)",
+        report.score.grade, report.score.composite,
+    );
+    let _ = writeln!(
+        out,
+        "Findings: {} total · {} error · {} warning · {} advisory",
+        report.summary.total, report.summary.error, report.summary.warning, report.summary.advisory,
+    );
+}
+
 pub(crate) fn score_report(findings: &[Finding], config: &Config) -> ScoreReport {
     let pillars = pillar_scores(findings, config);
     let composite = composite_score(&pillars);

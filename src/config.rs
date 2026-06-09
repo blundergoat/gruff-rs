@@ -8,7 +8,7 @@ pub(crate) const DEFAULT_ABBREVIATIONS: &[&str] = &[
 ];
 
 // The only accepted value for `.gruff-rs.yaml`'s required `schemaVersion:` field.
-// Introduced by ADR-013 / M08a; bumped only when the config schema breaks compatibility.
+// Introduced by ADR-013; bumped only when the config schema breaks compatibility.
 pub(crate) const SCHEMA_VERSION: &str = "gruff-rs.config.v1";
 
 #[derive(Clone)]
@@ -31,12 +31,6 @@ pub(crate) enum DiffSelection {
     Patch { path: PathBuf, scope: ChangedScope },
     Git { mode: String, scope: ChangedScope },
     ExplicitRanges { ranges: String, scope: ChangedScope },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ChangedScope {
-    Symbol,
-    Hunk,
 }
 
 /// Renderer-only view of which paths and diff mode the user asked for.
@@ -82,6 +76,7 @@ pub(crate) struct Config {
     pub(crate) custom_rules: Vec<CustomRule>,
     pub(crate) rule_settings: HashMap<String, RuleSetting>,
     pub(crate) minimum_severity: BTreeMap<String, FailThreshold>,
+    pub(crate) gate: Option<Gate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -155,6 +150,12 @@ impl PathMatcher {
             PathMatcherKind::Prefix(pattern.trim_end_matches('/').to_string())
         };
         Self { pattern, kind }
+    }
+
+    /// The original glob this matcher was compiled from, reported as the
+    /// `pattern` for `source: config` ignores and by `check-ignore`.
+    pub(crate) fn pattern(&self) -> &str {
+        &self.pattern
     }
 
     pub(crate) fn matches(&self, path: &str) -> bool {
@@ -266,6 +267,7 @@ impl Config {
             custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
             minimum_severity: BTreeMap::new(),
+            gate: None,
         }
     }
 
@@ -276,9 +278,19 @@ impl Config {
         if self.selectors.has_positive && !self.selectors.positive.contains(rule_id) {
             return false;
         }
-        self.rule_settings
+        if let Some(enabled) = self
+            .rule_settings
             .get(rule_id)
             .and_then(|setting| setting.enabled)
+        {
+            return enabled;
+        }
+        if self.selectors.has_positive {
+            return true;
+        }
+        rules::builtin_registry_cached()
+            .get(rule_id)
+            .map(|definition| definition.default_enabled)
             .unwrap_or(true)
     }
 

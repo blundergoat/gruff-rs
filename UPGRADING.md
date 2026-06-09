@@ -1,13 +1,13 @@
 # Upgrading
 
-`gruff-rs` follows SemVer with one explicit caveat: the `0.2.x` line is
+`gruff-rs` follows SemVer with one explicit caveat: the `0.3.x` line is
 "mostly stable", which means a compatibility-sensitive surface is locked in
-across `0.2.x` patch releases, but the surrounding edges may evolve.
+across `0.3.x` patch releases, but the surrounding edges may evolve.
 
-## What is stable across `0.2.x`
+## What is stable across `0.3.x`
 
-These will not change in a `0.2.x` patch or minor without a major bump to
-`0.3.0`:
+These will not change in a `0.3.x` patch or minor without a major bump to
+`0.4.0`:
 
 - **Rule ids.** `security.process-command`, `dead-code.unused-private-function`,
   `complexity.cognitive`, etc. Baselines key on these.
@@ -25,14 +25,14 @@ These will not change in a `0.2.x` patch or minor without a major bump to
   shape, suppression kind for config-derived exclusions, `partialFingerprints`
   key.
 - **Config root keys.** `paths.ignore`, `allowlists`, `rules.select`,
-  `rules.ignore`, `rules.<id>`, `custom_rules`, `exclude`, `minimumSeverity`.
-  Unknown keys continue to fail closed.
+  `rules.ignore`, `rules.<id>`, `custom_rules`, `exclude`, `minimumSeverity`,
+  `gate`. Unknown keys continue to fail closed.
 - **Exit codes.** `0` clean, `1` finding at the `--fail-on` threshold, `2`
   fatal diagnostic (parse error, missing path, etc).
 
-## What may change in `0.2.x` with deprecation
+## What may change in `0.3.x` with deprecation
 
-These can evolve inside `0.2.x` provided users get at least one minor release
+These can evolve inside `0.3.x` provided users get at least one minor release
 of warning before the change lands:
 
 - **New rules.** Default-on additions ship as new ids. Add `rules.ignore`
@@ -42,22 +42,49 @@ of warning before the change lands:
 - **New CLI flags and output formats.** Additions are non-breaking.
 - **New SARIF properties** under `result.properties` or `rule.properties`.
   Additions only; existing keys keep their meaning.
+- **`findings[].filePath`.** Superseded by the canonical `findings[].file`
+  alias added in `0.3.0`; `filePath` is still emitted for the transition and
+  will be removed in a later release. Migrate JSON consumers to `file`.
 - **Text/Markdown/HTML output formatting.** Cosmetic improvements may land
   without a deprecation window because they are not machine-consumed.
 - **Dashboard UI.** The local dashboard is explicitly best-effort.
 
 ## What may change without warning
 
-- **`0.1.x` behaviour.** The `0.1.x` line was the original "mostly stable" tier;
-  `0.2.0` collected its breaking changes (analyse-default flip from `error` to
-  `advisory`, required config `schemaVersion`, analysis JSON schema bump from
-  `gruff.analysis.v1` to `gruff.analysis.v2`, `gruff.summary.v1` to
-  `gruff.summary.v2`). Anything that existed only inside `0.1.x` and is not
-  named under "What is stable across `0.2.x`" is not covered.
+- **Pre-`0.3.x` behaviour.** The `0.1.x` line was the original "mostly stable"
+  tier; `0.2.0` collected its breaking changes (analyse-default flip from
+  `error` to `advisory`, required config `schemaVersion`, analysis JSON schema
+  bump from `gruff.analysis.v1` to `gruff.analysis.v2`, `gruff.summary.v1` to
+  `gruff.summary.v2`). Anything that existed only inside `0.1.x` or `0.2.x` and
+  is not named under "What is stable across `0.3.x`" is not covered.
 - **Internal Rust API.** `gruff-rs` is a binary crate; its library symbols are
   `pub(crate)` and intentionally not part of the public surface. Treat
   `gruff-rs` as a CLI, not a library dependency.
 - **Performance.** Wall-clock and RSS will change as rules are added.
+
+## Upgrade workflow (0.2.x → 0.3.0)
+
+`0.3.0` keeps every contract listed above — rule ids, fingerprints,
+`gruff.analysis.v2`, `gruff-rs.config.v1`, SARIF, and exit codes are all
+unchanged — so existing baselines and JSON/SARIF consumers keep working
+without edits. The new surface is opt-in:
+
+1. **Nothing is required for the bump.** Existing `.gruff-rs.yaml` files and
+   `gruff-baseline.json` load as-is; no `init --force` needed.
+2. **Four rubrics were removed:** `complexity.npath`,
+   `metrics.halstead-volume`, `metrics.maintainability-pressure`, and
+   `design.god-function`. Their findings and baseline entries simply disappear;
+   drop any `rules.ignore` / `exclude` entries that named them.
+3. **Eleven new rules** (nine security checks plus two secret checks) may
+   surface new findings. Run
+   `gruff-rs analyse <paths> --format json --no-baseline` to review, then
+   regenerate the baseline to absorb them if desired.
+4. **Two default changes:** `size.parameter-count` rose `5 → 7` (Clippy's
+   default) and `waste.unnecessary-clone-candidate` now ships disabled —
+   re-enable it under `rules:` if you want it.
+5. **Optional new gates.** The `gate:` block (per-severity and total count
+   caps) and `--fail-on-new` (gate only on findings new since the baseline)
+   are both off unless configured.
 
 ## Upgrade workflow (0.1.x → 0.2.0)
 
@@ -85,6 +112,6 @@ of warning before the change lands:
 
 ## Reporting compatibility regressions
 
-If a `0.2.x` upgrade silently changes a rule id, fingerprint input, exit code,
+If a `0.3.x` upgrade silently changes a rule id, fingerprint input, exit code,
 or JSON/SARIF field declared stable above, open an issue. Those are the
-load-bearing contracts and breaking them inside `0.2.x` is a bug.
+load-bearing contracts and breaking them inside `0.3.x` is a bug.

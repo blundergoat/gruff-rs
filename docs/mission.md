@@ -29,4 +29,4 @@ Because gruff runs as a hook, a finding is not advice a human weighs — it is a
 - **Finding correctness outranks breadth of coverage.** A rule that fires on clean code is worse than a rule that occasionally stays quiet.
 - **Every rule, threshold, and report is judged against verifiability + security + test-signal** — not generic notions of "good code".
 
-See [`ADR-015`](../.goat-flow/decisions/ADR-015-mission-agent-code-governance.md) for the binding decision and [`.goat-flow/architecture.md`](../.goat-flow/architecture.md) for how the analysis pipeline serves it.
+See [`ADR-015`](../.goat-flow/learning-loop/decisions/ADR-015-mission-agent-code-governance.md) for the binding decision and [`.goat-flow/architecture.md`](../.goat-flow/architecture.md) for how the analysis pipeline serves it.

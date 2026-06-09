@@ -160,6 +160,7 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
     let mut body = String::from(
             "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod fixtures {\n    #[test]\n    fn long_setup() {\n        let mut total = 0;\n",
         );
+    body.push_str("        assert_eq!(total, 0);\n");
     for index in 0..130 {
         body.push_str(&format!("        if {index} > 0 {{ total += {index}; }}\n"));
     }
@@ -181,8 +182,6 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
         "complexity.cyclomatic",
         "complexity.nesting-depth",
         "complexity.cognitive",
-        "metrics.halstead-volume",
-        "metrics.maintainability-pressure",
     ] {
         assert!(
             !report.findings.iter().any(|finding| {
@@ -194,8 +193,7 @@ pub(crate) fn calibration_complexity_metrics_size_skip_test_context() {
     }
 }
 
-/// Proves that `sensitive-data.api-key-pattern` recognises common synthetic
-/// provider-shaped tokens beyond the original narrow prefix set.
+/// Proves API-key detection recognises common synthetic provider tokens.
 #[test]
 pub(crate) fn calibration_api_key_pattern_detects_common_formats() {
     let _guard = analysis_lock();
@@ -203,6 +201,18 @@ pub(crate) fn calibration_api_key_pattern_detects_common_formats() {
     let github_fine_grained = concat!("github_", "pat_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let gitlab_token = concat!("gl", "pat-", "aaaaaaaaaaaaaaaaaaaaaaaa");
     let npm_token = concat!("npm_", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let sendgrid_token = concat!(
+        "SG.",
+        "aaaaaaaaaaaaaaaaaaaaaaaa",
+        ".",
+        "bbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+    let hugging_face_token = concat!("hf_", "aaaaaaaaaaaaaaaaaaaaaaaa");
+    let linear_token = concat!("lin_api_", "aaaaaaaaaaaaaaaaaaaaaaaa");
+    let discord_webhook = concat!(
+        "https://discord.com/api/webhooks/123456789012345678/",
+        "aaaaaaaaaaaaaaaaaaaaaaaa"
+    );
     let azure_storage = concat!(
         "DefaultEndpointsProtocol=https;AccountName=acct;",
         "AccountKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
@@ -218,6 +228,10 @@ pub fn entry() {{
     let _github_fine_grained = "{github_fine_grained}";
     let _gitlab_token = "{gitlab_token}";
     let _npm_token = "{npm_token}";
+    let _sendgrid_token = "{sendgrid_token}";
+    let _hugging_face_token = "{hugging_face_token}";
+    let _linear_token = "{linear_token}";
+    let _discord_webhook = "{discord_webhook}";
     let _openai_legacy = "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let _google_api = "AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let _azure_bus = "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -243,7 +257,7 @@ pub fn entry() {{
         .count();
     assert_eq!(
         api_key_findings,
-        11,
+        15,
         "calibration expected all common synthetic API-key formats to fire; findings={:?}",
         rule_ids(&report)
     );
@@ -420,7 +434,7 @@ pub fn entry(tenant: &str) {
     let _static = sqlx::query("select * from users");
     let _weak = Md5::new();
     let _strong = Sha256::new();
-    let _http_credential = "https://user:secret@example.invalid/path";
+    let _http_credential = "https://user:secret123@payments.acme.co/path";
     let _plain_http = "https://example.invalid/path";
     let _db_credential = "postgres://user:secret@db/app";
 }

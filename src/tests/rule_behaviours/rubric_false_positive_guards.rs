@@ -456,11 +456,12 @@ pub fn start_chat(session_id: String) -> String {
 }
 "#,
     );
+    enable_builtin_rule(dir.path(), "waste.unnecessary-clone-candidate");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
