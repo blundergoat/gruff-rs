@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.4.0 - Unreleased
+
+0.4.0 is a precision, correctness, and runtime-efficiency release for hook-facing scans. It keeps
+the report schema stable, makes partial-context analysis safer, tightens high-noise rules found by
+external scans, and retires two default rubrics that could not be made precise enough for agent
+hooks.
+
+- **Partial-context dead-code safety.** Project-level dead-code candidate findings are suppressed
+  when a path or diff run does not cover the whole discoverable Rust source universe; the report
+  emits a diagnostic pointing users at a full-project scan instead.
+- **Sharper security and secret rules.** Dynamic SQL checks require SQL-keyword-bearing templates
+  and keep identifier interpolation conservative; high-entropy strings skip known inert structures
+  such as package integrity hashes, base64 alphabets, separator-bearing slugs, and model IDs while
+  keeping real secret shapes reportable.
+- **Hook and Rust-pipeline efficiency.** Hook diff analysis avoids duplicate work, batched Git base
+  export reduces subprocess overhead, Rust rule dispatch skips disabled families earlier, and the
+  performance harness has an exact Rust item-rule scenario.
+- **Non-UTF-8 text robustness.** Broad scans skip low-risk invalid UTF-8 text with a diagnostic
+  instead of failing the whole run; explicit inputs and security-relevant text remain visible.
+- **External-scan false-positive fixes.** Dead-code candidates skip exported/plugin/allowed items,
+  path-traversal candidates require filesystem join evidence and recognize explicit segment
+  sanitizers, lock-across-await skips immediate value extraction, and SQL/test/security fixtures
+  cover the reviewed external shapes.
+- **Removed two noisy default rubrics:** `modernisation.public-field` and
+  `test-quality.no-assertions`. Public DTO/schema/CLI contract fields and Rust harness-style tests
+  require design or framework intent the analyzer cannot infer reliably enough for a default
+  hook rule.
+- **Kept `security.path-traversal-candidate` default-on.** The M09 review did not justify weakening
+  a security candidate rule; future work may refine wording or metadata without reducing coverage.
+- **Rule catalogue 87 -> 85.** The two retired rule IDs are absent from `list-rules`, default
+  config, docs, and normal analysis output; JSON/SARIF schema versions and existing finding
+  identity contracts are unchanged.
+
 ## v0.3.0 - 2026-06-09
 
 0.3.0 makes gruff easier to adopt and sharpens its rules: a new `hook` command that speaks the cross-analyzer `gruff.hook.v1` contract, tri-state baselines, count-based gates, a "fail-on-new" mode, eleven new security/secret rules, and four low-value rubrics dropped. JSON stays additive; new gates are opt-in.

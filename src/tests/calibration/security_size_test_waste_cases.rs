@@ -609,21 +609,6 @@ pub fn entry() {
             }),
         ),
         case(
-            "test-quality.no-assertions",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { let _ = 1; }\n}\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(1, 1); }\n}\n",
-                    )
-            }),
-        ),
-        case(
             "test-quality.sleep-in-test",
             Box::new(|root| {
                 baseline_with_lib(

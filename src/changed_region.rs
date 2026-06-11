@@ -202,7 +202,19 @@ pub(crate) fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<Str
 /// execution so the call site stays a plain builder.
 fn git_command(project_root: &Path, args: &[String]) -> std::process::Command {
     let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(project_root).args(args);
+    command
+        .arg("--no-pager")
+        .arg("-C")
+        .arg(project_root)
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env_remove("GIT_EXTERNAL_DIFF")
+        .env_remove("GIT_PAGER");
     command
 }
 
@@ -211,13 +223,50 @@ fn git_command(project_root: &Path, args: &[String]) -> std::process::Command {
 /// argv with `git_args_with_paths` or fixed argument vectors so refs and paths
 /// remain inert argv data, never shell input.
 pub(crate) fn git_output(project_root: &Path, args: &[String]) -> Result<String, String> {
-    let output = git_command(project_root, args)
-        .output()
+    let output = git_output_bytes(project_root, args)?;
+    Ok(String::from_utf8_lossy(&output).to_string())
+}
+
+pub(crate) fn git_output_bytes(project_root: &Path, args: &[String]) -> Result<Vec<u8>, String> {
+    git_output_bytes_with_stdin(project_root, args, &[])
+}
+
+pub(crate) fn git_output_bytes_with_stdin(
+    project_root: &Path,
+    args: &[String],
+    stdin: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut command = git_command(project_root, args);
+    if stdin.is_empty() {
+        let output = command
+            .output()
+            .map_err(|error| format!("unable to execute git diff: {error}"))?;
+        return git_stdout_or_error(output);
+    }
+
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|error| format!("unable to execute git diff: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "unable to open git stdin".to_string())?
+        .write_all(stdin)
+        .map_err(|error| format!("unable to write git stdin: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("unable to read git output: {error}"))?;
+    git_stdout_or_error(output)
+}
+
+fn git_stdout_or_error(output: std::process::Output) -> Result<Vec<u8>, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(output.stdout)
 }
 
 /// List untracked, non-ignored files under `paths` via `git ls-files --others

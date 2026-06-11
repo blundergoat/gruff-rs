@@ -3,10 +3,15 @@ use super::*;
 pub(crate) fn analyse_project_dead_code_rules(
     context: &ProjectContext,
     config: &Config,
+    diagnostics: &mut Vec<RunDiagnostic>,
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "dead-code.unused-private-item-candidate";
     if !config.is_rule_enabled(rule_id) {
+        return;
+    }
+    if context.coverage.is_partial() {
+        diagnostics.push(partial_context_rule_diagnostic(rule_id));
         return;
     }
 
@@ -22,11 +27,24 @@ pub(crate) fn analyse_project_dead_code_rules(
     }
 }
 
+fn partial_context_rule_diagnostic(rule_id: &str) -> RunDiagnostic {
+    RunDiagnostic {
+        diagnostic_type: "partial-context-rule-suppressed".to_string(),
+        message: format!(
+            "Rule `{rule_id}` was skipped because this run did not analyse every discoverable Rust source under the selected project root; run `gruff-rs analyse .` from that root for authoritative dead-code signal."
+        ),
+        file_path: None,
+        line: None,
+    }
+}
+
 fn is_private_item_candidate(item: &ItemSummary) -> bool {
     !item.public
         && !item.cfg_gated
         && !item.test_context
         && !item.trait_impl
+        && !item.exported_by_attr
+        && !item.allow_dead_code
         && matches!(
             item.kind.as_str(),
             "function" | "struct" | "enum" | "trait" | "const" | "static" | "type alias"

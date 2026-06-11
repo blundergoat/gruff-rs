@@ -8,7 +8,11 @@ pub(crate) use architecture::analyse_architecture_rules;
 pub(crate) use dead_code::analyse_project_dead_code_rules;
 pub(crate) use dependencies::analyse_dependency_rules;
 
-pub(crate) fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<Finding> {
+pub(crate) fn analyse_project(
+    context: &ProjectContext,
+    config: &Config,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     if !project_has_readme(&context.root_path) && config.is_rule_enabled("docs.missing-readme") {
@@ -30,7 +34,7 @@ pub(crate) fn analyse_project(context: &ProjectContext, config: &Config) -> Vec<
 
     analyse_dependency_rules(context, config, &mut findings);
     analyse_architecture_rules(context, config, &mut findings);
-    analyse_project_dead_code_rules(context, config, &mut findings);
+    analyse_project_dead_code_rules(context, config, diagnostics, &mut findings);
 
     findings
         .into_iter()

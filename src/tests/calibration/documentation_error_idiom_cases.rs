@@ -118,19 +118,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 0 }\n")),
         ),
-        // ----- modernisation -----
-        case(
-            "modernisation.public-field",
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub struct Wide { pub value: i32 }\n")
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub struct Narrow { value: i32 }\nimpl Narrow { /// Read.\npub fn value(&self) -> i32 { self.value } }\n",
-                    )
-            }),
-        ),
         // ----- naming -----
         case(
             "naming.boolean-prefix",

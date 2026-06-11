@@ -214,8 +214,14 @@ pub(crate) fn sarif_marks_clean_invocation_successful() {
 #[test]
 pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
     let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
-    assert_eq!(report.diagnostics.len(), 1);
-    assert_eq!(report.diagnostics[0].diagnostic_type, "parse-error");
+    assert_eq!(
+        diagnostic_types(&report),
+        vec!["partial-context-rule-suppressed", "parse-error"]
+    );
+    assert!(report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.diagnostic_type == "parse-error"));
     assert_has_rule(&report, "sensitive-data.aws-access-key");
 
     let sarif = sample_sarif(&report);
@@ -224,13 +230,17 @@ pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
         false
     );
     assert_eq!(
-        sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["descriptor"]["id"],
+        sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][1]["descriptor"]["id"],
         "parse-error"
     );
     assert_eq!(
-        sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["locations"][0]
+        sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][1]["locations"][0]
             ["physicalLocation"]["artifactLocation"]["uri"],
         "tests/fixtures/parser/invalid.rs"
+    );
+    assert_eq!(
+        sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["descriptor"]["id"],
+        "partial-context-rule-suppressed"
     );
     let result_rule_ids: Vec<&str> = sarif["runs"][0]["results"]
         .as_array()

@@ -7,3 +7,4 @@ mod mission_retune_guards;
 mod release_noise_guards;
 mod rubric_false_positive_guards;
 mod rust_rules;
+mod sql_dynamic_query_guards;

@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-31
+last_reviewed: 2026-06-12
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -115,6 +115,12 @@ After tightening a rule to eliminate false positives, a "zero findings on dogfoo
 **Why:** Pattern-matching rules can silently lose their pattern when calibration changes. The matrix is the contract; trust it over dogfood counts.
 
 **How to apply:** Tightening a regex → run calibration matrix as the first verification command, dogfood as the second. Never declare a tightening done from dogfood alone.
+
+## Lesson: Rule Retunes Need Parity Fixtures For Every Detection Path
+**Created:** 2026-06-12
+**What happened:** M02 and M08 were marked technically complete with green focused tests, but review-only scratch repros found two untested shapes: direct `prepare(&format!(...))` did not receive the same fixed-placeholder exemption as bound `let sql = format!(...)`, and inline `PathBuf::from(...).join(user_input)` / `Path::new(...).join(user_input)` were missed after receiver gating.
+**Evidence:** `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `push_direct_sql_dynamic_query_findings`) and `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `dynamic_format_binding_name`) had separate paths with different exemption coverage. `src/built_in_rules/path_traversal_rules.rs` (search: `join_regex`) only captured simple receivers before the inline constructor fix.
+**Prevention:** For every rule retune that mentions multiple detection paths or receiver shapes, add at least one positive and one negative fixture per path before closing the milestone. Re-run the original scratch repros that exposed the review finding, not just the named focused test filter.
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
 

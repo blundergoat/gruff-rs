@@ -389,7 +389,6 @@ pub(crate) fn entry_n() {}
     )
     .expect("analysis succeeds");
     for rule in [
-        "modernisation.public-field",
         "docs.missing-public-doc",
         "error-handling.public-unwrap",
         "architecture.public-api-surface",
@@ -514,5 +513,83 @@ pub fn entry() {
         entropy_findings.len(),
         1,
         "expected exactly one entropy finding (the bare secret); findings={entropy_findings:?}"
+    );
+}
+
+#[test]
+pub(crate) fn high_entropy_string_keeps_real_secret_shapes() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry() {
+    let _base64_classic = "mF9qL2sT8vX3pR6nY0aB4cD7eG1hJ5kM9pQ2rS+T=";
+    let _base64url = "Az9qL2sT8vX3pR6nY0aB4cD7eG1hJ5kM9pQ2rS";
+    let _jwt_payload_segment = "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ";
+    let _aws_secret_like = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY9";
+    let _github_pat_like = "ghp_Az9qL2sT8vX3pR6nY0aB4cD7eG1hJ5kM9";
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .collect();
+    assert_eq!(
+        entropy_findings.len(),
+        5,
+        "all real-secret-shaped values must still trigger high entropy; findings={entropy_findings:?}"
+    );
+}
+
+#[test]
+pub(crate) fn high_entropy_string_skips_structured_non_secret_values() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry() {
+    let _repo_slug = "Microsoft/TypeScript-Website-Builder12";
+    let _sha1_integrity = "sha1-3GuHKO69A8db+HYIftzVDpy1aZQ=";
+    let _sha512_integrity = "sha512-j51egjPa7/i+HYIftzVDpy1aZQ0rb2R/x42DYbwli3ZokMiTyJFhGQBdJCpg==";
+    let _base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let _base64url_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let _model_id = "deepinfra/Qwen/Qwen3-235B-A22B-Instruct-2507";
+    let _zero_separator_boundary = "WpcomRestApiV2EndpointExternalMedia1";
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .collect();
+    assert_eq!(
+        entropy_findings.len(),
+        1,
+        "only the conservative zero-separator boundary should still trigger; findings={entropy_findings:?}"
     );
 }

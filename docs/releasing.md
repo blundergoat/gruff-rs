@@ -13,6 +13,14 @@ cargo run -- --help
 cargo run -- list-rules --format json
 ```
 
+## Benchmarking
+
+Do not benchmark a previously-built `target/release/gruff-rs` unless you just ran
+`cargo build --release`. That path is a local Cargo artifact and can silently lag
+behind HEAD. Prefer `scripts/test-performance.sh` for performance checks because
+it rebuilds the release binary before timing it; `bin/gruff-rs` is also fresh by
+construction because it delegates to `cargo run`.
+
 ## CLI Contract
 
 Verify the common command surface:

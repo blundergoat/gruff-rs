@@ -21,16 +21,19 @@ pub(crate) fn analyse_path_traversal_candidate(
 struct PathTraversalScan<'a> {
     file: &'a SourceFile,
     searchable: String,
+    raw_lines: Vec<&'a str>,
     starts: Vec<usize>,
 }
 
 impl<'a> PathTraversalScan<'a> {
-    fn new(file: &'a SourceFile, source: &str) -> Self {
+    fn new(file: &'a SourceFile, source: &'a str) -> Self {
         let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+        let raw_lines = source.lines().collect();
         let starts = line_starts(&searchable);
         Self {
             file,
             searchable,
+            raw_lines,
             starts,
         }
     }
@@ -57,7 +60,12 @@ impl<'a> PathTraversalScan<'a> {
                 continue;
             };
             let line = byte_line_from_starts(&self.starts, full.start());
-            if path_traversal_finding_is_suppressed(arg.as_str(), lines, line) {
+            if let Some(receiver) = captures.name("receiver") {
+                if !join_receiver_has_filesystem_evidence(receiver.as_str(), lines, line) {
+                    continue;
+                }
+            }
+            if path_traversal_finding_is_suppressed(arg.as_str(), lines, &self.raw_lines, line) {
                 continue;
             }
             if !emitted.insert(line) {
@@ -78,17 +86,89 @@ fn constructor_regex() -> &'static Regex {
 fn join_regex() -> &'static Regex {
     static_regex(
         &PATH_TRAVERSAL_JOIN_REGEX,
-        r"\.join\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
+        r"\b(?P<receiver>(?:(?:std\s*::\s*path\s*::\s*)?(?:Path|PathBuf)\s*::\s*(?:new|from)\s*\([^;\n)]*\)|(?:self|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*))\s*\.\s*join\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
     )
 }
 
-fn path_traversal_finding_is_suppressed(arg: &str, lines: &[&str], line: usize) -> bool {
+fn path_traversal_finding_is_suppressed(
+    arg: &str,
+    lines: &[&str],
+    raw_lines: &[&str],
+    line: usize,
+) -> bool {
     path_traversal_arg_is_safe(arg)
         || arg_is_typed_path_in_nearby_signature(arg, lines, line)
         || arg_is_loop_var_from_literal_array(arg, lines, line)
         || arg_is_let_bound_to_literal(arg, lines, line)
+        || arg_is_sanitized_segment_binding(arg, raw_lines, line)
         || arg_was_validated_in_nearby_call(arg, lines, line)
         || window_has_validation_after(lines, line)
+}
+
+fn join_receiver_has_filesystem_evidence(receiver: &str, lines: &[&str], line: usize) -> bool {
+    let normalized: String = receiver
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    if receiver_is_inline_path_constructor(&normalized) {
+        return true;
+    }
+    let Some(name) = normalized.rsplit('.').next() else {
+        return false;
+    };
+    path_traversal_receiver_name_is_filesystem(name)
+        || arg_is_typed_path_in_nearby_signature(name, lines, line)
+        || receiver_is_path_binding(name, lines, line)
+}
+
+fn receiver_is_inline_path_constructor(receiver: &str) -> bool {
+    let receiver = receiver.strip_prefix("std::path::").unwrap_or(receiver);
+    receiver.starts_with("PathBuf::from(") || receiver.starts_with("Path::new(")
+}
+
+fn path_traversal_receiver_name_is_filesystem(name: &str) -> bool {
+    matches!(
+        name,
+        "root"
+            | "project_root"
+            | "workspace_root"
+            | "repo_root"
+            | "crate_root"
+            | "base"
+            | "base_dir"
+            | "base_path"
+            | "dir"
+            | "directory"
+            | "out_dir"
+            | "target_dir"
+            | "manifest_dir"
+            | "temp_dir"
+            | "tmp_dir"
+    )
+}
+
+fn receiver_is_path_binding(receiver: &str, lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let lookback_start = zero_based.saturating_sub(12);
+    let window: String = lines[lookback_start..=zero_based].join("\n");
+    let needle = format!("let {receiver}");
+    let Some(after) = window
+        .find(&needle)
+        .map(|position| &window[position + needle.len()..])
+    else {
+        return false;
+    };
+    let Some(statement_end) = after.find(';') else {
+        return false;
+    };
+    let statement = &after[..statement_end];
+    statement.contains("PathBuf::from(")
+        || statement.contains("Path::new(")
+        || statement.trim_start().starts_with(": Path")
+        || statement.trim_start().starts_with(": std::path::Path")
 }
 
 fn path_traversal_arg_is_safe(arg: &str) -> bool {
@@ -252,6 +332,42 @@ fn strip_type_annotation(after: &str) -> Option<&str> {
     } else {
         Some(trimmed)
     }
+}
+
+fn arg_is_sanitized_segment_binding(arg: &str, raw_lines: &[&str], line: usize) -> bool {
+    if line == 0 {
+        return false;
+    }
+    let zero_based = line.saturating_sub(1);
+    let lookback_start = zero_based.saturating_sub(12);
+    let window: String = raw_lines[lookback_start..=zero_based].join("\n");
+    let pattern = format!(
+        r"(?s)\blet\s+(?:mut\s+)?{}\b(?:\s*:\s*[^=;]+)?\s*=\s*(?P<rhs>[^;]+);",
+        regex::escape(arg)
+    );
+    let Ok(compiled) = Regex::new(&pattern) else {
+        return false;
+    };
+    let Some(captures) = compiled.captures(&window) else {
+        return false;
+    };
+    let Some(rhs) = captures.name("rhs") else {
+        return false;
+    };
+    is_segment_sanitizer_for_traversal(rhs.as_str())
+}
+
+fn is_segment_sanitizer_for_traversal(rhs: &str) -> bool {
+    let compact: String = rhs
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    let removes_parent = compact.contains(r#".replace("..","#);
+    let removes_forward =
+        compact.contains(r#".replace('/',"#) || compact.contains(r#".replace("/","#);
+    let removes_back =
+        compact.contains(r#".replace('\\',"#) || compact.contains(r#".replace("\\","#);
+    removes_parent && removes_forward && removes_back
 }
 
 fn push_path_traversal_candidate_finding(

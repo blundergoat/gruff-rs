@@ -1,7 +1,35 @@
 ---
 category: analyzer
-last_reviewed: 2026-06-07
+last_reviewed: 2026-06-11
 ---
+
+## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
+
+**Status:** active | **Created:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
+
+`src/analyse_project/dead_code.rs` (search: `analyse_project_dead_code_rules`) decides whether a private item is referenced by asking `ProjectContext` for the discovered identifier count. `src/analysis.rs` (search: `build_project_context(project_root, &parsed_sources`) builds that context from the parsed source set after discovery and diff file selection, so narrow path runs and file-based diff modes can otherwise turn a real sibling reference into a false unused-candidate finding.
+
+The concrete trap is a two-file crate where `src/lib.rs` declares `fn helper_used_by_child()` and `src/child.rs` calls `crate::helper_used_by_child()`: whole-project analysis is clean, but a partial context containing only `src/lib.rs` cannot see the sibling call. Because `src/report_identity.rs` (search: `_ if symbol.is_some() => FindingScope::Symbol`) scopes the finding as symbol-level, the hook changed-region filter would not drop it as file/project scope noise.
+
+Keep project-level dead-code tied to a coverage fact, not path-string guesses. The guard lives in `ProjectCoverage` (search: `diff_selection_narrowed`) and the rule suppresses itself with `partial-context-rule-suppressed` when coverage is partial. Regression coverage: `src/tests/project_tests/dead_code.rs` (search: `dead_code_partial_context_suppresses_cross_file_candidate`, `dead_code_diff_patch_partial_context_suppresses_candidate`, `dead_code_partial_context_coverage_tracks_actual_rust_file_universe`).
+
+## Footgun: Enriched Rule Definitions Require A `related` Arm
+
+**Status:** active | **Created:** 2026-06-11 | **Evidence:** OBSERVED
+
+`src/rules/mod.rs` (search: `macro_rules! rule_definition`) has only two macro arms: a plain
+definition with no optional sections, and an enriched definition that requires both
+`false_positives:` and `related:`. There is no macro arm for `false_positives:` alone.
+
+The trap surfaced while enriching `security.path-traversal-candidate` in
+`src/rules/idiom_security_size_test_definitions.rs` (search:
+`security.path-traversal-candidate`): adding `false_positives:` without `related:` made
+`cargo run --quiet -- list-rules security.path-traversal-candidate` fail at macro expansion with
+`unexpected end of macro invocation`.
+
+When adding false-positive guidance to any rule definition, add an explicit `related: &[]` or a
+real related-rule list in the same edit, then run the specific `list-rules <id>` command before
+ticking docs/list-rules agreement.
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
 

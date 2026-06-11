@@ -270,6 +270,64 @@ async fn async_step() {}
 }
 
 #[test]
+pub(crate) fn lock_across_await_distinguishes_extracted_value_from_guard() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Holds a lock guard across an await.
+pub async fn direct_guard(lock: &std::sync::Mutex<String>) {
+    let guard = lock.lock().unwrap();
+    async_step().await;
+    println!("{}", *guard);
+}
+
+/// Extracts the option payload before the later await.
+pub async fn take_value(lock: &tokio::sync::Mutex<Option<String>>) {
+    let value = lock.lock().await.take();
+    async_step().await;
+    drop(value);
+}
+
+/// Drops the guard before the later await.
+pub async fn drop_before_await(lock: &std::sync::Mutex<String>) {
+    let guard = lock.lock().unwrap();
+    drop(guard);
+    async_step().await;
+}
+
+async fn async_step() {}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let lock_symbols: BTreeSet<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "concurrency.lock-across-await")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    assert_eq!(
+        lock_symbols,
+        BTreeSet::from(["direct_guard"]),
+        "only a bound guard held across await should flag; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.symbol.as_deref()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 pub(crate) fn performance_rules_flag_loop_scoped_hotspots() {
     let _guard = analysis_lock();
     let positive_dir = tempdir().expect("tempdir");
@@ -437,5 +495,4 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
     assert_missing_rule(&test_negative, "test-quality.conditional-logic");
     assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
-    assert_missing_rule(&test_negative, "test-quality.no-assertions");
 }

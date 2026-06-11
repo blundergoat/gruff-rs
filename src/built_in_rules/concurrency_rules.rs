@@ -97,7 +97,7 @@ pub(crate) fn analyse_lock_across_await(
 fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
     let lock_binding = static_regex(
         &LOCK_BINDING_REGEX,
-        r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*[^;]*\.(?:lock|read|write)\s*\([^;]*;",
+        r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<rhs>[^;]*\.(?:lock|read|write)\s*\([^;]*);",
     );
     let mut depth = 0usize;
     for (line_index, line) in lines.iter().enumerate() {
@@ -110,12 +110,59 @@ fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
             .get(1)
             .map(|guard| guard.as_str())
             .unwrap_or("guard");
+        let Some(rhs) = captures.name("rhs") else {
+            continue;
+        };
+        if !rhs_is_lock_guard_binding(rhs.as_str()) {
+            continue;
+        }
         let later_lines = &lines[line_index + 1..];
         if is_guard_held_across_await(later_lines, guard, depth_before_line, depth) {
             return Some(guard.to_string());
         }
     }
     None
+}
+
+fn rhs_is_lock_guard_binding(rhs: &str) -> bool {
+    static LOCK_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
+    let lock_call = static_regex(&LOCK_CALL_REGEX, r"\.(?:lock|read|write)\s*\([^)]*\)");
+    let Some(found) = lock_call.find(rhs) else {
+        return false;
+    };
+    lock_suffix_is_guard_preserving(&rhs[found.end()..])
+}
+
+fn lock_suffix_is_guard_preserving(mut suffix: &str) -> bool {
+    loop {
+        suffix = suffix.trim_start();
+        if suffix.is_empty() {
+            return true;
+        }
+        if let Some(rest) = suffix.strip_prefix(".await") {
+            suffix = rest;
+            continue;
+        }
+        if let Some(rest) = suffix.strip_prefix(".unwrap()") {
+            suffix = rest;
+            continue;
+        }
+        if let Some(rest) = strip_expect_suffix(suffix) {
+            suffix = rest;
+            continue;
+        }
+        if let Some(rest) = suffix.strip_prefix('?') {
+            suffix = rest;
+            continue;
+        }
+        return false;
+    }
+}
+
+fn strip_expect_suffix(suffix: &str) -> Option<&str> {
+    let rest = suffix.strip_prefix(".expect(")?;
+    let close = rest.find(')')?;
+    Some(&rest[close + 1..])
 }
 
 fn is_guard_held_across_await(

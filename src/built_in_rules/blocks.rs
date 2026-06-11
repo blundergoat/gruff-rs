@@ -4,10 +4,11 @@ pub(crate) fn analyse_blocks(
     file: &SourceFile,
     blocks: &[FunctionBlock],
     config: &Config,
+    families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
     for block in blocks {
-        analyse_block(file, block, config, findings);
+        analyse_block(file, block, config, families, findings);
     }
 }
 
@@ -15,29 +16,86 @@ pub(crate) fn analyse_block(
     file: &SourceFile,
     block: &FunctionBlock,
     config: &Config,
+    families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
     let searchable_body = strip_rust_string_literals(&block.body);
-    if block.is_test {
-        analyse_test_block(file, block, config, findings);
-    }
+    analyse_block_test_rules(file, block, config, families, findings);
     if block.is_test_context() {
         return;
     }
+    analyse_block_metric_rules(file, block, config, families, &searchable_body, findings);
+    analyse_block_documentation_rules(file, block, config, families, findings);
+    analyse_block_behavior_rules(file, block, families, &searchable_body, findings);
+}
 
-    analyse_block_size(file, block, config, findings);
-    analyse_block_complexity(file, block, &searchable_body, config, findings);
-    analyse_performance_block(file, block, &searchable_body, findings);
-    analyse_block_naming(file, block, config, findings);
-    analyse_public_function_doc(file, block, findings);
-    analyse_missing_errors_section(file, block, findings);
-    analyse_missing_panics_section(file, block, findings);
-    analyse_missing_safety_section(file, block, findings);
-    analyse_missing_param_doc(file, block, findings);
-    analyse_missing_return_doc(file, block, findings);
-    analyse_error_handling_block(file, block, &searchable_body, findings);
-    analyse_concurrency_block(file, block, &searchable_body, findings);
-    analyse_insecure_rng_for_secrets(file, block, &searchable_body, findings);
+fn analyse_block_test_rules(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    config: &Config,
+    families: EnabledBuiltinFamilies,
+    findings: &mut Vec<Finding>,
+) {
+    if block.is_test && families.block_test_quality {
+        analyse_test_block(file, block, config, findings);
+    }
+}
+
+fn analyse_block_metric_rules(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    config: &Config,
+    families: EnabledBuiltinFamilies,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    if families.block_size {
+        analyse_block_size(file, block, config, findings);
+    }
+    if families.block_complexity {
+        analyse_block_complexity(file, block, searchable_body, config, findings);
+    }
+    if families.block_performance {
+        analyse_performance_block(file, block, searchable_body, findings);
+    }
+}
+
+fn analyse_block_documentation_rules(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    config: &Config,
+    families: EnabledBuiltinFamilies,
+    findings: &mut Vec<Finding>,
+) {
+    if families.block_naming {
+        analyse_block_naming(file, block, config, findings);
+    }
+    if families.block_docs {
+        analyse_public_function_doc(file, block, findings);
+        analyse_missing_errors_section(file, block, findings);
+        analyse_missing_panics_section(file, block, findings);
+        analyse_missing_safety_section(file, block, findings);
+        analyse_missing_param_doc(file, block, findings);
+        analyse_missing_return_doc(file, block, findings);
+    }
+}
+
+fn analyse_block_behavior_rules(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    families: EnabledBuiltinFamilies,
+    searchable_body: &str,
+    findings: &mut Vec<Finding>,
+) {
+    if families.block_error_handling {
+        analyse_error_handling_block(file, block, searchable_body, findings);
+    }
+    if families.block_concurrency {
+        analyse_concurrency_block(file, block, searchable_body, findings);
+    }
+    if families.block_security {
+        analyse_insecure_rng_for_secrets(file, block, searchable_body, findings);
+    }
 }
 
 pub(crate) fn analyse_block_size(
