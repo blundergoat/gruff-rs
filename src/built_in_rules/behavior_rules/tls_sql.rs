@@ -308,16 +308,26 @@ fn skip_format_placeholder(
 }
 
 fn fixed_placeholder_arity_is_safe(source: &str, format_start: usize, template: &str) -> bool {
-    let placeholders = format_placeholder_names(template);
+    let placeholders = placeholder_arg_names(template);
+    // Every placeholder must be a simple identifier proven to be a fixed `?` list.
+    // A positional `{}` or indexed `{0}` interpolates a value the exemption cannot
+    // prove is a `?` list (it is formatted straight into the SQL text), so its
+    // presence alongside a proven list must not suppress the finding.
     !placeholders.is_empty()
-        && placeholders
-            .iter()
-            .all(|name| placeholder_binding_is_fixed_question_list(source, name, format_start))
+        && placeholders.iter().all(|name| {
+            is_simple_identifier(name)
+                && placeholder_binding_is_fixed_question_list(source, name, format_start)
+        })
         && later_uses_params_from_iter(source, format_start)
 }
 
-fn format_placeholder_names(template: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
+/// Every `{...}` placeholder argument token in `template`, in order. A positional
+/// `{}` yields an empty string and an indexed `{0}` yields its digits, so a caller
+/// can reject placeholders that are not simple identifiers it can reason about by
+/// name. Escaped `{{`/`}}` are skipped, and a format spec after `:` or `!` is
+/// dropped so `{name:?}` yields `name`.
+fn placeholder_arg_names(template: &str) -> Vec<String> {
+    let mut names = Vec::new();
     let mut chars = template.chars().peekable();
     while let Some(character) = chars.next() {
         if character != '{' {
@@ -335,9 +345,7 @@ fn format_placeholder_names(template: &str) -> BTreeSet<String> {
             raw.push(inner);
         }
         let name = raw.split([':', '!']).next().unwrap_or_default().trim();
-        if is_simple_identifier(name) {
-            names.insert(name.to_string());
-        }
+        names.push(name.to_string());
     }
     names
 }

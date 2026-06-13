@@ -237,10 +237,13 @@ pub(crate) fn git_output_bytes_with_stdin(
     stdin: &[u8],
 ) -> Result<Vec<u8>, String> {
     let mut command = git_command(project_root, args);
+    // This helper backs every git subcommand (diff, ls-tree, cat-file, ...), so the
+    // spawn-failure message names the actual subcommand rather than always "diff".
+    let subcommand = args.first().map(String::as_str).unwrap_or("command");
     if stdin.is_empty() {
         let output = command
             .output()
-            .map_err(|error| format!("unable to execute git diff: {error}"))?;
+            .map_err(|error| format!("unable to execute git {subcommand}: {error}"))?;
         return git_stdout_or_error(output);
     }
 
@@ -249,7 +252,7 @@ pub(crate) fn git_output_bytes_with_stdin(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|error| format!("unable to execute git diff: {error}"))?;
+        .map_err(|error| format!("unable to execute git {subcommand}: {error}"))?;
     child
         .stdin
         .take()

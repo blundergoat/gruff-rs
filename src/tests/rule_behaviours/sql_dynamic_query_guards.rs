@@ -79,6 +79,42 @@ pub fn mixed_identifier_and_placeholders(table: &str, ids: Vec<i64>) {
 }
 
 #[test]
+pub(crate) fn sql_dynamic_query_rejects_value_interpolation_beside_placeholder_list() {
+    let _guard = analysis_lock();
+    // A proven `?` list (`placeholders`) plus a nearby `params_from_iter` must not
+    // exempt a template that ALSO interpolates a value through a positional `{}`:
+    // that value is formatted straight into the SQL text and is a real injection
+    // sink. The fixed-arity exemption may only fire when every placeholder is a
+    // proven `?` list.
+    let positional_value = r#"/// Probe.
+pub fn positional_value(status: &str, ids: Vec<i64>) {
+    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT * FROM t WHERE status = {} AND id IN ({placeholders})", status);
+    conn.prepare(&sql)?;
+    let params = rusqlite::params_from_iter(ids);
+}
+"#;
+    assert_has_rule(
+        &analyse_sql_fixture(positional_value),
+        "security.sql-dynamic-query",
+    );
+
+    // An indexed `{0}` is likewise an unproven value interpolation, not a `?` list.
+    let indexed_value = r#"/// Probe.
+pub fn indexed_value(status: &str, ids: Vec<i64>) {
+    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT * FROM t WHERE status = {0} AND id IN ({placeholders})", status);
+    conn.prepare(&sql)?;
+    let params = rusqlite::params_from_iter(ids);
+}
+"#;
+    assert_has_rule(
+        &analyse_sql_fixture(indexed_value),
+        "security.sql-dynamic-query",
+    );
+}
+
+#[test]
 pub(crate) fn sql_dynamic_query_skips_non_sql_format_calls() {
     let _guard = analysis_lock();
     let body = r#"/// Probe.
