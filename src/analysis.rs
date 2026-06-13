@@ -363,6 +363,7 @@ fn project_coverage(
             discoverable_rust_files: analysed_rust_files.clone(),
             analysed_rust_files,
             diff_selection_narrowed: false,
+            parse_incomplete: false,
         };
     }
 
@@ -374,6 +375,7 @@ fn project_coverage(
         discoverable_rust_files,
         analysed_rust_files,
         diff_selection_narrowed,
+        parse_incomplete: false,
     }
 }
 

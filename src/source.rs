@@ -53,6 +53,7 @@ pub(crate) struct ProjectCoverage {
     pub(crate) discoverable_rust_files: BTreeSet<String>,
     pub(crate) analysed_rust_files: BTreeSet<String>,
     pub(crate) diff_selection_narrowed: bool,
+    pub(crate) parse_incomplete: bool,
 }
 
 impl ProjectCoverage {
@@ -60,10 +61,12 @@ impl ProjectCoverage {
         if self.analysed_rust_files.is_empty() {
             return false;
         }
-        // Partial when any discoverable Rust file was not analysed, so an explicit
-        // scan whose set is not a subset of the universe (e.g. a named gitignored
-        // file) is still treated as partial rather than authoritative.
-        self.diff_selection_narrowed
+        // Partial when a discovered Rust file failed to parse (the cross-file
+        // identifier index is then incomplete), or when any discoverable Rust file
+        // was not analysed - an explicit scan whose set is not a subset of the
+        // universe (e.g. a named gitignored file) is not authoritative either.
+        self.parse_incomplete
+            || self.diff_selection_narrowed
             || !self
                 .discoverable_rust_files
                 .is_subset(&self.analysed_rust_files)
@@ -179,6 +182,7 @@ mod coverage_tests {
             discoverable_rust_files: discoverable.iter().map(|path| path.to_string()).collect(),
             analysed_rust_files: analysed.iter().map(|path| path.to_string()).collect(),
             diff_selection_narrowed: false,
+            parse_incomplete: false,
         }
     }
 

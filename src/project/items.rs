@@ -18,7 +18,10 @@ pub(crate) fn collect_project_rust_index(
         module_path,
         cfg_context: false,
         test_context: false,
-        allow_dead_code_context: false,
+        // A crate- or module-level `#![allow(dead_code)]` lives on the file's inner
+        // attributes, so honour it for every item in the file (generated/plugin
+        // modules keep intentionally-unused items on purpose).
+        allow_dead_code_context: has_allow_dead_code_attr(&ast.attrs),
     };
     collect_project_items(scope, &ast.items, builders.modules, builders.items);
     collect_call_names(file, source, builders.call_names);

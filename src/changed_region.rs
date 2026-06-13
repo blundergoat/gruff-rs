@@ -110,24 +110,16 @@ pub(crate) fn git_diff_patch(
     mode: &str,
     paths: &[PathBuf],
 ) -> Result<DiffPatchLineMap, String> {
-    let patch = match mode {
-        "working-tree" => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--no-ext-diff", "--unified=0", "HEAD"], paths),
-        )?,
-        "staged" => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--no-ext-diff", "--cached", "--unified=0"], paths),
-        )?,
-        "unstaged" => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--no-ext-diff", "--unified=0"], paths),
-        )?,
-        base => git_output(
-            project_root,
-            &git_args_with_paths(&["diff", "--no-ext-diff", "--unified=0", base], paths),
-        )?,
-    };
+    // `--no-ext-diff`/`--no-textconv` stop an untrusted repo's configured diff
+    // drivers from executing under this `--diff-git-unsafe`-gated path.
+    let mut prefix = vec!["diff", "--no-ext-diff", "--no-textconv", "--unified=0"];
+    match mode {
+        "working-tree" => prefix.push("HEAD"),
+        "staged" => prefix.push("--cached"),
+        "unstaged" => {}
+        base => prefix.push(base),
+    }
+    let patch = git_output(project_root, &git_args_with_paths(&prefix, paths))?;
     let mut parsed = parse_unified_diff(&patch);
     if mode == "working-tree" {
         for path in git_untracked_files(project_root, paths)? {
@@ -253,15 +245,21 @@ pub(crate) fn git_output_bytes_with_stdin(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| format!("unable to execute git {subcommand}: {error}"))?;
-    child
+    let mut child_stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "unable to open git stdin".to_string())?
-        .write_all(stdin)
-        .map_err(|error| format!("unable to write git stdin: {error}"))?;
+        .ok_or_else(|| "unable to open git stdin".to_string())?;
+    // Write stdin on a separate thread: batched git commands (e.g. `cat-file
+    // --batch -Z`) stream stdout while still reading stdin, so writing the whole
+    // query buffer before reading stdout would deadlock once the stdout pipe fills.
+    let payload = stdin.to_vec();
+    let writer = std::thread::spawn(move || child_stdin.write_all(&payload));
     let output = child
         .wait_with_output()
         .map_err(|error| format!("unable to read git output: {error}"))?;
+    // git's exit status is authoritative; a writer broken-pipe error (git exiting
+    // early) surfaces through git's own stderr in `git_stdout_or_error`.
+    let _ = writer.join();
     git_stdout_or_error(output)
 }
 

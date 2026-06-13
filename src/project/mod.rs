@@ -117,8 +117,15 @@ pub(crate) fn line_from_span(position: LineColumn) -> usize {
 pub(crate) fn build_project_context(
     project_root: &Path,
     sources: &[ParsedSource],
-    coverage: ProjectCoverage,
+    mut coverage: ProjectCoverage,
 ) -> ProjectContext {
+    // A discoverable Rust file that failed to parse contributes no identifiers to
+    // the index, so cross-file dead-code cannot be trusted. Mark coverage partial
+    // (the dead-code candidate then suppresses itself and emits its diagnostic)
+    // rather than reviving a false deletion signal from an incomplete index.
+    coverage.parse_incomplete = sources
+        .iter()
+        .any(|source| source.file.is_rust && source.rust_ast.is_none());
     let mut diagnostics = Vec::new();
     let manifest = read_manifest_summary(project_root, &mut diagnostics);
     let lockfile = read_lockfile_summary(project_root, &mut diagnostics);
