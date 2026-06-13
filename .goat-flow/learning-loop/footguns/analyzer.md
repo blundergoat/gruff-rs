@@ -13,6 +13,8 @@ The concrete trap is a two-file crate where `src/lib.rs` declares `fn helper_use
 
 Keep project-level dead-code tied to a coverage fact, not path-string guesses. The guard lives in `ProjectCoverage` (search: `diff_selection_narrowed`) and the rule suppresses itself with `partial-context-rule-suppressed` when coverage is partial. Regression coverage: `src/tests/project_tests/dead_code.rs` (search: `dead_code_partial_context_suppresses_cross_file_candidate`, `dead_code_diff_patch_partial_context_suppresses_candidate`, `dead_code_partial_context_coverage_tracks_actual_rust_file_universe`).
 
+**2026-06-14 extension:** the coverage test itself must be "did we analyse every discoverable file", i.e. `!discoverable.is_subset(&analysed)`. `ProjectCoverage::is_partial` (`src/source.rs` search: `fn is_partial`) first used `analysed != discoverable && analysed.is_subset(discoverable)`, which only treats a PROPER SUBSET as partial. When the sets are incomparable - analysed carries an out-of-walk extra (an explicitly named gitignored `.rs`) AND misses a discoverable file - that returned "complete" and let the cross-file candidate emit on an incomplete index. Regression: `src/source.rs` (search: `fn is_partial_flags_any_uncovered_discoverable_file`).
+
 ## Footgun: Enriched Rule Definitions Require A `related` Arm
 
 **Status:** active | **Created:** 2026-06-11 | **Evidence:** OBSERVED
@@ -267,6 +269,28 @@ Fix: `fn placeholder_arg_names` now returns every placeholder token (positional 
 The non-obvious failure mode is an error-severity secret rule whose inert-skip is enumerated from the author's example shapes: it looks correct on fixtures and floods on real data, and because it is error severity it FAILS a hook/CI gate on model-name strings - the false-positive-as-command-to-change-correct-code problem this tool exists to avoid. A structured-non-secret skip must be defined by a *safe separating principle*, not a hand-tuned shape.
 
 Fix: `fn is_separated_identifier_slug` recognises any separator-delimited slug where every segment is short and alphanumeric and at least two are word-like, but refuses the skip when any non-word segment exceeds 6 chars - because a real secret is either contiguous (one segment), carries base64 padding (`+`/`=`), or hides a long high-entropy run, none of which pass. This removed 100 of 101 model-catalogue FPs across five external repos with zero collateral on any other rule, while every real-secret fixture stayed flagged. Regression coverage: `src/built_in_rules/helpers.rs` (search: `high_entropy_skips_model_identifiers_without_masking_secrets`) asserts the model IDs skip AND that opaque tokens / separated secret blobs keep flagging. Residual: a CamelCase name with a short acronym tail whose non-word segment exceeds 6 chars (`WizardLM-2-8x22B`) still flags; closing it would loosen the safety bound, so it is left. Pairs with [[rule-precision]].
+
+## Footgun: Text Proof/Evidence Helpers Match Names Too Loosely
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
+
+Several rules "prove" a value safe, or find "evidence" it is risky, by scanning nearby source text for a binding or function. Done with `starts_with`, substring `find`, or `rfind("\nfn ")`, those matches are too loose in two recurring ways - they ignore word boundaries and they cross function boundaries - and the failure is a silent false negative in a SECURITY rule.
+
+Concrete instances (2026-06-14, PR review): `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn placeholder_binding_is_fixed_question_list`) scoped its fixed-`?` proof window with `rfind("\nfn ")`, which only matches a bare `fn` at column zero - so for `pub fn`/`async fn`/`impl` methods (the common case) the window spilled into earlier functions and a helper's `let placeholders = ...join(",")` vouched for an untrusted `placeholders` parameter elsewhere. Same file, `line_is_name_binding` used `starts_with("let {name}")`, so `placeholders` was proven by an unrelated `placeholders_safe` binding. The identical shape lived in `src/built_in_rules/path_traversal_rules.rs` (search: `fn window_has_receiver_path_binding`): a plain `find("let {receiver}")` let a `files_backup` binding vouch for a `files` receiver, and `let mut` bindings were missed entirely.
+
+Fix pattern: scope the window to the ENCLOSING function (reuse `is_function_start_line` to find the start, not `rfind("\nfn ")`), and require a non-identifier char after a name match so `x` does not match `x_suffix`; cover both `let` and `let mut`. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_proof_is_scoped_to_current_function_and_exact_name`) and `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `path_traversal_reaches_accessor_receivers_and_let_mut_bindings`).
+
+When adding any "look at nearby text for a binding/usage named X" helper, default to word-boundary checks and current-function scope, and add a negative fixture with a prefix-collision name (`X_safe`) plus a `let mut` binding. Pairs with [[rule-precision]].
+
+## Footgun: Clearing Git Env Vars Does Not Fully Neutralise The Subprocess
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** OBSERVED
+
+`src/changed_region.rs` (search: `fn git_command`) hardens the diff subprocess by removing `GIT_EXTERNAL_DIFF` and pointing config/hooks at `/dev/null`. That does NOT stop `git diff` from running an external diff driver configured by the repository's OWN committed `diff.external` (or a `.gitattributes` `diff=<driver>` mapping) - attacker-controlled data in an untrusted tree. Env hygiene neutralises the environment, not the repo's committed config.
+
+The diff path is opt-in behind `--diff-git-unsafe` (ADR-019), but `.goat-flow/architecture.md` claims the diff subprocess "does not execute arbitrary code", so the gap also makes a committed claim untrue. Fix: pass `--no-ext-diff` on every `git diff` invocation (`src/changed_region.rs` search: `fn git_diff_patch`) - it disables both global `diff.external` and attribute-driven drivers. `--no-ext-diff` is a diff/log option, so it cannot live in the shared `git_command` builder (cat-file/ls-tree reject it); add it per diff arg vector.
+
+When hardening any subprocess against an untrusted tree, enumerate the ways the tree's OWN committed files (config, attributes, hooks, ignore files) can change behaviour, not just environment variables. Pairs with ADR-019.
 
 ## Resolved Entries
 
