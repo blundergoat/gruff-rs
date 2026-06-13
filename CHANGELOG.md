@@ -4,14 +4,14 @@
 
 0.4.0 is a precision, correctness, and runtime-efficiency release for hook-facing scans. It keeps the report schema stable, makes partial-context analysis safer, tightens high-noise rules found by external scans, and retires two default rubrics that could not be made precise enough for agent hooks.
 
-- **Partial-context dead-code safety.** Project-level dead-code candidate findings are suppressed when a path or diff run does not cover the whole discoverable Rust source universe; the report emits a diagnostic pointing users at a full-project scan instead.
-- **Sharper security and secret rules.** Dynamic SQL checks require SQL-keyword-bearing templates and keep identifier interpolation conservative; high-entropy strings skip known inert structures such as package integrity hashes, base64 alphabets, separator-bearing slugs, and model IDs while keeping real secret shapes reportable.
-- **Hook and Rust-pipeline efficiency.** Hook diff analysis avoids duplicate work, batched Git base export reduces subprocess overhead, Rust rule dispatch skips disabled families earlier, and the performance harness has an exact Rust item-rule scenario.
-- **Non-UTF-8 text robustness.** Broad scans skip low-risk invalid UTF-8 text with a diagnostic instead of failing the whole run; explicit inputs and security-relevant text remain visible.
-- **External-scan false-positive fixes.** Dead-code candidates skip exported/plugin/allowed items, path-traversal candidates require filesystem join evidence and recognize explicit segment sanitizers, lock-across-await skips immediate value extraction, and SQL/test/security fixtures cover the reviewed external shapes.
-- **Removed two noisy default rubrics:** `modernisation.public-field` and `test-quality.no-assertions`. Public DTO/schema/CLI contract fields and Rust harness-style tests require design or framework intent the analyzer cannot infer reliably enough for a default hook rule.
-- **Kept `security.path-traversal-candidate` default-on.** A review did not justify weakening a security candidate rule; future work may refine wording or metadata without reducing coverage.
-- **Rule catalogue 87 → 85.** The two retired rule IDs are absent from `list-rules`, default config, docs, and normal analysis output; JSON/SARIF schema versions and existing finding identity contracts are unchanged.
+- **Partial-context dead-code safety.** Project-level dead-code findings are held back when a scan doesn't cover the whole Rust tree; a diagnostic points to a full scan.
+- **Sharper security and secret rules.** Dynamic SQL findings now require a real SQL keyword; high-entropy checks skip inert text (integrity hashes, base64 alphabets, slugs, model IDs) but still flag real secrets.
+- **Hook and Rust-pipeline efficiency.** Hook diff analysis avoids duplicate work, batched Git export cuts overhead, and rule dispatch skips disabled families sooner.
+- **Non-UTF-8 text robustness.** Broad scans skip invalid (non-UTF-8) text with a diagnostic instead of failing; named and security-relevant files stay visible.
+- **External-scan false-positive fixes.** Dead-code skips exported/plugin/allowed items; path-traversal needs filesystem-join evidence and honors sanitizers; lock-across-await ignores immediate extraction.
+- **Removed two noisy default rules:** `modernisation.public-field` and `test-quality.no-assertions`. Public contract fields and harness-style tests need design intent the analyzer can't reliably guess.
+- **Kept `security.path-traversal-candidate` on by default.** A review found no reason to weaken it; wording or metadata may still change without cutting coverage.
+- **Rule catalogue 87 → 85.** The two retired IDs are gone from `list-rules`, config, docs, and output; schema versions and finding identities are unchanged.
 
 ## v0.3.0 - 2026-06-09
 
