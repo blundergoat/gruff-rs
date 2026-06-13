@@ -409,7 +409,7 @@ version_metadata_check() {
     fi
 
     if [[ -f "$REPO_ROOT/CHANGELOG.md" ]] \
-      && ! grep -qE "^##[[:space:]]+${manifest_version}[[:space:]]+-[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" "$REPO_ROOT/CHANGELOG.md"; then
+      && ! grep -qE "^##[[:space:]]+v?${manifest_version}[[:space:]]+-[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" "$REPO_ROOT/CHANGELOG.md"; then
       printf 'CHANGELOG.md is missing a release heading for %s\n' "$manifest_version" >&2
       return 1
     fi

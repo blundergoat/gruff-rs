@@ -296,7 +296,9 @@ pub(crate) fn is_integrity_hash(value: &str) -> bool {
 }
 
 pub(crate) fn is_structured_high_entropy_non_secret(value: &str) -> bool {
-    is_base64_alphabet_table(value) || is_word_segment_slug(value) || is_model_identifier(value)
+    is_base64_alphabet_table(value)
+        || is_word_segment_slug(value)
+        || is_separated_identifier_slug(value)
 }
 
 fn is_base64_alphabet_table(value: &str) -> bool {
@@ -329,56 +331,38 @@ fn is_word_segment_slug(value: &str) -> bool {
     })
 }
 
-fn is_model_identifier(value: &str) -> bool {
-    let Some(segments) = model_identifier_segments(value) else {
+/// Recognises separator-delimited identifier slugs that trip entropy thresholds
+/// only because several low-entropy tokens are concatenated: model names and IDs
+/// (`Llama-4-Maverick-17B-128E-Instruct-FP8`, `provider/Family/Model-Size`), and
+/// kebab/path identifiers. A real secret is either contiguous (a single segment),
+/// carries base64 padding (`+`/`=`), or hides a long high-entropy run in a segment;
+/// none of those shapes pass here, so this skip cannot mask a credential.
+fn is_separated_identifier_slug(value: &str) -> bool {
+    if value.contains(['+', '=']) {
         return false;
-    };
-    let Some((word_segments, code_segments)) = count_model_segment_kinds(&segments) else {
+    }
+    let segments: Vec<&str> = value.split(['/', '_', '-', '.']).collect();
+    if segments.len() < 3 || segments.iter().any(|segment| segment.is_empty()) {
         return false;
-    };
-    segments.len() >= 5 && word_segments >= 3 && code_segments >= 2
-}
-
-fn model_identifier_segments(value: &str) -> Option<Vec<&str>> {
-    if value.contains(['+', '=', '_']) || !value.contains('/') || !value.contains('-') {
-        return None;
     }
-    let slash_parts: Vec<&str> = value.split('/').collect();
-    if slash_parts.len() < 3 || !is_lowercase_word(slash_parts[0]) {
-        return None;
+    if segments.iter().any(|segment| {
+        !segment
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    }) {
+        return false;
     }
-    let segments: Vec<&str> = slash_parts
-        .iter()
-        .flat_map(|part| part.split('-'))
-        .collect();
-    (!segments.iter().any(|segment| segment.is_empty())).then_some(segments)
-}
-
-fn count_model_segment_kinds(segments: &[&str]) -> Option<(usize, usize)> {
     let mut word_segments = 0;
-    let mut code_segments = 0;
-    for segment in segments {
-        match model_segment_kind(segment)? {
-            ModelSegmentKind::Word => word_segments += 1,
-            ModelSegmentKind::Code => code_segments += 1,
+    for segment in &segments {
+        if segment_has_word_like_case_runs(segment) {
+            word_segments += 1;
+        } else if segment.len() > 6 {
+            // A long token that is not word-like has the shape of a secret chunk,
+            // not a version/size code, so the whole value is not inert.
+            return false;
         }
     }
-    Some((word_segments, code_segments))
-}
-
-enum ModelSegmentKind {
-    Word,
-    Code,
-}
-
-fn model_segment_kind(segment: &str) -> Option<ModelSegmentKind> {
-    if is_model_word_segment(segment) {
-        Some(ModelSegmentKind::Word)
-    } else if is_model_code_segment(segment) {
-        Some(ModelSegmentKind::Code)
-    } else {
-        None
-    }
+    word_segments >= 2
 }
 
 fn segment_has_letters_then_optional_short_digits(segment: &str) -> bool {
@@ -429,33 +413,6 @@ fn camel_case_runs(value: &str) -> Vec<String> {
         }
     }
     runs
-}
-
-fn is_lowercase_word(value: &str) -> bool {
-    value.len() >= 3
-        && value
-            .chars()
-            .all(|character| character.is_ascii_lowercase())
-}
-
-fn is_model_word_segment(segment: &str) -> bool {
-    segment_has_letters_then_optional_short_digits(segment)
-        && segment_has_word_like_case_runs(segment)
-}
-
-fn is_model_code_segment(segment: &str) -> bool {
-    if !(2..=8).contains(&segment.len())
-        || !segment
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-        || !segment.chars().any(|character| character.is_ascii_digit())
-    {
-        return false;
-    }
-    segment.chars().all(|character| character.is_ascii_digit())
-        || segment
-            .chars()
-            .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit())
 }
 
 /// Returns true when the file is part of the rule calibration harness.
@@ -519,6 +476,16 @@ mod high_entropy_tests {
         "-_"
     );
     const MODEL_IDENTIFIER: &str = concat!("deepinfra/Qwen/", "Qwen3-235B-A22B-", "Instruct-2507");
+    // Real model-name/ID shapes that flagged at error severity on AI-tooling repos:
+    // a bare name with no provider slash, a single-slash id, and lowercase size codes
+    // the previous recogniser rejected.
+    const BARE_MODEL_NAME: &str = "Llama-4-Maverick-17B-128E-Instruct-FP8";
+    const SINGLE_SLASH_MODEL: &str = "Qwen/Qwen3-Coder-480B-A35B-Instruct";
+    const LOWERCASE_MODEL_ID: &str = "abacus/Qwen/qwen3-coder-480b-a35b-instruct";
+    // An opaque API response id and a separated value hiding a long high-entropy run:
+    // both must stay flagged so the broadened skip cannot mask a credential.
+    const OPAQUE_RESPONSE_ID: &str = concat!("chatcmpl-Bk9Ye6Y0", "t9E7bC3DOMxCpW8eJkTKU");
+    const SEPARATED_SECRET_BLOB: &str = concat!("key-Zx9Q2rS8vX3pR", "6nY0aB4cD7eG1hJ-end");
 
     #[test]
     fn high_entropy_structured_predicates_accept_only_inert_shapes() {
@@ -537,6 +504,20 @@ mod high_entropy_tests {
         assert!(!is_structured_high_entropy_non_secret(BASE64URL_SECRET));
         assert!(!is_structured_high_entropy_non_secret(
             GITHUB_PAT_LIKE_SECRET
+        ));
+    }
+
+    #[test]
+    fn high_entropy_skips_model_identifiers_without_masking_secrets() {
+        // Model names and IDs are concatenated low-entropy tokens, not credentials.
+        assert!(is_structured_high_entropy_non_secret(BARE_MODEL_NAME));
+        assert!(is_structured_high_entropy_non_secret(SINGLE_SLASH_MODEL));
+        assert!(is_structured_high_entropy_non_secret(LOWERCASE_MODEL_ID));
+
+        // A two-segment opaque id and a slug hiding a long random run keep flagging.
+        assert!(!is_structured_high_entropy_non_secret(OPAQUE_RESPONSE_ID));
+        assert!(!is_structured_high_entropy_non_secret(
+            SEPARATED_SECRET_BLOB
         ));
     }
 

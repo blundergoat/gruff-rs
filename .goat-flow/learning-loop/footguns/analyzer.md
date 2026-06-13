@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-06-11
+last_reviewed: 2026-06-14
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -127,6 +127,8 @@ Concrete instance from the 0.3.0 release check: `git check-ignore src/generated.
 
 The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/dead_code.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
 
+**2026-06-14 extension (external scan, OPEN gap):** the structured-reference extractor `src/parser/mod.rs` (search: `fn append_serde_default_references`) recognises only the `default = "..."` serde key (regex `\bdefault\s*=\s*"..."`). An external scan of a serde-heavy repo (goose) flagged custom `deserialize_with` / `serialize_with` / `skip_serializing_if` / `with` functions (e.g. `deserialize_modalities` via `#[serde(deserialize_with = "...")]`, `is_default_permissions` via `skip_serializing_if`) as `dead-code.unused-private-function` and `dead-code.unused-private-item-candidate`, because those attribute strings are the functions' only call sites and the extractor never appends them. Not yet fixed. Before treating dead-code findings on serde-heavy crates as authoritative, broaden the recognised serde attribute keys to the reference-bearing set (`with`, `serialize_with`, `deserialize_with`, `skip_serializing_if`, `default`), and add a fixture per key.
+
 ## Footgun: Secret-Key Case Sensitivity Depends On File Kind
 
 **Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
@@ -245,6 +247,26 @@ The non-obvious failure mode: the more faithfully an agent follows the doc-comme
 - `?` (error-propagation) counts toward cyclomatic but reads linearly; weight it deliberately (M00c).
 - `complexity.npath` was removed entirely (M00) because exponentiation made this inflation cross threshold while adding no signal cyclomatic / cognitive / nesting don't already carry.
 - Regression coverage to add when fixed: a complexity calibration case whose body contains control-flow words only in comments and stays silent.
+
+## Footgun: A Rule Exemption That Counts Only Named Placeholders Hides Positional Injection
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn fixed_placeholder_arity_is_safe`) exempts `security.sql-dynamic-query` for the safe IN-clause idiom: a `let placeholders = repeat_n("?", n).join(",")` list bound through `params_from_iter`. The original exemption extracted only NAMED placeholders from the `format!` template, so positional `{}` and indexed `{0}` placeholders were invisible to it. `format!("... WHERE status = {} AND id IN ({placeholders})", status)` had its only *named* placeholder (`placeholders`) proven safe, the `all(...)` check passed, and the rule silently dropped a real injection sink. Positional `{}` is the most common `format!` form, so the gap masked the dominant shape, not an edge case.
+
+The non-obvious failure mode is a security false-NEGATIVE introduced by a precision exemption: the placeholder enumerator filtered to simple identifiers and dropped non-identifier placeholders instead of treating them as un-proven. An exemption is itself a rule, and a skip predicate must enumerate EVERY placeholder and require all of them to be proven safe - never just the ones it can name.
+
+Fix: `fn placeholder_arg_names` now returns every placeholder token (positional `{}` -> empty string, indexed `{0}` -> digits) and `fixed_placeholder_arity_is_safe` requires each to be a simple identifier AND a proven `?` list. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_rejects_value_interpolation_beside_placeholder_list`) probes both positional `{}` and indexed `{0}`. Pairs with [[rule-precision]]: an exemption's false negatives cost as much as the rule's false positives.
+
+## Footgun: High-Entropy Inert Skip Was Tuned To One Model-ID Shape, Not A Safe Principle
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/helpers.rs` (search: `fn is_structured_high_entropy_non_secret`) skips inert high-entropy strings so `sensitive-data.high-entropy-string` (error severity) does not fire on base64 alphabets, word slugs, and model identifiers. The original model-ID recogniser demanded a `provider/Family/Model` slash structure with all-uppercase-or-digit version codes. Real model catalogues carry far more variety, so it missed bare names with no slash (`Llama-4-Maverick-17B-128E-Instruct-FP8`), single-slash ids, and lowercase size codes (`480b`, `a35b`). A scan of an AI-tooling repo's catalogue (`goose .../canonical_models.json`) produced ~92 error-severity false positives from model identifiers alone, and no real leaked credential was present among the 173 high-entropy hits across five repos.
+
+The non-obvious failure mode is an error-severity secret rule whose inert-skip is enumerated from the author's example shapes: it looks correct on fixtures and floods on real data, and because it is error severity it FAILS a hook/CI gate on model-name strings - the false-positive-as-command-to-change-correct-code problem this tool exists to avoid. A structured-non-secret skip must be defined by a *safe separating principle*, not a hand-tuned shape.
+
+Fix: `fn is_separated_identifier_slug` recognises any separator-delimited slug where every segment is short and alphanumeric and at least two are word-like, but refuses the skip when any non-word segment exceeds 6 chars - because a real secret is either contiguous (one segment), carries base64 padding (`+`/`=`), or hides a long high-entropy run, none of which pass. This removed 100 of 101 model-catalogue FPs across five external repos with zero collateral on any other rule, while every real-secret fixture stayed flagged. Regression coverage: `src/built_in_rules/helpers.rs` (search: `high_entropy_skips_model_identifiers_without_masking_secrets`) asserts the model IDs skip AND that opaque tokens / separated secret blobs keep flagging. Residual: a CamelCase name with a short acronym tail whose non-word segment exceeds 6 chars (`WizardLM-2-8x22B`) still flags; closing it would loosen the safety bound, so it is left. Pairs with [[rule-precision]].
 
 ## Resolved Entries
 
