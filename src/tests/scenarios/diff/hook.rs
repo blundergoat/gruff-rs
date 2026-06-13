@@ -364,6 +364,30 @@ pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
 }
 
 #[test]
+pub(crate) fn hook_diff_base_export_handles_newline_filenames() {
+    let _guard = analysis_lock();
+    let repo = tempdir().expect("tempdir");
+    init_git_repo(repo.path());
+    write_named_oversized_rust_file(repo.path(), "src/line\nbreak.rs", 601);
+    git(repo.path(), &["add", "-A"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+
+    let options = AnalysisOptions {
+        paths: vec![PathBuf::from("src")],
+        no_config: true,
+        no_baseline: true,
+        ..default_test_options()
+    };
+    let base_identities =
+        crate::hook::diff_base_stable_identities(repo.path(), &options, &Config::default(), "HEAD")
+            .expect("newline base tree export succeeds");
+    assert!(
+        !base_identities.is_empty(),
+        "base export should surface the oversized newline-path file finding"
+    );
+}
+
+#[test]
 pub(crate) fn hook_diff_new_only_keeps_a_newly_added_duplicate_line_finding() {
     let _guard = analysis_lock();
     let repo = tempdir().expect("tempdir");

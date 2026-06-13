@@ -153,3 +153,142 @@ pub fn make_client(insecure: bool) {
         report.findings
     );
 }
+
+#[test]
+pub(crate) fn path_traversal_requires_filesystem_join_and_recognises_segment_sanitizer() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use std::path::{Path, PathBuf};
+
+/// Walks virtual archive parts.
+pub struct Walker;
+
+impl Walker {
+    /// Joins archive parts, not filesystem paths.
+    pub fn join(&self, parts: Vec<&str>) -> usize {
+        parts.len()
+    }
+}
+
+/// Service owning a virtual walker.
+pub struct Service {
+    pub walker: Walker,
+}
+
+impl Service {
+    /// Delegates to a virtual walker.
+    pub fn walk(&self, subdir_parts: Vec<&str>) -> usize {
+        self.walker.join(subdir_parts)
+    }
+}
+
+/// Sanitizes a lookup key before joining it to a root directory.
+pub fn sanitized_lookup(root: &Path, key: &str) -> PathBuf {
+    let safe_key = key.replace("..", "").replace('/', "").replace('\\', "");
+    root.join(safe_key)
+}
+
+/// Joins an unchecked user segment to a project root.
+pub fn unchecked_join(project_root: &Path, user_input: &str) -> PathBuf {
+    project_root.join(user_input)
+}
+
+/// Joins an unchecked user segment to an inline PathBuf constructor.
+pub fn unchecked_inline_pathbuf_join(user_input: &str) -> PathBuf {
+    PathBuf::from("/tmp").join(user_input)
+}
+
+/// Joins an unchecked user segment to an inline Path constructor.
+pub fn unchecked_inline_path_join(user_input: &str) -> PathBuf {
+    Path::new("/tmp").join(user_input)
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let path_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.path-traversal-candidate")
+        .collect();
+    assert_eq!(
+        path_findings.len(),
+        3,
+        "only real filesystem joins with unchecked segments should flag; findings={path_findings:?}"
+    );
+    assert!(
+        path_findings
+            .iter()
+            .all(|finding| finding.metadata["argument"] == json!("user_input")),
+        "all filesystem join findings should report the unchecked segment; findings={path_findings:?}"
+    );
+}
+
+#[test]
+pub(crate) fn path_traversal_reaches_accessor_receivers_and_let_mut_bindings() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use std::path::PathBuf;
+
+/// Holds a base directory.
+pub struct App;
+
+impl App {
+    /// Returns the base directory.
+    pub fn root(&self) -> PathBuf {
+        PathBuf::from("/data")
+    }
+
+    /// Joins an unchecked segment onto a path returned by an accessor call.
+    pub fn open(&self, user_input: &str) -> PathBuf {
+        self.root().join(user_input)
+    }
+}
+
+/// Joins an unchecked segment onto a `let mut` path binding.
+pub fn mutable_base_join(user_input: &str) -> PathBuf {
+    let mut store = PathBuf::from("/data");
+    store.push("sub");
+    store.join(user_input)
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let path_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.path-traversal-candidate")
+        .collect();
+    assert_eq!(
+        path_findings.len(),
+        2,
+        "accessor-call receivers and `let mut` path bindings must flag; findings={path_findings:?}"
+    );
+    assert!(
+        path_findings
+            .iter()
+            .all(|finding| finding.metadata["argument"] == json!("user_input")),
+        "both joins should report the unchecked segment; findings={path_findings:?}"
+    );
+}

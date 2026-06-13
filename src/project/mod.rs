@@ -25,18 +25,47 @@ pub(crate) fn read_and_parse_sources_with_options(
     let mut diagnostics = Vec::new();
 
     for source_file in files {
-        match fs::read_to_string(&source_file.absolute_path) {
+        match read_source_text(source_file) {
             Ok(source) => parsed_sources.push(parse_source_file(source_file, source, parse_rust)),
-            Err(error) => diagnostics.push(RunDiagnostic {
-                diagnostic_type: "read-error".to_string(),
-                message: format!("Unable to read file: {error}"),
-                file_path: Some(source_file.display_path.clone()),
-                line: Some(1),
-            }),
+            Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
 
     (parsed_sources, diagnostics)
+}
+
+fn read_source_text(source_file: &SourceFile) -> Result<String, RunDiagnostic> {
+    let bytes = fs::read(&source_file.absolute_path).map_err(|error| {
+        read_error_diagnostic(source_file, format!("Unable to read file: {error}"))
+    })?;
+    match String::from_utf8(bytes) {
+        Ok(source) => Ok(source),
+        Err(_) if invalid_utf8_can_be_skipped(source_file) => Err(RunDiagnostic {
+            diagnostic_type: "read-skip-non-utf8".to_string(),
+            message: "Skipped supported text file because it is not valid UTF-8.".to_string(),
+            file_path: Some(source_file.display_path.clone()),
+            line: Some(1),
+        }),
+        Err(_) => Err(read_error_diagnostic(
+            source_file,
+            "Unable to read supported text as UTF-8; explicit inputs and security-relevant text must be valid UTF-8.".to_string(),
+        )),
+    }
+}
+
+fn invalid_utf8_can_be_skipped(source_file: &SourceFile) -> bool {
+    source_file.origin == SourceOrigin::Directory
+        && !source_file.is_rust
+        && !crate::discovery::is_security_relevant_text_path(&source_file.absolute_path)
+}
+
+fn read_error_diagnostic(source_file: &SourceFile, message: String) -> RunDiagnostic {
+    RunDiagnostic {
+        diagnostic_type: "read-error".to_string(),
+        message,
+        file_path: Some(source_file.display_path.clone()),
+        line: Some(1),
+    }
 }
 
 pub(crate) fn parse_source_file(
@@ -88,7 +117,15 @@ pub(crate) fn line_from_span(position: LineColumn) -> usize {
 pub(crate) fn build_project_context(
     project_root: &Path,
     sources: &[ParsedSource],
+    mut coverage: ProjectCoverage,
 ) -> ProjectContext {
+    // A discoverable Rust file that failed to parse contributes no identifiers to
+    // the index, so cross-file dead-code cannot be trusted. Mark coverage partial
+    // (the dead-code candidate then suppresses itself and emits its diagnostic)
+    // rather than reviving a false deletion signal from an incomplete index.
+    coverage.parse_incomplete = sources
+        .iter()
+        .any(|source| source.file.is_rust && source.rust_ast.is_none());
     let mut diagnostics = Vec::new();
     let manifest = read_manifest_summary(project_root, &mut diagnostics);
     let lockfile = read_lockfile_summary(project_root, &mut diagnostics);
@@ -97,6 +134,7 @@ pub(crate) fn build_project_context(
 
     ProjectContext {
         root_path: project_root.to_path_buf(),
+        coverage,
         manifest,
         lockfile,
         rust_sources: index.rust_sources,
@@ -129,7 +167,6 @@ pub(crate) fn project_index(sources: &[ParsedSource]) -> ProjectIndex {
             count_rust_identifiers(&reference_source, &mut identifier_counts);
             rust_sources.push(RustSourceSummary {
                 file_path: source.file.display_path.clone(),
-                source: source.source.clone(),
             });
             let module_path = inferred_file_module_path(&source.file);
             collect_project_rust_index(
@@ -209,6 +246,8 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
             left.cfg_gated,
             left.test_context,
             left.trait_impl,
+            left.exported_by_attr,
+            left.allow_dead_code,
         )
             .cmp(&(
                 right.file_path.as_str(),
@@ -220,6 +259,8 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
                 right.cfg_gated,
                 right.test_context,
                 right.trait_impl,
+                right.exported_by_attr,
+                right.allow_dead_code,
             ))
     });
 }
@@ -328,10 +369,10 @@ pub(crate) fn visibility_is_public(visibility: &Visibility) -> bool {
 /// Returns true only for unrestricted `pub` items. `pub(crate)`, `pub(super)`,
 /// and `pub(in path)` are reachable inside the crate but not part of the
 /// external API surface, so the reportable public-API rules
-/// (`modernisation.public-field`, `docs.missing-public-doc`,
-/// `error-handling.public-unwrap`, `architecture.public-api-surface`) use this
-/// stricter helper. Dead-code reachability and project-model indexing keep
-/// using the lenient `visibility_is_public` above.
+/// (`docs.missing-public-doc`, `error-handling.public-unwrap`,
+/// `architecture.public-api-surface`) use this stricter helper. Dead-code
+/// reachability and project-model indexing keep using the lenient
+/// `visibility_is_public` above.
 pub(crate) fn visibility_is_externally_public(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Public(_))
 }

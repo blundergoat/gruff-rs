@@ -326,3 +326,82 @@ rules:
         .iter()
         .any(|diagnostic| diagnostic.diagnostic_type == "parse-error"));
 }
+
+#[test]
+pub(crate) fn exact_rust_rule_selector_does_not_emit_neighbor_families() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("src")).expect("src dir");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        r#"
+pub fn missing_doc(input: Option<String>) -> String {
+    let value = input.unwrap();
+    std::process::Command::new("sh").arg("-c").arg(&value);
+    value
+}
+"#,
+    )
+    .expect("lib write");
+    write_config(
+        dir.path(),
+        r#"
+rules:
+  select: ["docs.missing-public-doc"]
+"#,
+    );
+
+    let report = run_project_analysis(dir.path(), default_test_options())
+        .expect("selected docs analysis succeeds");
+
+    assert_has_rule(&report, "docs.missing-public-doc");
+    assert_eq!(
+        rule_ids(&report),
+        BTreeSet::from(["docs.missing-public-doc"]),
+        "{:?}",
+        report.findings
+    );
+    assert_missing_rule(&report, "security.process-command");
+    assert_missing_rule(&report, "waste.unwrap-expect");
+    assert_missing_rule(&report, "docs.missing-return-doc");
+}
+
+#[test]
+pub(crate) fn enabled_builtin_families_tracks_rule_selectors() {
+    let text_only =
+        crate::built_in_rules::EnabledBuiltinFamilies::from_config(&config_selecting(&[
+            "size.file-length",
+        ]));
+    assert_eq!(
+        text_only,
+        crate::built_in_rules::EnabledBuiltinFamilies::default()
+    );
+
+    let missing_public_doc =
+        crate::built_in_rules::EnabledBuiltinFamilies::from_config(&config_selecting(&[
+            "docs.missing-public-doc",
+        ]));
+    assert!(missing_public_doc.item_rules);
+    assert!(missing_public_doc.block_docs);
+    assert!(missing_public_doc.needs_function_blocks());
+
+    let ssrf = crate::built_in_rules::EnabledBuiltinFamilies::from_config(&config_selecting(&[
+        "security.ssrf-candidate",
+    ]));
+    assert!(ssrf.network_block_security);
+    assert!(ssrf.needs_function_blocks());
+    assert!(!ssrf.process_commands);
+}
+
+fn config_selecting(selectors: &[&str]) -> Config {
+    let registry = rules::builtin_registry();
+    let mut config = Config::default();
+    for selector in selectors {
+        config
+            .selectors
+            .positive
+            .extend(expand_rule_selector(selector, &registry, "test").expect("selector expands"));
+    }
+    config.selectors.has_positive = true;
+    config
+}

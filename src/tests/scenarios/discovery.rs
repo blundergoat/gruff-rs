@@ -129,6 +129,122 @@ pub(crate) fn discovery_includes_security_relevant_text_names_and_extensions() {
     }
 }
 
+#[test]
+pub(crate) fn broad_scan_skips_invalid_utf8_low_risk_text_non_fatally() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("logs")).expect("logs dir");
+    fs::write(dir.path().join("logs/boot.txt"), b"boot\x80log").expect("invalid txt write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            fail_on: FailThreshold::None,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_eq!(diagnostic_types(&report), vec!["read-skip-non-utf8"]);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.file_path.as_deref(), Some("logs/boot.txt"));
+    assert!(!diagnostic.is_failure());
+    assert!(!diagnostic.message.contains("boot"));
+    assert!(!diagnostic.message.contains("index"));
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, None),
+        RunOutcome::Success
+    );
+}
+
+#[test]
+pub(crate) fn broad_scan_keeps_invalid_utf8_security_text_fatal() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("certs")).expect("certs dir");
+    fs::write(
+        dir.path().join(".env"),
+        b"DATABASE_PASSWORD=abc\x80secret\n",
+    )
+    .expect("invalid env write");
+    fs::write(
+        dir.path().join("certs/private.pem"),
+        b"-----BEGIN PRIVATE KEY-----\nabc\x80secret\n",
+    )
+    .expect("invalid pem write");
+    fs::create_dir_all(dir.path().join(".github/workflows")).expect("workflows dir");
+    fs::write(
+        dir.path().join(".github/workflows/ci.yml"),
+        b"on: push\njobs:\n  build:\n    run: echo abc\x80secret\n",
+    )
+    .expect("invalid workflow write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            fail_on: FailThreshold::None,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let diagnostics: BTreeMap<&str, &RunDiagnostic> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.file_path.as_deref().unwrap_or(""), diagnostic))
+        .collect();
+    for path in [".env", "certs/private.pem", ".github/workflows/ci.yml"] {
+        let diagnostic = diagnostics.get(path).expect("diagnostic for security text");
+        assert_eq!(diagnostic.diagnostic_type, "read-error");
+        assert!(diagnostic.is_failure());
+        assert!(!diagnostic.message.contains("DATABASE_PASSWORD"));
+        assert!(!diagnostic.message.contains("PRIVATE KEY"));
+        assert!(!diagnostic.message.contains("secret"));
+        assert!(!diagnostic.message.contains("index"));
+    }
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, None),
+        RunOutcome::DiagnosticsFailed
+    );
+}
+
+#[test]
+pub(crate) fn explicit_invalid_utf8_file_stays_fatal_and_visible() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("logs")).expect("logs dir");
+    fs::write(dir.path().join("logs/boot.txt"), b"boot\x80log").expect("invalid txt write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("logs/boot.txt")],
+            no_config: true,
+            no_baseline: true,
+            fail_on: FailThreshold::None,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_eq!(diagnostic_types(&report), vec!["read-error"]);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.file_path.as_deref(), Some("logs/boot.txt"));
+    assert!(diagnostic.is_failure());
+    assert!(!diagnostic.message.contains("boot"));
+    assert!(!diagnostic.message.contains("index"));
+    assert_eq!(
+        RunOutcome::classify(&report, FailThreshold::None, None),
+        RunOutcome::DiagnosticsFailed
+    );
+}
+
 const RISKY_RS: &str =
     "pub fn risky() -> i32 {\n    let value: Option<i32> = None;\n    value.unwrap()\n}\n";
 

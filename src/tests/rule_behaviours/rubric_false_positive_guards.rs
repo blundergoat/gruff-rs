@@ -82,43 +82,6 @@ aws-sdk-secretsmanager = "1"
 }
 
 #[test]
-pub(crate) fn public_field_skips_serde_transport_structs() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r#"use serde::{Deserialize, Serialize};
-
-/// API response DTO.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiResponse {
-    pub id: String,
-    pub status: String,
-}
-"#,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let public_field_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "modernisation.public-field")
-        .collect();
-    assert!(
-        public_field_findings.is_empty(),
-        "serde DTO public fields must stay silent; findings={public_field_findings:?}"
-    );
-}
-
-#[test]
 pub(crate) fn dead_code_unused_private_function_recognises_indirect_references() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");

@@ -1,5 +1,5 @@
 use super::*;
-use crate::changed_region::{git_args_with_paths, git_output};
+use crate::changed_region::{git_args_with_paths, git_output, git_output_bytes_with_stdin};
 use crate::cli::HookArgs;
 
 pub(crate) const HOOK_CONTRACT_VERSION: &str = "gruff.hook.v1";
@@ -87,8 +87,34 @@ fn apply_hook_new_only(
     if let Some(mode) = &args.diff {
         let base_identities = diff_base_stable_identities(project_root, options, config, mode)?;
         apply_stable_identity_new_only(report, &base_identities);
+        return apply_hook_changed_region_new_only(
+            report,
+            args,
+            project_root,
+            config,
+            changed_region_active,
+            Some(base_identities),
+        );
     }
 
+    apply_hook_changed_region_new_only(
+        report,
+        args,
+        project_root,
+        config,
+        changed_region_active,
+        None,
+    )
+}
+
+fn apply_hook_changed_region_new_only(
+    report: &mut AnalysisReport,
+    args: &HookArgs,
+    project_root: &Path,
+    config: &Config,
+    changed_region_active: bool,
+    diff_base_identities: Option<BTreeMap<String, usize>>,
+) -> Result<(), String> {
     if !changed_region_active || args.baseline.is_none() && args.diff.is_none() {
         return Ok(());
     }
@@ -96,8 +122,10 @@ fn apply_hook_new_only(
     let full_options = options_from_hook(args, false);
     let mut full_report = run_analysis_in_project(project_root, &full_options, config)?;
     if let Some(mode) = &args.diff {
-        let base_identities =
-            diff_base_stable_identities(project_root, &full_options, config, mode)?;
+        let base_identities = match &diff_base_identities {
+            Some(base_identities) => base_identities.clone(),
+            None => diff_base_stable_identities(project_root, &full_options, config, mode)?,
+        };
         apply_stable_identity_new_only(&mut full_report, &base_identities);
     }
 
@@ -185,34 +213,152 @@ fn export_git_base_tree(
     // `core.quotePath` and C-quotes non-ASCII names (e.g. `"caf\303\251.rs"`),
     // whose backslashes `safe_git_tree_path` rejects and which `git show` cannot
     // resolve - hard-erroring the hook on any tree with a non-ASCII filename.
+    let listed = git_base_tree_paths(project_root, base_ref, paths)?;
+    let base_paths = listed.iter().map(String::as_str).collect::<Vec<_>>();
+    let blobs = git_cat_file_batch(project_root, base_ref, &base_paths)?;
+    let mut parser = CatFileBatchParser::new(&blobs);
+    for path in base_paths {
+        let safe = safe_git_tree_path(path)?;
+        let content = parser.next_blob(path)?;
+        write_base_tree_blob(output_root, &safe, content)?;
+    }
+    parser.finish()
+}
+
+fn git_base_tree_paths(
+    project_root: &Path,
+    base_ref: &str,
+    paths: &[PathBuf],
+) -> Result<Vec<String>, String> {
     let listed = git_output(
         project_root,
         &git_args_with_paths(&["ls-tree", "-z", "-r", "--name-only", base_ref], paths),
     )?;
-    for path in listed.split('\0').filter(|path| !path.trim().is_empty()) {
-        let safe = safe_git_tree_path(path)?;
-        let mut git_object = String::with_capacity(base_ref.len() + path.len() + 1);
-        git_object.push_str(base_ref);
-        git_object.push(':');
-        git_object.push_str(path);
-        let content = git_output(project_root, &["show".to_string(), git_object])?;
-        let output_path = output_root.join(safe);
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "unable to create base tree directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-        }
-        fs::write(&output_path, content).map_err(|error| {
+    Ok(listed
+        .split('\0')
+        .filter(|path| !path.trim().is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+fn git_cat_file_batch(
+    project_root: &Path,
+    base_ref: &str,
+    base_paths: &[&str],
+) -> Result<Vec<u8>, String> {
+    let mut queries = Vec::new();
+    for path in base_paths {
+        queries.extend_from_slice(base_ref.as_bytes());
+        queries.push(b':');
+        queries.extend_from_slice(path.as_bytes());
+        queries.push(0);
+    }
+    git_output_bytes_with_stdin(
+        project_root,
+        &[
+            "cat-file".to_string(),
+            "--batch".to_string(),
+            "-Z".to_string(),
+        ],
+        &queries,
+    )
+}
+
+fn write_base_tree_blob(output_root: &Path, safe: &Path, content: &[u8]) -> Result<(), String> {
+    let output_path = output_root.join(safe);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
             format!(
-                "unable to write base tree file {}: {error}",
-                output_path.display()
+                "unable to create base tree directory {}: {error}",
+                parent.display()
             )
         })?;
     }
-    Ok(())
+    fs::write(&output_path, content).map_err(|error| {
+        format!(
+            "unable to write base tree file {}: {error}",
+            output_path.display()
+        )
+    })
+}
+
+struct CatFileBatchParser<'a> {
+    output: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> CatFileBatchParser<'a> {
+    fn new(output: &'a [u8]) -> Self {
+        Self { output, cursor: 0 }
+    }
+
+    fn next_blob(&mut self, path: &str) -> Result<&'a [u8], String> {
+        let header = self.next_header(path)?;
+        let (_, object_type, size) = parse_cat_file_header(header, path)?;
+        if object_type != "blob" {
+            return Err(format!(
+                "git base tree path {path} resolved to {object_type}, expected blob"
+            ));
+        }
+        let content_start = self.cursor;
+        let content_end = content_start
+            .checked_add(size)
+            .ok_or_else(|| format!("git cat-file size overflow for {path}"))?;
+        if content_end >= self.output.len() {
+            return Err(format!("git cat-file output truncated for {path}"));
+        }
+        if self.output.get(content_end) != Some(&0) {
+            return Err(format!(
+                "git cat-file output missing blob terminator for {path}"
+            ));
+        }
+        self.cursor = content_end + 1;
+        Ok(&self.output[content_start..content_end])
+    }
+
+    fn next_header(&mut self, path: &str) -> Result<&'a str, String> {
+        let Some(relative_end) = self.output[self.cursor..]
+            .iter()
+            .position(|byte| *byte == 0)
+        else {
+            return Err(format!("git cat-file output missing header for {path}"));
+        };
+        let header_start = self.cursor;
+        let header_end = self.cursor + relative_end;
+        self.cursor = header_end + 1;
+        std::str::from_utf8(&self.output[header_start..header_end])
+            .map_err(|error| format!("git cat-file header for {path} is not UTF-8: {error}"))
+    }
+
+    fn finish(&self) -> Result<(), String> {
+        if self.cursor == self.output.len() {
+            Ok(())
+        } else {
+            Err("git cat-file returned trailing batch output".to_string())
+        }
+    }
+}
+
+fn parse_cat_file_header<'a>(
+    header: &'a str,
+    path: &str,
+) -> Result<(&'a str, &'a str, usize), String> {
+    let mut parts = header.split(' ');
+    let object_id = parts
+        .next()
+        .ok_or_else(|| format!("git cat-file header missing object id for {path}"))?;
+    let object_type = parts
+        .next()
+        .ok_or_else(|| format!("git cat-file header missing object type for {path}"))?;
+    if object_type == "missing" {
+        return Err(format!("git cat-file could not read base tree path {path}"));
+    }
+    let size = parts
+        .next()
+        .ok_or_else(|| format!("git cat-file header missing size for {path}"))?
+        .parse::<usize>()
+        .map_err(|error| format!("git cat-file header size invalid for {path}: {error}"))?;
+    Ok((object_id, object_type, size))
 }
 
 fn safe_git_tree_path(path: &str) -> Result<PathBuf, String> {

@@ -61,6 +61,8 @@ pub(crate) use project::{
 pub(crate) use analyse_project::analyse_project;
 #[cfg(test)]
 use analysis::apply_report_exclusions;
+#[cfg(test)]
+pub(crate) use analysis::project_coverage_for_test;
 pub(crate) use analysis::{apply_gate_diagnostic, run_analysis_in_project};
 #[cfg(test)]
 pub(crate) use baseline::write_baseline;
@@ -117,8 +119,8 @@ use report_identity::FindingScope;
 pub(crate) use scoring::{grade, render_composite_block, score_report, summarize};
 use source::{
     CallNameSummary, DependencySummary, ItemSummary, LockedPackageSummary, LockfileSummary,
-    ManifestSummary, ModuleSummary, ParsedSource, ProjectContext, ProjectItemContext,
-    RustSourceSummary, SourceFile, SourceUnit,
+    ManifestSummary, ModuleSummary, ParsedSource, ProjectContext, ProjectCoverage,
+    ProjectItemContext, RustSourceSummary, SourceFile, SourceOrigin, SourceUnit,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -553,6 +555,19 @@ pub(crate) fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Find
     let mut findings = built_in_rules::analyse(unit, config);
     findings.extend(custom_rules::analyse(unit, config));
     findings
+}
+
+pub(crate) fn analyse_source_with_artifacts(
+    unit: &SourceUnit<'_>,
+    config: &Config,
+    retain_function_blocks: bool,
+) -> built_in_rules::SourceAnalysisArtifacts {
+    let mut artifacts =
+        built_in_rules::analyse_with_artifacts(unit, config, retain_function_blocks);
+    artifacts
+        .findings
+        .extend(custom_rules::analyse(unit, config));
+    artifacts
 }
 
 mod built_in_rules;

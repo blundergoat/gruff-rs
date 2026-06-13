@@ -111,7 +111,12 @@ fn collect_input_file_source(
         );
         return;
     }
-    push_source_file(session.project_root, absolute, files);
+    push_source_file(
+        session.project_root,
+        absolute,
+        SourceOrigin::ExplicitFile,
+        files,
+    );
 }
 
 fn sort_and_dedupe_source_files(files: &mut Vec<SourceFile>) {
@@ -148,7 +153,12 @@ pub(crate) fn collect_directory_sources(
             .is_some_and(|file_type| file_type.is_file())
     }) {
         if should_include_file(&entry, &outer_filters) {
-            push_source_file(session.project_root, entry.path(), files);
+            push_source_file(
+                session.project_root,
+                entry.path(),
+                SourceOrigin::Directory,
+                files,
+            );
         }
     }
 }
@@ -315,7 +325,12 @@ pub(crate) fn vcs_internal_component(relative: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn push_source_file(project_root: &Path, path: &Path, files: &mut Vec<SourceFile>) {
+pub(crate) fn push_source_file(
+    project_root: &Path,
+    path: &Path,
+    origin: SourceOrigin,
+    files: &mut Vec<SourceFile>,
+) {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -333,6 +348,7 @@ pub(crate) fn push_source_file(project_root: &Path, path: &Path, files: &mut Vec
             absolute_path: path.to_path_buf(),
             display_path: display_path(project_root, path),
             is_rust,
+            origin,
         });
     }
 }
@@ -383,4 +399,39 @@ fn is_security_relevant_text_name(file_name: &str) -> bool {
                 | "makefile"
                 | "procfile"
         )
+}
+
+pub(crate) fn is_security_relevant_text_path(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    matches!(extension.as_str(), "crt" | "env" | "key" | "pem" | "tfvars")
+        || is_security_relevant_text_name(file_name)
+        || path_is_github_workflow(path)
+}
+
+/// True when `path` is a GitHub Actions workflow (`.github/workflows/*.yml` or
+/// `.yaml`). Those files carry the `security.github-actions-*` rules, so invalid
+/// UTF-8 there must stay visible rather than be skipped as low-risk text.
+fn path_is_github_workflow(path: &Path) -> bool {
+    let is_yaml = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"));
+    if !is_yaml {
+        return false;
+    }
+    let components: Vec<&str> = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    components
+        .windows(2)
+        .any(|pair| pair[0] == ".github" && pair[1] == "workflows")
 }

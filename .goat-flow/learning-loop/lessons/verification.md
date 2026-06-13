@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-05-31
+last_reviewed: 2026-06-14
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -27,6 +27,20 @@ None of these patterns existed in gruff-rs's own source. Calibration was green; 
 **Why:** Calibration proves a rule does what its author intended; an external scan reveals what the rule *also* does that the author didn't intend. Shipping without the second step ships hidden noise that erodes user trust in every other finding.
 
 **How to apply:** For every new default-on rule, add a one-line note to the rule's `Created:` PR description: "External scan: <repo path>, <N> findings, <X> TPs / <Y> FPs / <Z> ambiguous." If <Y> exceeds 10% of <N>, tighten the rule or downgrade it to non-default-on before merge.
+
+## Lesson: Dogfood From The Repo Root, Not A Subpath Of A Parent
+
+**Created:** 2026-06-14
+
+gruff roots the "project" at the invocation cwd, and `dead-code.unused-private-item-candidate` (plus any project-coverage rule) suppresses itself with a `partial-context-rule-suppressed` diagnostic when the analysed file set does not cover every discoverable Rust file under that root (see `.goat-flow/learning-loop/decisions/ADR-020-partial-context-dead-code-suppression.md`). So *how* you invoke a dogfood scan changes which rules even run - a subpath scan silently turns project-level rules off.
+
+**Concrete example (this repo, 2026-06-14):** validating the release against five external repos, the first sweep ran `gruff-rs analyse <abs>/RuView` while the shell cwd sat at the parent `scan-test-repos/`. gruff took the parent as the project root, saw RuView's ~700 analysed files as a partial subset of the parent's thousands of discoverable `.rs`, and suppressed the project-level dead-code rule on every repo (0 candidates everywhere, each with a `partial-context-rule-suppressed` diagnostic). Re-running `cd RuView && gruff-rs analyse .` rooted correctly and produced 10 candidates with no suppression - the rule was fine, the invocation was wrong. Per-file rules (path-traversal, high-entropy, lock-across-await) were unaffected, so only the project-coverage rule went dark, which is easy to miss in a counts-only review.
+
+**How to apply:**
+
+- For each external repo, `cd` into its root and run `gruff-rs analyse .`. Do not scan a subpath (or an absolute path to a subdir) from a parent directory when project-level rules matter.
+- After any sweep, read the `diagnostics[]` array. A `partial-context-rule-suppressed` entry means a project-coverage rule did not run, so its "zero findings" is not authoritative - pairs with [[research]]/external-scan practice above.
+- The shell cwd persists across tool calls; an earlier `cd` into a scratch dir can silently re-root later scans. Set cwd deliberately and confirm it, in addition to using absolute paths for the binary and target.
 
 ## Lesson: Run Fresh Git Status Before Giving Git Next Steps
 
@@ -115,6 +129,14 @@ After tightening a rule to eliminate false positives, a "zero findings on dogfoo
 **Why:** Pattern-matching rules can silently lose their pattern when calibration changes. The matrix is the contract; trust it over dogfood counts.
 
 **How to apply:** Tightening a regex → run calibration matrix as the first verification command, dogfood as the second. Never declare a tightening done from dogfood alone.
+
+## Lesson: Rule Retunes Need Parity Fixtures For Every Detection Path
+**Created:** 2026-06-12
+**What happened:** M02 and M08 were marked technically complete with green focused tests, but review-only scratch repros found two untested shapes: direct `prepare(&format!(...))` did not receive the same fixed-placeholder exemption as bound `let sql = format!(...)`, and inline `PathBuf::from(...).join(user_input)` / `Path::new(...).join(user_input)` were missed after receiver gating.
+**Evidence:** `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `push_direct_sql_dynamic_query_findings`) and `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `dynamic_format_binding_name`) had separate paths with different exemption coverage. `src/built_in_rules/path_traversal_rules.rs` (search: `join_regex`) only captured simple receivers before the inline constructor fix.
+**Prevention:** For every rule retune that mentions multiple detection paths or receiver shapes, add at least one positive and one negative fixture per path before closing the milestone. Re-run the original scratch repros that exposed the review finding, not just the named focused test filter.
+
+**2026-06-14 extension - narrowing for precision silently drops valid shapes.** One review round found four coverage gaps where tightening a rule excluded shapes that still matter, and a clean dogfood/calibration run could not reveal them (a clean repo has no findings to lose - only adversarial review or an external scan carrying those shapes exposes the false negative): the SQL keyword gate (`src/built_in_rules/behavior_rules/tls_sql.rs` search: `fn template_is_flaggable`) dropped non-DML statements (`TRUNCATE`/`MERGE`/`GRANT`); the path-traversal receiver grammar (search: `fn join_regex`) stopped matching accessor-call receivers like `self.root().join(x)`; the export-attribute check (`src/project/items.rs` search: `fn has_export_attr`) missed Rust 2024 `#[unsafe(no_mangle)]` (the attribute path is `unsafe`, with the export ident nested inside); and the non-UTF-8 skip classifier (`src/discovery.rs` search: `fn is_security_relevant_text_path`) did not treat `.github/workflows/*.yml` as security-relevant, so an invalid byte skipped the `security.github-actions-*` rules. When narrowing a gate, grammar, classifier, or attribute matcher, enumerate the shapes you are now EXCLUDING and add a positive fixture for each that must still fire.
 
 ## Lesson: Shell Wrapper Path Resolution Must Pass Shellcheck
 

@@ -101,6 +101,14 @@ pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
                 shape: "Items referenced only via macros or via a build-script-generated file the discovery layer did not see (e.g. proc-macro-generated names).",
                 mitigation: "Add the generating path to `paths.ignore` in `.gruff-rs.yaml`, or document with an `exclude:` entry naming the path.",
             },
+            FalsePositiveShape {
+                shape: "Narrow path or diff runs that do not cover every discoverable Rust source under the selected project root cannot prove an item is unused across the crate.",
+                mitigation: "The rule is suppressed on partial-context runs with a `partial-context-rule-suppressed` diagnostic; run `gruff-rs analyse .` from the selected project root for authoritative dead-code signal.",
+            },
+            FalsePositiveShape {
+                shape: "Items exported through FFI/plugin attributes or explicitly kept with `#[allow(dead_code)]`.",
+                mitigation: "The rule skips `#[no_mangle]`, `#[export_name]`, `#[pymodule]`, `#[pyfunction]`, and explicit `allow(dead_code)` contexts; use those only where the external entry point or macro contract is real.",
+            },
         ],
         related: &["dead-code.unused-private-function"],
     ),
@@ -292,6 +300,13 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags lock guard bindings that appear to live across an await point.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Bindings that extract a value from the guard immediately, such as `.lock().await.take()`, before any later await.",
+                mitigation: "Keep the extraction chained on the lock expression or explicitly drop the guard before awaiting; the rule only tracks bindings that still represent the guard.",
+            },
+        ],
+        related: &["concurrency.blocking-call-in-async", "concurrency.unbounded-channel"],
     ),
     rule_definition!(
         "concurrency.unbounded-channel",

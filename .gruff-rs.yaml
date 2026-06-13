@@ -180,9 +180,6 @@ rules:
   # Flags `match opt { Some(v) => v, None => Default::default() }` shapes that should use `unwrap_or_default()`.
   modernisation.manual-unwrap-or-default:
     enabled: true
-  # Flags public struct fields that expose representation.
-  modernisation.public-field:
-    enabled: true
   # Flags manual `match`/`if let Err` Result-propagation shapes that should use `?`.
   modernisation.question-mark-candidate:
     enabled: true
@@ -320,9 +317,6 @@ rules:
     enabled: true
     threshold: 120
     severity: advisory
-  # Flags tests that do not appear to assert behavior.
-  test-quality.no-assertions:
-    enabled: true
   # Flags `#[should_panic]` attributes without an `expected = "..."` clause.
   test-quality.should-panic-without-expected:
     enabled: true

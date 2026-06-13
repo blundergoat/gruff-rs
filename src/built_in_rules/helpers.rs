@@ -285,6 +285,136 @@ pub(crate) fn shannon_entropy(value: &str) -> f64 {
         .sum()
 }
 
+/// Recognises subresource-integrity hash literals (`sha1-...`,
+/// `sha256-...`, `sha384-...`, `sha512-...`, generic `sri-...`) that
+/// lockfiles and integrity manifests commit on purpose. The byte body
+/// of these is always a base64 cryptographic digest, so it trivially
+/// trips entropy thresholds.
+pub(crate) fn is_integrity_hash(value: &str) -> bool {
+    const PREFIXES: &[&str] = &["sha1-", "sha256-", "sha384-", "sha512-", "sri-"];
+    PREFIXES.iter().any(|prefix| value.starts_with(prefix))
+}
+
+pub(crate) fn is_structured_high_entropy_non_secret(value: &str) -> bool {
+    is_base64_alphabet_table(value)
+        || is_word_segment_slug(value)
+        || is_separated_identifier_slug(value)
+}
+
+fn is_base64_alphabet_table(value: &str) -> bool {
+    const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
+    const DIGITS: &str = "0123456789";
+    if value.len() != UPPER.len() + LOWER.len() + DIGITS.len() + 2 {
+        return false;
+    }
+    let Some(after_upper) = value.strip_prefix(UPPER) else {
+        return false;
+    };
+    let Some(after_lower) = after_upper.strip_prefix(LOWER) else {
+        return false;
+    };
+    after_lower == "0123456789+/" || after_lower == "0123456789-_"
+}
+
+fn is_word_segment_slug(value: &str) -> bool {
+    if value.contains(['+', '=']) {
+        return false;
+    }
+    let segments: Vec<&str> = value.split(['/', '_', '-']).collect();
+    if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
+        return false;
+    }
+    segments.iter().all(|segment| {
+        segment_has_letters_then_optional_short_digits(segment)
+            && segment_has_word_like_case_runs(segment)
+    })
+}
+
+/// Recognises separator-delimited identifier slugs that trip entropy thresholds
+/// only because several low-entropy tokens are concatenated: model names and IDs
+/// (`Llama-4-Maverick-17B-128E-Instruct-FP8`, `provider/Family/Model-Size`), and
+/// kebab/path identifiers. A real secret is either contiguous (a single segment),
+/// carries base64 padding (`+`/`=`), or hides a long high-entropy run in a segment;
+/// none of those shapes pass here, so this skip cannot mask a credential.
+fn is_separated_identifier_slug(value: &str) -> bool {
+    if value.contains(['+', '=']) {
+        return false;
+    }
+    let segments: Vec<&str> = value.split(['/', '_', '-', '.']).collect();
+    if segments.len() < 3 || segments.iter().any(|segment| segment.is_empty()) {
+        return false;
+    }
+    if segments.iter().any(|segment| {
+        !segment
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    }) {
+        return false;
+    }
+    let mut word_segments = 0;
+    for segment in &segments {
+        if segment_has_word_like_case_runs(segment) {
+            word_segments += 1;
+        } else if segment.len() > 6 {
+            // A long token that is not word-like has the shape of a secret chunk,
+            // not a version/size code, so the whole value is not inert.
+            return false;
+        }
+    }
+    word_segments >= 2
+}
+
+fn segment_has_letters_then_optional_short_digits(segment: &str) -> bool {
+    let mut letter_count = 0;
+    let mut digit_count = 0;
+    let mut seen_digit = false;
+    for character in segment.chars() {
+        if character.is_ascii_alphabetic() {
+            if seen_digit {
+                return false;
+            }
+            letter_count += 1;
+        } else if character.is_ascii_digit() {
+            seen_digit = true;
+            digit_count += 1;
+        } else {
+            return false;
+        }
+    }
+    letter_count > 0 && digit_count <= 4
+}
+
+fn segment_has_word_like_case_runs(segment: &str) -> bool {
+    let alpha_prefix: String = segment
+        .chars()
+        .take_while(|character| character.is_ascii_alphabetic())
+        .collect();
+    let runs = camel_case_runs(&alpha_prefix);
+    !runs.is_empty() && runs.iter().filter(|run| run.len() >= 3).count() * 2 > runs.len()
+}
+
+fn camel_case_runs(value: &str) -> Vec<String> {
+    let mut runs: Vec<String> = Vec::new();
+    for character in value.chars() {
+        if character.is_ascii_uppercase()
+            && runs.last().is_some_and(|run| {
+                run.chars()
+                    .last()
+                    .is_some_and(|last| last.is_ascii_lowercase())
+            })
+        {
+            runs.push(String::new());
+        }
+        if let Some(run) = runs.last_mut() {
+            run.push(character);
+        } else {
+            runs.push(character.to_string());
+        }
+    }
+    runs
+}
+
 /// Returns true when the file is part of the rule calibration harness.
 /// Calibration files exist to prove rules fire (positive cases) or stay
 /// silent (negative cases); they intentionally embed deliberately-bad
@@ -320,4 +450,94 @@ pub(crate) fn path_is_test_infrastructure(display_path: &str) -> bool {
         || normalized.starts_with("tests/")
         || normalized.ends_with("/tests.rs")
         || normalized == "tests.rs"
+}
+
+#[cfg(test)]
+mod high_entropy_tests {
+    use super::*;
+
+    const CLASSIC_BASE64_SECRET: &str =
+        concat!("mF9qL2sT8vX3pR6n", "Y0aB4cD7eG1hJ5k", "M9pQ2rS+T=");
+    const BASE64URL_SECRET: &str = concat!("Az9qL2sT8vX3pR6n", "Y0aB4cD7eG1hJ5k", "M9pQ2rS");
+    const JWT_PAYLOAD_SEGMENT: &str =
+        concat!("eyJzdWIiOiIxMjM0", "NTY3ODkwIiwibmFt", "ZSI6IkpvaG4ifQ");
+    const GITHUB_PAT_LIKE_SECRET: &str = concat!("ghp_Az9qL2sT8vX", "3pR6nY0aB4cD7eG", "1hJ5kM9");
+    const REPO_SLUG: &str = concat!("Microsoft/Type", "Script-Website-", "Builder12");
+    const STANDARD_BASE64_ALPHABET: &str = concat!(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "abcdefghijklmnopqrstuvwxyz",
+        "0123456789",
+        "+/"
+    );
+    const URL_SAFE_BASE64_ALPHABET: &str = concat!(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "abcdefghijklmnopqrstuvwxyz",
+        "0123456789",
+        "-_"
+    );
+    const MODEL_IDENTIFIER: &str = concat!("deepinfra/Qwen/", "Qwen3-235B-A22B-", "Instruct-2507");
+    // Real model-name/ID shapes that flagged at error severity on AI-tooling repos:
+    // a bare name with no provider slash, a single-slash id, and lowercase size codes
+    // the previous recogniser rejected.
+    const BARE_MODEL_NAME: &str = "Llama-4-Maverick-17B-128E-Instruct-FP8";
+    const SINGLE_SLASH_MODEL: &str = "Qwen/Qwen3-Coder-480B-A35B-Instruct";
+    const LOWERCASE_MODEL_ID: &str = "abacus/Qwen/qwen3-coder-480b-a35b-instruct";
+    // An opaque API response id and a separated value hiding a long high-entropy run:
+    // both must stay flagged so the broadened skip cannot mask a credential.
+    const OPAQUE_RESPONSE_ID: &str = concat!("chatcmpl-Bk9Ye6Y0", "t9E7bC3DOMxCpW8eJkTKU");
+    const SEPARATED_SECRET_BLOB: &str = concat!("key-Zx9Q2rS8vX3pR", "6nY0aB4cD7eG1hJ-end");
+
+    #[test]
+    fn high_entropy_structured_predicates_accept_only_inert_shapes() {
+        assert!(is_structured_high_entropy_non_secret(REPO_SLUG));
+        assert!(is_structured_high_entropy_non_secret(
+            STANDARD_BASE64_ALPHABET
+        ));
+        assert!(is_structured_high_entropy_non_secret(
+            URL_SAFE_BASE64_ALPHABET
+        ));
+        assert!(is_structured_high_entropy_non_secret(MODEL_IDENTIFIER));
+
+        assert!(!is_structured_high_entropy_non_secret(
+            CLASSIC_BASE64_SECRET
+        ));
+        assert!(!is_structured_high_entropy_non_secret(BASE64URL_SECRET));
+        assert!(!is_structured_high_entropy_non_secret(
+            GITHUB_PAT_LIKE_SECRET
+        ));
+    }
+
+    #[test]
+    fn high_entropy_skips_model_identifiers_without_masking_secrets() {
+        // Model names and IDs are concatenated low-entropy tokens, not credentials.
+        assert!(is_structured_high_entropy_non_secret(BARE_MODEL_NAME));
+        assert!(is_structured_high_entropy_non_secret(SINGLE_SLASH_MODEL));
+        assert!(is_structured_high_entropy_non_secret(LOWERCASE_MODEL_ID));
+
+        // A two-segment opaque id and a slug hiding a long random run keep flagging.
+        assert!(!is_structured_high_entropy_non_secret(OPAQUE_RESPONSE_ID));
+        assert!(!is_structured_high_entropy_non_secret(
+            SEPARATED_SECRET_BLOB
+        ));
+    }
+
+    #[test]
+    fn high_entropy_predicates_keep_jwt_segment_flaggable() {
+        assert!(is_high_entropy(JWT_PAYLOAD_SEGMENT));
+        assert!(!is_structured_high_entropy_non_secret(JWT_PAYLOAD_SEGMENT));
+    }
+
+    #[test]
+    fn high_entropy_integrity_hashes_include_sha1() {
+        assert!(is_integrity_hash(concat!(
+            "sha1-",
+            "3GuHKO69A8db",
+            "+HYIftzVDpy1aZQ="
+        )));
+        assert!(is_integrity_hash(concat!(
+            "sha512-",
+            "j51egjPa7/i+HYI",
+            "ftzVDpy1aZQ=="
+        )));
+    }
 }

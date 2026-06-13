@@ -422,18 +422,6 @@ fn has_secret_value_shape(value: &str) -> bool {
     has_letter && has_digit_or_symbol
 }
 
-/// Recognises subresource-integrity hash literals (`sha256-...`,
-/// `sha384-...`, `sha512-...`, generic `sri-...`) that lockfiles and
-/// integrity manifests commit on purpose. The byte body of these is
-/// always a base64 cryptographic digest, so it trivially trips entropy
-/// thresholds; the rule should skip them to avoid blanket false
-/// positives on `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
-/// `<link integrity="...">` HTML, and similar.
-fn is_integrity_hash(value: &str) -> bool {
-    const PREFIXES: &[&str] = &["sha256-", "sha384-", "sha512-", "sri-"];
-    PREFIXES.iter().any(|prefix| value.starts_with(prefix))
-}
-
 pub(crate) fn analyse_high_entropy_strings(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -458,11 +446,15 @@ pub(crate) fn analyse_high_entropy_strings(
 
 /// Returns the redacted preview for `value` if the high-entropy rule
 /// should fire - or `None` when the value is below the entropy bar, is
-/// a recognised integrity-hash literal, or matches the configured
-/// `secret_previews` allowlist. Centralising the skip logic keeps the
-/// outer loop body terse.
+/// a recognised integrity-hash literal, has a known structured
+/// non-secret shape, or matches the configured `secret_previews`
+/// allowlist. Centralising the skip logic keeps the outer loop body
+/// terse.
 fn high_entropy_secret_preview(value: &str, config: &Config) -> Option<String> {
-    if !is_high_entropy(value) || is_integrity_hash(value) {
+    if !is_high_entropy(value)
+        || is_integrity_hash(value)
+        || is_structured_high_entropy_non_secret(value)
+    {
         return None;
     }
     let preview = redact(value);

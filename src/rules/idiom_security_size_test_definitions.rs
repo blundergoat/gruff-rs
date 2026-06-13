@@ -2,23 +2,6 @@ use super::*;
 
 pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
     rule_definition!(
-        "modernisation.public-field",
-        "Public struct field",
-        Pillar::Modernisation,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags public struct fields that expose representation.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "Pure transport structs that exist to serialize JSON or shuttle bytes between layers (no invariants to protect).",
-                mitigation: "The rule already skips structs deriving `Serialize`/`Deserialize`; if the carve-out misses a real case, document it with an `exclude:` entry naming the file.",
-            },
-        ],
-        related: &["modernisation.manual-is-empty", "modernisation.manual-contains"],
-    ),
-    rule_definition!(
         "modernisation.manual-is-empty",
         "Manual is_empty check",
         Pillar::Modernisation,
@@ -308,7 +291,18 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags direct dynamic SQL query arguments such as query(format!(...)).",
+        "Flags SQL-keyword-bearing dynamic query arguments such as query(format!(...)).",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "SQL-keyword-bearing non-SQL DSL text passed to a method named query, execute, or prepare.",
+                mitigation: "Rename the wrapper method if possible, or add an `exclude:` entry for the reviewed path and message.",
+            },
+            FalsePositiveShape {
+                shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",
+                mitigation: "Prefer a static statement per identifier, prove the identifier comes from a literal/const allowlist in code review, or add a documented `exclude:` entry for that path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.tls-verification-disabled",
@@ -349,6 +343,17 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags filesystem path construction where externally-derived input is joined without normalisation.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Custom domain types that expose a `.join(...)` method unrelated to filesystem paths.",
+                mitigation: "The rule requires filesystem receiver evidence for `.join(...)` calls, such as a path-typed receiver or base-directory naming. Keep non-filesystem receivers domain-specific rather than naming them like roots or directories.",
+            },
+            FalsePositiveShape {
+                shape: "Segments sanitized before joining by removing traversal and both path separators.",
+                mitigation: "Use a visible sanitizer or local replacement chain that removes `..`, `/`, and `\\`; generic names like `key` or `value` remain reportable unless the defense is explicit.",
+            },
+        ],
+        related: &["security.process-command", "security.sql-dynamic-query"],
     ),
     rule_definition!(
         "security.ssrf-candidate",
@@ -461,7 +466,18 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Severity::Error,
         Confidence::Medium,
         None,
-        "Flags long string literals that look like generated secrets.",
+        "Flags long string literals that look like generated secrets while skipping known structured non-secret values.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Zero-separator CamelCase or mixed-case identifiers that are high entropy but not secrets.",
+                mitigation: "Prefer a separator-bearing identifier when practical, or add the deterministic redacted preview to `secret_previews` after review.",
+            },
+            FalsePositiveShape {
+                shape: "Manifest checksum or signature fields whose value shape alone is indistinguishable from secret material.",
+                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible; otherwise document the field and use `secret_previews` for the reviewed value.",
+            },
+        ],
+        related: &["sensitive-data.api-key-pattern", "sensitive-data.jwt-token"],
     ),
     rule_definition!(
         "sensitive-data.jwt-token",
@@ -596,23 +612,6 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         "Flags long test functions that are harder to scan and maintain.",
     ),
     rule_definition!(
-        "test-quality.no-assertions",
-        "No assertions in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags tests that do not appear to assert behavior.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "Tests that assert through a helper or macro the rule's heuristic cannot recognise (custom `assert_*` macros, panic-via-`?`).",
-                mitigation: "Add a real assertion to the test, or add an `exclude:` entry in `.gruff-rs.yaml` documenting the helper used.",
-            },
-        ],
-        related: &["test-quality.sleep-in-test", "test-quality.trivial-assertion"],
-    ),
-    rule_definition!(
         "test-quality.sleep-in-test",
         "Sleep in test",
         Pillar::TestQuality,
@@ -641,7 +640,7 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
                 mitigation: "Not flagged: the asserted value is produced by a call or computation, not bound directly to the matching literal. Keep them as regression guards.",
             },
         ],
-        related: &["test-quality.no-assertions"],
+        related: &[],
     ),
     rule_definition!(
         "test-quality.unwrap-in-test",

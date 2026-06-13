@@ -163,16 +163,24 @@ pub(crate) fn run_analysis_in_project(
     let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
     diagnostics.extend(excluded_security_rule_diagnostics(config));
     let diff_filter = resolve_diff_filter(project_root, options, &discovery.files)?;
+    let pre_diff_rust_paths = rust_display_paths(&discovery.files);
     apply_diff_file_selection(&mut discovery, diff_filter.as_ref());
-    let analysed_paths = analysed_display_paths(&discovery.files);
+    let coverage = project_coverage(
+        project_root,
+        options,
+        config,
+        &discovery,
+        &pre_diff_rust_paths,
+        diff_filter.as_ref(),
+    );
     let inputs = collect_report_inputs(
         project_root,
         options,
         config,
         discovery,
         diagnostics,
+        coverage,
         diff_filter.as_ref(),
-        &analysed_paths,
     )?;
     let mut report = build_report(project_root, options, config, inputs);
     record_history_if_requested(project_root, options, config, &mut report);
@@ -201,14 +209,21 @@ fn collect_report_inputs(
     config: &Config,
     discovery: DiscoveryResult,
     mut diagnostics: Vec<RunDiagnostic>,
+    coverage: ProjectCoverage,
     diff_filter: Option<&ResolvedDiffFilter>,
-    analysed_paths: &BTreeSet<String>,
 ) -> Result<ReportInputs, String> {
+    let analysed_paths = analysed_display_paths(&discovery.files);
     let AnalysisArtifacts {
         mut findings,
         function_blocks_by_file,
-    } = analyse_report_artifacts(project_root, &discovery, config, &mut diagnostics);
-    // Dedupe before baseline so perRuleDeltas match the final report (footguns/report.md).
+    } = analyse_discovered_sources_with_artifacts(
+        project_root,
+        &discovery.files,
+        config,
+        coverage,
+        has_symbol_scope_diff(diff_filter),
+        &mut diagnostics,
+    );
     sort_and_dedupe_findings(&mut findings);
     let all_findings = findings.clone();
     let (baseline_resolution, all_findings_summary) =
@@ -221,10 +236,7 @@ fn collect_report_inputs(
         diagnostics,
         findings,
         baseline_report,
-        suppressions: ReportSuppressions {
-            summaries,
-            suppressed_findings,
-        },
+        suppressions: report_suppressions(summaries, suppressed_findings),
         per_rule_deltas,
         suppressed_count: None,
         all_findings_summary: Some(all_findings_summary),
@@ -236,9 +248,23 @@ fn collect_report_inputs(
         config,
         inputs,
         diff_filter,
-        analysed_paths,
+        &analysed_paths,
         &function_blocks_by_file,
     ))
+}
+
+fn has_symbol_scope_diff(diff_filter: Option<&ResolvedDiffFilter>) -> bool {
+    diff_filter.is_some_and(|filter| filter.scope == ChangedScope::Symbol)
+}
+
+fn report_suppressions(
+    summaries: Vec<SuppressionSummary>,
+    suppressed_findings: Vec<SuppressedFinding>,
+) -> ReportSuppressions {
+    ReportSuppressions {
+        summaries,
+        suppressed_findings,
+    }
 }
 
 /// Run the changed-region filter over an already-assembled report and re-pack
@@ -288,15 +314,6 @@ fn apply_changed_region_to_inputs(
     }
 }
 
-fn analyse_report_artifacts(
-    project_root: &Path,
-    discovery: &DiscoveryResult,
-    config: &Config,
-    diagnostics: &mut Vec<RunDiagnostic>,
-) -> AnalysisArtifacts {
-    analyse_discovered_sources_with_artifacts(project_root, &discovery.files, config, diagnostics)
-}
-
 fn changed_scope_all_summary(
     all_findings: &[Finding],
     diff_filter: &ResolvedDiffFilter,
@@ -324,6 +341,75 @@ pub(crate) fn analysed_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
     files.iter().map(|file| file.display_path.clone()).collect()
 }
 
+fn rust_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
+    files
+        .iter()
+        .filter(|file| file.is_rust)
+        .map(|file| file.display_path.clone())
+        .collect()
+}
+
+fn project_coverage(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    discovery: &DiscoveryResult,
+    pre_diff_rust_paths: &BTreeSet<String>,
+    diff_filter: Option<&ResolvedDiffFilter>,
+) -> ProjectCoverage {
+    let analysed_rust_files = rust_display_paths(&discovery.files);
+    if !config.is_rule_enabled("dead-code.unused-private-item-candidate") {
+        return ProjectCoverage {
+            discoverable_rust_files: analysed_rust_files.clone(),
+            analysed_rust_files,
+            diff_selection_narrowed: false,
+            parse_incomplete: false,
+        };
+    }
+
+    let discoverable_rust_files = discover_project_rust_universe(project_root, options, config);
+    let diff_selection_narrowed = diff_filter.is_some_and(|filter| {
+        !filter.explicit_ranges && !pre_diff_rust_paths.is_subset(&analysed_rust_files)
+    });
+    ProjectCoverage {
+        discoverable_rust_files,
+        analysed_rust_files,
+        diff_selection_narrowed,
+        parse_incomplete: false,
+    }
+}
+
+fn discover_project_rust_universe(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+) -> BTreeSet<String> {
+    let mut universe_options = options.clone();
+    universe_options.paths = vec![PathBuf::from(".")];
+    universe_options.diff = None;
+    rust_display_paths(&discover_sources(project_root, &universe_options, config).files)
+}
+
+#[cfg(test)]
+pub(crate) fn project_coverage_for_test(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+) -> Result<ProjectCoverage, String> {
+    let mut discovery = discover_sources(project_root, options, config);
+    let diff_filter = resolve_diff_filter(project_root, options, &discovery.files)?;
+    let pre_diff_rust_paths = rust_display_paths(&discovery.files);
+    apply_diff_file_selection(&mut discovery, diff_filter.as_ref());
+    Ok(project_coverage(
+        project_root,
+        options,
+        config,
+        &discovery,
+        &pre_diff_rust_paths,
+        diff_filter.as_ref(),
+    ))
+}
+
 pub(crate) struct AnalysisArtifacts {
     pub(crate) findings: Vec<Finding>,
     pub(crate) function_blocks_by_file: BTreeMap<String, Vec<FunctionBlock>>,
@@ -333,42 +419,41 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
     project_root: &Path,
     files: &[SourceFile],
     config: &Config,
+    coverage: ProjectCoverage,
+    retain_function_blocks: bool,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> AnalysisArtifacts {
     let capabilities = AnalysisCapabilities::from_config(config);
     let (parsed_sources, read_diagnostics) =
         crate::project::read_and_parse_sources_with_options(files, capabilities.parse_rust);
     diagnostics.extend(read_diagnostics);
-    let blocks_by_file = function_blocks_by_file(&parsed_sources);
+    let mut blocks_by_file = BTreeMap::new();
 
     let mut findings = if capabilities.project_context {
-        let project_context = build_project_context(project_root, &parsed_sources);
+        let project_context = build_project_context(project_root, &parsed_sources, coverage);
         diagnostics.extend(project_context.diagnostics.iter().cloned());
-        analyse_project(&project_context, config)
+        analyse_project(&project_context, config, diagnostics)
     } else {
         Vec::new()
     };
     for parsed_source in &parsed_sources {
-        findings.extend(analyse_source(&parsed_source.as_source_unit(), config));
+        let source_unit = parsed_source.as_source_unit();
+        if retain_function_blocks {
+            let source_artifacts =
+                crate::analyse_source_with_artifacts(&source_unit, config, retain_function_blocks);
+            if let Some(blocks) = source_artifacts.function_blocks {
+                blocks_by_file.insert(parsed_source.file.display_path.clone(), blocks);
+            }
+            findings.extend(source_artifacts.findings);
+        } else {
+            findings.extend(crate::analyse_source(&source_unit, config));
+        }
         diagnostics.extend(parsed_source.diagnostics.iter().cloned());
     }
     AnalysisArtifacts {
         findings,
         function_blocks_by_file: blocks_by_file,
     }
-}
-
-fn function_blocks_by_file(sources: &[ParsedSource]) -> BTreeMap<String, Vec<FunctionBlock>> {
-    sources
-        .iter()
-        .filter_map(|source| {
-            let ast = source.rust_ast.as_ref()?;
-            Some((
-                source.file.display_path.clone(),
-                crate::built_in_rules::rust_function_blocks(ast, &source.source),
-            ))
-        })
-        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,6 +5,13 @@ pub(crate) struct SourceFile {
     pub(crate) absolute_path: PathBuf,
     pub(crate) display_path: String,
     pub(crate) is_rust: bool,
+    pub(crate) origin: SourceOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceOrigin {
+    ExplicitFile,
+    Directory,
 }
 
 pub(crate) struct SourceUnit<'a> {
@@ -41,9 +48,35 @@ impl SourceUnit<'_> {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProjectCoverage {
+    pub(crate) discoverable_rust_files: BTreeSet<String>,
+    pub(crate) analysed_rust_files: BTreeSet<String>,
+    pub(crate) diff_selection_narrowed: bool,
+    pub(crate) parse_incomplete: bool,
+}
+
+impl ProjectCoverage {
+    pub(crate) fn is_partial(&self) -> bool {
+        if self.analysed_rust_files.is_empty() {
+            return false;
+        }
+        // Partial when a discovered Rust file failed to parse (the cross-file
+        // identifier index is then incomplete), or when any discoverable Rust file
+        // was not analysed - an explicit scan whose set is not a subset of the
+        // universe (e.g. a named gitignored file) is not authoritative either.
+        self.parse_incomplete
+            || self.diff_selection_narrowed
+            || !self
+                .discoverable_rust_files
+                .is_subset(&self.analysed_rust_files)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectContext {
     pub(crate) root_path: PathBuf,
+    pub(crate) coverage: ProjectCoverage,
     pub(crate) manifest: Option<ManifestSummary>,
     pub(crate) lockfile: Option<LockfileSummary>,
     pub(crate) rust_sources: Vec<RustSourceSummary>,
@@ -92,7 +125,6 @@ pub(crate) struct LockedPackageSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RustSourceSummary {
     pub(crate) file_path: String,
-    pub(crate) source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +150,8 @@ pub(crate) struct ItemSummary {
     pub(crate) cfg_gated: bool,
     pub(crate) test_context: bool,
     pub(crate) trait_impl: bool,
+    pub(crate) exported_by_attr: bool,
+    pub(crate) allow_dead_code: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +162,8 @@ pub(crate) struct ProjectItemContext {
     pub(crate) test_context: bool,
     pub(crate) container: Option<String>,
     pub(crate) trait_impl: bool,
+    pub(crate) exported_by_attr: bool,
+    pub(crate) allow_dead_code: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,4 +171,32 @@ pub(crate) struct CallNameSummary {
     pub(crate) file_path: String,
     pub(crate) name: String,
     pub(crate) line: usize,
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn coverage(discoverable: &[&str], analysed: &[&str]) -> ProjectCoverage {
+        ProjectCoverage {
+            discoverable_rust_files: discoverable.iter().map(|path| path.to_string()).collect(),
+            analysed_rust_files: analysed.iter().map(|path| path.to_string()).collect(),
+            diff_selection_narrowed: false,
+            parse_incomplete: false,
+        }
+    }
+
+    #[test]
+    fn is_partial_flags_any_uncovered_discoverable_file() {
+        // Full coverage: every discoverable file was analysed.
+        assert!(!coverage(&["a.rs", "b.rs"], &["a.rs", "b.rs"]).is_partial());
+        // Proper subset: a discoverable file was not analysed.
+        assert!(coverage(&["a.rs", "b.rs"], &["a.rs"]).is_partial());
+        // Superset: analysed covers all discoverable plus an out-of-walk extra.
+        assert!(!coverage(&["a.rs"], &["a.rs", "extra.rs"]).is_partial());
+        // Incomparable: an extra AND a missed discoverable file - still partial.
+        assert!(coverage(&["a.rs", "b.rs"], &["a.rs", "extra.rs"]).is_partial());
+        // Nothing analysed: treated as not-partial.
+        assert!(!coverage(&["a.rs"], &[]).is_partial());
+    }
 }

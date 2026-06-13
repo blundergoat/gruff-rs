@@ -16,6 +16,7 @@ readonly LAST_RUN="${PERF_DIR}/last-run.json"
 readonly SCRATCH_BASELINE="${PERF_DIR}/scratch-baseline.json"
 readonly SCRATCH_HISTORY="${PERF_DIR}/scratch-history.json"
 readonly SCRATCH_PATCH="${PERF_DIR}/scratch-empty.patch"
+readonly SCRATCH_EXACT_RUST_CONFIG="${PERF_DIR}/scratch-exact-rust-rule.yaml"
 readonly TIME_LOG="${PERF_DIR}/time.log"
 readonly BIN="${REPO_ROOT}/target/release/gruff-rs"
 
@@ -90,6 +91,7 @@ Scenarios (each runs ITERS times; the first run is warmup and discarded):
   fixtures.sarif        analyse fixtures --format sarif
   fixtures.html         analyse fixtures --format html
   src.json              analyse src --format json (self-scan)
+  src.exact-rust-item   analyse src with rules.select=["docs.missing-public-doc"]
   src.with-baseline     analyse src --format json --baseline=<scratch>
   src.with-history      analyse src --format json --history-file=<scratch>
   src.diff-empty        analyse src --format json --diff-patch <empty-patch>
@@ -223,6 +225,7 @@ add_scenario "fixtures.json"      analyse fixtures --format json --fail-on none 
 add_scenario "fixtures.sarif"     analyse fixtures --format sarif --fail-on none --no-baseline
 add_scenario "fixtures.html"      analyse fixtures --format html --fail-on none --no-baseline
 add_scenario "src.json"           analyse src --format json --fail-on none --no-baseline
+add_scenario "src.exact-rust-item" analyse src --format json --fail-on none --config "${SCRATCH_EXACT_RUST_CONFIG}" --no-baseline
 add_scenario "src.with-baseline"  analyse src --format json --fail-on none --baseline "${SCRATCH_BASELINE}"
 add_scenario "src.with-history"   analyse src --format json --fail-on none --no-baseline --history-file "${SCRATCH_HISTORY}"
 add_scenario "src.diff-empty"     analyse src --format json --fail-on none --no-baseline --diff-patch "${SCRATCH_PATCH}"
@@ -243,7 +246,20 @@ setup_scenario() {
             : > "${SCRATCH_HISTORY}"
             ;;
         src.diff-empty)
-            : > "${SCRATCH_PATCH}"
+            cat > "${SCRATCH_PATCH}" <<'PATCH'
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,1 +1,1 @@
+ use super::*;
+PATCH
+            ;;
+        src.exact-rust-item)
+            cat > "${SCRATCH_EXACT_RUST_CONFIG}" <<'YAML'
+schemaVersion: gruff-rs.config.v1
+rules:
+  select: ["docs.missing-public-doc"]
+YAML
             ;;
         *) : ;;
     esac

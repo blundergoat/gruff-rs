@@ -174,7 +174,18 @@ pub(crate) fn analyse_item_rules(file: &SourceFile, ast: &syn::File, findings: &
 pub(crate) fn analyse_public_item(file: &SourceFile, item: &Item, findings: &mut Vec<Finding>) {
     match item {
         Item::Mod(item_mod) => analyse_public_module_item(file, item_mod, findings),
-        Item::Struct(item_struct) => analyse_public_struct_item(file, item_struct, findings),
+        Item::Struct(item_struct) => {
+            analyse_public_named_item_doc(
+                file,
+                PublicItemDoc {
+                    visibility: &item_struct.vis,
+                    attrs: &item_struct.attrs,
+                    name: item_struct.ident.to_string(),
+                    span: item_struct.ident.span(),
+                },
+                findings,
+            );
+        }
         Item::Enum(item_enum) => {
             analyse_public_named_item_doc(
                 file,
@@ -227,57 +238,6 @@ pub(crate) fn analyse_public_module_item(
     }
 }
 
-pub(crate) fn analyse_public_struct_item(
-    file: &SourceFile,
-    item_struct: &syn::ItemStruct,
-    findings: &mut Vec<Finding>,
-) {
-    analyse_public_named_item_doc(
-        file,
-        PublicItemDoc {
-            visibility: &item_struct.vis,
-            attrs: &item_struct.attrs,
-            name: item_struct.ident.to_string(),
-            span: item_struct.ident.span(),
-        },
-        findings,
-    );
-    if is_serde_data_struct(item_struct) {
-        return;
-    }
-    for field in &item_struct.fields {
-        if is_externally_public(&field.vis) {
-            push_public_field_finding(file, field.span(), findings);
-        }
-    }
-}
-
-fn is_serde_data_struct(item_struct: &syn::ItemStruct) -> bool {
-    has_serde_contract_attr(&item_struct.attrs)
-        || item_struct
-            .fields
-            .iter()
-            .any(|field| has_serde_contract_attr(&field.attrs))
-}
-
-fn has_serde_contract_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if attr.path().is_ident("serde") {
-            return true;
-        }
-        if !attr.path().is_ident("derive") {
-            return false;
-        }
-        match &attr.meta {
-            syn::Meta::List(list) => {
-                let tokens = list.tokens.to_string();
-                tokens.contains("Serialize") || tokens.contains("Deserialize")
-            }
-            _ => false,
-        }
-    })
-}
-
 pub(crate) struct PublicItemDoc<'a> {
     pub(crate) visibility: &'a Visibility,
     pub(crate) attrs: &'a [syn::Attribute],
@@ -293,23 +253,6 @@ pub(crate) fn analyse_public_named_item_doc(
     if is_externally_public(item.visibility) && !has_doc_attr(item.attrs) {
         push_missing_public_item_doc(file, item.name, item.span, findings);
     }
-}
-
-pub(crate) fn push_public_field_finding(
-    file: &SourceFile,
-    span: proc_macro2::Span,
-    findings: &mut Vec<Finding>,
-) {
-    findings.push(finding(SimpleFindingDescriptor {
-        rule_id: "modernisation.public-field",
-        message:
-            "Public struct field exposes representation; prefer accessors when invariants matter."
-                .into(),
-        file,
-        line: Some(line_from_span(span.start())),
-        severity: Severity::Advisory,
-        pillar: Pillar::Modernisation,
-    }));
 }
 
 pub(crate) fn push_missing_public_item_doc(

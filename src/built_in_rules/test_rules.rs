@@ -8,6 +8,8 @@ static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
 static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
 static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
 
+const TEST_ASSERTION_PATTERN: &str = r"(?:\b(?:assert!|assert_eq!|assert_ne!|matches!|panic!)|\bassert_[A-Za-z0-9_]*!\s*|\bassert_[A-Za-z0-9_]*(?:\s*::\s*<[^;\n()]+>)?)\s*\(|\.\s*expect\s*\(";
+
 const TEST_CHECKS: &[RegexRule] = &[
     RegexRule {
         rule_id: "test-quality.sleep-in-test",
@@ -159,11 +161,10 @@ pub(crate) fn analyse_test_size(
 fn long_test_effective_line_count(block: &FunctionBlock) -> usize {
     let searchable =
         strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
-    let assertion = static_regex(
-        &TEST_ASSERTION_REGEX,
-        r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
-    );
-    let Some(first_assertion) = searchable.lines().position(|line| assertion.is_match(line)) else {
+    let Some(first_assertion) = searchable
+        .lines()
+        .position(|line| test_assertion_regex().is_match(line))
+    else {
         return block.line_count;
     };
     block.body.lines().count().saturating_sub(first_assertion)
@@ -188,25 +189,10 @@ pub(crate) fn analyse_test_assertions(
             pillar: Pillar::TestQuality,
         }));
     }
+}
 
-    if !static_regex(
-        &TEST_ASSERTION_REGEX,
-        r"\b(assert!|assert_eq!|assert_ne!|matches!|panic!|assert_[A-Za-z0-9_]*\s*\()",
-    )
-    .is_match(searchable_body)
-    {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id: "test-quality.no-assertions",
-            message: format!(
-                "Test `{}` does not appear to make an assertion.",
-                block.name
-            ),
-            file,
-            block,
-            severity: Severity::Warning,
-            pillar: Pillar::TestQuality,
-        }));
-    }
+fn test_assertion_regex() -> &'static Regex {
+    static_regex(&TEST_ASSERTION_REGEX, TEST_ASSERTION_PATTERN)
 }
 
 pub(crate) fn analyse_test_regex_checks(

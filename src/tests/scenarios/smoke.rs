@@ -41,8 +41,7 @@ fn test_no_assert() {
         .collect();
     assert!(rule_ids.contains("security.process-command"));
     assert!(rule_ids.contains("size.parameter-count"));
-    assert!(rule_ids.contains("test-quality.no-assertions"));
-    assert!(rule_ids.contains("modernisation.public-field"));
+    assert!(rule_ids.contains("test-quality.sleep-in-test"));
 }
 
 #[test]
@@ -50,7 +49,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
     let _guard = analysis_lock();
     let report = analyse_test_paths(vec![PathBuf::from("fixtures/sample.rs")]);
 
-    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_only_partial_context_diagnostic(&report);
     assert_eq!(report.summary.total, report.findings.len());
     assert_eq!(
         report
@@ -58,7 +57,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        12
+        10
     );
 
     let expected = [
@@ -69,14 +68,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(1),
             Some("SampleAnalyzer"),
             "33f9dd5201230832",
-        ),
-        (
-            "modernisation.public-field",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(2),
-            None,
-            "bc7bce7d0361e8e7",
         ),
         (
             "docs.missing-public-doc",
@@ -143,14 +134,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "79a7540d1b61cf02",
         ),
         (
-            "test-quality.no-assertions",
-            Severity::Warning,
-            "fixtures/sample.rs",
-            Some(23),
-            Some("test_sleeps_without_assertion"),
-            "7d01e1f8fa08edc9",
-        ),
-        (
             "test-quality.sleep-in-test",
             Severity::Advisory,
             "fixtures/sample.rs",
@@ -183,7 +166,7 @@ pub(crate) fn parser_handles_raw_strings_macros_impls_and_test_attributes() {
         PathBuf::from("tests/fixtures/parser/macros_impls.rs"),
     ]);
 
-    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    assert_only_partial_context_diagnostic(&report);
 
     let parameter_count = report
         .findings
@@ -195,17 +178,6 @@ pub(crate) fn parser_handles_raw_strings_macros_impls_and_test_attributes() {
         })
         .expect("impl method parameter-count finding");
     assert_eq!(parameter_count.line, Some(12));
-
-    let no_assertions = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.rule_id == "test-quality.no-assertions"
-                && finding.file_path == "tests/fixtures/parser/macros_impls.rs"
-                && finding.symbol.as_deref() == Some("test_macro_fixture")
-        })
-        .expect("test attribute no-assertions finding");
-    assert_eq!(no_assertions.line, Some(20));
 }
 
 #[test]
@@ -259,10 +231,17 @@ pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
     let _guard = analysis_lock();
     let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
 
-    assert_eq!(report.diagnostics.len(), 1);
-    assert_eq!(report.diagnostics[0].diagnostic_type, "parse-error");
     assert_eq!(
-        report.diagnostics[0].file_path.as_deref(),
+        diagnostic_types(&report),
+        vec!["partial-context-rule-suppressed", "parse-error"]
+    );
+    let parse_error = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.diagnostic_type == "parse-error")
+        .expect("parse-error diagnostic");
+    assert_eq!(
+        parse_error.file_path.as_deref(),
         Some("tests/fixtures/parser/invalid.rs")
     );
 

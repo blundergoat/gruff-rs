@@ -169,6 +169,23 @@ fn assert_has_rule(report: &AnalysisReport, rule_id: &str) {
     );
 }
 
+fn diagnostic_types(report: &AnalysisReport) -> Vec<&str> {
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.diagnostic_type.as_str())
+        .collect()
+}
+
+fn assert_only_partial_context_diagnostic(report: &AnalysisReport) {
+    assert_eq!(
+        diagnostic_types(report),
+        vec!["partial-context-rule-suppressed"],
+        "{:?}",
+        report.diagnostics
+    );
+}
+
 fn assert_missing_rule(report: &AnalysisReport, rule_id: &str) {
     assert!(
         !report
@@ -222,5 +239,5 @@ fn project_context_for_test(project_root: &Path) -> ProjectContext {
     let discovery = discover_sources(project_root, &options, &Config::default());
     let (parsed_sources, read_diagnostics) = read_and_parse_sources(&discovery.files);
     assert!(read_diagnostics.is_empty(), "{read_diagnostics:?}");
-    build_project_context(project_root, &parsed_sources)
+    build_project_context(project_root, &parsed_sources, ProjectCoverage::default())
 }

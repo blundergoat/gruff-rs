@@ -1,7 +1,37 @@
 ---
 category: analyzer
-last_reviewed: 2026-06-07
+last_reviewed: 2026-06-14
 ---
+
+## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
+
+**Status:** active | **Created:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
+
+`src/analyse_project/dead_code.rs` (search: `analyse_project_dead_code_rules`) decides whether a private item is referenced by asking `ProjectContext` for the discovered identifier count. `src/analysis.rs` (search: `build_project_context(project_root, &parsed_sources`) builds that context from the parsed source set after discovery and diff file selection, so narrow path runs and file-based diff modes can otherwise turn a real sibling reference into a false unused-candidate finding.
+
+The concrete trap is a two-file crate where `src/lib.rs` declares `fn helper_used_by_child()` and `src/child.rs` calls `crate::helper_used_by_child()`: whole-project analysis is clean, but a partial context containing only `src/lib.rs` cannot see the sibling call. Because `src/report_identity.rs` (search: `_ if symbol.is_some() => FindingScope::Symbol`) scopes the finding as symbol-level, the hook changed-region filter would not drop it as file/project scope noise.
+
+Keep project-level dead-code tied to a coverage fact, not path-string guesses. The guard lives in `ProjectCoverage` (search: `diff_selection_narrowed`) and the rule suppresses itself with `partial-context-rule-suppressed` when coverage is partial. Regression coverage: `src/tests/project_tests/dead_code.rs` (search: `dead_code_partial_context_suppresses_cross_file_candidate`, `dead_code_diff_patch_partial_context_suppresses_candidate`, `dead_code_partial_context_coverage_tracks_actual_rust_file_universe`).
+
+**2026-06-14 extension:** the coverage test itself must be "did we analyse every discoverable file", i.e. `!discoverable.is_subset(&analysed)`. `ProjectCoverage::is_partial` (`src/source.rs` search: `fn is_partial`) first used `analysed != discoverable && analysed.is_subset(discoverable)`, which only treats a PROPER SUBSET as partial. When the sets are incomparable - analysed carries an out-of-walk extra (an explicitly named gitignored `.rs`) AND misses a discoverable file - that returned "complete" and let the cross-file candidate emit on an incomplete index. Regression: `src/source.rs` (search: `fn is_partial_flags_any_uncovered_discoverable_file`).
+
+## Footgun: Enriched Rule Definitions Require A `related` Arm
+
+**Status:** active | **Created:** 2026-06-11 | **Evidence:** OBSERVED
+
+`src/rules/mod.rs` (search: `macro_rules! rule_definition`) has only two macro arms: a plain
+definition with no optional sections, and an enriched definition that requires both
+`false_positives:` and `related:`. There is no macro arm for `false_positives:` alone.
+
+The trap surfaced while enriching `security.path-traversal-candidate` in
+`src/rules/idiom_security_size_test_definitions.rs` (search:
+`security.path-traversal-candidate`): adding `false_positives:` without `related:` made
+`cargo run --quiet -- list-rules security.path-traversal-candidate` fail at macro expansion with
+`unexpected end of macro invocation`.
+
+When adding false-positive guidance to any rule definition, add an explicit `related: &[]` or a
+real related-rule list in the same edit, then run the specific `list-rules <id>` command before
+ticking docs/list-rules agreement.
 
 ## Footgun: Bare-Bare Equality Closures Look Like `.contains()` But Often Aren't
 
@@ -98,6 +128,8 @@ Concrete instance from the 0.3.0 release check: `git check-ignore src/generated.
 `src/parser/mod.rs` (search: `fn rust_code_reference_source`) masks arbitrary comments and strings before dead-code reference counting, then appends only structured references such as `serde(default = "function_name")`. Comments and ordinary prose strings should not keep private functions alive, but serde default function strings are real call sites from generated deserialization code.
 
 The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/dead_code.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
+
+**2026-06-14 extension (external scan, OPEN gap):** the structured-reference extractor `src/parser/mod.rs` (search: `fn append_serde_default_references`) recognises only the `default = "..."` serde key (regex `\bdefault\s*=\s*"..."`). An external scan of a serde-heavy repo (goose) flagged custom `deserialize_with` / `serialize_with` / `skip_serializing_if` / `with` functions (e.g. `deserialize_modalities` via `#[serde(deserialize_with = "...")]`, `is_default_permissions` via `skip_serializing_if`) as `dead-code.unused-private-function` and `dead-code.unused-private-item-candidate`, because those attribute strings are the functions' only call sites and the extractor never appends them. Not yet fixed. Before treating dead-code findings on serde-heavy crates as authoritative, broaden the recognised serde attribute keys to the reference-bearing set (`with`, `serialize_with`, `deserialize_with`, `skip_serializing_if`, `default`), and add a fixture per key.
 
 ## Footgun: Secret-Key Case Sensitivity Depends On File Kind
 
@@ -217,6 +249,48 @@ The non-obvious failure mode: the more faithfully an agent follows the doc-comme
 - `?` (error-propagation) counts toward cyclomatic but reads linearly; weight it deliberately (M00c).
 - `complexity.npath` was removed entirely (M00) because exponentiation made this inflation cross threshold while adding no signal cyclomatic / cognitive / nesting don't already carry.
 - Regression coverage to add when fixed: a complexity calibration case whose body contains control-flow words only in comments and stays silent.
+
+## Footgun: A Rule Exemption That Counts Only Named Placeholders Hides Positional Injection
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn fixed_placeholder_arity_is_safe`) exempts `security.sql-dynamic-query` for the safe IN-clause idiom: a `let placeholders = repeat_n("?", n).join(",")` list bound through `params_from_iter`. The original exemption extracted only NAMED placeholders from the `format!` template, so positional `{}` and indexed `{0}` placeholders were invisible to it. `format!("... WHERE status = {} AND id IN ({placeholders})", status)` had its only *named* placeholder (`placeholders`) proven safe, the `all(...)` check passed, and the rule silently dropped a real injection sink. Positional `{}` is the most common `format!` form, so the gap masked the dominant shape, not an edge case.
+
+The non-obvious failure mode is a security false-NEGATIVE introduced by a precision exemption: the placeholder enumerator filtered to simple identifiers and dropped non-identifier placeholders instead of treating them as un-proven. An exemption is itself a rule, and a skip predicate must enumerate EVERY placeholder and require all of them to be proven safe - never just the ones it can name.
+
+Fix: `fn placeholder_arg_names` now returns every placeholder token (positional `{}` -> empty string, indexed `{0}` -> digits) and `fixed_placeholder_arity_is_safe` requires each to be a simple identifier AND a proven `?` list. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_rejects_value_interpolation_beside_placeholder_list`) probes both positional `{}` and indexed `{0}`. Pairs with [[rule-precision]]: an exemption's false negatives cost as much as the rule's false positives.
+
+## Footgun: High-Entropy Inert Skip Was Tuned To One Model-ID Shape, Not A Safe Principle
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
+
+`src/built_in_rules/helpers.rs` (search: `fn is_structured_high_entropy_non_secret`) skips inert high-entropy strings so `sensitive-data.high-entropy-string` (error severity) does not fire on base64 alphabets, word slugs, and model identifiers. The original model-ID recogniser demanded a `provider/Family/Model` slash structure with all-uppercase-or-digit version codes. Real model catalogues carry far more variety, so it missed bare names with no slash (`Llama-4-Maverick-17B-128E-Instruct-FP8`), single-slash ids, and lowercase size codes (`480b`, `a35b`). A scan of an AI-tooling repo's catalogue (`goose .../canonical_models.json`) produced ~92 error-severity false positives from model identifiers alone, and no real leaked credential was present among the 173 high-entropy hits across five repos.
+
+The non-obvious failure mode is an error-severity secret rule whose inert-skip is enumerated from the author's example shapes: it looks correct on fixtures and floods on real data, and because it is error severity it FAILS a hook/CI gate on model-name strings - the false-positive-as-command-to-change-correct-code problem this tool exists to avoid. A structured-non-secret skip must be defined by a *safe separating principle*, not a hand-tuned shape.
+
+Fix: `fn is_separated_identifier_slug` recognises any separator-delimited slug where every segment is short and alphanumeric and at least two are word-like, but refuses the skip when any non-word segment exceeds 6 chars - because a real secret is either contiguous (one segment), carries base64 padding (`+`/`=`), or hides a long high-entropy run, none of which pass. This removed 100 of 101 model-catalogue FPs across five external repos with zero collateral on any other rule, while every real-secret fixture stayed flagged. Regression coverage: `src/built_in_rules/helpers.rs` (search: `high_entropy_skips_model_identifiers_without_masking_secrets`) asserts the model IDs skip AND that opaque tokens / separated secret blobs keep flagging. Residual: a CamelCase name with a short acronym tail whose non-word segment exceeds 6 chars (`WizardLM-2-8x22B`) still flags; closing it would loosen the safety bound, so it is left. Pairs with [[rule-precision]].
+
+## Footgun: Text Proof/Evidence Helpers Match Names Too Loosely
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
+
+Several rules "prove" a value safe, or find "evidence" it is risky, by scanning nearby source text for a binding or function. Done with `starts_with`, substring `find`, or `rfind("\nfn ")`, those matches are too loose in two recurring ways - they ignore word boundaries and they cross function boundaries - and the failure is a silent false negative in a SECURITY rule.
+
+Concrete instances (2026-06-14, PR review): `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn placeholder_binding_is_fixed_question_list`) scoped its fixed-`?` proof window with `rfind("\nfn ")`, which only matches a bare `fn` at column zero - so for `pub fn`/`async fn`/`impl` methods (the common case) the window spilled into earlier functions and a helper's `let placeholders = ...join(",")` vouched for an untrusted `placeholders` parameter elsewhere. Same file, `line_is_name_binding` used `starts_with("let {name}")`, so `placeholders` was proven by an unrelated `placeholders_safe` binding. The identical shape lived in `src/built_in_rules/path_traversal_rules.rs` (search: `fn window_has_receiver_path_binding`): a plain `find("let {receiver}")` let a `files_backup` binding vouch for a `files` receiver, and `let mut` bindings were missed entirely.
+
+Fix pattern: scope the window to the ENCLOSING function (reuse `is_function_start_line` to find the start, not `rfind("\nfn ")`), and require a non-identifier char after a name match so `x` does not match `x_suffix`; cover both `let` and `let mut`. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_proof_is_scoped_to_current_function_and_exact_name`) and `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `path_traversal_reaches_accessor_receivers_and_let_mut_bindings`).
+
+When adding any "look at nearby text for a binding/usage named X" helper, default to word-boundary checks and current-function scope, and add a negative fixture with a prefix-collision name (`X_safe`) plus a `let mut` binding. Pairs with [[rule-precision]].
+
+## Footgun: Clearing Git Env Vars Does Not Fully Neutralise The Subprocess
+
+**Status:** active | **Created:** 2026-06-14 | **Evidence:** OBSERVED
+
+`src/changed_region.rs` (search: `fn git_command`) hardens the diff subprocess by removing `GIT_EXTERNAL_DIFF` and pointing config/hooks at `/dev/null`. That does NOT stop `git diff` from running an external diff driver configured by the repository's OWN committed `diff.external` (or a `.gitattributes` `diff=<driver>` mapping) - attacker-controlled data in an untrusted tree. Env hygiene neutralises the environment, not the repo's committed config.
+
+The diff path is opt-in behind `--diff-git-unsafe` (ADR-019), but `.goat-flow/architecture.md` claims the diff subprocess "does not execute arbitrary code", so the gap also makes a committed claim untrue. Fix: pass `--no-ext-diff` on every `git diff` invocation (`src/changed_region.rs` search: `fn git_diff_patch`) - it disables both global `diff.external` and attribute-driven drivers. `--no-ext-diff` is a diff/log option, so it cannot live in the shared `git_command` builder (cat-file/ls-tree reject it); add it per diff arg vector.
+
+When hardening any subprocess against an untrusted tree, enumerate the ways the tree's OWN committed files (config, attributes, hooks, ignore files) can change behaviour, not just environment variables. Pairs with ADR-019.
 
 ## Resolved Entries
 
