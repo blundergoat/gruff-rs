@@ -60,11 +60,13 @@ impl ProjectCoverage {
         if self.analysed_rust_files.is_empty() {
             return false;
         }
+        // Partial when any discoverable Rust file was not analysed, so an explicit
+        // scan whose set is not a subset of the universe (e.g. a named gitignored
+        // file) is still treated as partial rather than authoritative.
         self.diff_selection_narrowed
-            || (self.analysed_rust_files != self.discoverable_rust_files
-                && self
-                    .analysed_rust_files
-                    .is_subset(&self.discoverable_rust_files))
+            || !self
+                .discoverable_rust_files
+                .is_subset(&self.analysed_rust_files)
     }
 }
 
@@ -166,4 +168,31 @@ pub(crate) struct CallNameSummary {
     pub(crate) file_path: String,
     pub(crate) name: String,
     pub(crate) line: usize,
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn coverage(discoverable: &[&str], analysed: &[&str]) -> ProjectCoverage {
+        ProjectCoverage {
+            discoverable_rust_files: discoverable.iter().map(|path| path.to_string()).collect(),
+            analysed_rust_files: analysed.iter().map(|path| path.to_string()).collect(),
+            diff_selection_narrowed: false,
+        }
+    }
+
+    #[test]
+    fn is_partial_flags_any_uncovered_discoverable_file() {
+        // Full coverage: every discoverable file was analysed.
+        assert!(!coverage(&["a.rs", "b.rs"], &["a.rs", "b.rs"]).is_partial());
+        // Proper subset: a discoverable file was not analysed.
+        assert!(coverage(&["a.rs", "b.rs"], &["a.rs"]).is_partial());
+        // Superset: analysed covers all discoverable plus an out-of-walk extra.
+        assert!(!coverage(&["a.rs"], &["a.rs", "extra.rs"]).is_partial());
+        // Incomparable: an extra AND a missed discoverable file - still partial.
+        assert!(coverage(&["a.rs", "b.rs"], &["a.rs", "extra.rs"]).is_partial());
+        // Nothing analysed: treated as not-partial.
+        assert!(!coverage(&["a.rs"], &[]).is_partial());
+    }
 }

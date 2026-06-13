@@ -113,19 +113,19 @@ pub(crate) fn git_diff_patch(
     let patch = match mode {
         "working-tree" => git_output(
             project_root,
-            &git_args_with_paths(&["diff", "--unified=0", "HEAD"], paths),
+            &git_args_with_paths(&["diff", "--no-ext-diff", "--unified=0", "HEAD"], paths),
         )?,
         "staged" => git_output(
             project_root,
-            &git_args_with_paths(&["diff", "--cached", "--unified=0"], paths),
+            &git_args_with_paths(&["diff", "--no-ext-diff", "--cached", "--unified=0"], paths),
         )?,
         "unstaged" => git_output(
             project_root,
-            &git_args_with_paths(&["diff", "--unified=0"], paths),
+            &git_args_with_paths(&["diff", "--no-ext-diff", "--unified=0"], paths),
         )?,
         base => git_output(
             project_root,
-            &git_args_with_paths(&["diff", "--unified=0", base], paths),
+            &git_args_with_paths(&["diff", "--no-ext-diff", "--unified=0", base], paths),
         )?,
     };
     let mut parsed = parse_unified_diff(&patch);

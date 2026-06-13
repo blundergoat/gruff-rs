@@ -207,6 +207,14 @@ unsafe extern "C" fn ffi_entry() -> i32 {
 #[export_name = "renamed_entry"]
 fn renamed_entry() {}
 
+#[unsafe(no_mangle)]
+unsafe extern "C" fn ffi_entry_2024() -> i32 {
+    0
+}
+
+#[unsafe(export_name = "renamed_entry_2024")]
+fn renamed_entry_2024() {}
+
 #[pymodule]
 fn plugin_module() {}
 
@@ -251,6 +259,8 @@ pub fn entry() {}
     for exported in [
         "ffi_entry",
         "renamed_entry",
+        "ffi_entry_2024",
+        "renamed_entry_2024",
         "plugin_module",
         "plugin_function",
         "intentionally_registered",

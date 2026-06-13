@@ -86,7 +86,7 @@ fn constructor_regex() -> &'static Regex {
 fn join_regex() -> &'static Regex {
     static_regex(
         &PATH_TRAVERSAL_JOIN_REGEX,
-        r"\b(?P<receiver>(?:(?:std\s*::\s*path\s*::\s*)?(?:Path|PathBuf)\s*::\s*(?:new|from)\s*\([^;\n)]*\)|(?:self|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*))\s*\.\s*join\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
+        r"\b(?P<receiver>(?:(?:std\s*::\s*path\s*::\s*)?(?:Path|PathBuf)\s*::\s*(?:new|from)\s*\([^;\n)]*\)|(?:self|[A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*\(\s*\))?)*))\s*\.\s*join\s*\(\s*&?\s*(?P<arg>[a-z_][a-z0-9_]*)\s*\)",
     )
 }
 
@@ -113,9 +113,11 @@ fn join_receiver_has_filesystem_evidence(receiver: &str, lines: &[&str], line: u
     if receiver_is_inline_path_constructor(&normalized) {
         return true;
     }
-    let Some(name) = normalized.rsplit('.').next() else {
+    let Some(segment) = normalized.rsplit('.').next() else {
         return false;
     };
+    // Strip a trailing accessor call so `self.root()` resolves to `root`.
+    let name = segment.strip_suffix("()").unwrap_or(segment);
     path_traversal_receiver_name_is_filesystem(name)
         || arg_is_typed_path_in_nearby_signature(name, lines, line)
         || receiver_is_path_binding(name, lines, line)
@@ -154,17 +156,45 @@ fn receiver_is_path_binding(receiver: &str, lines: &[&str], line: usize) -> bool
     let zero_based = line.saturating_sub(1);
     let lookback_start = zero_based.saturating_sub(12);
     let window: String = lines[lookback_start..=zero_based].join("\n");
-    let needle = format!("let {receiver}");
-    let Some(after) = window
-        .find(&needle)
-        .map(|position| &window[position + needle.len()..])
-    else {
+    ["let ", "let mut "]
+        .iter()
+        .any(|prefix| window_has_receiver_path_binding(&window, prefix, receiver))
+}
+
+/// True when `window` binds exactly `receiver` (after `prefix`) to a filesystem
+/// path. A non-identifier char must follow the name so a `files` receiver is not
+/// proven by an unrelated `files_backup` binding, and `let mut` bindings count.
+fn window_has_receiver_path_binding(window: &str, prefix: &str, receiver: &str) -> bool {
+    let needle = format!("{prefix}{receiver}");
+    let mut search_from = 0;
+    while let Some(position) = window[search_from..].find(&needle) {
+        let after_name = search_from + position + needle.len();
+        search_from = after_name;
+        if boundary_is_word_break(window, after_name)
+            && statement_after_is_path_binding(&window[after_name..])
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when the char at `index` is not an identifier char, so a name match ends
+/// on a word boundary (`files` must not match inside `files_backup`).
+fn boundary_is_word_break(window: &str, index: usize) -> bool {
+    !window[index..]
+        .chars()
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+/// True when the statement starting at `after` (up to the next `;`) assigns a
+/// filesystem path via `PathBuf::from`/`Path::new` or a `: Path` type annotation.
+fn statement_after_is_path_binding(after: &str) -> bool {
+    let Some(end) = after.find(';') else {
         return false;
     };
-    let Some(statement_end) = after.find(';') else {
-        return false;
-    };
-    let statement = &after[..statement_end];
+    let statement = &after[..end];
     statement.contains("PathBuf::from(")
         || statement.contains("Path::new(")
         || statement.trim_start().starts_with(": Path")

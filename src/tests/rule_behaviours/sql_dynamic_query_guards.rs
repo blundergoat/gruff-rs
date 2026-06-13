@@ -115,6 +115,43 @@ pub fn indexed_value(status: &str, ids: Vec<i64>) {
 }
 
 #[test]
+pub(crate) fn sql_dynamic_query_proof_is_scoped_to_current_function_and_exact_name() {
+    let _guard = analysis_lock();
+    // A helper's fixed-`?` list must not vouch for an untrusted `placeholders`
+    // parameter in a LATER public function: the proof window stays inside one fn.
+    let cross_function = r#"/// Probe.
+pub fn build_list(ids: &[i64]) -> String {
+    std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",")
+}
+
+/// Probe.
+pub fn run_attack(placeholders: &str, ids: Vec<i64>) {
+    let sql = format!("SELECT * FROM t WHERE name IN ({placeholders})");
+    conn.prepare(&sql)?;
+    let params = rusqlite::params_from_iter(ids);
+}
+"#;
+    assert_has_rule(
+        &analyse_sql_fixture(cross_function),
+        "security.sql-dynamic-query",
+    );
+
+    // A prefix-named binding (`placeholders_safe`) must not prove `{placeholders}`.
+    let prefix_name = r#"/// Probe.
+pub fn run_prefix(placeholders: &str, ids: Vec<i64>) {
+    let placeholders_safe = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT * FROM t WHERE name IN ({placeholders})");
+    conn.prepare(&sql)?;
+    let params = rusqlite::params_from_iter(ids);
+}
+"#;
+    assert_has_rule(
+        &analyse_sql_fixture(prefix_name),
+        "security.sql-dynamic-query",
+    );
+}
+
+#[test]
 pub(crate) fn sql_dynamic_query_skips_non_sql_format_calls() {
     let _guard = analysis_lock();
     let body = r#"/// Probe.

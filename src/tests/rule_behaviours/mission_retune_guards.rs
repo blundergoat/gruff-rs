@@ -233,3 +233,62 @@ pub fn unchecked_inline_path_join(user_input: &str) -> PathBuf {
         "all filesystem join findings should report the unchecked segment; findings={path_findings:?}"
     );
 }
+
+#[test]
+pub(crate) fn path_traversal_reaches_accessor_receivers_and_let_mut_bindings() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use std::path::PathBuf;
+
+/// Holds a base directory.
+pub struct App;
+
+impl App {
+    /// Returns the base directory.
+    pub fn root(&self) -> PathBuf {
+        PathBuf::from("/data")
+    }
+
+    /// Joins an unchecked segment onto a path returned by an accessor call.
+    pub fn open(&self, user_input: &str) -> PathBuf {
+        self.root().join(user_input)
+    }
+}
+
+/// Joins an unchecked segment onto a `let mut` path binding.
+pub fn mutable_base_join(user_input: &str) -> PathBuf {
+    let mut store = PathBuf::from("/data");
+    store.push("sub");
+    store.join(user_input)
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let path_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.path-traversal-candidate")
+        .collect();
+    assert_eq!(
+        path_findings.len(),
+        2,
+        "accessor-call receivers and `let mut` path bindings must flag; findings={path_findings:?}"
+    );
+    assert!(
+        path_findings
+            .iter()
+            .all(|finding| finding.metadata["argument"] == json!("user_input")),
+        "both joins should report the unchecked segment; findings={path_findings:?}"
+    );
+}

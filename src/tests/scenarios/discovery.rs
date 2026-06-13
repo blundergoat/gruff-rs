@@ -175,6 +175,12 @@ pub(crate) fn broad_scan_keeps_invalid_utf8_security_text_fatal() {
         b"-----BEGIN PRIVATE KEY-----\nabc\x80secret\n",
     )
     .expect("invalid pem write");
+    fs::create_dir_all(dir.path().join(".github/workflows")).expect("workflows dir");
+    fs::write(
+        dir.path().join(".github/workflows/ci.yml"),
+        b"on: push\njobs:\n  build:\n    run: echo abc\x80secret\n",
+    )
+    .expect("invalid workflow write");
 
     let report = run_project_analysis(
         dir.path(),
@@ -193,7 +199,7 @@ pub(crate) fn broad_scan_keeps_invalid_utf8_security_text_fatal() {
         .iter()
         .map(|diagnostic| (diagnostic.file_path.as_deref().unwrap_or(""), diagnostic))
         .collect();
-    for path in [".env", "certs/private.pem"] {
+    for path in [".env", "certs/private.pem", ".github/workflows/ci.yml"] {
         let diagnostic = diagnostics.get(path).expect("diagnostic for security text");
         assert_eq!(diagnostic.diagnostic_type, "read-error");
         assert!(diagnostic.is_failure());

@@ -8,6 +8,18 @@ pub(crate) use architecture::analyse_architecture_rules;
 pub(crate) use dead_code::analyse_project_dead_code_rules;
 pub(crate) use dependencies::analyse_dependency_rules;
 
+/// Runs the project-level rules (cross-file dead code, architecture, dependency,
+/// missing-README) over an already-built `ProjectContext`.
+///
+/// Usage: called once per analysis after `ProjectContext` is assembled from the
+/// discovered, parsed sources.
+///
+/// Contract: returns the project-scope findings and appends any run diagnostics
+/// (such as partial-context suppression) to `diagnostics`; each rule honours its
+/// `config` enablement.
+///
+/// Failure behaviour: never returns an error - a rule that cannot produce an
+/// authoritative result suppresses itself and records a diagnostic instead.
 pub(crate) fn analyse_project(
     context: &ProjectContext,
     config: &Config,

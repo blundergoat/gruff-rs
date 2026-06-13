@@ -1,5 +1,17 @@
 use super::*;
 
+/// Emits `dead-code.unused-private-item-candidate` for private items that appear
+/// unreferenced across the whole project.
+///
+/// Usage: invoked by `analyse_project` after the identifier index is built.
+///
+/// Contract: emits only when the rule is enabled AND project coverage is
+/// complete; a private item flags when its identifier appears at most once
+/// (its definition) across all analysed sources.
+///
+/// Failure behaviour: on partial coverage it emits no findings and instead
+/// appends a `partial-context-rule-suppressed` diagnostic pointing at a full
+/// `analyse .`, because cross-file reference counts are not authoritative then.
 pub(crate) fn analyse_project_dead_code_rules(
     context: &ProjectContext,
     config: &Config,
@@ -27,6 +39,9 @@ pub(crate) fn analyse_project_dead_code_rules(
     }
 }
 
+/// Builds the non-failing `partial-context-rule-suppressed` diagnostic recorded
+/// when `rule_id` is skipped because the run did not cover the whole discoverable
+/// Rust source universe under the project root.
 fn partial_context_rule_diagnostic(rule_id: &str) -> RunDiagnostic {
     RunDiagnostic {
         diagnostic_type: "partial-context-rule-suppressed".to_string(),

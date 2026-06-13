@@ -335,13 +335,26 @@ pub(crate) fn project_item(
 
 fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        attr.path().segments.last().is_some_and(|segment| {
-            segment.ident == "no_mangle"
-                || segment.ident == "export_name"
-                || segment.ident == "pymodule"
-                || segment.ident == "pyfunction"
-        })
+        let Some(segment) = attr.path().segments.last() else {
+            return false;
+        };
+        if attr_ident_is_export(&segment.ident) {
+            return true;
+        }
+        // Rust 2024 wraps these as `#[unsafe(no_mangle)]` / `#[unsafe(export_name = ...)]`,
+        // so the attribute path is `unsafe` and the export ident sits in the inner tokens.
+        if segment.ident == "unsafe" {
+            if let syn::Meta::List(list) = &attr.meta {
+                let inner = list.tokens.to_string();
+                return inner.contains("no_mangle") || inner.contains("export_name");
+            }
+        }
+        false
     })
+}
+
+fn attr_ident_is_export(ident: &syn::Ident) -> bool {
+    ident == "no_mangle" || ident == "export_name" || ident == "pymodule" || ident == "pyfunction"
 }
 
 fn has_allow_dead_code_attr(attrs: &[syn::Attribute]) -> bool {

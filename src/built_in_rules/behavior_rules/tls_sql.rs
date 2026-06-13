@@ -258,7 +258,7 @@ fn template_is_flaggable(template: &str) -> bool {
     let literal_fragments = format_literal_fragments(template);
     static_regex(
         &SQL_DYNAMIC_QUERY_KEYWORD_REGEX,
-        r"(?i)\b(?:SELECT|INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|SHOW|FROM|WHERE)\b",
+        r"(?i)\b(?:SELECT|INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|SHOW|FROM|WHERE|TRUNCATE|MERGE|GRANT|REVOKE|REPLACE|UPSERT|VACUUM)\b",
     )
     .is_match(&literal_fragments)
 }
@@ -364,7 +364,7 @@ fn placeholder_binding_is_fixed_question_list(
     name: &str,
     format_start: usize,
 ) -> bool {
-    let function_start = source[..format_start].rfind("\nfn ").unwrap_or(0);
+    let function_start = enclosing_function_start(source, format_start);
     source[function_start..format_start]
         .lines()
         .rev()
@@ -375,9 +375,37 @@ fn placeholder_binding_is_fixed_question_list(
         })
 }
 
+/// Byte offset where the function enclosing `format_start` begins. Recognises
+/// `fn`, `pub fn`, `async fn`, and indented `impl` methods via
+/// `is_function_start_line`, not just a bare `fn` at column zero, so the
+/// fixed-`?` proof window stays inside one function: a helper's `let x = ...`
+/// binding must not vouch for a same-named parameter in a later public function.
+fn enclosing_function_start(source: &str, format_start: usize) -> usize {
+    let mut start = 0;
+    let mut offset = 0;
+    for line in source[..format_start].split_inclusive('\n') {
+        if is_function_start_line(line) {
+            start = offset;
+        }
+        offset += line.len();
+    }
+    start
+}
+
+/// True when `line` binds exactly `name` (`let name` / `let mut name`). A
+/// non-identifier char must follow the name so `placeholders` does not match a
+/// `placeholders_safe` binding.
 fn line_is_name_binding(line: &str, name: &str) -> bool {
     let line = line.trim_start();
-    line.starts_with(&format!("let {name}")) || line.starts_with(&format!("let mut {name}"))
+    ["let ", "let mut "].iter().any(|prefix| {
+        line.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix(name))
+            .is_some_and(|after| {
+                !after.starts_with(|character: char| {
+                    character == '_' || character.is_ascii_alphanumeric()
+                })
+            })
+    })
 }
 
 fn later_uses_params_from_iter(source: &str, format_start: usize) -> bool {
@@ -461,6 +489,11 @@ mod tests {
         assert!(template_is_flaggable("SELECT * FROM users WHERE id = {id}"));
         assert!(template_is_flaggable("select * from users where id = {id}"));
         assert!(template_is_flaggable("UPDATE t SET v = {v}"));
+        assert!(template_is_flaggable("TRUNCATE TABLE {table}"));
+        assert!(template_is_flaggable(
+            "MERGE INTO {table} USING src ON id = {id}"
+        ));
+        assert!(template_is_flaggable("GRANT ALL ON {table} TO {user}"));
         assert!(!template_is_flaggable("//item[{idx}]"));
         assert!(!template_is_flaggable("--limit={n}"));
         assert!(!template_is_flaggable("{SELECT}"));

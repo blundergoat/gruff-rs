@@ -413,4 +413,25 @@ pub(crate) fn is_security_relevant_text_path(path: &Path) -> bool {
         .unwrap_or_default();
     matches!(extension.as_str(), "crt" | "env" | "key" | "pem" | "tfvars")
         || is_security_relevant_text_name(file_name)
+        || path_is_github_workflow(path)
+}
+
+/// True when `path` is a GitHub Actions workflow (`.github/workflows/*.yml` or
+/// `.yaml`). Those files carry the `security.github-actions-*` rules, so invalid
+/// UTF-8 there must stay visible rather than be skipped as low-risk text.
+fn path_is_github_workflow(path: &Path) -> bool {
+    let is_yaml = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"));
+    if !is_yaml {
+        return false;
+    }
+    let components: Vec<&str> = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect();
+    components
+        .windows(2)
+        .any(|pair| pair[0] == ".github" && pair[1] == "workflows")
 }

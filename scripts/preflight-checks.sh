@@ -408,8 +408,10 @@ version_metadata_check() {
       return 1
     fi
 
+    # Escape the version's dots so the heading match is literal, not a regex wildcard.
+    local changelog_version="${manifest_version//./\\.}"
     if [[ -f "$REPO_ROOT/CHANGELOG.md" ]] \
-      && ! grep -qE "^##[[:space:]]+v?${manifest_version}[[:space:]]+-[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" "$REPO_ROOT/CHANGELOG.md"; then
+      && ! grep -qE "^##[[:space:]]+v?${changelog_version}[[:space:]]+-[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" "$REPO_ROOT/CHANGELOG.md"; then
       printf 'CHANGELOG.md is missing a release heading for %s\n' "$manifest_version" >&2
       return 1
     fi
