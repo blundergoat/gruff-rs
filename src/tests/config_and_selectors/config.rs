@@ -1,3 +1,7 @@
+//! Configuration loading and behavior contracts for user-authored project settings.
+//! These tests keep strict schema validation, documented selectors, allowlists,
+//! and command defaults aligned with the analysis path that consumes them.
+
 use super::*;
 
 #[test]
@@ -400,8 +404,9 @@ pub(crate) fn legacy_config_byte_identical_rule_blocks_remain_selector_neutral()
     assert_has_rule(&report, "size.parameter-count");
 }
 
+/// Legacy `secretPreviews` aliases suppress exact matches without becoming report metadata.
 #[test]
-pub(crate) fn config_secret_previews_allowlist_only_matching_synthetic_values() {
+pub(crate) fn config_secret_previews_preserve_legacy_suppression_without_serializing_alias() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
@@ -446,10 +451,7 @@ allowlists:
         1,
         "expected only the unlisted API key preview to remain; findings={api_key_findings:?}"
     );
-    assert_eq!(
-        api_key_findings[0].metadata["preview"],
-        "ghp_...bbbb (redacted, 26 chars)"
-    );
+    assert_eq!(api_key_findings[0].metadata["preview"], "[redacted]");
 }
 
 #[test]

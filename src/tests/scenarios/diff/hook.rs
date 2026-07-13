@@ -1,3 +1,7 @@
+//! Hook capability, changed-region, and native new-only comparison contracts.
+//! These tests keep serialized hook findings stable while line shifts and
+//! duplicate identities are matched by occurrence count.
+
 use super::*;
 
 #[test]

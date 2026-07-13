@@ -1,3 +1,7 @@
+//! Registry definitions for idiom, security, size, and test-quality rules.
+//! The catalogue feeds rule listing and documentation with stable IDs,
+//! descriptions, relationships, options, and false-positive guidance.
+
 use super::*;
 
 pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
@@ -470,11 +474,11 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         false_positives: &[
             FalsePositiveShape {
                 shape: "Zero-separator CamelCase or mixed-case identifiers that are high entropy but not secrets.",
-                mitigation: "Prefer a separator-bearing identifier when practical, or add the deterministic redacted preview to `secret_previews` after review.",
+                mitigation: "Prefer a separator-bearing identifier when practical. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
             },
             FalsePositiveShape {
                 shape: "Manifest checksum or signature fields whose value shape alone is indistinguishable from secret material.",
-                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible; otherwise document the field and use `secret_previews` for the reviewed value.",
+                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
             },
         ],
         related: &["sensitive-data.api-key-pattern", "sensitive-data.jwt-token"],
@@ -527,7 +531,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Severity::Error,
         Confidence::High,
         None,
-        "Flags SSN, MRN, and Medicare-style health identifiers with redacted previews.",
+        "Flags SSN, MRN, and Medicare-style health identifiers with zero-payload category markers.",
     ),
 ];
 

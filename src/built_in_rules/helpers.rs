@@ -1,3 +1,7 @@
+//! Shared constructors and predicates for built-in source checks.
+//! Rule modules use these helpers to create deterministic findings, classify
+//! source shapes, and keep sensitive display values separate from suppression.
+
 use super::*;
 
 pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
@@ -239,8 +243,51 @@ pub(crate) fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
         .find_map(|(index, line)| line.contains(needle).then_some(index + 1))
 }
 
-pub(crate) fn redact(value: &str) -> String {
+/// Zero-payload marker selected from detector-owned sensitive-data categories.
+/// Reports receive only these markers; matched source values and legacy aliases
+/// remain inside analysis long enough to classify or suppress a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SensitiveDisplayMarker<'a> {
+    Generic,
+    AwsAccessKey,
+    PrivateKey,
+    Jwt,
+    GcpServiceAccount,
+    ProtectedIdentifier(&'a str),
+    ConnectionString(&'a str),
+}
+
+impl SensitiveDisplayMarker<'_> {
+    /// Render the zero-payload text serialized in a sensitive finding's metadata.
+    /// Category and scheme values come from detector constants or accepted regex alternatives.
+    pub(crate) fn render(self) -> String {
+        match self {
+            // Generic token and entropy matches reveal no narrower detector class.
+            Self::Generic => "[redacted]".to_string(),
+            // AWS access-key matches expose the credential class but no key characters.
+            Self::AwsAccessKey => "[redacted:aws-access-key]".to_string(),
+            // Private-key matches expose the material class but no header or body bytes.
+            Self::PrivateKey => "[redacted:private-key]".to_string(),
+            // JWT matches expose the token class but no encoded segment bytes.
+            Self::Jwt => "[redacted:jwt]".to_string(),
+            // GCP service-account matches expose the provider class but no key fields.
+            Self::GcpServiceAccount => "[redacted:gcp-service-account]".to_string(),
+            // PHI markers expose only the detector-owned identifier category.
+            Self::ProtectedIdentifier(category) => format!("[redacted:{category}]"),
+            // Connection markers expose only the regex-approved public URL scheme.
+            Self::ConnectionString(scheme) => {
+                format!("[redacted:connection-string:{scheme}]")
+            }
+        }
+    }
+}
+
+/// Compute the historic first-four/last-four alias accepted by `secretPreviews`.
+/// Callers use it only for exact in-memory suppression; reports must use a
+/// [`SensitiveDisplayMarker`] instead.
+pub(crate) fn legacy_secret_suppression_alias(value: &str) -> String {
     let char_count = value.chars().count();
+    // Short values reveal no characters, preserving the historic exact alias contract.
     if char_count <= 8 {
         return format!("{} (redacted, {char_count} chars)", "*".repeat(char_count));
     }
@@ -254,6 +301,13 @@ pub(crate) fn redact(value: &str) -> String {
         .rev()
         .collect();
     format!("{start}...{end} (redacted, {char_count} chars)")
+}
+
+/// Render the legacy partial form still used by structured fixture-PII messages.
+/// Message text participates in line-scoped stable identity, so this display
+/// remains separate from the zero-payload secret-metadata path.
+pub(crate) fn redact(value: &str) -> String {
+    legacy_secret_suppression_alias(value)
 }
 
 pub(crate) fn is_high_entropy(value: &str) -> bool {

@@ -1,3 +1,7 @@
+//! Detect secret-like and protected-health values in supported source files.
+//! Findings expose detector-owned zero-payload markers while legacy config
+//! aliases stay internal to exact suppression checks.
+
 use super::*;
 
 // PII-in-fixtures detection is a sensitive-data sub-concern kept in its own
@@ -89,20 +93,25 @@ pub(crate) fn analyse_sensitive_data(
     analyse_high_entropy_strings(unit, config, findings);
 }
 
+/// Emit generic pattern findings after placeholder and legacy-alias suppression.
+/// The finding message and identity stay unchanged while metadata receives a safe marker.
 fn push_regex_pattern_matches(
     unit: &SourceUnit<'_>,
     config: &Config,
     rule: &RegexRule,
     findings: &mut Vec<Finding>,
 ) {
+    // Each regex match is independently classified, suppressed, or reported to the user.
     for capture in static_regex(rule.regex, rule.pattern).find_iter(unit.source) {
+        // Known placeholders and overlapping GCP keys stay suppressed by detector policy.
         if regex_match_should_be_suppressed(unit.source, config, rule.rule_id, &capture) {
             continue;
         }
-        let preview = redact(capture.as_str());
-        if config.secret_previews.contains(&preview) {
+        // A reviewed historic alias suppresses the same finding without entering report data.
+        if legacy_secret_is_suppressed(config, capture.as_str()) {
             continue;
         }
+        let display_marker = regex_display_marker(rule.rule_id, capture.as_str());
         findings.push(Finding::new(FindingDescriptor {
             rule_id: rule.rule_id.to_string(),
             message: rule.message.to_string(),
@@ -115,9 +124,45 @@ fn push_regex_pattern_matches(
             remediation: Some(
                 "Remove the secret and load it from a secure runtime source.".to_string(),
             ),
-            metadata: json!({ "preview": preview }),
+            metadata: json!({ "preview": display_marker }),
         }));
     }
+}
+
+/// Choose a zero-payload marker from the rule and its regex-approved match shape.
+/// Generic provider-token patterns intentionally reveal no provider guess.
+fn regex_display_marker(rule_id: &str, matched_value: &str) -> String {
+    match rule_id {
+        // AWS has a dedicated rule, so the report can safely name its credential class.
+        "sensitive-data.aws-access-key" => SensitiveDisplayMarker::AwsAccessKey.render(),
+        // Private-key findings expose only the key-material class.
+        "sensitive-data.private-key" => SensitiveDisplayMarker::PrivateKey.render(),
+        // JWT findings expose only the token class.
+        "sensitive-data.jwt-token" => SensitiveDisplayMarker::Jwt.render(),
+        // Credential URLs expose only a scheme already accepted by their detector regex.
+        "sensitive-data.database-url-password" | "sensitive-data.url-embedded-credentials" => {
+            connection_string_display_marker(matched_value)
+        }
+        // Mixed provider tokens keep the family contract's generic zero-payload marker.
+        _ => SensitiveDisplayMarker::Generic.render(),
+    }
+}
+
+/// Render a connection-string marker from the detector-approved URL scheme.
+/// A malformed match falls back to the generic marker instead of exposing source text.
+fn connection_string_display_marker(matched_value: &str) -> String {
+    // The URL regex normally guarantees `://`; absence means no safe public scheme is available.
+    let Some((scheme, _)) = matched_value.split_once("://") else {
+        return SensitiveDisplayMarker::Generic.render();
+    };
+    SensitiveDisplayMarker::ConnectionString(scheme).render()
+}
+
+/// Check the exact historic alias used by `allowlists.secretPreviews`.
+/// The alias exists only for this comparison and is never attached to a finding.
+fn legacy_secret_is_suppressed(config: &Config, value: &str) -> bool {
+    let legacy_alias = legacy_secret_suppression_alias(value);
+    config.secret_previews.contains(&legacy_alias)
 }
 
 fn regex_match_should_be_suppressed(
@@ -196,6 +241,8 @@ fn analyse_phi_patterns(unit: &SourceUnit<'_>, config: &Config, findings: &mut V
     );
 }
 
+/// Emit one PHI finding per non-placeholder identifier not suppressed by its legacy alias.
+/// Metadata exposes only the detector-owned health-identifier category.
 fn push_phi_matches(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -203,17 +250,21 @@ fn push_phi_matches(
     regex: &Regex,
     findings: &mut Vec<Finding>,
 ) {
+    // Each structured identifier is checked independently for placeholder and suppression policy.
     for captures in regex.captures_iter(unit.source) {
+        // An incomplete named capture cannot identify a value for the user to replace.
         let Some(value) = captures.name("value") else {
             continue;
         };
+        // Standards-reserved placeholders remain silent so fixtures can use safe examples.
         if phi_value_is_placeholder(category, value.as_str()) {
             continue;
         }
-        let preview = redact(value.as_str());
-        if config.secret_previews.contains(&preview) {
+        // Existing configs still suppress the exact legacy alias without serializing it.
+        if legacy_secret_is_suppressed(config, value.as_str()) {
             continue;
         }
+        let display_marker = SensitiveDisplayMarker::ProtectedIdentifier(category).render();
         findings.push(Finding::new(FindingDescriptor {
             rule_id: "sensitive-data.phi-pattern".to_string(),
             message: format!("Protected health identifier pattern detected for {category}."),
@@ -227,7 +278,7 @@ fn push_phi_matches(
                 "Replace committed health identifiers with standards-reserved placeholders."
                     .to_string(),
             ),
-            metadata: json!({ "category": category, "preview": preview }),
+            metadata: json!({ "category": category, "preview": display_marker }),
         }));
     }
 }
@@ -252,18 +303,26 @@ fn phi_value_is_placeholder(category: &str, value: &str) -> bool {
 // GCP-specific rule and the generic private-key suppression check so both agree
 // on exactly when a GCP finding exists.
 const GCP_SERVICE_ACCOUNT_PATTERN: &str = r#"(?s)"type"\s*:\s*"service_account".{0,2500}"private_key"\s*:\s*"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----"#;
+const GCP_LEGACY_SUPPRESSION_ALIAS: &str = "service_account private key (redacted)";
 
+/// Emit GCP service-account findings with a provider marker and historic suppression alias.
+/// Generic private-key coverage remains coordinated by `gcp_finding_contains_private_key`.
 fn analyse_gcp_service_account_keys(
     unit: &SourceUnit<'_>,
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
     let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
+    // Each matched service-account object produces at most one provider-specific finding.
     for capture in regex.find_iter(unit.source) {
-        let preview = "service_account private key (redacted)".to_string();
-        if config.secret_previews.contains(&preview) {
+        // Existing configs keep suppressing the fixed historic GCP alias.
+        if config
+            .secret_previews
+            .contains(GCP_LEGACY_SUPPRESSION_ALIAS)
+        {
             continue;
         }
+        let display_marker = SensitiveDisplayMarker::GcpServiceAccount.render();
         findings.push(Finding::new(FindingDescriptor {
             rule_id: "sensitive-data.gcp-service-account-key".to_string(),
             message: "GCP service account private key material detected.".to_string(),
@@ -276,7 +335,7 @@ fn analyse_gcp_service_account_keys(
             remediation: Some(
                 "Remove the service account key and rotate it in Google Cloud IAM.".to_string(),
             ),
-            metadata: json!({ "provider": "gcp", "preview": preview }),
+            metadata: json!({ "provider": "gcp", "preview": display_marker }),
         }));
     }
 }
@@ -332,6 +391,8 @@ fn allows_lowercase_secret_keys(display_path: &str) -> bool {
     )
 }
 
+/// Emit credible environment-style assignments after exact legacy-alias suppression.
+/// Reports receive only the generic zero-payload marker.
 fn push_env_like_secret_matches(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -339,9 +400,10 @@ fn push_env_like_secret_matches(
     regex: &Regex,
     test_ranges: &[(usize, usize)],
 ) {
+    // Each assignment is independently validated against test context and placeholder shapes.
     for captures in regex.captures_iter(unit.source) {
-        let Some((line, preview)) = env_like_secret_match(unit, config, &captures, test_ranges)
-        else {
+        // Suppressed or non-credible assignments do not become findings.
+        let Some(line) = env_like_secret_match(unit, config, &captures, test_ranges) else {
             continue;
         };
         findings.push(Finding::new(FindingDescriptor {
@@ -356,26 +418,35 @@ fn push_env_like_secret_matches(
             remediation: Some(
                 "Load secret values from runtime configuration instead of source.".to_string(),
             ),
-            metadata: json!({ "preview": preview }),
+            metadata: json!({ "preview": SensitiveDisplayMarker::Generic.render() }),
         }));
     }
 }
 
+/// Return the source line for one reportable environment-style assignment.
+/// Missing captures, test-only lines, placeholders, and legacy aliases stay silent.
 fn env_like_secret_match(
     unit: &SourceUnit<'_>,
     config: &Config,
     captures: &regex::Captures<'_>,
     test_ranges: &[(usize, usize)],
-) -> Option<(usize, String)> {
-    let full_match = captures.get(0)?;
-    let key = captures.get(1)?;
-    let value = captures.get(2)?;
+) -> Option<usize> {
+    // An incomplete regex capture cannot support a trustworthy finding location or value shape.
+    let (Some(full_match), Some(key), Some(value)) =
+        (captures.get(0), captures.get(1), captures.get(2))
+    else {
+        return None;
+    };
     let line = byte_line_from_starts(unit.line_starts(), key.start());
+    // Test-context assignments and non-credible values stay silent for the source author.
     if line_in_ranges(line, test_ranges) || !is_credible_secret_assignment_value(value.as_str()) {
         return None;
     }
-    let preview = redact(full_match.as_str());
-    (!config.secret_previews.contains(&preview)).then_some((line, preview))
+    // A reviewed legacy alias suppresses the finding without becoming report metadata.
+    if legacy_secret_is_suppressed(config, full_match.as_str()) {
+        return None;
+    }
+    Some(line)
 }
 
 fn is_credible_secret_assignment_value(value: &str) -> bool {
@@ -422,6 +493,8 @@ fn has_secret_value_shape(value: &str) -> bool {
     has_letter && has_digit_or_symbol
 }
 
+/// Report generated-looking string literals that survive inert-shape and legacy-alias checks.
+/// Project analysis reaches this after the structured sensitive-data detectors.
 pub(crate) fn analyse_high_entropy_strings(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -432,43 +505,38 @@ pub(crate) fn analyse_high_entropy_strings(
         r#""([A-Za-z0-9+/=_-]{32,})"|'([A-Za-z0-9+/=_-]{32,})'"#,
     );
 
+    // Each quoted candidate is classified before any finding metadata is built.
     for captures in regex.captures_iter(unit.source) {
+        // A regex alternative without a captured value cannot support entropy analysis.
         let Some(secret) = captures.get(1).or_else(|| captures.get(2)) else {
             continue;
         };
         let value = secret.as_str();
-        let Some(preview) = high_entropy_secret_preview(value, config) else {
+        // Inert shapes and reviewed legacy aliases remain silent.
+        if !high_entropy_secret_should_report(value, config) {
             continue;
-        };
-        findings.push(high_entropy_finding(unit, &secret, &preview));
+        }
+        findings.push(high_entropy_finding(unit, &secret));
     }
 }
 
-/// Returns the redacted preview for `value` if the high-entropy rule
-/// should fire - or `None` when the value is below the entropy bar, is
-/// a recognised integrity-hash literal, has a known structured
-/// non-secret shape, or matches the configured `secret_previews`
-/// allowlist. Centralising the skip logic keeps the outer loop body
-/// terse.
-fn high_entropy_secret_preview(value: &str, config: &Config) -> Option<String> {
+/// Return whether a high-entropy value should produce a finding.
+/// Inert shapes and exact historic suppression aliases remain silent without
+/// exposing the alias to report construction.
+fn high_entropy_secret_should_report(value: &str, config: &Config) -> bool {
+    // Values below the entropy bar or with known inert shapes are not secret findings.
     if !is_high_entropy(value)
         || is_integrity_hash(value)
         || is_structured_high_entropy_non_secret(value)
     {
-        return None;
+        return false;
     }
-    let preview = redact(value);
-    if config.secret_previews.contains(&preview) {
-        return None;
-    }
-    Some(preview)
+    !legacy_secret_is_suppressed(config, value)
 }
 
-fn high_entropy_finding(
-    unit: &SourceUnit<'_>,
-    secret: &regex::Match<'_>,
-    preview: &str,
-) -> Finding {
+/// Build a high-entropy finding with a generic marker and measured entropy.
+/// The raw value is used only for the numeric calculation and is never serialized.
+fn high_entropy_finding(unit: &SourceUnit<'_>, secret: &regex::Match<'_>) -> Finding {
     let value = secret.as_str();
     Finding::new(FindingDescriptor {
         rule_id: "sensitive-data.high-entropy-string".to_string(),
@@ -480,6 +548,9 @@ fn high_entropy_finding(
         confidence: Confidence::Medium,
         symbol: None,
         remediation: Some("Move generated secrets to a secure runtime secret source.".to_string()),
-        metadata: json!({ "preview": preview, "entropy": shannon_entropy(value) }),
+        metadata: json!({
+            "preview": SensitiveDisplayMarker::Generic.render(),
+            "entropy": shannon_entropy(value)
+        }),
     })
 }

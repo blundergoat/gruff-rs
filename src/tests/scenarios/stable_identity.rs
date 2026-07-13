@@ -1,4 +1,113 @@
+//! Stable finding identity and score-policy contracts for serialized reports.
+//! These tests distinguish line-sensitive baseline fingerprints from the
+//! line-insensitive identities consumed by hook new-only comparisons.
+
 use super::*;
+
+/// Outcome B preserves fixture-PII messages, fingerprints, and stable identities byte-for-byte.
+#[test]
+pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join("tests/fixtures")).expect("fixture dir");
+    fs::write(
+        dir.path().join("tests/fixtures/users.txt"),
+        "alice.smith@gmail.com\n123-45-6789\n212-867-5309\n",
+    )
+    .expect("fixture write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("tests/fixtures/users.txt")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let expected = [
+        (
+            "email",
+            "Realistic email value `alic....com (redacted, 21 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "70348abd6bb12274",
+            "9144b3113699deeb",
+        ),
+        (
+            "ssn",
+            "Realistic ssn value `123-...6789 (redacted, 11 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "55bf45dde170be2d",
+            "f4a38a9c11617562",
+        ),
+        (
+            "phone",
+            "Realistic phone value `212-...5309 (redacted, 12 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "919d252a926d85b6",
+            "3a7eeefbb3712de5",
+        ),
+    ];
+
+    for (kind, message, fingerprint, stable_identity) in expected {
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == "sensitive-data.pii-test-fixture"
+                    && finding.metadata["kind"] == kind
+            })
+            .expect("missing expected fixture-PII kind");
+        assert_eq!(finding.message, message, "{kind}");
+        assert_eq!(finding.fingerprint, fingerprint, "{kind}");
+        assert_eq!(finding.stable_identity, stable_identity, "{kind}");
+    }
+}
+
+/// Outcome B keeps fixture-PII line shifts and added duplicates compatible with hook new-only.
+#[test]
+pub(crate) fn outcome_b_keeps_structured_pii_hook_new_only_identity_compatible() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join("tests/fixtures")).expect("fixture dir");
+    let fixture_path = dir.path().join("tests/fixtures/users.txt");
+    fs::write(&fixture_path, "123-45-6789\n").expect("base fixture write");
+
+    let base = analyse_structured_pii_fixture(dir.path());
+    let mut base_counts = BTreeMap::new();
+    for finding in base.findings {
+        *base_counts.entry(finding.stable_identity).or_default() += 1;
+    }
+
+    fs::write(&fixture_path, "\n123-45-6789\n123-45-6789\n").expect("current fixture write");
+    let mut current = analyse_structured_pii_fixture(dir.path());
+    assert_eq!(current.findings.len(), 2, "both current SSNs are detected");
+    assert_eq!(
+        current.findings[0].stable_identity, current.findings[1].stable_identity,
+        "same-category duplicates share the unchanged PII identity subject"
+    );
+
+    crate::hook::apply_stable_identity_new_only(&mut current, &base_counts);
+    assert_eq!(
+        current.findings.len(),
+        1,
+        "the shifted base occurrence suppresses while the added duplicate remains new"
+    );
+}
+
+/// Analyse the focused fixture path used by the Outcome B hook compatibility guard.
+fn analyse_structured_pii_fixture(root: &Path) -> AnalysisReport {
+    run_project_analysis(
+        root,
+        AnalysisOptions {
+            paths: vec![PathBuf::from("tests/fixtures/users.txt")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds")
+}
 
 fn make_finding(rule_id: &str, file: &str, line: usize, symbol: Option<&str>) -> Finding {
     Finding::new(FindingDescriptor {

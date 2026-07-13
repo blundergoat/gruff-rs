@@ -1,4 +1,63 @@
+//! Baseline generation, exact matching, and tri-state report contracts.
+//! These tests ensure reviewed findings remain suppressible without widening
+//! the fingerprint, rule-id, and file-path tuple.
+
 use super::*;
+
+/// Outcome B keeps existing fixture-PII baselines exactly suppressible.
+#[test]
+pub(crate) fn outcome_b_keeps_structured_pii_baseline_matching_byte_compatible() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join("tests/fixtures")).expect("fixture dir");
+    fs::write(
+        dir.path().join("tests/fixtures/users.txt"),
+        "alice.smith@gmail.com\n123-45-6789\n212-867-5309\n",
+    )
+    .expect("fixture write");
+
+    let before = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("tests/fixtures/users.txt")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let pii_findings: Vec<Finding> = before
+        .findings
+        .into_iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.pii-test-fixture")
+        .collect();
+    assert_eq!(pii_findings.len(), 3, "fixture must pin all PII categories");
+
+    let baseline_path = dir.path().join("baseline.json");
+    write_baseline(&baseline_path, &pii_findings).expect("baseline write");
+    let after = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("tests/fixtures/users.txt")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: false,
+            ..default_test_options()
+        },
+    )
+    .expect("baseline analysis succeeds");
+
+    assert!(
+        after.findings.is_empty(),
+        "all three reviewed PII findings suppress"
+    );
+    let baseline = after.baseline.as_ref().expect("baseline report");
+    assert_eq!(baseline.suppressed, 3);
+    assert_eq!(baseline.unchanged_count, 3);
+    assert_eq!(baseline.new_count, 0);
+    assert_eq!(baseline.absent_count, 0);
+}
 
 #[test]
 pub(crate) fn baseline_generation_and_exact_suppression_are_stable() {
