@@ -196,6 +196,16 @@ allow just to finish the milestone. In M31, threading suppression state pushed
 the summaries and SARIF-only suppressed findings into a small state struct kept
 the pipeline explicit and lint-clean.
 
+**2026-07-13 extension:** M07 added metadata kind to the GitHub line analyzer
+and shared finding emitter, pushing both to eight arguments. The first
+`cargo clippy --all-targets -- -D warnings` run rejected both helpers. Grouping
+per-file rule state in `src/built_in_rules/text_rules.rs` (search:
+`struct GithubMetadataScanState`) and user-visible finding copy in the same file
+(search: `struct GithubStepFinding`) removed the structural warning without a
+lint allow or behavior change. When a rule change threads one more concern
+through an existing seven-argument helper, introduce a vocabulary-named state
+or descriptor before the full gate rather than waiting for Clippy to force it.
+
 ## Lesson: Regex Match Starts Can Hide Useful Source Lines
 
 **Created:** 2026-05-18
@@ -378,6 +388,14 @@ example, match Markdown backticks as `\x60`), and scope reference resolution to
 the files or sections actually changed. A broad repository/workspace reference
 audit is a separate check and must model intentionally future-created and
 sibling-owned paths explicitly.
+
+**2026-07-13 extension:** M07 broadened an existing workflow-event regression
+test from scalar `on:` values to scalar, list, and mapping forms, then renamed
+the test even though its original scalar contract still applied. `goat-flow
+stats --check` caught the learning-loop reference that the rename made stale.
+When expanding a referenced test without invalidating its original contract,
+preserve the established semantic anchor; rename it only when the meaning truly
+changes and every approved reference can move with it.
 
 ## Lesson: Use concat! For Whitespace-Sensitive Multiline Assertions
 

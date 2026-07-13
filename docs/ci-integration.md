@@ -140,3 +140,19 @@ Run the full local gate before releases:
 ```sh
 scripts/preflight-checks.sh
 ```
+
+Ordinary project analysis remains config-aware, so this repository's
+`.gruff-rs.yaml` continues to exclude `.github/**` from broad dogfood scans.
+Preflight has a separate named security check that enumerates the exact live
+`.github/workflows/*.yml` and `.yaml` files plus root `action.yml`, then supplies
+those paths with `--no-config --no-baseline`. That explicit bypass audits
+checked-in automation without weakening the project's normal ignore policy or
+recursively discovering arbitrary local actions.
+
+An explicitly supplied file named exactly `action.yml` or `action.yaml` receives
+the step rules that understand both workflow and composite-action syntax:
+direct `github.event.*` shell interpolation, remote downloads piped into a
+shell, and third-party `uses:` dependencies without full commit SHAs. Workflow
+permissions, `pull_request_target`, and pull-request secret checks remain
+workflow-only because action metadata has no workflow trigger or permission
+contract.

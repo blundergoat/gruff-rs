@@ -1,3 +1,7 @@
+//! Deterministic text rules for source, workflow, and action metadata files.
+//! The analyzer reaches these checks after discovery classifies a supported
+//! source file; path and input origin keep GitHub rules on understood surfaces.
+
 use super::*;
 
 pub(crate) fn analyse_text_rules(
@@ -82,15 +86,18 @@ fn path_is_agent_hook(normalized: &str) -> bool {
         || normalized.starts_with(".claude/hooks/")
 }
 
+/// Find direct event-context interpolation in understood GitHub shell steps.
 fn analyse_ci_github_event_shell_interpolation(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
-    if !is_github_workflow(&unit.file.display_path) {
+    // Other YAML and directory-discovered actions stay outside the GitHub metadata contract.
+    let Some(metadata_kind) = github_metadata_kind(unit.file) else {
         return;
-    }
+    };
 
     let mut state = RunBlockState::default();
+    // Each source line can open, continue, or close the shell step a user configured.
     for (line_index, line) in unit.source.lines().enumerate() {
         if state.line_has_event_shell_interpolation(line) {
-            push_github_event_shell_finding(unit, findings, line_index + 1);
+            push_github_event_shell_finding(unit, findings, metadata_kind, line_index + 1);
         }
     }
 }
@@ -130,15 +137,22 @@ impl RunBlockState {
     }
 }
 
+/// Emit event-interpolation guidance for the workflow or action the user scanned.
 fn push_github_event_shell_finding(
     unit: &SourceUnit<'_>,
     findings: &mut Vec<Finding>,
+    metadata_kind: GithubMetadataKind,
     line: usize,
 ) {
+    // Preserve established workflow wording while naming a composite action accurately.
+    let message = if metadata_kind == GithubMetadataKind::Workflow {
+        "GitHub event data is interpolated directly into a workflow shell step."
+    } else {
+        "GitHub event data is interpolated directly into a composite-action shell step."
+    };
     findings.push(Finding::new(FindingDescriptor {
         rule_id: "ci.github-event-shell-interpolation".to_string(),
-        message:
-            "GitHub event data is interpolated directly into a workflow shell step.".to_string(),
+        message: message.to_string(),
         file_path: unit.file.display_path.clone(),
         line: Some(line),
         severity: Severity::Warning,
@@ -153,6 +167,39 @@ fn push_github_event_shell_finding(
     }));
 }
 
+/// GitHub metadata kinds supported by the lightweight text-rule model.
+/// Workflows are recognised by their repository path; composite actions are
+/// recognised only when a user supplies an exact action metadata file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GithubMetadataKind {
+    Workflow,
+    Action,
+}
+
+/// Classify the GitHub metadata contract a supplied source file can satisfy.
+fn github_metadata_kind(file: &SourceFile) -> Option<GithubMetadataKind> {
+    // Workflow paths keep their existing rules whether reached by a walk or explicit input.
+    if is_github_workflow(&file.display_path) {
+        return Some(GithubMetadataKind::Workflow);
+    }
+    // Only an exact file argument opts a composite action into shared step rules.
+    if file.origin == SourceOrigin::ExplicitFile && is_action_metadata_path(&file.display_path) {
+        return Some(GithubMetadataKind::Action);
+    }
+    // No kind means this source file receives ordinary text rules but no GitHub metadata rules.
+    None
+}
+
+/// Recognise the two exact composite-action basenames accepted by GitHub.
+fn is_action_metadata_path(path: &str) -> bool {
+    // A path without a UTF-8 basename is not metadata the text analyzer can name safely.
+    matches!(
+        Path::new(path).file_name().and_then(|name| name.to_str()),
+        Some("action.yml" | "action.yaml")
+    )
+}
+
+/// Recognise root `.github/workflows/` YAML paths without recursively widening discovery.
 fn is_github_workflow(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
     normalized.starts_with(".github/workflows/")
@@ -174,27 +221,40 @@ fn is_yaml_block_scalar(value: &str) -> bool {
     matches!(value, "|" | "|-" | "|+" | ">" | ">-" | ">+")
 }
 
+/// Run the GitHub rules applicable to this workflow or explicit action file.
 fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
-    if !is_github_workflow(&unit.file.display_path) {
+    // Ordinary YAML and directory-discovered actions receive no GitHub metadata rules.
+    let Some(metadata_kind) = github_metadata_kind(unit.file) else {
         return;
-    }
-    let mut state = WorkflowRunState::default();
-    let mut permissions = WorkflowPermissionsState::default();
-    let mut summary = WorkflowSecuritySummary::default();
+    };
+    let mut scan_state = GithubMetadataScanState::default();
 
+    // Shared step syntax is inspected line by line while workflow state stays separately gated.
     for (line_index, line) in unit.source.lines().enumerate() {
         analyse_github_actions_line(
             unit,
             findings,
-            &mut state,
-            &mut permissions,
-            &mut summary,
+            metadata_kind,
+            &mut scan_state,
             line_index + 1,
             line,
         );
     }
 
-    push_github_actions_summary_findings(unit, findings, summary);
+    // Only workflows have trigger and pull-request secret contracts to summarize.
+    if metadata_kind == GithubMetadataKind::Workflow {
+        push_github_actions_summary_findings(unit, findings, scan_state.workflow_summary);
+    }
+}
+
+/// Mutable state shared while one GitHub metadata file is scanned.
+/// Step tracking applies to workflows and actions; permission and event state
+/// is populated only for workflows before findings enter the user report.
+#[derive(Default)]
+struct GithubMetadataScanState {
+    run: WorkflowRunState,
+    workflow_permissions: WorkflowPermissionsState,
+    workflow_summary: WorkflowSecuritySummary,
 }
 
 #[derive(Default)]
@@ -223,20 +283,26 @@ impl WorkflowSecuritySummary {
     }
 }
 
+/// Inspect one metadata line and route shared or workflow-only security checks.
 fn analyse_github_actions_line(
     unit: &SourceUnit<'_>,
     findings: &mut Vec<Finding>,
-    state: &mut WorkflowRunState,
-    permissions: &mut WorkflowPermissionsState,
-    summary: &mut WorkflowSecuritySummary,
+    metadata_kind: GithubMetadataKind,
+    scan_state: &mut GithubMetadataScanState,
     line_number: usize,
     line: &str,
 ) {
     let trimmed = line.trim();
+    // Both workflows and composite actions can depend on third-party `uses:` steps.
     if let Some(action) = workflow_uses_value(trimmed) {
-        maybe_push_unpinned_action(unit, findings, line_number, action);
+        maybe_push_unpinned_action(unit, findings, metadata_kind, line_number, action);
     }
-    if permissions.line_allows_broad_permission(line) {
+    // Composite action metadata has no workflow-level permissions contract.
+    if metadata_kind == GithubMetadataKind::Workflow
+        && scan_state
+            .workflow_permissions
+            .line_allows_broad_permission(line)
+    {
         push_workflow_finding(
             unit,
             findings,
@@ -246,17 +312,27 @@ fn analyse_github_actions_line(
             json!({}),
         );
     }
-    if state.line_has_remote_shell(line) {
-        push_workflow_finding(
+    // Both metadata kinds can place remote-download commands in shell steps.
+    if scan_state.run.line_has_remote_shell(line) {
+        push_shared_github_metadata_finding(
             unit,
             findings,
-            "security.github-actions-remote-shell",
-            "Workflow downloads remote content directly into a shell.",
-            line_number,
-            json!({}),
+            metadata_kind,
+            GithubStepFinding {
+                rule_id: "security.github-actions-remote-shell",
+                workflow_message: "Workflow downloads remote content directly into a shell.",
+                action_message: "Composite action downloads remote content directly into a shell.",
+                line: line_number,
+                metadata: json!({}),
+            },
         );
     }
-    summary.observe_line(trimmed, line_number);
+    // Event and secret summary state exists only for workflow triggers.
+    if metadata_kind == GithubMetadataKind::Workflow {
+        scan_state
+            .workflow_summary
+            .observe_line(trimmed, line_number);
+    }
 }
 
 fn push_github_actions_summary_findings(
@@ -336,21 +412,26 @@ fn strip_inline_comment(value: &str) -> &str {
     }
 }
 
+/// Report a third-party step dependency unless its ref is an immutable full SHA.
 fn maybe_push_unpinned_action(
     unit: &SourceUnit<'_>,
     findings: &mut Vec<Finding>,
+    metadata_kind: GithubMetadataKind,
     line: usize,
     action: &str,
 ) {
+    // Local actions and pinned container images do not depend on a moving repository ref.
     if action.starts_with("./") || action.starts_with("docker://") {
         return;
     }
+    // A third-party action without any ref is unpinned for either metadata kind.
     let Some((name, reference)) = action.rsplit_once('@') else {
-        push_unpinned_action(unit, findings, line, action, None);
+        push_unpinned_action(unit, findings, metadata_kind, line, action, None);
         return;
     };
+    // Third-party repository refs must use the complete commit identity users reviewed.
     if name.contains('/') && !is_full_sha_reference(reference) {
-        push_unpinned_action(unit, findings, line, name, Some(reference));
+        push_unpinned_action(unit, findings, metadata_kind, line, name, Some(reference));
     }
 }
 
@@ -361,20 +442,26 @@ fn is_full_sha_reference(reference: &str) -> bool {
             .all(|character| character.is_ascii_hexdigit())
 }
 
+/// Emit pinning guidance with wording accurate for the supplied metadata kind.
 fn push_unpinned_action(
     unit: &SourceUnit<'_>,
     findings: &mut Vec<Finding>,
+    metadata_kind: GithubMetadataKind,
     line: usize,
     action: &str,
     reference: Option<&str>,
 ) {
-    push_workflow_finding(
+    push_shared_github_metadata_finding(
         unit,
         findings,
-        "security.github-actions-unpinned-action",
-        "Workflow action is not pinned to a full commit SHA.",
-        line,
-        json!({ "action": action, "reference": reference }),
+        metadata_kind,
+        GithubStepFinding {
+            rule_id: "security.github-actions-unpinned-action",
+            workflow_message: "Workflow action is not pinned to a full commit SHA.",
+            action_message: "Composite action dependency is not pinned to a full commit SHA.",
+            line,
+            metadata: json!({ "action": action, "reference": reference }),
+        },
     );
 }
 
@@ -499,6 +586,50 @@ fn push_workflow_finding(
     }));
 }
 
+/// User-visible copy and metadata for one shared GitHub step finding.
+/// Call sites keep established workflow wording beside action-specific wording,
+/// then the emitter selects the copy that matches the file the user supplied.
+struct GithubStepFinding<'a> {
+    rule_id: &'a str,
+    workflow_message: &'a str,
+    action_message: &'a str,
+    line: usize,
+    metadata: Value,
+}
+
+/// Emit a step finding with wording and remediation accurate for its metadata file.
+fn push_shared_github_metadata_finding(
+    unit: &SourceUnit<'_>,
+    findings: &mut Vec<Finding>,
+    metadata_kind: GithubMetadataKind,
+    finding: GithubStepFinding<'_>,
+) {
+    // Existing workflow findings keep their public wording and remediation unchanged.
+    let (message, remediation) = if metadata_kind == GithubMetadataKind::Workflow {
+        (
+            finding.workflow_message,
+            "Pin third-party actions, minimise workflow permissions, and avoid exposing secrets to untrusted pull request code.",
+        )
+    } else {
+        (
+            finding.action_message,
+            "Pin third-party actions, verify downloaded installers, and pass untrusted context through validated inputs.",
+        )
+    };
+    findings.push(Finding::new(FindingDescriptor {
+        rule_id: finding.rule_id.to_string(),
+        message: message.to_string(),
+        file_path: unit.file.display_path.clone(),
+        line: Some(finding.line),
+        severity: Severity::Warning,
+        pillar: Pillar::Security,
+        confidence: Confidence::Medium,
+        symbol: None,
+        remediation: Some(remediation.to_string()),
+        metadata: finding.metadata,
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +690,13 @@ mod tests {
         ]));
         // A step input named like a permission, outside any permissions block.
         assert!(!grants_broad_permission(&["with:", "  contents: write"]));
+        // A single job can receive its required scope without widening every workflow job.
+        assert!(!grants_broad_permission(&[
+            "jobs:",
+            "  publish:",
+            "    permissions:",
+            "      contents: write",
+        ]));
     }
 
     #[test]

@@ -58,6 +58,7 @@ Runs the local gruff-rs preflight suite:
   - crate version consistency between Cargo.toml and Cargo.lock
   - RustSec dependency audit, auto-installing cargo-audit when missing
   - pinned action.yml and GitHub Actions workflow validators
+  - exact-path GitHub workflow and composite-action security scan without project config
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
   - gruff-rs dogfood scan (analyse the whole project, gated by minimumSeverity.analyse in .gruff-rs.yaml)
   - documentation drift guard (architecture.md schema string and CLI command list match the code)
@@ -682,6 +683,78 @@ workflow_validation() {
   "$actionlint_path"
 }
 
+# Scan live GitHub metadata that ordinary config-aware dogfood intentionally ignores.
+# Contributors reach this check through preflight; exact paths keep the bypass visible
+# and prevent recursive discovery of arbitrary local actions.
+focused_github_metadata_scan() {
+  local report_file="$WORK_DIR/github-metadata.json"
+  local metadata_paths=()
+  local workflow_paths=()
+  local workflow_path
+  local expected_file_count
+  local actual_file_count
+  local github_rule_pattern='"ruleId": "(ci\.github-event-shell-interpolation|security\.github-actions-(broad-permissions|pull-request-target|remote-shell|secrets-in-pr|unpinned-action))"'
+
+  shopt -s nullglob
+  workflow_paths=(.github/workflows/*.yml .github/workflows/*.yaml)
+  shopt -u nullglob
+
+  # Each root workflow is named explicitly so no hidden directory traversal is widened.
+  for workflow_path in "${workflow_paths[@]}"; do
+    metadata_paths+=("$workflow_path")
+  done
+
+  # No workflow paths means the security gate lost the hosted automation it promises to scan.
+  if ((${#metadata_paths[@]} == 0)); then
+    printf 'GitHub metadata scan found no .github/workflows/*.yml or *.yaml files\n' >&2
+    return 1
+  fi
+  # A missing root action means downstream workflow users would have no action metadata to scan.
+  if [[ ! -f action.yml ]]; then
+    printf 'GitHub metadata scan expected root action.yml\n' >&2
+    return 1
+  fi
+  metadata_paths+=(action.yml)
+  expected_file_count=${#metadata_paths[@]}
+
+  cargo run --quiet -- analyse "${metadata_paths[@]}" \
+    --no-config \
+    --no-baseline \
+    --format json \
+    --fail-on none >"$report_file" || return $?
+
+  actual_file_count=$(sed -n \
+    's/.*"analysedFiles": \([0-9][0-9]*\).*/\1/p' \
+    "$report_file" | head -1)
+  # An absent count means the report no longer proves which requested files reached analysis.
+  if [[ -z "$actual_file_count" ]]; then
+    printf 'GitHub metadata scan could not read paths.analysedFiles\n' >&2
+    return 1
+  fi
+  # A count mismatch means a named workflow or action was silently skipped.
+  if ((actual_file_count != expected_file_count)); then
+    printf 'GitHub metadata scan analysed %s of %s expected paths\n' \
+      "$actual_file_count" \
+      "$expected_file_count" >&2
+    return 1
+  fi
+  # Ignored or missing entries mean the exact-path config bypass did not reach every user file.
+  if ! grep -q '"ignoredPaths": \[\]' "$report_file" \
+    || ! grep -q '"ignoredPathDetails": \[\]' "$report_file" \
+    || ! grep -q '"missingPaths": \[\]' "$report_file"; then
+    printf 'GitHub metadata scan reported an ignored or missing exact path\n' >&2
+    return 1
+  fi
+  # Any applicable finding means checked-in automation failed its own focused security scan.
+  if grep -Eq "$github_rule_pattern" "$report_file"; then
+    printf 'GitHub metadata scan reported applicable findings:\n' >&2
+    grep -E "$github_rule_pattern" "$report_file" >&2
+    return 1
+  fi
+
+  printf 'analysed exact GitHub metadata paths: %s\n' "${metadata_paths[*]}"
+}
+
 # Prove users can request deterministic JSON findings from the fixture project.
 fixture_json_smoke() {
   cargo run --quiet -- analyse fixtures --format json --fail-on none >"$WORK_DIR/fixtures.json"
@@ -936,6 +1009,7 @@ run_preflight_suite() {
   run_preflight_check "dependency audit" dependency_audit_check
   run_preflight_check "action metadata" action_metadata_validation
   run_preflight_check "workflow validation" workflow_validation
+  run_preflight_check "GitHub metadata scan" focused_github_metadata_scan
   run_preflight_check "cargo fmt" cargo fmt --check
   run_preflight_check "cargo clippy" cargo clippy --all-targets -- -D warnings
   run_preflight_check "cargo test" cargo test

@@ -7,6 +7,7 @@
 - **Exact, verified composite-action install.** The action now requires an exact binary version, downloads from the fixed project release origin, verifies the matching SHA-256 sidecar and archive members, and installs only the verified binary from a private runner directory; mutable `cargo-binstall@main` and `latest` paths are removed.
 - **Verified five-platform release candidates.** A non-publishing workflow now binds the source commit and Cargo package to Linux, macOS, and Windows archives, rejects incomplete or mismatched asset sets, and reuses those gates for serialized crate-first, draft-first tag publication.
 - **Pinned, least-privilege release execution.** CI and release workflows now use full commit SHAs for third-party actions, exact Rust/Cargo-tool versions, checksum-verified actionlint downloads, read-only defaults, and write access only for final GitHub publication; a contract test rejects moving refs, floating installs, or permission drift.
+- **Explicit composite-action security coverage.** Directly supplied `action.yml` and `action.yaml` files now receive event-interpolation, remote-shell, and full-SHA dependency checks, while workflow-only trigger and permission rules remain limited to workflows and ordinary scans retain project ignore policy.
 
 ## v0.4.0 - 2026-06-14
 

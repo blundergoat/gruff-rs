@@ -174,7 +174,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags GitHub event values interpolated directly into workflow shell steps.",
+        "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
     ),
     rule_definition!(
         "security.github-actions-broad-permissions",
@@ -204,7 +204,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags workflow shell steps that pipe remote downloads into an interpreter.",
+        "Flags GitHub Actions shell steps that pipe remote downloads into an interpreter.",
     ),
     rule_definition!(
         "security.github-actions-secrets-in-pr",
@@ -224,7 +224,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags third-party workflow actions that are not pinned to a full commit SHA.",
+        "Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.",
     ),
     rule_definition!(
         "performance.clone-in-loop",

@@ -75,7 +75,7 @@ rules:
     enabled: true
     threshold: 12
     severity: advisory
-  # Flags GitHub event values interpolated directly into workflow shell steps.
+  # Flags GitHub event values interpolated directly into workflow or composite-action shell steps.
   ci.github-event-shell-interpolation:
     enabled: true
   # Flags functions with high cognitive complexity.
@@ -212,13 +212,13 @@ rules:
   # Flags pull_request_target workflows for manual secret and checkout review.
   security.github-actions-pull-request-target:
     enabled: true
-  # Flags workflow shell steps that pipe remote downloads into an interpreter.
+  # Flags GitHub Actions shell steps that pipe remote downloads into an interpreter.
   security.github-actions-remote-shell:
     enabled: true
   # Flags pull request workflows that reference repository secrets.
   security.github-actions-secrets-in-pr:
     enabled: true
-  # Flags third-party workflow actions that are not pinned to a full commit SHA.
+  # Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.
   security.github-actions-unpinned-action:
     enabled: true
   # Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.
