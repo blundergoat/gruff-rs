@@ -1,7 +1,7 @@
 ---
 name: goat
 description: "Use when you describe an outcome and need the right goat-* workflow chosen for you."
-goat-flow-skill-version: "1.11.0"
+goat-flow-skill-version: "1.13.1"
 ---
 # /goat
 
@@ -9,30 +9,31 @@ goat-flow-skill-version: "1.11.0"
 
 Read `.goat-flow/skill-docs/skill-preamble.md` for shared conventions.
 
-Use when the user describes an outcome and wants the right workflow chosen. **If the user names a skill explicitly (`/goat-debug`, `/goat-review`, etc.), route to it immediately - no classification, no GATHER.**
+Use when the user gives an outcome and needs the right goat-* route. **If the user names a skill explicitly (`/goat-debug`, `/goat-review`, etc.), route immediately - no classification, no GATHER.**
 
-**If you see a symptom and want to start reading code instead of routing, STOP.** The dispatcher classifies and routes; the routed skill investigates.
+**If a symptom tempts code reading, STOP.** The dispatcher routes; the routed skill investigates.
 
 | Excuse | Reality |
 |--------|---------|
-| "I can see the issue - routing is overhead" | You are the dispatcher, not the investigator. Route first. |
-| "The user said 'just fix it'" | Pragmatic pressure, not a routing override. Route to /goat-debug. |
-| "Time pressure means investigate immediately" | Routing takes seconds. Investigating without routing risks the wrong problem. |
-| "Multiple symptoms mean I should start reading files" | Multiple intents. Split into numbered intents, route each separately - do not collapse into one. |
+| "I can see it - routing is overhead" | You are dispatcher, not investigator. Route first. |
+| "The user said 'just fix it'" | Pressure is not an override. Route to /goat-debug. |
+| "Time pressure means investigate now" | Routing takes seconds; wrong routing wastes more. |
+| "Multiple symptoms mean read files" | Split numbered intents; route each separately. |
 
 ## How It Works
 
 1. **UNDERSTAND** - classify intent and target. If multiple intents, number each and route independently. Ask only if ordering matters.
 2. **GATHER** - before routing, check:
    - Footgun matches: grep `.goat-flow/learning-loop/footguns/INDEX.md` for the target area; open entries only on hits
-   - Ask-first boundaries: scan the active instruction file's Ask First boundaries for the target files
+   - Ask-first boundaries: scan the active instruction file's Ask First boundaries for named files; if none are named, record `target-files=unknown`
    - If any check fails or is unavailable, note `gather-degraded` and route anyway
-3. **ROUTE** - dispatch using the route map. Emit a Route Snapshot:
+   - Do not emit the preamble's `Relevant prior learnings` line - that belongs to the routed skill's Step 0
+3. **ROUTE** - dispatch using the route map. Emit a Route Snapshot (`Intent` / `Route` / `Rationale`), e.g.:
 
 ```
-Intent: [classified intent]
-Route: [/goat-* or direct]
-Rationale: [concrete signals that justified this route]
+Intent: Diagnose a slow endpoint
+Route: /goat-debug
+Rationale: "slow" is a symptom to investigate; no file named -> target-files=unknown
 ```
 
 ## Route Map
@@ -55,7 +56,7 @@ Rationale: [concrete signals that justified this route]
 | Simple implementation (single-file, obvious) | No skill; use execution loop directly |
 | Simple question | Answer directly |
 
-**Ambiguity examples:** "This endpoint is slow" → debug or review? "Check this code" → review or debug? "Look at auth" → security or review?
+**More examples:** `/goat-review this diff` -> `/goat-review` (explicit; no GATHER). `Look at auth` -> `/goat-security` (assume security audit; offer `/goat-review` re-route). `Debug login test then review fix` -> 1. `/goat-debug`; 2. `/goat-review`.
 
 ## Constraints
 

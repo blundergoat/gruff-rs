@@ -1,3 +1,6 @@
+# Composite action entry point for workflow authors running gruff-rs in CI.
+# Use it to install one exact release, analyse a workspace, and optionally save
+# the report for a later upload step without parsing user input as shell code.
 name: gruff-rs
 description: Run the gruff-rs quality analyzer on a Rust project.
 author: gruff-rs contributors
@@ -8,17 +11,29 @@ branding:
 inputs:
   version:
     description: |
-      Version of gruff-rs to install. Defaults to the version matching the
-      action tag (e.g. `v0.1.0` -> `0.1.0`). Pass `latest` to install the
-      newest published release.
+      Exact gruff-rs semantic version to install. When omitted, the version is
+      inferred only from an exact action tag such as `v0.5.0`. Callers pinning
+      this action by full commit SHA must pass the matching version explicitly.
     required: false
     default: ""
   args:
     description: |
-      Arguments passed to gruff-rs. Defaults to a SARIF scan of the working
-      directory that fails on warnings or errors.
+      Deprecated. Any non-empty value fails closed; migrate to argv.
     required: false
-    default: analyse . --format sarif --fail-on warning --no-baseline
+    default: ""
+  argv:
+    description: |
+      Arguments passed to gruff-rs, one literal argument per non-empty line.
+      Spaces inside a line are preserved as part of that argument.
+    required: false
+    default: |
+      analyse
+      .
+      --format
+      sarif
+      --fail-on
+      warning
+      --no-baseline
   working-directory:
     description: Directory the analyzer is invoked from.
     required: false
@@ -37,36 +52,22 @@ runs:
     - name: Resolve version
       id: version
       shell: bash
-      run: |
-        requested="${{ inputs.version }}"
-        if [ -z "$requested" ]; then
-          ref="${{ github.action_ref }}"
-          if [ -n "$ref" ] && [[ "$ref" == v* ]]; then
-            requested="${ref#v}"
-          else
-            requested="latest"
-          fi
-        fi
-        echo "value=$requested" >> "$GITHUB_OUTPUT"
-
-    - name: Install cargo-binstall
-      uses: cargo-bins/cargo-binstall@main
+      env:
+        GRUFF_INPUT_VERSION: ${{ inputs.version }}
+        GRUFF_ACTION_REF: ${{ github.action_ref }}
+      run: '"$GITHUB_ACTION_PATH/scripts/action-run.sh" resolve-version'
 
     - name: Install gruff-rs
       shell: bash
-      run: |
-        if [ "${{ steps.version.outputs.value }}" = "latest" ]; then
-          cargo binstall -y --force gruff-rs
-        else
-          cargo binstall -y --force --version "${{ steps.version.outputs.value }}" gruff-rs
-        fi
+      env:
+        GRUFF_RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+      run: '"$GITHUB_ACTION_PATH/scripts/action-install.sh"'
 
     - name: Run gruff-rs
       shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        if [ -n "${{ inputs.output-file }}" ]; then
-          gruff-rs ${{ inputs.args }} > "${{ inputs.output-file }}"
-        else
-          gruff-rs ${{ inputs.args }}
-        fi
+      env:
+        GRUFF_INPUT_ARGS: ${{ inputs.args }}
+        GRUFF_INPUT_ARGV: ${{ inputs.argv }}
+        GRUFF_INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        GRUFF_INPUT_OUTPUT_FILE: ${{ inputs.output-file }}
+      run: '"$GITHUB_ACTION_PATH/scripts/action-run.sh" run'

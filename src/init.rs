@@ -240,6 +240,13 @@ fn append_paths_section(out: &mut String, extra_ignores: &[String]) {
 
 fn append_allowlists_section(out: &mut String) {
     out.push_str("allowlists:\n");
+    out.push_str(
+        "  # acceptedAbbreviations controls which short names naming.short-variable permits.\n",
+    );
+    out.push_str(
+        "  # This configured list replaces (not merges) built-ins; keep these seeds and\n",
+    );
+    out.push_str("  # append project vocabulary below.\n");
     out.push_str("  acceptedAbbreviations:\n");
     for abbreviation in DEFAULT_ABBREVIATIONS {
         out.push_str(&format!("    - {abbreviation}\n"));

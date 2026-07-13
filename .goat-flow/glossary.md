@@ -1,6 +1,6 @@
 # Glossary - gruff-rs
 
-Last reviewed 2026-05-24.
+Last reviewed 2026-07-13.
 
 This glossary defines terms used by `gruff-rs`, its public reports, and local project memory. Keep shared gruff-family terms aligned with the sibling implementations; keep Rust-specific differences explicit rather than making them look identical.
 
@@ -100,6 +100,14 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 ## Implementation-Specific Terms
 
+### Candidate Release
+
+A manually dispatched, non-publishing run of `.github/workflows/release.yml`. It exercises source identity, Cargo package, five-platform build, archive, checksum, and final asset-set gates at one commit while all publication jobs remain skipped.
+
+### Composite Action
+
+The `action.yml` integration consumed by GitHub workflow authors. It resolves one exact `gruff-rs` version, installs the matching checksum-verified release asset, and passes line-delimited argv without shell reparsing.
+
 ### Selector
 
 A rule-selection expression used by `rules.select`, `rules.ignore`, and `list-rules --selector`. It accepts exact rule IDs, dotted prefixes, and public pillar names; negative selectors win on overlap.
@@ -127,6 +135,10 @@ A local-only check that reads `Cargo.toml` and `Cargo.lock` as data. It does not
 ### Fixture
 
 Intentionally noisy analyzer input under `fixtures/` or `tests/fixtures/`. Fixture findings are calibration data, not product debt.
+
+### Release Asset Contract
+
+The shared target, archive, checksum, identity, and manifest rules enforced by `scripts/release-targets.sh` and `scripts/release-contract.sh`. A tag may publish only the complete verified set produced by those contracts.
 
 ## Agent Workflow Terms
 

@@ -61,6 +61,31 @@ pub(crate) fn config_rejects_unknown_root_keys_and_rule_ids() {
 }
 
 #[test]
+pub(crate) fn accepted_abbreviations_replace_builtins() {
+    let dir = tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        r#"
+allowlists:
+  acceptedAbbreviations:
+    - ZZ
+    - zz
+    - Domain
+"#,
+    );
+
+    let config = load_config(dir.path(), &default_test_options()).expect("allowlist loads");
+    let loaded: Vec<&str> = config
+        .accepted_abbreviations
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    assert_eq!(loaded, vec!["domain", "zz"]);
+    assert!(!config.accepted_abbreviations.contains("id"));
+}
+
+#[test]
 pub(crate) fn config_rejects_threshold_maps_and_unknown_options() {
     let dir = tempdir().expect("tempdir");
     let options = default_test_options();

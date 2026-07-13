@@ -8,6 +8,10 @@
 `AGENTS.md` = Codex/goat-flow operating instructions.
 `.gitignore` = Ignores Cargo output plus analyzer baseline/history side files.
 `.gruff-rs.yaml` = Project-level analyzer config; default config file discovered by `gruff-rs`.
+`action.yml` = Composite GitHub Action entrypoint; resolves one exact release, installs its verified binary, and passes structured argv to the analyzer.
+`.github/workflows/ci.yml` = Read-only contributor CI using pinned action/tool identities and the local dependency installer + preflight.
+`.github/workflows/release.yml` = Candidate/tag release graph: source verification, five-platform builds, asset verification, then tag-only crate and GitHub publication.
+`package.json` / `package-lock.json` = Local goat-flow development dependency and its resolved npm graph; not part of the Rust runtime.
 
 ## Source
 
@@ -31,7 +35,7 @@
 `src/summary.rs` = `gruff-rs summary` digest renderer: text scan card + per-pillar / top-rules / top-files digest, and `gruff.summary.v2` JSON.
 `src/render/` = Output formatters: `text.rs` (scan-card header + findings + diagnostics + suppressions), `markdown.rs`, `github.rs` (Actions annotations), `hotspot.rs` (top-offenders JSON), `sarif.rs` (SARIF v2.1.0 emitter and helpers). `mod.rs` dispatches by `OutputFormat` and threads `Option<u128>` scan duration into text only.
 `src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
-`src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, `/health`, `/favicon.ico` routes, and the form/iframe shell.
+`src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, and `/health` routes, a plain-text 404 fallback, and the form/iframe shell.
 `src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split by concern across `structure_docs_reliability_definitions.rs`, `idiom_security_size_test_definitions.rs`, and `waste_definitions.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
 `src/tests/` = Unit and integration tests grouped by concern (`scenarios/`, `rule_behaviours/`, `project_tests/`, `config_and_selectors/`, `renderers/`, `calibration/`).
 
@@ -45,13 +49,22 @@
 `tests/fixtures/README.md` = Fixture grouping notes for parser, rule, and temp-project scanner tests.
 `tests/fixtures/parser/` = Parser-focused Rust inputs covering raw strings, macros/impl methods, test attributes, and invalid Rust.
 `tests/fixtures/rules/` = Focused positive/negative rule fixtures for selected v0.1 rubric checks.
+`tests/release_security_contract.rs` = Supply-chain contract tests for immutable action/tool pins, least-privilege workflows, and the five-target release surface.
+`tests/release_workflow.rs` = Parsed workflow-graph tests proving candidate isolation, verification dependencies, and tag-only publication.
 
 ## Scripts
 
 `scripts/` = Project shell entrypoints.
 `scripts/preflight-checks.sh` = Shell syntax/lint, formatting, Clippy, unit-test, rule-listing, JSON/SARIF fixture-scan, patch-input diff, selector, exclusion/custom-rule smokes, and a whole-project dogfood scan gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
+`scripts/dependency-install.sh` = Installs or reuses the exact local/CI audit and GitHub Action validators required by preflight.
+`scripts/action-run.sh` = Composite-action input boundary: exact-version resolution, workspace-contained paths, line-delimited argv parsing, and analyzer exit preservation.
+`scripts/action-install.sh` = Exact-release downloader and installer with host/redirect policy, checksum verification, archive-member validation, and private extraction.
+`scripts/release-targets.sh` = Canonical five-platform release matrix and action-runner-to-asset mapping.
+`scripts/release-contract.sh` = Shared source/package/archive/manifest/draft verifier used by candidate and tag release jobs.
+`scripts/test-action-contract.sh` = Offline adversarial harness for composite-action version, argv, path, transport, checksum, and archive contracts.
+`scripts/test-release-workflow.sh` = Offline candidate/tag harness for source, package, build-asset, manifest, and draft verification contracts.
 `scripts/start-dev.sh` = Starts the local dashboard with `GRUFF_HOST`, `GRUFF_PORT`, and `GRUFF_PROJECT_ROOT` overrides.
-`scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 9-10 scenarios, writes per-run perf metrics to target/perf/last-run.json (gitignored build output), supports `--update-baseline` and `--check` with configurable time/RSS budgets.
+`scripts/test-performance.sh` = End-to-end performance harness; runs N+1 iterations across 10 scenarios plus an optional large-corpus scenario, writes per-run perf metrics to target/perf/last-run.json (gitignored build output), supports `--update-baseline` and `--check` with configurable time/RSS budgets.
 
 ## Documentation And Harness
 
@@ -88,5 +101,6 @@
 ## Generated Or Local-Only
 
 `target/` = Cargo build output; never edit or commit.
+`node_modules/` = Local npm dependency cache used for goat-flow setup; generated, never edit or commit.
 `.idea/` = IDE project metadata from this checkout.
 `.git/` = Git repository metadata; never edit directly.

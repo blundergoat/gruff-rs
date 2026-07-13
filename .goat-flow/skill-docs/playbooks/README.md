@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.13.1"
 ---
 # Skill Playbooks
 
@@ -22,7 +22,7 @@ For shared meta-references composed into every skill (preamble, conventions), se
 | [`browser-use.md`](./browser-use.md) | One-off browser observation: load a URL, screenshot, click, inspect DOM, capture state mid-investigation | `browser-use` CLI, typically at `~/.local/bin/browser-use` |
 | [`page-capture.md`](./page-capture.md) | Batch capture: visit N known pages, screenshot each, emit one MD record per page, for documentation, before/after evidence, or audit snapshots | Playwright (MCP / Node / Python tier), or `browser-use` CLI as a downgrade |
 | [`observability.md`](./observability.md) | Instrumenting code with logs, metrics, span events, or trace context: severity, structured fields, naming, cardinality budget, sensitive-data rules, and the log-vs-metric decision | n/a (instrumentation discipline) |
-| [`code-comments.md`](./code-comments.md) | Writing or editing source code: which inline comments earn their place, the mandatory doc-comment contract on every function/class/file, TODO/FIXME/HACK marker rules, and whether existing comments should be kept, rewritten, or deleted | n/a (commenting discipline) |
+| [`code-comments.md`](./code-comments.md) | Writing or editing source code: user-perspective doc comments, self-documenting names, context comments above branches/loops/null checks, null/empty tag meaning, journey anchors, TODO/FIXME/HACK markers, and concise comment cleanup | n/a (commenting discipline) |
 | [`gruff-code-quality.md`](./gruff-code-quality.md) | Running `gruff-go`, `gruff-rs`, `gruff-ts`, `gruff-php`, or `gruff-py`; triaging findings and verifying analyzer-driven cleanup without low-value comments or suppressions | gruff CLI family |
 | [`changelog.md`](./changelog.md) | Writing or editing `CHANGELOG.md`: Keep a Changelog categories, SemVer alignment, breaking-change markers and migration paths, write-at-commit vs write-at-release cadence, version-surface sync | n/a (changelog discipline) |
 | [`release-notes.md`](./release-notes.md) | Writing a per-release narrative for end users (GitHub release body, blog post, email, in-app banner, social): theme identification, user-impact lens, inverted-pyramid structure, multi-surface consistency. Derives from `changelog.md` | n/a (release-notes discipline) |
@@ -36,7 +36,7 @@ When you add a new tool to the project that future agents need to discover:
 3. Include a grep-findable `## Availability Check` section before any workflow that depends on a tool. For runnable tools/capabilities, include an exact shell-runnable verification command; for non-runnable authoring references, state the load condition and why no CLI check applies.
 4. Include the boundary, workflow, fallback/troubleshooting, and verification gate an agent needs to apply the playbook without inherited context.
 5. Add a row to the table above so the index stays complete.
-6. Check the ADR-023 budget tier before adding content: top-level playbooks in this directory are progressive references and must stay under 3000 body words.
+6. Check the current reference-pack budget tier before adding content: top-level playbooks in this directory are progressive references and must stay under 3000 body words.
 
 ## Admission checklist
 

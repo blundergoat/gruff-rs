@@ -119,13 +119,17 @@ pub(crate) fn build_project_context(
     sources: &[ParsedSource],
     mut coverage: ProjectCoverage,
 ) -> ProjectContext {
-    // A discoverable Rust file that failed to parse contributes no identifiers to
-    // the index, so cross-file dead-code cannot be trusted. Mark coverage partial
-    // (the dead-code candidate then suppresses itself and emits its diagnostic)
-    // rather than reviving a false deletion signal from an incomplete index.
-    coverage.parse_incomplete = sources
+    // A selected Rust file that failed to read or parse contributes no identifiers
+    // to the index, so cross-file dead-code cannot be trusted. Base the authoritative
+    // set on successfully parsed AST inputs rather than discovery alone: read-failed
+    // files never enter `sources`, while parse-failed files have no AST.
+    let selected_rust_files = std::mem::take(&mut coverage.analysed_rust_files);
+    coverage.analysed_rust_files = sources
         .iter()
-        .any(|source| source.file.is_rust && source.rust_ast.is_none());
+        .filter(|source| source.file.is_rust && source.rust_ast.is_some())
+        .map(|source| source.file.display_path.clone())
+        .collect();
+    coverage.parse_incomplete |= !selected_rust_files.is_subset(&coverage.analysed_rust_files);
     let mut diagnostics = Vec::new();
     let manifest = read_manifest_summary(project_root, &mut diagnostics);
     let lockfile = read_lockfile_summary(project_root, &mut diagnostics);

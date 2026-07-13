@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.13.1"
 ---
 # Cross-Model Refuter Specification
 
@@ -65,10 +65,12 @@ The host reviewer applies these rules to the refuter output:
 ## Review Integrity Extension
 
 When Pass 3 runs, add to Review Integrity:
-- Refuter pass: yes | no | skipped
-- Refuter confirmed: `<N>` | Refuted: `<M>` | Unresolved: `<K>`
-- Refuter leads verified by host: `<N>`
-- Refuter model: `<model-identifier>`
+
+```
+- Refuter pass: yes | no | skipped; confirmed=<N>, refuted=<M>, unresolved=<K>, leads-verified=<N>, model=<model-identifier|n/a>
+```
+
+Use `skipped` when Pass 3 was triggered but no authenticated external refuter was available. Use `n/a` for the model when no refuter actually ran.
 
 ## Pre-flight Check
 

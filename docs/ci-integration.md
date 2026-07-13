@@ -14,11 +14,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo run -- analyse src --format sarif --fail-on none > gruff-rs.sarif
+      # Replace the placeholder with the reviewed commit for v0.5.0.
+      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.5.0
+        with:
+          version: 0.5.0
+          argv: |
+            analyse
+            src
+            --format
+            sarif
+            --fail-on
+            none
+          output-file: gruff-rs.sarif
       - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: gruff-rs.sarif
+```
+
+The composite action's `argv` input uses one literal argument per non-empty
+line. It never treats spaces or shell metacharacters within a line as syntax.
+Relative `working-directory` and `output-file` paths are rooted in the
+workspace; lexical and symlink escapes fail before the analyzer runs.
+
+Replace `FULL_40_CHARACTER_COMMIT_SHA` with the reviewed full commit SHA for
+v0.5.0 and keep `version: 0.5.0` aligned with that review. A full SHA pins the
+action code immutably. An exact action tag can infer its matching binary
+version, but tags can move; a full-SHA caller must always supply `version`.
+`latest` and omitted versions on non-release refs fail closed.
+
+Installation downloads the exact platform archive and its `.sha256` sidecar
+from the fixed `blundergoat/gruff-rs` GitHub release origin. It verifies the
+checksum and archive members before installing only the binary into a private
+`RUNNER_TEMP` directory. This checksum catches corruption or a mismatched
+asset, but it is not publisher authentication because both files come from the
+same release channel. The 0.5.0 release gate also requires GitHub release
+immutability before publication. Errors identify the install,
+checksum/archive, or analyzer-execution stage.
+
+The former `args` command string is intentionally unsupported starting in
+v0.5.0. Any non-empty legacy value fails with exactly:
+
+```text
+gruff-rs action: input 'args' is no longer supported; use 'argv' with one literal argument per non-empty line, for example:
+argv: |
+  analyse
+  .
+  --format
+  sarif
 ```
 
 ## Quality Gate

@@ -1,133 +1,310 @@
+# Release workflow for a verified gruff-rs candidate or published tag.
+# Maintainers dispatch it before tagging to prove source, Cargo package, and all
+# five platform assets at one commit. Only an exact tag push can continue from
+# those shared gates into serialized crate and draft-first GitHub publication.
 name: Release
 
 on:
   push:
     tags:
-      - "v*"
+      # GitHub uses glob syntax here; the source gate enforces exact X.Y.Z SemVer.
+      - "v[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
+  source_verify:
+    name: Verify source and Cargo package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
+      rust_toolchain: ${{ steps.source.outputs.rust_toolchain }}
+      build_matrix: ${{ steps.source.outputs.build_matrix }}
+    steps:
+      - name: Check out the triggering commit and release history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up the shared Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        with:
+          toolchain: ${{ env.RELEASE_RUST_TOOLCHAIN }}
+
+      - name: Install verification tools
+        run: bash scripts/dependency-install.sh
+
+      - name: Resolve source identity and release matrix
+        id: source
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          bash scripts/release-contract.sh resolve-source \
+            "$GITHUB_WORKSPACE" \
+            "$RELEASE_EVENT" \
+            "$RELEASE_REF_NAME" \
+            "$RELEASE_TRIGGER_SHA" \
+            "$RELEASE_RUST_TOOLCHAIN" \
+            "$GITHUB_OUTPUT"
+
+      - name: Run the local release contract harness
+        run: bash scripts/test-release-workflow.sh
+
+      - name: Run the full project preflight
+        run: bash scripts/preflight-checks.sh
+
+      - name: Package and record source evidence
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          PREVIOUS_TAG: ${{ steps.source.outputs.previous_tag }}
+          PREVIOUS_COMMIT: ${{ steps.source.outputs.previous_commit }}
+        run: |
+          cargo package --locked
+          cargo package --locked --list >"$RUNNER_TEMP/package-files.txt"
+          bash scripts/release-contract.sh write-source-manifest \
+            "$RUNNER_TEMP/source-verification" \
+            "$RELEASE_EVENT" \
+            "$RELEASE_VERSION" \
+            "$RELEASE_COMMIT" \
+            "$RELEASE_RUST_TOOLCHAIN" \
+            "$PREVIOUS_TAG" \
+            "$PREVIOUS_COMMIT" \
+            "target/package/gruff-rs-$RELEASE_VERSION.crate" \
+            "$RUNNER_TEMP/package-files.txt"
+
+      - name: Upload source verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-source-${{ steps.source.outputs.commit }}
+          path: ${{ runner.temp }}/source-verification/*
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.target }}
+    needs: source_verify
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            cross: true
-          - target: x86_64-apple-darwin
-            os: macos-13
-            archive: tar.gz
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            archive: tar.gz
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zip
+      matrix: ${{ fromJSON(needs.source_verify.outputs.build_matrix) }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Check out verified source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          ref: ${{ needs.source_verify.outputs.commit }}
+
+      - name: Set up the shared Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        with:
+          toolchain: ${{ needs.source_verify.outputs.rust_toolchain }}
           targets: ${{ matrix.target }}
 
-      - name: Install cross (Linux aarch64)
-        if: matrix.cross
-        run: cargo install cross --locked
+      - name: Install cross for Linux ARM64
+        # Only the Linux ARM64 row needs cross; M06 pins its exact version.
+        if: matrix.build == 'cross'
+        run: cargo install cross --version 0.2.5 --locked
 
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --release --locked --target ${{ matrix.target }}
+      - name: Build with cross
+        # The cross row uses the same locked source and target selected above.
+        if: matrix.build == 'cross'
+        run: cross build --release --locked --target "${{ matrix.target }}"
 
-      - name: Build (native)
-        if: ${{ !matrix.cross }}
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build natively
+        # Every non-cross row compiles on its target's reviewed hosted runner.
+        if: matrix.build == 'native'
+        run: cargo build --release --locked --target "${{ matrix.target }}"
 
-      - name: Stage archive (unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Stage archive and build identity
+        env:
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.source_verify.outputs.commit }}
+          RELEASE_TOOLCHAIN: ${{ needs.source_verify.outputs.rust_toolchain }}
+          RELEASE_TARGET: ${{ matrix.target }}
+          RELEASE_BINARY: ${{ matrix.binary }}
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          stage="gruff-rs-${version}-${{ matrix.target }}"
-          mkdir "$stage"
-          cp "target/${{ matrix.target }}/release/gruff-rs" "$stage/"
-          cp README.md LICENSE-MIT LICENSE-APACHE CHANGELOG.md "$stage/"
-          tar -czf "${stage}.tar.gz" "$stage"
-          shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          bash scripts/release-contract.sh stage-archive \
+            "$GITHUB_WORKSPACE" \
+            "$RELEASE_VERSION" \
+            "$RELEASE_COMMIT" \
+            "$RELEASE_TOOLCHAIN" \
+            "$RELEASE_TARGET" \
+            "target/$RELEASE_TARGET/release/$RELEASE_BINARY" \
+            "$PWD/release-build"
 
-      - name: Stage archive (windows)
-        if: matrix.archive == 'zip'
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          stage="gruff-rs-${version}-${{ matrix.target }}"
-          mkdir "$stage"
-          cp "target/${{ matrix.target }}/release/gruff-rs.exe" "$stage/"
-          cp README.md LICENSE-MIT LICENSE-APACHE CHANGELOG.md "$stage/"
-          7z a "${stage}.zip" "$stage"
-          sha256sum "${stage}.zip" > "${stage}.zip.sha256"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload exact target artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gruff-rs-${{ matrix.target }}
-          path: |
-            gruff-rs-*.tar.gz
-            gruff-rs-*.tar.gz.sha256
-            gruff-rs-*.zip
-            gruff-rs-*.zip.sha256
-          if-no-files-found: ignore
+          name: release-build-${{ matrix.target }}-${{ needs.source_verify.outputs.commit }}
+          path: release-build/*
+          if-no-files-found: error
 
-  release:
-    name: Publish GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
+  asset_verify:
+    name: Verify complete release asset set
+    needs: [source_verify, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Check out verified source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          path: dist
+          ref: ${{ needs.source_verify.outputs.commit }}
+
+      - name: Download source verification evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-source-${{ needs.source_verify.outputs.commit }}
+          path: source-verification
+
+      - name: Download all target artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-build-*-${{ needs.source_verify.outputs.commit }}
+          path: build-artifacts
           merge-multiple: true
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Verify all assets and write the bound release manifest
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.source_verify.outputs.commit }}
+          RELEASE_TOOLCHAIN: ${{ needs.source_verify.outputs.rust_toolchain }}
+        run: |
+          bash scripts/release-contract.sh verify-assets \
+            build-artifacts \
+            source-verification \
+            verified-release \
+            "$RELEASE_EVENT" \
+            "$RELEASE_VERSION" \
+            "$RELEASE_COMMIT" \
+            "$RELEASE_TOOLCHAIN"
+
+      - name: Upload verified candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          files: |
-            dist/gruff-rs-*.tar.gz
-            dist/gruff-rs-*.tar.gz.sha256
-            dist/gruff-rs-*.zip
-            dist/gruff-rs-*.zip.sha256
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          name: release-verified-${{ needs.source_verify.outputs.commit }}
+          path: verified-release/*
+          if-no-files-found: error
 
-  publish-crate:
-    name: Publish to crates.io
-    needs: build
-    runs-on: ubuntu-latest
+  publish_crate:
+    name: Publish verified crate
+    needs: [source_verify, asset_verify]
+    # Candidate runs stop after verification; only an exact tag push can publish.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Check out verified source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.source_verify.outputs.commit }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up the shared Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        with:
+          toolchain: ${{ needs.source_verify.outputs.rust_toolchain }}
 
-      - name: Publish
+      - name: Download source package evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-source-${{ needs.source_verify.outputs.commit }}
+          path: source-verification
+
+      - name: Recreate and compare the Cargo package
+        env:
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+        run: |
+          cargo package --locked
+          cargo package --locked --list >"$RUNNER_TEMP/publish-package-files.txt"
+          bash scripts/release-contract.sh verify-package \
+            source-verification \
+            "target/package/gruff-rs-$RELEASE_VERSION.crate" \
+            "$RUNNER_TEMP/publish-package-files.txt"
+
+      - name: Publish the verified crate
         run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish_github:
+    name: Publish complete GitHub release
+    needs: [source_verify, asset_verify, publish_crate]
+    # GitHub publication is serialized after the verified crate and remains tag-only.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    # Creating, uploading, checking, and publishing the release uses GitHub's release API.
+    permissions:
+      contents: write
+    steps:
+      - name: Check out verified source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.source_verify.outputs.commit }}
+
+      - name: Download verified release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-verified-${{ needs.source_verify.outputs.commit }}
+          path: verified-release
+
+      - name: Create an unpublished draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+        run: |
+          gh release create "v$RELEASE_VERSION" \
+            --draft \
+            --verify-tag \
+            --generate-notes
+
+      - name: Upload the exact verified files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+        run: |
+          mapfile -t publish_files < <(
+            bash scripts/release-contract.sh publish-files verified-release
+          )
+          # Ten archives/sidecars plus their manifest must be ready before publication.
+          [[ ${#publish_files[@]} -eq 11 ]] || {
+            printf 'release workflow: expected 11 publishable files, got %s\n' \
+              "${#publish_files[@]}" >&2
+            exit 2
+          }
+          gh release upload "v$RELEASE_VERSION" "${publish_files[@]}"
+
+      - name: Verify the remote draft asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+        run: |
+          gh release view "v$RELEASE_VERSION" \
+            --json isDraft,tagName,assets >"$RUNNER_TEMP/release-draft.json"
+          bash scripts/release-contract.sh verify-draft \
+            verified-release \
+            "$RUNNER_TEMP/release-draft.json" \
+            "$RELEASE_VERSION"
+
+      - name: Publish the complete verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.source_verify.outputs.version }}
+        run: gh release edit "v$RELEASE_VERSION" --draft=false --verify-tag

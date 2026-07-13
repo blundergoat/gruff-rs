@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::config::DEFAULT_ABBREVIATIONS;
 use crate::init::{
     read_existing_ignore_patterns, read_existing_minimum_severity, render_default_config,
 };
@@ -33,6 +34,36 @@ pub(crate) fn default_config_round_trips_through_load_config() {
             definition.id,
         );
     }
+}
+
+#[test]
+pub(crate) fn accepted_abbreviations_match_family_contract() {
+    // FAMILY-CONTRACT §8 owns this universal cross-port seed.
+    const FAMILY_ABBREVIATIONS: &[&str] = &[
+        "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx",
+        "ui", "url",
+    ];
+
+    assert_eq!(DEFAULT_ABBREVIATIONS, FAMILY_ABBREVIATIONS);
+
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), &body);
+    let config = load_config(dir.path(), &default_test_options()).expect("generated config loads");
+    let loaded: Vec<&str> = config
+        .accepted_abbreviations
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    assert_eq!(loaded, FAMILY_ABBREVIATIONS);
+    let expected_comment = concat!(
+        "  # acceptedAbbreviations controls which short names naming.short-variable permits.\n",
+        "  # This configured list replaces (not merges) built-ins; keep these seeds and\n",
+        "  # append project vocabulary below.\n",
+        "  acceptedAbbreviations:\n",
+    );
+    assert!(body.contains(expected_comment), "generated config:\n{body}");
 }
 
 #[test]

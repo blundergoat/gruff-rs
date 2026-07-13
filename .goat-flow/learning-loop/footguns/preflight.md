@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-05-24
+last_reviewed: 2026-07-13
 ---
 
 ## Footgun: Preflight Dogfood Output Is Truncated To 20 Findings
@@ -34,15 +34,73 @@ Same caveat for the `summary` command: when triaging from `gruff-rs summary` out
 
 Resist the temptation to "fix the truncation" by widening the `sed` window: the cap is there to keep the preflight report readable. The right move is to know when you need the full list and run the unwrapped command above.
 
-## Footgun: Stale target/release/gruff-rs Can Invalidate Benchmarks
+## Footgun: Stale Target Binaries Can Invalidate CLI Proofs
 
 **Status:** active | **Created:** 2026-06-11 | **Evidence:** ACTUAL_MEASURED
 
-`target/release/gruff-rs` is a local Cargo artifact, not a freshness-guaranteed project entrypoint. During the 2026-06-10 sibling audit (`.goat-flow/scratchpad/sibling-audit-2026-06-10.json`, search: `surprises[5]`), this checkout's release binary was five days and nine commits behind HEAD and predated the `hook` subcommand entirely. Directly timing that binary measured stale code.
+`target/debug/gruff-rs` and `target/release/gruff-rs` are local Cargo artifacts,
+not freshness-guaranteed project entrypoints. During the 2026-06-10 sibling
+audit (`.goat-flow/scratchpad/sibling-audit-2026-06-10.json`, search:
+`surprises[5]`), this checkout's release binary was five days and nine commits
+behind HEAD and predated the `hook` subcommand entirely. Directly timing that
+binary measured stale code.
 
-The safe entrypoints are different: `bin/gruff-rs` (search: `exec cargo run`) always runs through Cargo against the current manifest, and `scripts/test-performance.sh` (search: `cargo build --release --quiet`) rebuilds before measuring its `target/release/gruff-rs` path.
+The debug path can also stay stale after a test-only build. During 0.5.0 M01,
+`cargo test accepted_abbreviations` compiled a test binary containing
+`src/init.rs` (search: `acceptedAbbreviations controls which short names`), but
+the next `cargo run -- init --stdout` reported a fresh dev target and executed
+an older `target/debug/gruff-rs` that omitted the new comment. The
+`src/tests/config_and_selectors/init_command.rs` contract passed while the CLI
+artifact remained byte-identical to the pre-change output. Running
+`CARGO_INCREMENTAL=0 cargo run -v -- init --stdout` forced the normal binary to
+compile and made the marker appear.
 
-Mitigation: benchmark through `scripts/test-performance.sh`, or run `cargo build --release` immediately before manually invoking `target/release/gruff-rs`. Do not treat refreshing or deleting `target/` as the durable fix; the artifact can become stale again as soon as HEAD moves.
+Mitigation: for behavior proofs, inspect Cargo's output for an actual compile
+and sanity-check the runnable artifact for the changed marker. If Cargo reuses
+a stale normal binary after a test build, use a separate non-incremental
+fingerprint (`CARGO_INCREMENTAL=0 cargo run ...`) instead of trusting `Finished`
+alone. Benchmark through `scripts/test-performance.sh`, or run
+`cargo build --release` immediately before manually invoking
+`target/release/gruff-rs`. Do not treat deleting `target/` as the durable fix;
+the artifact can become stale again as soon as HEAD moves.
+
+## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
+
+**Status:** active | **Created:** 2026-07-13 | **Evidence:** OBSERVED
+
+`cargo install <crate> --version <exact> --locked` can fail with `binary already
+exists in destination` when the destination already contains the right binary
+but Cargo's install metadata does not own it. This occurs after a release
+artifact or package manager placed the executable in the same install root; an
+exact `--version` does not make Cargo adopt or overwrite that file.
+
+The M03 validator installer reproduced this with `action-validator 0.9.0`.
+`scripts/dependency-install.sh` (search: `install_action_validator`) now checks
+the executable at the requested install-root destination first: it reuses an
+exact reported version and requests a forced Cargo replacement only when an
+existing destination is wrong. Keep that check destination-aware so `--root`
+does not accidentally accept a matching binary found elsewhere on `PATH`.
+
+## Footgun: Release Archive Shape Is A Cross-File Contract
+
+**Status:** active | **Created:** 2026-07-13 | **Evidence:** OBSERVED
+
+`.github/workflows/release.yml` (search: `Stage archive and build identity`)
+invokes the production `stage-archive` contract. `scripts/release-contract.sh`
+(search: `validate_archive_member_names`) requires one top-level directory
+containing the binary plus README, two licenses, and CHANGELOG.
+`scripts/action-install.sh` (search: `validate_release_member_list`) duplicates
+that exact member set so a release archive cannot smuggle extra files into the
+action install path.
+
+M04's first production-path harness encoded the named members correctly but
+asserted the wrong total: it counted six files instead of the actual five files
+plus one directory. The valid fixture then failed as incomplete. The installer
+now proves exactness through named presence flags plus duplicate/unexpected
+rejection instead of maintaining a second numeric total. Whenever the release
+workflow changes archive contents, update the named installer contract and its
+valid/unexpected-member fixtures together. Never loosen the installer to accept
+arbitrary extra members just to make a publisher change pass.
 
 ## Footgun: Perf Harness Empty Patch Must Stay Parseable
 

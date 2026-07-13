@@ -140,12 +140,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.3.0
+      # Replace the placeholder with the reviewed commit for v0.5.0.
+      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.5.0
         with:
-          args: analyse . --format sarif --fail-on warning --no-baseline
+          version: 0.5.0
+          argv: |
+            analyse
+            .
+            --format
+            sarif
+            --fail-on
+            warning
+            --no-baseline
 ```
 
-The action installs the matching binary via `cargo-binstall` and runs `gruff-rs` with the supplied args. Pin to a tag for reproducibility. See [`action.yml`](action.yml) for inputs.
+Starting in v0.5.0, the action accepts arguments only through `argv`: one
+literal argument per non-empty line. Spaces within a line remain part of that
+argument; blank lines are rejected. `working-directory` and `output-file` must
+resolve inside `GITHUB_WORKSPACE`, including after resolving symlinks. The
+action installs the matching binary and invokes `gruff-rs` without reparsing
+the constructed argument array.
+
+Replace `FULL_40_CHARACTER_COMMIT_SHA` with the reviewed full commit SHA for
+the release. A full SHA is the immutable action-code pin; the matching explicit
+`version` selects the binary release. An exact action tag such as `v0.5.0` can
+infer `version: 0.5.0`, but a tag can move and is therefore not reproducible.
+`latest` is not accepted.
+
+The installer downloads only from the fixed `blundergoat/gruff-rs` GitHub
+release origin, verifies the archive against its matching `.sha256` sidecar,
+checks the expected member set, and puts only the verified binary directory on
+the workflow path. The checksum detects corruption or a mismatched download;
+because the archive and checksum share one release channel, it does not prove
+publisher authenticity. The 0.5.0 release gate therefore also requires GitHub
+release immutability before publication. Install, checksum/archive, and
+analyzer-execution errors name the failing stage. See [`action.yml`](action.yml)
+for inputs.
+
+The former free-form `args` input is a hard cut. Any non-empty value exits with
+this migration error and is never parsed or executed:
+
+```text
+gruff-rs action: input 'args' is no longer supported; use 'argv' with one literal argument per non-empty line, for example:
+argv: |
+  analyse
+  .
+  --format
+  sarif
+```
 
 ## Configuration
 
@@ -168,7 +210,26 @@ paths:
     - fixtures/**
 
 allowlists:
-  acceptedAbbreviations: [id, db, io, ui]
+  # acceptedAbbreviations controls which short names naming.short-variable permits.
+  # This configured list replaces (not merges) built-ins; keep these seeds and
+  # append project vocabulary below.
+  acceptedAbbreviations:
+    - age
+    - app
+    - db
+    - fs
+    - id
+    - io
+    - key
+    - log
+    - max
+    - min
+    - now
+    - raw
+    - rx
+    - tx
+    - ui
+    - url
   secretPreviews: []
 
 rules:
@@ -186,6 +247,11 @@ exclude:
     message_contains: "Command::new"
     reason: "test-only synthetic command"
 ```
+
+`gruff-rs init` emits that universal seed visibly. Because a configured
+`acceptedAbbreviations` list replaces the built-ins, keep the seeded entries
+and append project vocabulary instead of replacing the list with only the new
+tokens.
 
 Selectors can target exact rule IDs, dotted prefixes such as `security.*`, or public pillars such as `Security`.
 

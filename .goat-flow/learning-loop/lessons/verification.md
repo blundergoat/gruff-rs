@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-06-14
+last_reviewed: 2026-07-13
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -232,6 +232,17 @@ preflight. The same dogfood pass also catches helper naming drift, e.g.
 boolean helper names in `src/built_in_rules/docs_rules.rs` must keep accepted
 predicate prefixes like `has_`.
 
+**Updated 2026-07-13:** New integration-test files need the same focused
+dogfood pass even when they are well below the file-length threshold. M05's
+release workflow graph tests passed 12/12, but full preflight still found a
+102-line validator, vague mutation parameters named `to`, and YAML parsing
+whose helper names did not express that the input was controlled test data.
+Split contract validation by the user-visible workflow stages, use semantic
+mutation names such as `replacement_text`, and name intentional local parsers
+for the format they review (for example, `replace_workflow_yaml_text`). Run a
+focused dogfood scan on the new test file before the full preflight so shape
+and security-review findings are corrected as design feedback, not suppressed.
+
 ## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
 
 **Created:** 2026-05-23
@@ -333,3 +344,53 @@ When capturing `gruff-rs` CLI output to a file for parsing (`... list-rules --fo
 - Capture CLI output to a unique path (`mktemp` or `...$$.json`), not a shared `/tmp/<tool>.json`, when other workspace ports may run concurrently.
 - Before drawing a conclusion from a captured artifact, sanity-check it against source: `rg` one id you expect and one you don't in `src/rules/`. A surprising result (rules from another language) is far more likely a clobbered artifact than a real finding.
 - This is a specific case of the universal rule: verify against current source before asserting; never fabricate codebase facts from a stale or swapped artifact.
+
+## Lesson: Expand Abbreviated Commit IDs From Git, Not Memory
+
+**Created:** 2026-07-13
+
+An abbreviated commit ID is enough for human navigation but not enough to
+reconstruct a full hash. During the 0.5.0 plan verification, the graph checks
+were correct but the verification command invented full-length expansions for
+`a3f20f2` and `2f6a25b`; the resulting exact-hash assertions failed even though
+the live ancestry and tree relationship had not changed.
+
+**Prevention:** When exact identity matters, capture it with `git rev-parse`
+in the same verification command and report that value. If a plan intentionally
+records only an abbreviation, compare it with `git rev-parse --short` or treat
+the abbreviation as a display anchor. Never pad or infer the unseen suffix of
+a Git object ID from memory or prior prose.
+
+## Lesson: Keep Compound Verification Checks Wrapper-Safe And Scoped
+
+**Created:** 2026-07-13
+
+A combined plan-consistency check failed before executing any repository
+assertion because a literal backtick matcher conflicted with the JavaScript
+tool wrapper. After that was corrected, the repository safety hook rejected the
+same command for exceeding its chained-segment limit. The first reference pass
+also scanned untouched sections of a parent multi-repository prompt and
+reported missing files owned by sibling ports.
+
+**Prevention:** Split verification into bounded commands before reaching hook
+limits, avoid shell tokens that conflict with the outer tool-call syntax (for
+example, match Markdown backticks as `\x60`), and scope reference resolution to
+the files or sections actually changed. A broad repository/workspace reference
+audit is a separate check and must model intentionally future-created and
+sibling-owned paths explicitly.
+
+## Lesson: Use concat! For Whitespace-Sensitive Multiline Assertions
+
+**Created:** 2026-07-13
+
+The first M01 generated-config contract used a Rust string with backslash line
+continuations around explicit `\n` escapes. Rust stripped indentation following
+the physical continuation, so the expected bytes lost the two leading spaces
+on later YAML comment lines. The implementation was correct, but the test stayed
+red after the generator changed.
+
+**Prevention:** Build exact multiline expectations with `concat!` and one
+quoted logical line per argument. Include the actual rendered value in the
+assertion failure message. Reserve backslash continuations for prose where
+leading whitespace is irrelevant, not byte-sensitive YAML, JSON, or renderer
+contracts.

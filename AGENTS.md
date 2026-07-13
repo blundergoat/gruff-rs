@@ -1,4 +1,4 @@
-# gruff-rs - goat-flow 1.10.1
+# gruff-rs - goat-flow 1.13.1
 
 Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
 
@@ -33,6 +33,10 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 - Preserve evidence with semantic anchors, not brittle line numbers.
 - Do not add features, abstractions, or error handling beyond the request.
 - Ambiguous requirements: present interpretations before writing.
+- Do not hide shell, file, Git, or network mutations inside interpreter/client heredocs.
+  The Codex deny hook intentionally does not inspect Python, Node, Ruby, Perl,
+  PHP, sed, awk, or SQL-client bodies; use direct commands so the hook can review
+  the operation. See `.goat-flow/learning-loop/footguns/deny-dangerous.md`.
 
 ## Commit Messages
 

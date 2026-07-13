@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.13.1"
 ---
 # goat-security reference: file upload and paths
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Visible accepted-abbreviation contract.** `gruff-rs init` now explains that `allowlists.acceptedAbbreviations` controls short-name acceptance, replaces the built-in list, and should be extended by appending project vocabulary to the visible 16-entry seed.
+- **Structured composite-action arguments.** The GitHub Action now accepts newline-delimited `argv`, rejects legacy `args` fail-closed, and contains working/output paths within the workspace.
+- **Exact, verified composite-action install.** The action now requires an exact binary version, downloads from the fixed project release origin, verifies the matching SHA-256 sidecar and archive members, and installs only the verified binary from a private runner directory; mutable `cargo-binstall@main` and `latest` paths are removed.
+- **Verified five-platform release candidates.** A non-publishing workflow now binds the source commit and Cargo package to Linux, macOS, and Windows archives, rejects incomplete or mismatched asset sets, and reuses those gates for serialized crate-first, draft-first tag publication.
+- **Pinned, least-privilege release execution.** CI and release workflows now use full commit SHAs for third-party actions, exact Rust/Cargo-tool versions, checksum-verified actionlint downloads, read-only defaults, and write access only for final GitHub publication; a contract test rejects moving refs, floating installs, or permission drift.
+
 ## v0.4.0 - 2026-06-14
 
 0.4.0 is a precision, correctness, and runtime-efficiency release for hook-facing scans. It keeps the report schema stable, makes partial-context analysis safer, tightens high-noise rules found by external scans, and retires two default rubrics that could not be made precise enough for agent hooks.

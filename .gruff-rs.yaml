@@ -37,10 +37,9 @@ paths:
     - "**/pnpm-lock.yaml"
 
 allowlists:
-  # Mirror the full DEFAULT_ABBREVIATIONS set from src/config.rs so this
-  # file does not narrow the runtime default. The loader replaces (not
-  # merges) acceptedAbbreviations from yaml; keeping the full list here
-  # makes the accepted set visible at the config surface.
+  # acceptedAbbreviations controls which short names naming.short-variable permits.
+  # This configured list replaces (not merges) built-ins; keep these seeds and
+  # append project vocabulary below.
   acceptedAbbreviations:
     - age
     - app

@@ -1,9 +1,9 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.13.1"
 ---
 # Project Security Policy Template
 
-Optional path for goat-security policy overrides:
+Setup template for goat-security policy overrides. This file is not a scan reference; load it only when creating or revising a project policy file.
 
 `.goat-flow/security-policy.md`
 

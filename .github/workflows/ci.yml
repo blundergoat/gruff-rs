@@ -1,3 +1,6 @@
+# CI workflow for maintainers and contributors validating repository changes.
+# A push or pull request runs the same dependency installer and preflight that
+# developers use locally, with immutable action and Rust identities for trust.
 name: CI
 
 on:
@@ -9,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CI_RUST_TOOLCHAIN: 1.97.0
+
 jobs:
   verify:
     name: Rust
@@ -16,13 +22,15 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        with:
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install dependency tools
         run: bash scripts/dependency-install.sh
