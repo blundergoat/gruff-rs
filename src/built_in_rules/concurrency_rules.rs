@@ -1,3 +1,7 @@
+//! Concurrency rules inspect parsed Rust function slices without executing code.
+//! They report narrow async, channel, and lock-lifetime source shapes while
+//! keeping type-dependent conclusions at medium confidence for human review.
+
 use super::*;
 
 pub(crate) fn analyse_concurrency_block(
@@ -82,41 +86,52 @@ pub(crate) fn analyse_async_blocking_calls(
     }
 }
 
+/// Reports a guard binding that remains lexically live when a later await begins.
+/// Source comments and strings are masked before acquisition evidence is inspected.
 pub(crate) fn analyse_lock_across_await(
     file: &SourceFile,
     block: &FunctionBlock,
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
-    let lines: Vec<&str> = searchable_body.lines().collect();
-    if let Some(guard) = find_lock_guard_held_across_await(&lines) {
+    let code_only_body = strip_rust_comments_after_string_mask(searchable_body);
+    let lines: Vec<&str> = code_only_body.lines().collect();
+    // An absent match means every acquisition was non-lock-shaped, dropped, or scoped out.
+    if let Some(guard) = find_lock_guard_held_across_await(&lines, &code_only_body) {
         findings.push(lock_across_await_finding(file, block, &guard));
     }
 }
 
-fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
+/// Returns the first qualifying guard because the rule emits one function finding.
+/// The full function slice supplies receiver-linked type or constructor evidence.
+fn find_lock_guard_held_across_await(lines: &[&str], function_source: &str) -> Option<String> {
     let lock_binding = static_regex(
         &LOCK_BINDING_REGEX,
-        r"\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<rhs>[^;]*\.(?:lock|read|write)\s*\([^;]*);",
+        r"\blet\s+(?:mut\s+)?(?P<guard>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<rhs>[^;]*);",
     );
     let mut depth = 0usize;
+    // Walk bindings in source order so the reported guard is deterministic.
     for (line_index, line) in lines.iter().enumerate() {
         let depth_before_line = depth;
         depth = brace_depth_after_line(depth, line);
+        // Ordinary source lines do not begin a candidate guard lifetime.
         let Some(captures) = lock_binding.captures(line) else {
             continue;
         };
         let guard = captures
-            .get(1)
-            .map(|guard| guard.as_str())
-            .unwrap_or("guard");
+            .name("guard")
+            .expect("lock-binding regex always captures the guard")
+            .as_str();
+        // A malformed capture cannot describe the assigned acquisition expression.
         let Some(rhs) = captures.name("rhs") else {
             continue;
         };
-        if !rhs_is_lock_guard_binding(rhs.as_str()) {
+        // I/O calls, domain methods, and value-extraction chains are not guard bindings.
+        if !rhs_is_lock_guard_binding(rhs.as_str(), function_source) {
             continue;
         }
         let later_lines = &lines[line_index + 1..];
+        // A guard only matters when no drop or scope exit precedes the next await.
         if is_guard_held_across_await(later_lines, guard, depth_before_line, depth) {
             return Some(guard.to_string());
         }
@@ -124,13 +139,56 @@ fn find_lock_guard_held_across_await(lines: &[&str]) -> Option<String> {
     None
 }
 
-fn rhs_is_lock_guard_binding(rhs: &str) -> bool {
+/// Classifies a bound RHS as a zero-argument, guard-preserving lock acquisition.
+/// Ambiguous read/write methods additionally need evidence tied to their receiver.
+fn rhs_is_lock_guard_binding(rhs: &str, function_source: &str) -> bool {
     static LOCK_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
-    let lock_call = static_regex(&LOCK_CALL_REGEX, r"\.(?:lock|read|write)\s*\([^)]*\)");
-    let Some(found) = lock_call.find(rhs) else {
-        return false;
-    };
-    lock_suffix_is_guard_preserving(&rhs[found.end()..])
+    let lock_call = static_regex(
+        &LOCK_CALL_REGEX,
+        r"\b(?P<receiver>[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(?P<method>lock|read|write)\s*\(\s*\)",
+    );
+    // A chained RHS may contain more than one named call; accept only a call whose tail
+    // preserves the returned guard and whose receiver supplies the required lock signal.
+    lock_call.captures_iter(rhs).any(|captures| {
+        let found = captures
+            .get(0)
+            .expect("lock-call regex always captures the complete call");
+        let receiver = captures
+            .name("receiver")
+            .expect("lock-call regex always captures the receiver")
+            .as_str();
+        let method = captures
+            .name("method")
+            .expect("lock-call regex always captures the method")
+            .as_str();
+        lock_suffix_is_guard_preserving(&rhs[found.end()..])
+            && acquisition_has_lock_evidence(method, receiver, function_source)
+    })
+}
+
+/// Keeps `.lock()` as the explicit lock-named heuristic used by mutex APIs.
+/// Read/write methods need receiver-linked evidence because I/O uses the same names.
+fn acquisition_has_lock_evidence(method: &str, receiver: &str, function_source: &str) -> bool {
+    // A zero-argument method literally named `lock` is the rule's documented heuristic.
+    if method == "lock" {
+        return true;
+    }
+    receiver_has_local_lock_evidence(function_source, receiver)
+}
+
+/// Finds a receiver type containing `Mutex`/`RwLock` or a local lock constructor.
+/// This same-function text check intentionally does not resolve aliases or struct fields.
+fn receiver_has_local_lock_evidence(function_source: &str, receiver: &str) -> bool {
+    let escaped_receiver = regex::escape(receiver);
+    let typed_receiver = Regex::new(&format!(
+        r"(?s)\b{escaped_receiver}\s*:\s*[^=;{{}}]*\b(?:Mutex|RwLock)\b"
+    ))
+    .expect("escaped Rust receiver keeps the typed-lock regex valid");
+    let constructed_receiver = Regex::new(&format!(
+        r"(?s)\blet\s+(?:mut\s+)?{escaped_receiver}\s*(?::[^=;{{}}]+)?=\s*[^;{{}}]*\b(?:Mutex|RwLock)\s*::\s*new\s*\("
+    ))
+    .expect("escaped Rust receiver keeps the lock-constructor regex valid");
+    typed_receiver.is_match(function_source) || constructed_receiver.is_match(function_source)
 }
 
 fn lock_suffix_is_guard_preserving(mut suffix: &str) -> bool {

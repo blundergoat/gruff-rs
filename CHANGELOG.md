@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Narrower lock-across-await signal.** Buffered I/O and domain `.read()`/`.write()` results no longer masquerade as guards; zero-argument read/write acquisitions require same-function `Mutex`/`RwLock` evidence while explicit `.lock()` and supported guard-preserving suffixes remain covered.
 - **Zero-payload sensitive metadata markers.** JSON, SARIF, and hook findings now serialize detector-owned markers instead of partial secret or PHI previews while legacy `allowlists.secretPreviews` entries still suppress exact matches; structured fixture-PII message masking and its stable-identity migration are explicitly deferred to the coordinated family JSON break.
 - **Inert Markdown finding fields.** Markdown reports now use delimiter-safe code spans for rule IDs and file paths, escape finding messages as plain text, and show CR/LF as visible text so untrusted values cannot inject headings, lists, tables, links, raw HTML, or code fences; GitHub workflow-command rendering remains a separate unchanged protocol.
 - **Visible accepted-abbreviation contract.** `gruff-rs init` now explains that `allowlists.acceptedAbbreviations` controls short-name acceptance, replaces the built-in list, and should be extended by appending project vocabulary to the visible 16-entry seed.
