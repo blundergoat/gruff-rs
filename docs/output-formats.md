@@ -29,6 +29,12 @@ Use `html` for archived human review or dashboard scan output.
 
 Use `markdown` for pull request comments and release notes.
 
+Finding rule IDs and file paths use delimiter-safe code spans. Finding messages
+escape Markdown and HTML structure, with carriage returns and newlines shown as
+literal `\r` and `\n` text so source-controlled values cannot add report blocks.
+This encoding is Markdown-specific; `github` remains a separate workflow-command
+protocol.
+
 ## GitHub
 
 Use `github` inside GitHub Actions to emit workflow annotations.

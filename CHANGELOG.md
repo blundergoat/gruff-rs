@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Inert Markdown finding fields.** Markdown reports now use delimiter-safe code spans for rule IDs and file paths, escape finding messages as plain text, and show CR/LF as visible text so untrusted values cannot inject headings, lists, tables, links, raw HTML, or code fences; GitHub workflow-command rendering remains a separate unchanged protocol.
 - **Visible accepted-abbreviation contract.** `gruff-rs init` now explains that `allowlists.acceptedAbbreviations` controls short-name acceptance, replaces the built-in list, and should be extended by appending project vocabulary to the visible 16-entry seed.
 - **Structured composite-action arguments.** The GitHub Action now accepts newline-delimited `argv`, rejects legacy `args` fail-closed, and contains working/output paths within the workspace.
 - **Exact, verified composite-action install.** The action now requires an exact binary version, downloads from the fixed project release origin, verifies the matching SHA-256 sidecar and archive members, and installs only the verified binary from a private runner directory; mutable `cargo-binstall@main` and `latest` paths are removed.

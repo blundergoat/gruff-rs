@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-07-13
+last_reviewed: 2026-07-14
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -412,3 +412,21 @@ quoted logical line per argument. Include the actual rendered value in the
 assertion failure message. Reserve backslash continuations for prose where
 leading whitespace is irrelevant, not byte-sensitive YAML, JSON, or renderer
 contracts.
+
+## Lesson: Renderer Injection Assertions Must Respect Output Context
+
+**Created:** 2026-07-14
+
+M08's first green Markdown encoding still failed a broad
+`!markdown.contains("<script>")` assertion. The message had correctly encoded
+its HTML-looking text, while the same text in a file path remained safely
+inside the dynamic code span produced by `src/render/markdown.rs` (search:
+`fn markdown_code_span`). The assertion treated inert code content as raw HTML
+and therefore rejected the correct output grammar.
+
+**Prevention:** Keep an exact golden for delimiter-safe code fields, then
+isolate the plain-text field before asserting that HTML, links, or other
+structure is absent. For mixed-context formats, never use one raw substring ban
+across the entire rendered document; assert per context or parse the rendered
+format. Regression coverage lives in `src/tests/renderers/output.rs` (search:
+`markdown_renderer_keeps_hostile_finding_fields_in_one_inert_bullet`).
