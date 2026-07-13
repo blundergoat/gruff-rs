@@ -1,3 +1,7 @@
+//! Built-in rule dispatch and shared analyzer vocabulary.
+//! Focused sibling modules evaluate source units, then this parent combines
+//! their deterministic findings for the configured report pipeline.
+
 pub(crate) use super::*;
 
 mod helpers;

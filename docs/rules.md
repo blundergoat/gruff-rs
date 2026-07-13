@@ -37,7 +37,9 @@ does not recursively enable action rules. Event interpolation, remote shell
 installers, and unpinned third-party `uses:` dependencies apply to both kinds.
 Broad permissions, `pull_request_target`, and pull-request secret exposure
 remain workflow-only because composite actions have no workflow `on:` or
-permission contract.
+permission contract. The permissions rule reports workflow-level scoped writes
+and `permissions: write-all` at any level; a bounded job-scoped mapping such as
+release-only `contents: write` stays silent.
 
 Sensitive-data rules report likely secret material directly from text and render deterministic redacted previews only. `sensitive-data.database-url-password` is scoped to database and message-bus URL schemes, while `sensitive-data.url-embedded-credentials` covers generic HTTP(S) `user:password@host` URLs and skips reserved documentation hosts and obvious placeholder credentials. `sensitive-data.high-entropy-string` keeps real base64/base64url/JWT/PAT-like secret shapes reportable while skipping known non-secret structures: package integrity literals including `sha1-`, exact standard and URL-safe base64 alphabets, separator-bearing word slugs, and provider/model identifiers such as `provider/Family/Model-Size-Variant`. It deliberately does not infer that arbitrary checksum or signature fields are safe from value shape alone. Provider-prefixed token coverage stays under `sensitive-data.api-key-pattern` unless a separate rule ID adds distinct user-facing value; GCP service-account key material and PHI-style identifiers have dedicated IDs because their remediation and triage differ from generic tokens.
 

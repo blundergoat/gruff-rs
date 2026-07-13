@@ -64,6 +64,18 @@ alone. Benchmark through `scripts/test-performance.sh`, or run
 `target/release/gruff-rs`. Do not treat deleting `target/` as the durable fix;
 the artifact can become stale again as soon as HEAD moves.
 
+**2026-07-13 extension:** Cargo package verification can produce the same trap
+without a test-only build. During M07, `target/debug/gruff-rs.d` named only
+`target/package/gruff-rs-0.4.0/src/...` inputs. Subsequent workspace `cargo
+build` and `cargo run` both reported the dev target fresh and executed that
+package-copy binary, so the new focused metadata scan falsely retained an old
+permission finding while current unit tests passed. `CARGO_INCREMENTAL=0 cargo
+run` rebuilt dep-info from the repository `src/` tree and the exact reproduction
+became silent. `scripts/preflight-checks.sh` (search:
+`focused_github_metadata_scan`) now uses that distinct fingerprint for the
+security scan; keep it whenever `cargo package` and live-worktree analysis can
+share one target directory and package version.
+
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 
 **Status:** active | **Created:** 2026-07-13 | **Evidence:** OBSERVED

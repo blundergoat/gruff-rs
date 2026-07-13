@@ -199,7 +199,7 @@ the pipeline explicit and lint-clean.
 **2026-07-13 extension:** M07 added metadata kind to the GitHub line analyzer
 and shared finding emitter, pushing both to eight arguments. The first
 `cargo clippy --all-targets -- -D warnings` run rejected both helpers. Grouping
-per-file rule state in `src/built_in_rules/text_rules.rs` (search:
+per-file rule state in `src/built_in_rules/github_metadata_rules.rs` (search:
 `struct GithubMetadataScanState`) and user-visible finding copy in the same file
 (search: `struct GithubStepFinding`) removed the structural warning without a
 lint allow or behavior change. When a rule change threads one more concern

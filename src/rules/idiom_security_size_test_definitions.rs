@@ -184,7 +184,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags workflow permissions that grant broad write access.",
+        "Flags workflow-level scoped writes and permissions: write-all grants.",
     ),
     rule_definition!(
         "security.github-actions-pull-request-target",

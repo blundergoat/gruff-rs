@@ -717,7 +717,9 @@ focused_github_metadata_scan() {
   metadata_paths+=(action.yml)
   expected_file_count=${#metadata_paths[@]}
 
-  cargo run --quiet -- analyse "${metadata_paths[@]}" \
+  # Package verification can leave a same-version binary built from target/package sources.
+  # A distinct fingerprint makes this security scan compile the live contributor workspace.
+  CARGO_INCREMENTAL=0 cargo run --quiet -- analyse "${metadata_paths[@]}" \
     --no-config \
     --no-baseline \
     --format json \

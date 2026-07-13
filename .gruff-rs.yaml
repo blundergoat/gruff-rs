@@ -206,7 +206,7 @@ rules:
   # Flags Regex::new calls inside loop bodies.
   performance.regex-in-loop:
     enabled: true
-  # Flags workflow permissions that grant broad write access.
+  # Flags workflow-level scoped writes and permissions: write-all grants.
   security.github-actions-broad-permissions:
     enabled: true
   # Flags pull_request_target workflows for manual secret and checkout review.
