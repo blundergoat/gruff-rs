@@ -253,6 +253,19 @@ for the format they review (for example, `replace_workflow_yaml_text`). Run a
 focused dogfood scan on the new test file before the full preflight so shape
 and security-review findings are corrected as design feedback, not suppressed.
 
+**Updated 2026-07-14 (M12):** A 29-line rationale table pushed
+`src/tests/rule_behaviours/rust_rules.rs` to 628 lines, while the companion
+classifier pushed `src/built_in_rules/helpers.rs` to 613. Focused tests and
+Clippy passed; only repository dogfood exposed both 600-line breaches. Moving
+the table to `safety_rationale_guards.rs` and the cohesive production helpers
+to `safety_rationale.rs` preserved the same focused filters without formatter
+exemptions or threshold suppression. Registering both as new top-level modules
+then pushed their parents from eight to nine children, so the final wiring
+nests them under `idiomatic_handling.rs` and `behavior_rules.rs`; focused
+dogfood returned zero findings. Check both the destination line count and the
+parent fan-out before adding a cohesive test/helper, then split and nest
+ownership before the full gate when either owner is already at its limit.
+
 ## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
 
 **Created:** 2026-05-23

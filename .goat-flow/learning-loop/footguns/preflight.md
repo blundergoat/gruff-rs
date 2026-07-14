@@ -86,6 +86,16 @@ expected empty finding set. For current-source CLI comparisons after tests,
 use an isolated target directory or `CARGO_INCREMENTAL=0`, then confirm the
 runnable binary timestamp changed before trusting its output.
 
+**2026-07-14 M12 extension:** `cargo clippy --all-targets` left the same trap
+after `src/built_in_rules/helpers.rs` changed (search:
+`safety_rationale_words`). The focused test binary accepted `same-thread
+access`, but `cargo run --verbose` printed `Fresh gruff-rs` and launched an
+older `target/debug/gruff-rs`, so a manual matrix reproduced the pre-change
+classifications. Repeating the exact scan with a fresh `CARGO_TARGET_DIR`
+accepted both hyphenated rationales and rejected the circular one. Treat a CLI
+proof after Clippy like a proof after tests or packaging: isolate its target or
+force a distinct non-incremental fingerprint, and verify an actual compile.
+
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 
 **Status:** active | **Created:** 2026-07-13 | **Evidence:** OBSERVED

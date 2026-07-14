@@ -1,8 +1,11 @@
 use super::*;
 
+#[path = "safety_rationale.rs"]
+mod safety_rationale;
 #[path = "behavior_rules/tls_sql.rs"]
 mod tls_sql;
 
+pub(crate) use safety_rationale::{find_nearby_safety_rationale, is_weak_safety_rationale};
 pub(crate) use tls_sql::{analyse_sql_dynamic_query, analyse_tls_verification_disabled};
 
 static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();

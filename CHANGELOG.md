@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Punctuation-stable SAFETY rationales.** Meaningful comments such as `SAFETY: same-thread access` no longer trigger `docs.weak-safety-rationale`, while empty, generic, and circular assurances remain flagged.
 - **Block rustdoc and function-length precision.** Function documentation rules now accept attached outer `/** */` comments alongside `///`, while `size.function-length` excludes attached rustdoc and attributes without moving existing finding identities.
 - **SQL-shaped dynamic-query warnings.** Formatted prose and non-SQL DSL text with isolated SQL words now stay quiet, while direct and one-hop `query`, `execute`, and `prepare` values retain supported statement and placeholder coverage.
 - **Narrower lock-across-await signal.** Buffered I/O and domain `.read()`/`.write()` results no longer masquerade as guards; zero-argument read/write acquisitions require same-function `Mutex`/`RwLock` evidence while explicit `.lock()` and supported guard-preserving suffixes remain covered.

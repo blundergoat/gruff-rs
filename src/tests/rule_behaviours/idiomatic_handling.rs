@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "safety_rationale_guards.rs"]
+mod safety_rationale_guards;
+
 /// Calibration guard: `naming.boolean-prefix` accepts idiomatic Rust
 /// predicate names (subject-predicate form, common predicate verbs) while
 /// keeping passive shapes like `triggered_by` flagged.

@@ -4,50 +4,6 @@
 
 use super::*;
 
-pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
-    let start = line_index.saturating_sub(3);
-    for line in lines[start..=line_index].iter() {
-        if let Some(pos) = line.find("SAFETY:") {
-            let after = &line[pos + "SAFETY:".len()..];
-            return Some(after.to_string());
-        }
-    }
-    None
-}
-
-/// `SAFETY:` rationale counts as weak when it is too short to convey an
-/// invariant or matches a known low-content phrase. Keep the deny list
-/// small and exact so private comments with brief but meaningful text
-/// (`SAFETY: same-thread access` etc.) still pass.
-pub(crate) fn is_weak_safety_rationale(rationale: &str) -> bool {
-    let trimmed = rationale.trim().trim_end_matches('.').to_ascii_lowercase();
-    if trimmed.is_empty() {
-        return true;
-    }
-    const WEAK_PHRASES: &[&str] = &[
-        "safe",
-        "required",
-        "needed",
-        "ok",
-        "okay",
-        "yes",
-        "trivial",
-        "obvious",
-        "n/a",
-        "none",
-        "see above",
-        "see below",
-    ];
-    if WEAK_PHRASES.contains(&trimmed.as_str()) {
-        return true;
-    }
-    let word_count = trimmed
-        .split_whitespace()
-        .filter(|word| word.len() >= 2)
-        .count();
-    word_count < 3 || trimmed.len() < 12
-}
-
 pub(crate) fn has_nearby_invariant_comment(source: &str) -> bool {
     source
         .lines()
