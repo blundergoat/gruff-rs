@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-07-14
+last_reviewed: 2026-07-15
 ---
 
 ## Footgun: Preflight Dogfood Output Is Truncated To 20 Findings
@@ -125,6 +125,25 @@ the executable at the requested install-root destination first: it reuses an
 exact reported version and requests a forced Cargo replacement only when an
 existing destination is wrong. Keep that check destination-aware so `--root`
 does not accidentally accept a matching binary found elsewhere on `PATH`.
+
+## Footgun: Release Pin Tests Scan Shell Source As Commands
+
+**Status:** active | **Created:** 2026-07-15 | **Evidence:** OBSERVED
+
+`tests/release_security_contract.rs` (search: `fn logical_shell_commands`) treats
+every non-empty, non-comment line in a reviewed shell script as command text;
+it does not mask quoted labels or strings before
+`validate_direct_cargo_installs` searches for the literal lowercase prefix
+`cargo install `. During M17, the documentation checker label
+`'cargo install version'` in `scripts/preflight-checks.sh` (search:
+`Cargo install example version`) was therefore reported as an unpinned install
+even though it was only user-facing diagnostic text.
+
+Before adding command examples or diagnostics to a release script, run
+`cargo test --test release_security_contract -- --nocapture`. Any line that
+contains the lowercase executable prefix must be a real or synthetic install
+command with both `--version` and `--locked`; non-command labels should use
+plain descriptive prose that cannot masquerade as an executable command.
 
 ## Footgun: Release Archive Shape Is A Cross-File Contract
 

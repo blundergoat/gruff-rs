@@ -10,6 +10,7 @@ set -o pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GRUFF_RS_RELEASE_CHECK="${GRUFF_RS_RELEASE_CHECK:-0}"
+PREFLIGHT_MODE=full
 WORK_DIR=""
 CARGO_AUDIT_VERSION=0.22.2
 ACTION_VALIDATOR_VERSION=0.9.0
@@ -61,12 +62,14 @@ Runs the local gruff-rs preflight suite:
   - exact-path GitHub workflow and composite-action security scan without project config
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
   - gruff-rs dogfood scan (analyse the whole project, gated by minimumSeverity.analyse in .gruff-rs.yaml)
-  - documentation drift guard (architecture.md schema string and CLI command list match the code)
+  - documentation drift guards for release examples, built-in rules, schemas, and CLI commands
 
 Options:
-  --release-check  Also require the crate version to be newer than the latest
-                   local vX.Y.Z git tag and present in CHANGELOG.md.
-  -h, --help       Show this help.
+  --release-check        Also require the crate version to be newer than the
+                         latest local vX.Y.Z tag and present in CHANGELOG.md.
+  --docs-drift-check     Run only the live documentation drift check.
+  --docs-drift-fixtures  Run only the deterministic drift-check fixture harness.
+  -h, --help             Show this help.
 
 Environment:
   GRUFF_RS_RELEASE_CHECK  Set to 1/true/yes/on to enable --release-check.
@@ -205,8 +208,8 @@ compact_output() {
     return 0
   fi
 
-  summary_line=$(printf '%s\n' "$output" | grep -E '^Score:' | tail -1 || true)
-  # Analyzer commands expose their strongest user signal in the score line.
+  summary_line=$(printf '%s\n' "$output" | grep -E '^Composite:' | tail -1 || true)
+  # Analyzer commands expose their strongest user signal in the composite line.
   if [[ -n "$summary_line" ]]; then
     trim_line "$summary_line"
     return 0
@@ -554,6 +557,12 @@ require_cargo_for_preflight() {
     || fail_preflight_setup "cargo is not available on PATH"
 }
 
+# Require the structured JSON reader used to compare docs with live rule metadata.
+require_jq_for_preflight() {
+  command -v jq >/dev/null 2>&1 \
+    || fail_preflight_setup "jq is required for documentation drift checks; install jq and rerun preflight"
+}
+
 # Resolve the Cargo bin directory where a developer's installed audit tool lives.
 resolved_cargo_install_root() {
   # CI may provide a dedicated install root for cached check binaries.
@@ -769,7 +778,7 @@ fixture_sarif_smoke() {
 
 # Prove integrations can enumerate the complete rule registry as JSON.
 list_rules_json_smoke() {
-  cargo run --quiet -- list-rules --format json >"$WORK_DIR/list-rules.json"
+  cargo run --quiet -- list-rules --format json --no-config >"$WORK_DIR/list-rules.json"
 }
 
 # Prove users can inspect only Security rules through the selector surface.
@@ -891,12 +900,504 @@ YAML
   grep -q 'custom.fixture-marker' "$report_file"
 }
 
-# Keep orientation docs aligned with the schema and commands users actually receive.
+# Read the package version that release examples must match from Cargo metadata.
+package_version_for_docs() {
+  local metadata
+  local package_version
+
+  # A malformed manifest prevents the docs gate from knowing which release users install.
+  metadata=$(cargo metadata --format-version 1 --no-deps) || {
+    printf 'docs drift: cargo metadata could not read the package version\n' >&2
+    return 1
+  }
+  # Exactly one gruff-rs package row identifies the version every labelled example must use.
+  package_version=$(printf '%s\n' "$metadata" | jq -er '
+    [.packages[] | select(.name == "gruff-rs") | .version]
+    | select(length == 1)
+    | .[0]
+  ') || {
+    printf 'docs drift: Cargo metadata package.version actual=<missing> expected=one gruff-rs version\n' >&2
+    return 1
+  }
+
+  printf '%s\n' "$package_version"
+}
+
+# Return one explicitly labelled documentation block for contract comparison.
+read_single_docs_block() {
+  local doc_file=$1
+  local block_name=$2
+  local begin_marker="<!-- gruff-docs:begin $block_name -->"
+  local end_marker="<!-- gruff-docs:end $block_name -->"
+  local begin_count
+  local end_count
+
+  begin_count=$(grep -Fxc "$begin_marker" "$doc_file" || true)
+  end_count=$(grep -Fxc "$end_marker" "$doc_file" || true)
+
+  # Missing or repeated start anchors leave maintainers unsure which value is machine-owned.
+  if ((begin_count != 1)); then
+    printf "docs drift: %s: '%s' marker count actual=%s expected=1\n" \
+      "$doc_file" \
+      "$begin_marker" \
+      "$begin_count" >&2
+    return 1
+  fi
+  # Missing or repeated end anchors can make unrelated prose part of the generated contract.
+  if ((end_count != 1)); then
+    printf "docs drift: %s: '%s' marker count actual=%s expected=1\n" \
+      "$doc_file" \
+      "$end_marker" \
+      "$end_count" >&2
+    return 1
+  fi
+
+  awk -v begin_marker="$begin_marker" -v end_marker="$end_marker" '
+    $0 == begin_marker { inside = 1; next }
+    $0 == end_marker { inside = 0; next }
+    inside { print }
+  ' "$doc_file"
+}
+
+# Compare one labelled value and name the stale value, expected value, and document.
+assert_docs_value() {
+  local doc_file=$1
+  local label=$2
+  local actual=$3
+  local expected=$4
+  local actual_display=$actual
+
+  # A missing parse result tells the maintainer the labelled line changed shape or vanished.
+  if [[ -z "$actual_display" ]]; then
+    actual_display='<missing>'
+  fi
+  actual_display=${actual_display//$'\n'/,}
+
+  # Drift failures show the exact edit needed instead of only reporting inequality.
+  if [[ "$actual" != "$expected" ]]; then
+    printf "docs drift: %s: %s actual='%s' expected='%s'\n" \
+      "$doc_file" \
+      "$label" \
+      "$actual_display" \
+      "$expected" >&2
+    return 1
+  fi
+}
+
+# Turn tabular pillar evidence into one readable value for a failed preflight line.
+pillar_table_summary() {
+  local table=$1
+  local summary=${table//$'\t'/=}
+
+  summary=${summary//$'\n'/,}
+  printf '%s' "$summary"
+}
+
+# Validate labelled release examples and structured rule references against live metadata.
+release_docs_drift_check() {
+  local docs_root=$1
+  local catalogue_file=$2
+  local package_version=$3
+  local readme_doc="$docs_root/README.md"
+  local rules_doc="$docs_root/docs/rules.md"
+  local release_status_block
+  local install_version_block
+  local action_version_block
+  local release_line_block
+  local rule_catalogue_block
+  local rule_examples_block
+  local release_status_version
+  local install_version
+  local action_comment_version
+  local action_input_version
+  local release_line
+  local expected_release_line="${package_version%.*}.x"
+  local documented_rule_count
+  local expected_rule_count
+  local documented_pillars
+  local expected_pillars
+  local registered_rule_ids
+  local rule_id
+  local marked_rule_count=0
+  local table_rule_count=0
+  local drift_found=0
+
+  # Missing docs leave contributors without the release and catalogue surfaces this gate owns.
+  for doc_file in "$readme_doc" "$rules_doc"; do
+    # Each named document must exist before its labelled values can be trusted.
+    if [[ ! -f "$doc_file" ]]; then
+      printf "docs drift: %s actual='<missing>' expected='documentation file'\n" "$doc_file" >&2
+      return 1
+    fi
+  done
+  # Invalid or incomplete catalogue JSON cannot establish the built-in rule truth.
+  if ! jq -e '
+    type == "array"
+    and length > 0
+    and all(.[]; (.id | type == "string") and (.pillar | type == "string"))
+  ' "$catalogue_file" >/dev/null 2>&1; then
+    printf "docs drift: %s: catalogue JSON actual='invalid' expected='non-empty list-rules array'\n" \
+      "$catalogue_file" >&2
+    return 1
+  fi
+
+  release_status_block=$(read_single_docs_block "$readme_doc" release-status) || return $?
+  install_version_block=$(read_single_docs_block "$readme_doc" install-version) || return $?
+  action_version_block=$(read_single_docs_block "$readme_doc" action-version) || return $?
+  release_line_block=$(read_single_docs_block "$readme_doc" release-line) || return $?
+  rule_catalogue_block=$(read_single_docs_block "$readme_doc" rule-catalogue) || return $?
+  rule_examples_block=$(read_single_docs_block "$readme_doc" rule-id-examples) || return $?
+
+  release_status_version=$(printf '%s\n' "$release_status_block" \
+    | sed -n "s/^| Release line | Published \`\([^\`]*\)\` package line |$/\1/p")
+  install_version=$(printf '%s\n' "$install_version_block" \
+    | sed -n 's/^cargo install gruff-rs --locked --version \([^ ]*\) --root .*$/\1/p')
+  action_comment_version=$(printf '%s\n' "$action_version_block" \
+    | sed -n 's/^[[:space:]]*- uses: .* # v\([0-9][0-9.]*\)$/\1/p')
+  action_input_version=$(printf '%s\n' "$action_version_block" \
+    | sed -n 's/^[[:space:]]*version: \([0-9][0-9.]*\)$/\1/p')
+  release_line=$(printf '%s\n' "$release_line_block" \
+    | sed -n "s/^\`\([^\`]*\)\` is the active release line\..*/\1/p")
+
+  # Every stale release value is shown together so one preflight run gives the full edit list.
+  assert_docs_value "$readme_doc" 'published release version' \
+    "$release_status_version" "$package_version" || drift_found=1
+  assert_docs_value "$readme_doc" 'Cargo install example version' \
+    "$install_version" "$package_version" || drift_found=1
+  assert_docs_value "$readme_doc" 'action release-version comment' \
+    "$action_comment_version" "$package_version" || drift_found=1
+  assert_docs_value "$readme_doc" 'action binary-version input' \
+    "$action_input_version" "$package_version" || drift_found=1
+  assert_docs_value "$readme_doc" 'active release line' \
+    "$release_line" "$expected_release_line" || drift_found=1
+
+  expected_rule_count=$(jq -r 'length' "$catalogue_file")
+  documented_rule_count=$(printf '%s\n' "$rule_catalogue_block" \
+    | sed -n 's/^The catalogue contains \([0-9][0-9]*\) rules:$/\1/p')
+  assert_docs_value "$readme_doc" 'built-in rule count' \
+    "$documented_rule_count" "$expected_rule_count" || drift_found=1
+
+  expected_pillars=$(jq -r '
+    sort_by(.pillar)
+    | group_by(.pillar)[]
+    | "\(.[0].pillar)\t\(length)"
+  ' "$catalogue_file")
+  documented_pillars=$(printf '%s\n' "$rule_catalogue_block" \
+    | sed -n "s/^| \`\([^\`]*\)\` | \([0-9][0-9]*\) |$/\1\t\2/p")
+  # A changed pillar table must name both the documented and registry-derived totals.
+  if [[ "$documented_pillars" != "$expected_pillars" ]]; then
+    printf "docs drift: %s: pillar table actual='%s' expected='%s'\n" \
+      "$readme_doc" \
+      "$(pillar_table_summary "$documented_pillars")" \
+      "$(pillar_table_summary "$expected_pillars")" >&2
+    drift_found=1
+  fi
+
+  registered_rule_ids=$(jq -r '.[].id' "$catalogue_file" | sort -u)
+  # Only explicitly marked examples are registry-owned; normal dotted prose stays reviewer-owned.
+  while IFS= read -r rule_id; do
+    # Empty extraction means this iteration has no candidate rule for the user-facing block.
+    if [[ -z "$rule_id" ]]; then
+      continue
+    fi
+    marked_rule_count=$((marked_rule_count + 1))
+    # A phantom marked example sends users to a rule the CLI cannot list or explain.
+    if ! grep -Fqx "$rule_id" <<<"$registered_rule_ids"; then
+      printf "docs drift: %s: marked rule ID actual='%s' expected='registered built-in rule ID'\n" \
+        "$readme_doc" \
+        "$rule_id" >&2
+      return 1
+    fi
+  done < <({ grep -oE "\`[a-z][a-z0-9-]*(\.[a-z0-9-]+)+\`" <<<"$rule_examples_block" || true; } \
+    | tr -d '`' \
+    | sort -u)
+  # An empty marked block would make the rule-example contract appear protected without evidence.
+  if ((marked_rule_count == 0)); then
+    printf "docs drift: %s: marked rule ID count actual=0 expected='at least 1'\n" \
+      "$readme_doc" >&2
+    return 1
+  fi
+
+  # First-column rule IDs in docs/rules.md tables are structured catalogue references.
+  while IFS= read -r rule_id; do
+    table_rule_count=$((table_rule_count + 1))
+    # A phantom table row gives maintainers a threshold for a rule that does not ship.
+    if ! grep -Fqx "$rule_id" <<<"$registered_rule_ids"; then
+      printf "docs drift: %s: table rule ID actual='%s' expected='registered built-in rule ID'\n" \
+        "$rules_doc" \
+        "$rule_id" >&2
+      return 1
+    fi
+  done < <(sed -n "s/^| \`\([^\`]*\)\` |.*/\1/p" "$rules_doc")
+  # No structured rule rows would silently remove the catalogue comparison reviewers expect.
+  if ((table_rule_count == 0)); then
+    printf "docs drift: %s: table rule ID count actual=0 expected='at least 1'\n" \
+      "$rules_doc" >&2
+    return 1
+  fi
+
+  # Any collected mismatch keeps preflight red after all actionable values are printed.
+  if ((drift_found != 0)); then
+    return 1
+  fi
+
+  printf 'README release %s and %s built-in rules match labelled docs\n' \
+    "$package_version" \
+    "$expected_rule_count"
+}
+
+# Write the smallest valid docs set used by deterministic negative drift checks.
+write_valid_docs_drift_fixture() {
+  local fixture_root=$1
+  local catalogue_file=$2
+  local package_version=$3
+  local release_line="${package_version%.*}.x"
+  local rule_count
+  local example_rule
+
+  rule_count=$(jq -r 'length' "$catalogue_file")
+  example_rule=$(jq -r '.[0].id' "$catalogue_file")
+  mkdir -p "$fixture_root/docs"
+
+  {
+    printf '# Synthetic documentation drift fixture\n\n'
+    printf '<!-- gruff-docs:begin release-status -->\n'
+    printf '| Field | Value |\n| --- | --- |\n'
+    printf "| Release line | Published \`%s\` package line |\n" "$package_version"
+    printf '<!-- gruff-docs:end release-status -->\n\n'
+    printf '<!-- gruff-docs:begin install-version -->\n'
+    printf "\`\`\`bash\ncargo install gruff-rs --locked --version %s --root ./.cargo-tools\n\`\`\`\n" \
+      "$package_version"
+    printf '<!-- gruff-docs:end install-version -->\n\n'
+    printf '<!-- gruff-docs:begin action-version -->\n'
+    printf '```yaml\n      - uses: example/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v%s\n' \
+      "$package_version"
+    printf '        with:\n          version: %s\n```\n' "$package_version"
+    printf '<!-- gruff-docs:end action-version -->\n\n'
+    printf '<!-- gruff-docs:begin release-line -->\n'
+    printf "\`%s\` is the active release line.\n" "$release_line"
+    printf '<!-- gruff-docs:end release-line -->\n\n'
+    printf '<!-- gruff-docs:begin rule-catalogue -->\n'
+    printf 'The catalogue contains %s rules:\n\n' "$rule_count"
+    printf '| Pillar | Rules |\n| --- | ---: |\n'
+    # Each registry pillar becomes one exact machine-owned README table row.
+    while IFS=$'\t' read -r pillar count; do
+      printf "| \`%s\` | %s |\n" "$pillar" "$count"
+    done < <(jq -r '
+      sort_by(.pillar)
+      | group_by(.pillar)[]
+      | "\(.[0].pillar)\t\(length)"
+    ' "$catalogue_file")
+    printf '<!-- gruff-docs:end rule-catalogue -->\n\n'
+    printf "Normal prose may mention \`phantom.unmarked\` without becoming generated data.\n\n"
+    printf '<!-- gruff-docs:begin rule-id-examples -->\n'
+    printf "Generated example rules: \`%s\`.\n" "$example_rule"
+    printf '<!-- gruff-docs:end rule-id-examples -->\n'
+  } >"$fixture_root/README.md"
+
+  {
+    printf '# Synthetic rules table\n\n'
+    printf '| Rule | Default | Note |\n| --- | --- | --- |\n'
+    printf "| \`%s\` | fixture | Registered example. |\n" "$example_rule"
+  } >"$fixture_root/docs/rules.md"
+}
+
+# Copy a known-good fixture so each negative case changes only one contract.
+copy_docs_drift_fixture() {
+  local source_root=$1
+  local target_root=$2
+
+  mkdir -p "$target_root/docs"
+  cp "$source_root/README.md" "$target_root/README.md"
+  cp "$source_root/docs/rules.md" "$target_root/docs/rules.md"
+}
+
+# Replace one exact fixture line without platform-specific in-place editing flags.
+replace_docs_fixture_line() {
+  local doc_file=$1
+  local expected_line=$2
+  local replacement_line=$3
+  local rewritten_file="$doc_file.rewritten"
+
+  awk -v expected_line="$expected_line" -v replacement_line="$replacement_line" '
+    $0 == expected_line { print replacement_line; replacements += 1; next }
+    { print }
+    # Exactly one replacement proves the intended stale fixture was constructed.
+    END { exit(replacements == 1 ? 0 : 3) }
+  ' "$doc_file" >"$rewritten_file" || {
+    # A malformed test fixture must fail before it can create misleading green evidence.
+    rm -f "$rewritten_file"
+    printf "docs drift fixture: could not replace '%s' in %s\n" "$expected_line" "$doc_file" >&2
+    return 1
+  }
+  mv "$rewritten_file" "$doc_file"
+}
+
+# Remove or duplicate one marker to exercise anchor-cardinality diagnostics.
+rewrite_docs_fixture_marker() {
+  local doc_file=$1
+  local marker=$2
+  local operation=$3
+  local rewritten_file="$doc_file.rewritten"
+
+  awk -v marker="$marker" -v operation="$operation" '
+    $0 == marker {
+      matches += 1
+      # Duplicate mode emits two anchors; remove mode emits none for its negative case.
+      if (operation == "duplicate") { print; print }
+      next
+    }
+    { print }
+    # One source marker keeps the negative fixture focused on cardinality alone.
+    END { exit(matches == 1 ? 0 : 3) }
+  ' "$doc_file" >"$rewritten_file" || {
+    # A missing source marker means the intended negative case was never constructed.
+    rm -f "$rewritten_file"
+    printf "docs drift fixture: could not %s marker '%s' in %s\n" \
+      "$operation" \
+      "$marker" \
+      "$doc_file" >&2
+    return 1
+  }
+  mv "$rewritten_file" "$doc_file"
+}
+
+# Require one synthetic docs tree to fail for the intended actionable reason.
+expect_docs_drift_failure() {
+  local case_name=$1
+  local expected_diagnostic=$2
+  local fixture_root=$3
+  local catalogue_file=$4
+  local package_version=$5
+  local output
+  local status
+
+  output=$(release_docs_drift_check "$fixture_root" "$catalogue_file" "$package_version" 2>&1)
+  status=$?
+  # A zero exit means the stale synthetic document escaped the contributor gate.
+  if ((status == 0)); then
+    printf 'docs drift fixture: %s unexpectedly passed\n' "$case_name" >&2
+    return 1
+  fi
+  # A different error would not prove the named stale value is diagnosed usefully.
+  if ! grep -Fq "$expected_diagnostic" <<<"$output"; then
+    printf "docs drift fixture: %s failed for the wrong reason; expected '%s', got:\n%s\n" \
+      "$case_name" \
+      "$expected_diagnostic" \
+      "$output" >&2
+    return 1
+  fi
+
+  printf 'PASS: docs drift fixture %s rejected with %s\n' "$case_name" "$expected_diagnostic"
+}
+
+# Exercise every negative drift shape without mutating the real documentation.
+docs_drift_fixture_harness() {
+  local catalogue_file="$WORK_DIR/list-rules.json"
+  local harness_root="$WORK_DIR/docs-drift-fixtures"
+  local valid_root="$harness_root/valid"
+  local stale_count_root="$harness_root/stale-count"
+  local stale_version_root="$harness_root/stale-version"
+  local missing_anchor_root="$harness_root/missing-anchor"
+  local duplicate_anchor_root="$harness_root/duplicate-anchor"
+  local invalid_json_root="$harness_root/invalid-json"
+  local phantom_rule_root="$harness_root/phantom-rule"
+  local invalid_catalogue="$invalid_json_root/catalogue.json"
+  local custom_config="$harness_root/custom-rule.yaml"
+  local custom_catalogue="$harness_root/custom-rules.json"
+  local package_version
+  local rule_count
+  local example_rule
+  local valid_output
+  local custom_rule_count
+
+  package_version=$(package_version_for_docs) || return $?
+  rule_count=$(jq -r 'length' "$catalogue_file")
+  example_rule=$(jq -r '.[0].id' "$catalogue_file")
+  write_valid_docs_drift_fixture "$valid_root" "$catalogue_file" "$package_version"
+
+  # The valid synthetic docs include an unmarked phantom phrase that must stay reviewer-owned.
+  if ! valid_output=$(release_docs_drift_check \
+    "$valid_root" \
+    "$catalogue_file" \
+    "$package_version" 2>&1); then
+    printf 'docs drift fixture: valid base failed:\n%s\n' "$valid_output" >&2
+    return 1
+  fi
+
+  copy_docs_drift_fixture "$valid_root" "$stale_count_root"
+  replace_docs_fixture_line "$stale_count_root/README.md" \
+    "The catalogue contains $rule_count rules:" \
+    "The catalogue contains $((rule_count + 1)) rules:" || return $?
+  expect_docs_drift_failure stale-count 'built-in rule count' \
+    "$stale_count_root" "$catalogue_file" "$package_version" || return $?
+
+  copy_docs_drift_fixture "$valid_root" "$stale_version_root"
+  replace_docs_fixture_line "$stale_version_root/README.md" \
+    "| Release line | Published \`$package_version\` package line |" \
+    "| Release line | Published \`0.0.0\` package line |" || return $?
+  expect_docs_drift_failure stale-version 'published release version' \
+    "$stale_version_root" "$catalogue_file" "$package_version" || return $?
+
+  copy_docs_drift_fixture "$valid_root" "$missing_anchor_root"
+  rewrite_docs_fixture_marker "$missing_anchor_root/README.md" \
+    '<!-- gruff-docs:begin release-status -->' remove || return $?
+  expect_docs_drift_failure missing-anchor 'marker count actual=0 expected=1' \
+    "$missing_anchor_root" "$catalogue_file" "$package_version" || return $?
+
+  copy_docs_drift_fixture "$valid_root" "$duplicate_anchor_root"
+  rewrite_docs_fixture_marker "$duplicate_anchor_root/README.md" \
+    '<!-- gruff-docs:begin release-status -->' duplicate || return $?
+  expect_docs_drift_failure duplicate-anchor 'marker count actual=2 expected=1' \
+    "$duplicate_anchor_root" "$catalogue_file" "$package_version" || return $?
+
+  copy_docs_drift_fixture "$valid_root" "$invalid_json_root"
+  printf '{ invalid catalogue\n' >"$invalid_catalogue"
+  expect_docs_drift_failure invalid-json 'catalogue JSON' \
+    "$invalid_json_root" "$invalid_catalogue" "$package_version" || return $?
+
+  copy_docs_drift_fixture "$valid_root" "$phantom_rule_root"
+  replace_docs_fixture_line "$phantom_rule_root/README.md" \
+    "Generated example rules: \`$example_rule\`." \
+    "Generated example rules: \`phantom.marked\`." || return $?
+  expect_docs_drift_failure phantom-marked-rule 'marked rule ID' \
+    "$phantom_rule_root" "$catalogue_file" "$package_version" || return $?
+
+  cat >"$custom_config" <<'YAML'
+schemaVersion: gruff-rs.config.v1
+custom_rules:
+  - id: custom.docs-drift-probe
+    pillar: Documentation
+    severity: advisory
+    message: Docs drift probe
+    scope: text
+    pattern: docs-drift-probe
+YAML
+  cargo run --quiet -- list-rules --format json --config "$custom_config" >"$custom_catalogue" \
+    || return $?
+  custom_rule_count=$(jq -r 'length' "$custom_catalogue")
+  # A valid project custom rule must not alter the no-config built-in count used by docs.
+  if ((custom_rule_count != rule_count + 1)); then
+    printf 'docs drift fixture: custom catalogue count actual=%s expected=%s\n' \
+      "$custom_rule_count" \
+      "$((rule_count + 1))" >&2
+    return 1
+  fi
+
+  printf 'PASS: custom config reports %s rules while documented built-ins remain %s\n' \
+    "$custom_rule_count" \
+    "$rule_count"
+  printf 'PASS: docs drift fixture harness rejected every intended negative case\n'
+}
+
+# Keep release, catalogue, schema, and command docs aligned with live behavior.
 docs_drift_check() {
   local architecture_doc="$REPO_ROOT/.goat-flow/architecture.md"
   local glossary_doc="$REPO_ROOT/.goat-flow/glossary.md"
   local analysis_source="$REPO_ROOT/src/analysis.rs"
+  local catalogue_file="$WORK_DIR/list-rules.json"
   local backtick='`'
+  local package_version
   local live_schema
   local orientation_doc
   local document_schema
@@ -905,6 +1406,9 @@ docs_drift_check() {
   local checked_command_count=0
   local stale_schemas=()
   local missing_commands=()
+
+  package_version=$(package_version_for_docs) || return $?
+  release_docs_drift_check "$REPO_ROOT" "$catalogue_file" "$package_version" || return $?
 
   # Missing orientation inputs mean reviewers cannot compare docs with live behavior.
   [[ -f "$architecture_doc" \
@@ -983,14 +1487,33 @@ run_preflight_suite() {
   while (($#)); do
     case "$1" in
       --release-check)
+        # Release mode adds tag and changelog checks to the normal contributor suite.
         GRUFF_RS_RELEASE_CHECK=1
         shift
         ;;
+      --docs-drift-check)
+        # Focused mode gives maintainers the live docs failure without running the full suite.
+        if [[ "$PREFLIGHT_MODE" != full ]]; then
+          fail_preflight_setup "choose only one focused preflight mode"
+        fi
+        PREFLIGHT_MODE=docs-drift-check
+        shift
+        ;;
+      --docs-drift-fixtures)
+        # Fixture mode proves negative diagnostics without editing real documentation.
+        if [[ "$PREFLIGHT_MODE" != full ]]; then
+          fail_preflight_setup "choose only one focused preflight mode"
+        fi
+        PREFLIGHT_MODE=docs-drift-fixtures
+        shift
+        ;;
       -h|--help)
+        # Help users see prerequisites and modes without starting any build or scan.
         usage
         return 0
         ;;
       *)
+        # Unknown input fails before a user could mistake a weaker run for full preflight.
         fail_preflight_setup "unknown argument: $1"
         ;;
     esac
@@ -998,10 +1521,31 @@ run_preflight_suite() {
 
   validate_release_check
   require_cargo_for_preflight
+  require_jq_for_preflight
+  # Release-only metadata has no meaning when the user requested a docs-only mode.
+  if [[ "$PREFLIGHT_MODE" != full ]] && release_check_enabled; then
+    fail_preflight_setup "--release-check cannot be combined with a focused docs mode"
+  fi
   WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gruff-rs-preflight.XXXXXX")"
   trap remove_preflight_workspace EXIT
 
   cd "$REPO_ROOT" || return 1
+
+  # Focused modes stop after their named contract so red/green evidence stays concise.
+  case "$PREFLIGHT_MODE" in
+    docs-drift-check)
+      # Live mode checks the actual README and docs against one built-in catalogue capture.
+      list_rules_json_smoke || return $?
+      docs_drift_check
+      return $?
+      ;;
+    docs-drift-fixtures)
+      # Fixture mode exercises synthetic failures without touching real documentation.
+      list_rules_json_smoke || return $?
+      docs_drift_fixture_harness
+      return $?
+      ;;
+  esac
 
   show_preflight_header
 
@@ -1025,6 +1569,7 @@ run_preflight_suite() {
   run_preflight_check "exclusion smoke" exclusion_smoke
   run_preflight_check "custom rule smoke" custom_rule_smoke
   run_preflight_check "docs drift" docs_drift_check
+  run_preflight_check "docs drift fixtures" docs_drift_fixture_harness
   run_preflight_check "gruff-rs dogfood scan" dogfood_scan
 
   show_preflight_summary

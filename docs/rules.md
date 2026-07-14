@@ -64,7 +64,7 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
 | `architecture.module-fan-out` | 8 | none | Gruff-specific; PMD CouplingBetweenObjects exists but its threshold is not documented in the neighbor studies. |
 | `architecture.public-api-surface` | 12 items | none | Gruff-specific external-public count; PMD TooManyMethods is the nearest peer concept. |
 | `dependency.duplicate-locked-version` | 1 | none | Cargo-specific; no peer analyzer ships this check. |
-| `docs.todo-density` | 4 per file | none (peers use binary presence) | Gruff counts TODO/FIXME comments per file rather than firing on first occurrence. |
+| `docs.stale-todo` | unthresholded | none (peers use binary presence) | Gruff flags each TODO/FIXME/HACK/XXX comment that lacks an owner, issue reference, or reason. |
 | `size.file-length` | 600 | Detekt LargeClass 600 | Matches Detekt exactly; PMD uses 1500 NCSS, RuboCop uses 250 lines. |
 | `size.function-length` | 50 | Detekt LongMethod 60, PMD NcssCount 60 | Counts declaration/body lines without attached rustdoc or attributes; slightly stricter than Detekt/PMD and far looser than RuboCop's 10-line Ruby default. |
 | `size.parameter-count` | 7 | Clippy `too_many_arguments` 7 | Aligned to Clippy, the default Rust devs calibrate to; idiomatic Rust tolerates 6-7 params (builders, context structs). |

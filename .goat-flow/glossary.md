@@ -72,7 +72,7 @@ The set of built-in and configured custom rules plus their public metadata. `lis
 
 ### Rule ID
 
-Stable public identifier for one rule, using dotted gruff-family names such as `size.function-length`, `docs.todo-density`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` may emit shared public pillars.
+Stable public identifier for one rule, using dotted gruff-family names such as `size.function-length`, `docs.stale-todo`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` may emit shared public pillars.
 
 ### SARIF
 

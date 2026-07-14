@@ -12,8 +12,12 @@ Run the local check suite before tagging:
 ```sh
 scripts/preflight-checks.sh
 cargo run -- --help
-cargo run -- list-rules --format json
+cargo run -- list-rules --format json --no-config
 ```
+
+Local preflight requires `jq` on `PATH` so the documentation gate can compare
+labelled rule counts and examples with structured, config-independent catalogue
+data. A missing `jq` fails before the catalogue capture and names the prerequisite.
 
 The release-specific local harness exercises source, package, archive,
 checksum, manifest, and workflow-graph failures without contacting GitHub or
@@ -182,7 +186,7 @@ Update docs when command output or schemas change:
 - `docs/rules.md`
 
 If the rule registry changes, verify `docs/rules.md` against
-`cargo run -- list-rules --format json`.
+`cargo run -- list-rules --format json --no-config`.
 
 ## Changelog
 
