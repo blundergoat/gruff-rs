@@ -1,5 +1,10 @@
+//! Security, size, test-quality, and waste calibration pairs exercise one rule at a time.
+//! Each pair gives operators one source that must fire and one source that must stay quiet,
+//! keeping broad registry calibration independent from findings produced by other rules.
+
 use super::*;
 
+/// Builds one positive and one quiet project for each calibrated rule in these families.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- security -----
@@ -57,8 +62,8 @@ pub fn load(tenant: &str) {
                 baseline_with_lib(
                     root,
                     r#"/// Probe.
-pub fn load() {
-    let _ = sqlx::query("select * from users");
+pub fn load(column: &str) {
+    let _ = backend::query(&format!("from df | uniq `{column}` | take 500"));
 }
 "#,
                 )

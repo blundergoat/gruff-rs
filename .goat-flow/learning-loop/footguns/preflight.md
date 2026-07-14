@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-07-13
+last_reviewed: 2026-07-14
 ---
 
 ## Footgun: Preflight Dogfood Output Is Truncated To 20 Findings
@@ -75,6 +75,16 @@ became silent. `scripts/preflight-checks.sh` (search:
 `focused_github_metadata_scan`) now uses that distinct fingerprint for the
 security scan; keep it whenever `cargo package` and live-worktree analysis can
 share one target directory and package version.
+
+**2026-07-14 extension:** A test-only build reproduced the trap during the SQL
+shape retune. `cargo test sql_dynamic_query` compiled the current
+`src/built_in_rules/behavior_rules/tls_sql.rs` (search:
+`normalise_sql_shape_text`) into the test harness, but the following `cargo
+run` reused an older normal binary and falsely retained two PRQL findings. A
+fresh `CARGO_TARGET_DIR` rebuilt the CLI from the worktree and returned the
+expected empty finding set. For current-source CLI comparisons after tests,
+use an isolated target directory or `CARGO_INCREMENTAL=0`, then confirm the
+runnable binary timestamp changed before trusting its output.
 
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 

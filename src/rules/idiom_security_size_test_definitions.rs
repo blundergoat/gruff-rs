@@ -295,11 +295,11 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags SQL-keyword-bearing dynamic query arguments such as query(format!(...)).",
+        "Flags SQL-shaped format! values passed directly or through one local binding to query, execute, or prepare.",
         false_positives: &[
             FalsePositiveShape {
-                shape: "SQL-keyword-bearing non-SQL DSL text passed to a method named query, execute, or prepare.",
-                mitigation: "Rename the wrapper method if possible, or add an `exclude:` entry for the reviewed path and message.",
+                shape: "A non-SQL DSL whose formatted text has a supported SQL statement shape and reaches a method named query, execute, or prepare.",
+                mitigation: "Rename the reviewed wrapper method if possible, or add an `exclude:` entry for that path and message.",
             },
             FalsePositiveShape {
                 shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",

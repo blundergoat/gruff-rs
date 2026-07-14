@@ -1,5 +1,10 @@
+//! SQL dynamic-query behaviour tests keep the security signal tied to SQL-shaped text.
+//! They model direct and one-hop `format!` values at supported database sink names so
+//! maintainers can tighten prose noise without dropping injection-relevant statements.
+
 use super::*;
 
+/// Keeps direct and one-hop SQL injection shapes visible across every supported sink name.
 #[test]
 pub(crate) fn sql_dynamic_query_keeps_attack_shapes() {
     let _guard = analysis_lock();
@@ -10,6 +15,10 @@ pub fn attack_shapes(user_id: i64, key: &str, prefix: &str, id: i64, v: i64) {
     let _prefix_and_value = db.prepare(&format!("SELECT * FROM {prefix}users WHERE name = '{key}'"));
     let q = format!("UPDATE t SET v = {v}");
     let _binding_flow = db.execute(&q);
+    let query_text = format!("SELECT id FROM users WHERE id = {id}");
+    let _bound_query = db.query(&query_text);
+    let prepare_text = format!("DELETE FROM users WHERE id = {id}");
+    let _bound_prepare = db.prepare(&prepare_text);
     let _no_bind_marker = db.prepare(&format!("SELECT * FROM {prefix}users WHERE id = {id}"));
     let _lowercase = db.query(&format!("select * from t where id = {id}"));
 }
@@ -19,7 +28,7 @@ pub fn attack_shapes(user_id: i64, key: &str, prefix: &str, id: i64, v: i64) {
     let lines = sql_dynamic_lines(&report);
     assert_eq!(
         lines,
-        vec![3, 4, 5, 7, 8, 9],
+        vec![3, 4, 5, 7, 9, 11, 12, 13],
         "attack-shaped dynamic SQL must keep flagging; findings={:?}",
         sql_dynamic_findings(&report)
     );
@@ -164,6 +173,67 @@ pub fn non_sql(idx: usize, n: usize) {
     assert_missing_rule(&analyse_sql_fixture(body), "security.sql-dynamic-query");
 }
 
+/// Keeps formatted prose quiet across every direct and one-hop sink shape the rule inspects.
+#[test]
+pub(crate) fn sql_dynamic_query_requires_sql_shapes_across_supported_sinks() {
+    let _guard = analysis_lock();
+    let body = r#"/// Probe.
+pub fn formatted_prose(source: &str, topic: &str) {
+    let _direct_query = backend.query(&format!("Show the report from {source}"));
+    let _direct_execute = backend.execute(&format!("Update where the export came from: {source}"));
+    let _direct_prepare = backend.prepare(&format!("Create a summary for {topic}"));
+    let query_text = format!("From the archive, select the note about {topic}");
+    let _bound_query = backend.query(&query_text);
+    let execute_text = format!("Delete the draft from the list for {topic}");
+    let _bound_execute = backend.execute(&execute_text);
+    let prepare_text = format!("Grant the reviewer access to {topic}");
+    let _bound_prepare = backend.prepare(&prepare_text);
+}
+"#;
+
+    let report = analyse_sql_fixture(body);
+    assert_eq!(
+        sql_dynamic_lines(&report),
+        Vec::<usize>::new(),
+        "plain-English format values must stay quiet; findings={:?}",
+        sql_dynamic_findings(&report)
+    );
+}
+
+/// Pins every SQL statement family retained by the bounded structural matcher.
+#[test]
+pub(crate) fn sql_dynamic_query_keeps_supported_statement_families() {
+    let _guard = analysis_lock();
+    let body = r#"/// Probe.
+pub fn supported_sql(table: &str, value: &str, user: &str) {
+    let _select = db.query(&format!("SELECT id FROM {table} WHERE name = '{value}'"));
+    let _insert = db.execute(&format!("INSERT INTO {table} (name) VALUES ('{value}')"));
+    let _update = db.execute(&format!("UPDATE {table} SET name = '{value}'"));
+    let _delete = db.execute(&format!("DELETE FROM {table} WHERE name = '{value}'"));
+    let _cte = db.query(&format!("/* active rows */ WITH active AS (SELECT id FROM {table}) SELECT id FROM active WHERE name = '{value}'"));
+    let _alter = db.execute(&format!("ALTER TABLE {table} ADD COLUMN note TEXT DEFAULT '{value}'"));
+    let _drop = db.execute(&format!("DROP TABLE {table}"));
+    let _create = db.execute(&format!("CREATE TABLE {table} (name TEXT DEFAULT '{value}')"));
+    let _show = db.query(&format!("SHOW TABLES LIKE '{value}'"));
+    let _truncate = db.execute(&format!("TRUNCATE TABLE {table}"));
+    let _merge = db.execute(&format!("MERGE INTO {table} USING staged ON staged.id = {table}.id"));
+    let _grant = db.execute(&format!("GRANT SELECT ON {table} TO {user}"));
+    let _revoke = db.execute(&format!("REVOKE SELECT ON {table} FROM {user}"));
+    let _replace = db.execute(&format!("REPLACE INTO {table} (name) VALUES ('{value}')"));
+    let _upsert = db.execute(&format!("UPSERT INTO {table} (name) VALUES ('{value}')"));
+    let _vacuum = db.execute(&format!("VACUUM {table}"));
+}
+"#;
+
+    let report = analyse_sql_fixture(body);
+    assert_eq!(
+        sql_dynamic_lines(&report),
+        (3..=18).collect::<Vec<_>>(),
+        "every supported dynamic-SQL family must remain visible; findings={:?}",
+        sql_dynamic_findings(&report)
+    );
+}
+
 #[test]
 pub(crate) fn sql_dynamic_query_keeps_unbounded_identifier_interpolation() {
     let _guard = analysis_lock();
@@ -183,6 +253,7 @@ pub fn identifier_interpolation(prefix: &str, schema: &str, table: &str) {
     );
 }
 
+/// Analyses one synthetic Rust source as a config-free project from a CLI user's perspective.
 fn analyse_sql_fixture(body: &str) -> AnalysisReport {
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), body);
@@ -198,6 +269,7 @@ fn analyse_sql_fixture(body: &str) -> AnalysisReport {
     .expect("analysis succeeds")
 }
 
+/// Returns only SQL dynamic-query findings so exact rule contracts remain easy to review.
 fn sql_dynamic_findings(report: &AnalysisReport) -> Vec<&Finding> {
     report
         .findings
@@ -206,6 +278,7 @@ fn sql_dynamic_findings(report: &AnalysisReport) -> Vec<&Finding> {
         .collect()
 }
 
+/// Returns SQL finding lines in report order; an empty list means every sample stayed quiet.
 fn sql_dynamic_lines(report: &AnalysisReport) -> Vec<usize> {
     sql_dynamic_findings(report)
         .into_iter()
