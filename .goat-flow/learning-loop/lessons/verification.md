@@ -266,6 +266,15 @@ dogfood returned zero findings. Check both the destination line count and the
 parent fan-out before adding a cohesive test/helper, then split and nest
 ownership before the full gate when either owner is already at its limit.
 
+**Updated 2026-07-14 (M14):** Three strict-config and metadata contracts pushed
+`src/tests/config_and_selectors/config.rs` from 559 to 640 lines. Formatting,
+Clippy, focused tests, and the full suite all passed, but a focused dogfood scan
+reported `size.file-length`. Moving the new contracts plus the existing legacy
+suppression scenario into the nested `secret_previews.rs` module keeps the
+config test owner below 600 lines and its parent below the fan-out threshold.
+Check the destination line count before adding even small contract-test groups;
+the full Rust suite does not exercise the analyzer's own source-shape rubric.
+
 ## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
 
 **Created:** 2026-05-23

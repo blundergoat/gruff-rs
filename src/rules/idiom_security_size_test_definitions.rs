@@ -275,7 +275,10 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
                 mitigation: "Add an `exclude:` entry for that path in `.gruff-rs.yaml` with a documented reason, or refactor the call into a helper that the rule's path-aware skip recognises (`tests/`, `fixtures/`).",
             },
         ],
-        related: &["security.insecure-rng-for-secrets", "sensitive-data.api-key"],
+        related: &[
+            "security.insecure-rng-for-secrets",
+            "sensitive-data.api-key-pattern",
+        ],
     ),
     rule_definition!(
         "security.insecure-rng-for-secrets",

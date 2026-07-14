@@ -5,49 +5,6 @@
 use super::*;
 
 #[test]
-pub(crate) fn registry_rejects_duplicate_rule_ids_and_sorts_definitions() {
-    let registry = rules::builtin_registry();
-    assert!(registry
-        .definitions()
-        .windows(2)
-        .all(|window| window[0].id < window[1].id));
-    assert!(registry.contains("security.process-command"));
-
-    let duplicate = registry.definitions()[0];
-    assert!(rules::RuleRegistry::new(vec![duplicate, duplicate]).is_err());
-}
-
-#[test]
-pub(crate) fn registry_reserves_custom_namespace() {
-    assert!(rules::builtin_registry()
-        .definitions()
-        .iter()
-        .all(|definition| !definition.id.starts_with("custom.")));
-
-    let definition = rules::RuleDefinition {
-        id: "custom.builtin",
-        name: "Reserved",
-        pillar: Pillar::Documentation,
-        tier: "v0.1",
-        kind: rules::RuleKind::Text,
-        default_severity: Severity::Advisory,
-        confidence: Confidence::High,
-        threshold: None,
-        options: &[],
-        default_enabled: true,
-        description: "Reserved namespace probe.",
-        false_positive_shapes: &[],
-        related_rules: &[],
-    };
-    let error = rules::RuleRegistry::new(vec![definition])
-        .expect_err("custom namespace reserved for config rules");
-    assert!(
-        error.contains("built-in rule id `custom.builtin` uses reserved custom namespace"),
-        "{error}"
-    );
-}
-
-#[test]
 pub(crate) fn config_rejects_unknown_root_keys_and_rule_ids() {
     let dir = tempdir().expect("tempdir");
     let options = default_test_options();
@@ -402,56 +359,6 @@ pub(crate) fn legacy_config_byte_identical_rule_blocks_remain_selector_neutral()
 
     assert_missing_rule(&report, "security.process-command");
     assert_has_rule(&report, "size.parameter-count");
-}
-
-/// Legacy `secretPreviews` aliases suppress exact matches without becoming report metadata.
-#[test]
-pub(crate) fn config_secret_previews_preserve_legacy_suppression_without_serializing_alias() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
-    let accepted_fixture = concat!("ghp_", "aaaaaaaaaaaaaaaaaaaaaa");
-    let unlisted_secret = concat!("ghp_", "bbbbbbbbbbbbbbbbbbbbbb");
-    let sample = format!(
-        r#"pub fn entry() {{
-    let accepted_fixture = "{accepted_fixture}";
-    let unlisted_secret = "{unlisted_secret}";
-    println!("{{accepted_fixture}}{{unlisted_secret}}");
-}}
-"#
-    );
-    fs::write(dir.path().join("sample.rs"), sample).expect("fixture write");
-    write_config(
-        dir.path(),
-        r#"
-allowlists:
-  secretPreviews:
-    - "ghp_...aaaa (redacted, 26 chars)"
-"#,
-    );
-
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from("sample.rs")],
-            no_config: false,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let api_key_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "sensitive-data.api-key-pattern")
-        .collect();
-
-    assert_eq!(
-        api_key_findings.len(),
-        1,
-        "expected only the unlisted API key preview to remain; findings={api_key_findings:?}"
-    );
-    assert_eq!(api_key_findings[0].metadata["preview"], "[redacted]");
 }
 
 #[test]

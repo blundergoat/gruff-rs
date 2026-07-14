@@ -96,6 +96,19 @@ accepted both hyphenated rationales and rejected the circular one. Treat a CLI
 proof after Clippy like a proof after tests or packaging: isolate its target or
 force a distinct non-incremental fingerprint, and verify an actual compile.
 
+**2026-07-14 M16 extension:** Focused and full tests compiled the current rule
+catalogue, but the following `cargo run --quiet -- list-rules` still exposed
+the retired relationship target `sensitive-data.api-key` instead of the live
+`src/rules/idiom_security_size_test_definitions.rs` target (search:
+`sensitive-data.api-key-pattern`). The normal binary predated both changed
+sources, and `target/debug/gruff-rs.d` still named only
+`target/package/gruff-rs-0.4.0/src/...` inputs. `CARGO_INCREMENTAL=0 cargo
+build` printed `Compiling gruff-rs`, advanced the executable timestamp, exposed
+the canonical target, and the complete 85-rule detail scan reported zero
+dangling links. A post-test CLI proof must therefore check both the marker and
+the executable freshness; a successful test harness alone does not refresh the
+normal command.
+
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 
 **Status:** active | **Created:** 2026-07-13 | **Evidence:** OBSERVED

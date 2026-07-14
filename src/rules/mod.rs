@@ -1,3 +1,7 @@
+//! Built-in rule metadata and the validated catalogue served to CLI users.
+//! The registry keeps configuration, analysis, rule detail, and renderers on
+//! one deterministic set of IDs whose public relationship links all resolve.
+
 use crate::{Confidence, Pillar, Severity};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -70,26 +74,49 @@ pub(crate) struct RuleDefinition {
 
 #[derive(Debug)]
 /// Sorted registry for built-in rule metadata.
+/// Config loading, analysis, and `list-rules` share this catalogue, so its IDs
+/// must be unique and every relationship must resolve before a scan begins.
 pub(crate) struct RuleRegistry {
     definitions: Vec<RuleDefinition>,
 }
 
 impl RuleRegistry {
-    /// Build a sorted rule registry and reject duplicate rule ids.
+    /// Build a sorted registry for scan and rule-detail consumers.
+    /// Reject IDs or relationships that the resulting catalogue cannot serve.
     pub(crate) fn new(mut definitions: Vec<RuleDefinition>) -> Result<Self, String> {
         definitions.sort_by(|left, right| left.id.cmp(right.id));
         let mut seen = BTreeSet::new();
+
+        // Every catalogue consumer needs stable, unique built-in IDs before lookup begins.
         for definition in &definitions {
+            // Config-defined rules own `custom.*`, so a built-in entry there is ambiguous.
             if definition.id.starts_with("custom.") {
                 return Err(format!(
                     "built-in rule id `{}` uses reserved custom namespace",
                     definition.id
                 ));
             }
+
+            // Duplicate IDs would make config and rule-detail lookup order-dependent.
             if !seen.insert(definition.id) {
                 return Err(format!("duplicate rule id `{}`", definition.id));
             }
         }
+
+        // Rule-detail links must resolve inside the complete catalogue shown to the user.
+        for definition in &definitions {
+            // Each declared relationship is validated independently for precise diagnostics.
+            for &related_rule in definition.related_rules {
+                // A missing target would send the user to a rule that the CLI cannot explain.
+                if !seen.contains(related_rule) {
+                    return Err(format!(
+                        "rule `{}` references unknown related rule `{related_rule}`",
+                        definition.id
+                    ));
+                }
+            }
+        }
+
         Ok(Self { definitions })
     }
 
@@ -128,7 +155,7 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
     match RuleRegistry::new(builtin_definitions()) {
         Ok(registry) => registry,
         Err(error) => {
-            // PANIC: duplicate built-in rule ids are programmer errors caught by tests.
+            // PANIC: catalogue defects are programmer errors, such as linking to a retired ID.
             panic!("invalid built-in rule definitions: {error}");
         }
     }
