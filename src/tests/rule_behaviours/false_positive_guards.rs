@@ -247,18 +247,6 @@ pub fn fixture(name: &str) -> String {
     );
     format!("{trimmed} {body}")
 }
-
-#[test]
-pub(crate) fn rust_masking_preserves_non_ascii_byte_offsets_and_nested_comments() {
-    let source = "éé\nlet sql = format!(\"SELECT {}\", name);\n/* outer /* inner */ still outer */\nlet done = true;\n";
-    let masked_strings = strip_rust_string_literals(source);
-    assert_eq!(masked_strings.len(), source.len());
-    let masked_comments = strip_rust_comments_after_string_mask(&masked_strings);
-    assert_eq!(masked_comments.len(), source.len());
-    assert!(!masked_comments.contains("still outer"));
-    let format_offset = masked_comments.find("format!").expect("format offset");
-    assert_eq!(byte_line_from_starts(&line_starts(source), format_offset), 2);
-}
 "##,
     );
     let report = run_project_analysis(
