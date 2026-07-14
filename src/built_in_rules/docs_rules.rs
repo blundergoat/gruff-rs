@@ -1,3 +1,7 @@
+//! Function documentation rules share one parser-attached outer-rustdoc source.
+//! Public API scans use the same normalized `///` or `/** */` text for presence,
+//! required sections, parameter descriptions, and return-value descriptions.
+
 use super::*;
 
 pub(crate) static UNSAFE_FN_SIGNATURE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -7,7 +11,10 @@ pub(crate) fn analyse_public_function_doc(
     block: &FunctionBlock,
     findings: &mut Vec<Finding>,
 ) {
-    if block.is_externally_public && !has_doc_comment_before(&block.body) {
+    let docs = function_doc_text(block);
+
+    // Public functions without supported attached rustdoc need an intent description.
+    if block.is_externally_public && !docs.is_present() {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {
                 rule_id: "docs.missing-public-doc",
@@ -23,7 +30,7 @@ pub(crate) fn analyse_public_function_doc(
             BlockFindingExtras {
                 confidence: Confidence::High,
                 remediation: Some(
-                    "Add a one-line `/// Description.` above the function. This rule wants content, not boilerplate - if your project policy is 'no comments', that policy is about avoiding comments that restate code, not about removing documentation. The description should answer 'what is this for, what does it return at the edge values, what must the caller satisfy'."
+                    "Add concise outer rustdoc above the function (`/// Description.` or `/** Description. */`). This rule wants content, not boilerplate - if your project policy is 'no comments', that policy is about avoiding comments that restate code, not about removing documentation. The description should answer 'what is this for, what does it return at the edge values, what must the caller satisfy'."
                         .to_string(),
                 ),
                 metadata: json!({}),
@@ -44,7 +51,7 @@ pub(crate) fn analyse_missing_errors_section(
     if !block.is_externally_public || !block.returns_result {
         return;
     }
-    let docs = doc_comment_text(&block.body);
+    let docs = function_doc_text(block);
     if docs.contains_section("Errors") || docs.has_error_contract_prose() {
         return;
     }
@@ -89,7 +96,7 @@ pub(crate) fn analyse_missing_panics_section(
     if !block_body_can_panic(&block.body) {
         return;
     }
-    let docs = doc_comment_text(&block.body);
+    let docs = function_doc_text(block);
     if docs.is_empty() || docs.contains_section("Panics") || docs.has_panic_contract_prose() {
         return;
     }
@@ -144,7 +151,7 @@ pub(crate) fn analyse_missing_safety_section(
     if !is_unsafe_fn {
         return;
     }
-    let docs = doc_comment_text(&block.body);
+    let docs = function_doc_text(block);
     if docs.contains_section("Safety") {
         return;
     }
@@ -185,7 +192,7 @@ pub(crate) fn analyse_missing_param_doc(
     if block.param_count == 0 {
         return;
     }
-    let docs = doc_comment_text(&block.body);
+    let docs = function_doc_text(block);
     if docs.is_empty() {
         return;
     }
@@ -253,7 +260,7 @@ pub(crate) fn analyse_missing_return_doc(
     if block.returns_result || !signature_has_return_type(&block.body) {
         return;
     }
-    let docs = doc_comment_text(&block.body);
+    let docs = function_doc_text(block);
     if docs.is_empty() || docs.has_returns_section() {
         return;
     }
@@ -288,31 +295,40 @@ fn is_documentable_block(block: &FunctionBlock) -> bool {
     block.is_externally_public && !block.is_test && !block.test_context
 }
 
-/// Returns the concatenated text of `///` and `//!` doc-comment lines that
-/// appear before the `fn ` keyword in `block_body`, with the marker bytes
-/// stripped. Used to look for rustdoc sections like `# Errors`.
-pub(crate) fn doc_comment_text(block_body: &str) -> DocCommentText {
-    let mut text = String::new();
-    for line in block_body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("///") {
-            text.push_str(trimmed.trim_start_matches("///").trim());
-            text.push('\n');
-        } else if trimmed.starts_with("//!") {
-            text.push_str(trimmed.trim_start_matches("//!").trim());
-            text.push('\n');
-        } else if trimmed.contains("fn ") {
-            break;
-        }
+/// Return the parser-attached function rustdoc used by every documentation rule.
+pub(crate) fn function_doc_text(block: &FunctionBlock) -> DocCommentText {
+    // Absence means the user supplied no supported outer comment for this function.
+    match &block.rustdoc {
+        // Attached rustdoc gives every function-doc rule the same normalized source text.
+        Some(rustdoc) => DocCommentText {
+            text: rustdoc.text.clone(),
+            source_line: Some(rustdoc.start_line),
+        },
+        // No supported comment keeps absence distinct from an intentionally empty doc comment.
+        None => DocCommentText {
+            text: String::new(),
+            source_line: None,
+        },
     }
-    DocCommentText(text)
 }
 
-pub(crate) struct DocCommentText(String);
+/// Normalized function rustdoc plus the source-presence fact used by rule consumers.
+/// Empty text means the user attached an empty doc comment; no source line means
+/// there was no supported outer comment and the missing-public-doc rule may fire.
+pub(crate) struct DocCommentText {
+    text: String,
+    source_line: Option<usize>,
+}
 
 impl DocCommentText {
+    /// Report whether the user attached a supported outer comment to the function.
+    pub(crate) fn is_present(&self) -> bool {
+        self.source_line.is_some()
+    }
+
+    /// Find a Markdown rustdoc heading required by an API-contract rule.
     pub(crate) fn contains_section(&self, heading: &str) -> bool {
-        self.0.lines().any(|line| {
+        self.text.lines().any(|line| {
             let trimmed = line.trim();
             let with_one = format!("# {heading}");
             let with_two = format!("## {heading}");
@@ -323,18 +339,23 @@ impl DocCommentText {
         })
     }
 
+    /// Report whether attached rustdoc contains no usable prose.
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.trim().is_empty()
+        self.text.trim().is_empty()
     }
 
+    /// Find a parameter name as a complete rustdoc word rather than a substring.
     pub(crate) fn has_identifier_mention(&self, name: &str) -> bool {
-        let lower = self.0.to_ascii_lowercase();
+        let lower = self.text.to_ascii_lowercase();
         let needle = name.to_ascii_lowercase();
         let bytes = lower.as_bytes();
         let pattern_len = needle.len();
         let mut index = 0usize;
+        // Each matching word is checked until the user's prose contains the full identifier.
         while let Some(found) = lower[index..].find(needle.as_str()) {
             let absolute = index + found;
+
+            // A complete identifier mention satisfies the parameter contract for the user.
             if is_word_boundary_match(bytes, absolute, pattern_len) {
                 return true;
             }
@@ -343,11 +364,13 @@ impl DocCommentText {
         false
     }
 
+    /// Accept an explicit Returns heading or concise equivalent contract prose.
     pub(crate) fn has_returns_section(&self) -> bool {
+        // An explicit heading is the clearest return-value contract for the user.
         if self.contains_section("Returns") {
             return true;
         }
-        let lower = self.0.to_ascii_lowercase();
+        let lower = self.text.to_ascii_lowercase();
         lower.contains("returns ")
             || lower.contains("returning ")
             || lower.contains("yields ")
@@ -355,8 +378,9 @@ impl DocCommentText {
             || lower.contains("provides ")
     }
 
+    /// Accept concise prose that explains when a Result-returning function fails.
     fn has_error_contract_prose(&self) -> bool {
-        let normalized = normalized_contract_text(&self.0);
+        let normalized = normalized_contract_text(&self.text);
         contains_any_phrase(
             &normalized,
             &[
@@ -375,8 +399,11 @@ impl DocCommentText {
         )
     }
 
+    /// Accept concise prose that identifies a panic trigger and reject denial-only text.
     fn has_panic_contract_prose(&self) -> bool {
-        let normalized = normalized_contract_text(&self.0);
+        let normalized = normalized_contract_text(&self.text);
+
+        // A no-panic statement does not document the real panic path found in the function.
         if contains_any_phrase(
             &normalized,
             &[
@@ -401,8 +428,9 @@ impl DocCommentText {
         )
     }
 
+    /// Accept concise single-parameter prose that still explains the caller's input contract.
     fn has_single_parameter_contract_prose(&self) -> bool {
-        let normalized = normalized_contract_text(&self.0);
+        let normalized = normalized_contract_text(&self.text);
         contains_any_phrase(
             &normalized,
             &[

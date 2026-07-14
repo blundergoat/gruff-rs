@@ -1,3 +1,7 @@
+//! Shared Rust predicates translate parsed syntax into facts used by built-in rules.
+//! Function-block construction and rule dispatch call these helpers after parsing,
+//! keeping visibility, attributes, and naming decisions consistent across findings.
+
 use super::*;
 
 pub(crate) fn is_public(visibility: &Visibility) -> bool {
@@ -28,13 +32,6 @@ pub(crate) fn has_ignore_without_reason(attrs: &[syn::Attribute]) -> bool {
                 _ => true,
             },
         })
-}
-
-pub(crate) fn has_doc_comment_before(block: &str) -> bool {
-    block
-        .lines()
-        .take_while(|line| !line.contains("fn "))
-        .any(|line| line.trim_start().starts_with("///"))
 }
 
 pub(crate) fn is_generic_name(name: &str) -> bool {

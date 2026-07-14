@@ -1,3 +1,7 @@
+//! Gruff's CLI entry point assembles commands, analysis services, and report output.
+//! Users reach this crate through a subcommand, which routes source discovery and
+//! rule findings into deterministic renderers and process-exit classification.
+
 use chrono::Utc;
 use clap::builder::styling;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
@@ -126,29 +130,6 @@ use source::{
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff-rs.yaml"];
-
-#[derive(Clone)]
-struct FunctionBlock {
-    name: String,
-    param_count: usize,
-    start_line: usize,
-    line_count: usize,
-    body: String,
-    is_externally_public: bool,
-    is_test: bool,
-    test_context: bool,
-    is_async: bool,
-    returns_bool: bool,
-    returns_result: bool,
-    ignore_without_reason: bool,
-    body_is_declarative_literal: bool,
-}
-
-impl FunctionBlock {
-    pub(crate) fn is_test_context(&self) -> bool {
-        self.is_test || self.test_context
-    }
-}
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -571,6 +552,7 @@ pub(crate) fn analyse_source_with_artifacts(
 }
 
 mod built_in_rules;
+pub(crate) use built_in_rules::FunctionBlock;
 
 mod custom_rules;
 

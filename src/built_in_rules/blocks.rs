@@ -1,3 +1,7 @@
+//! Block rules turn each parsed function into size, complexity, documentation,
+//! behavior, performance, and test findings. Users reach this layer after a
+//! Rust source parses successfully and before findings enter the shared report.
+
 use super::*;
 
 pub(crate) fn analyse_blocks(
@@ -98,6 +102,7 @@ fn analyse_block_behavior_rules(
     }
 }
 
+/// Report declaration/body size and parameter-count findings for one function.
 pub(crate) fn analyse_block_size(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -106,26 +111,28 @@ pub(crate) fn analyse_block_size(
 ) {
     let rule_id = "size.function-length";
     let threshold = config.threshold(rule_id, 50.0) as usize;
-    if block.line_count > threshold && !block.body_is_declarative_literal {
+    // Only executable source above the threshold asks the user to split a function.
+    if block.executable_line_count > threshold && !block.body_is_declarative_literal {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!(
                     "Function `{}` has {} lines, above the threshold of {threshold}.",
-                    block.name, block.line_count
+                    block.name, block.executable_line_count
                 ),
                 file,
                 block,
                 severity: config.severity(rule_id, Severity::Warning),
                 pillar: Pillar::Size,
             },
-            threshold_metadata(block.line_count, threshold, "lines"),
+            threshold_metadata(block.executable_line_count, threshold, "lines"),
         ));
     }
 
     let params = block.param_count;
     let rule_id = "size.parameter-count";
     let threshold = config.threshold(rule_id, 7.0) as usize;
+    // Functions over the parameter limit ask the user for a clearer input contract.
     if params > threshold {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {

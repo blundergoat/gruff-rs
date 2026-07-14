@@ -554,7 +554,7 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         FUNCTION_LENGTH_THRESHOLD,
-        "Flags functions over the configured line-count threshold.",
+        "Flags functions whose declaration and body exceed the line threshold, excluding attached rustdoc and attributes.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "Functions whose body is a single declarative literal (large match table, builder chain).",

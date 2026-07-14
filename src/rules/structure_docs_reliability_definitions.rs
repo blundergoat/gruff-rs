@@ -1,3 +1,7 @@
+//! Registry definitions for structure, documentation, and reliability rules.
+//! The catalogue supplies stable IDs, descriptions, thresholds, and guidance to
+//! rule listing, generated docs, and findings shown to CLI and action users.
+
 use super::*;
 
 pub(crate) const ARCHITECTURE_RULES: &[RuleDefinition] = &[
@@ -186,7 +190,7 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::Medium,
         None,
-        "Flags public Rust API items without doc comments.",
+        "Flags public Rust API items without attached outer `///` or `/** */` rustdoc.",
     ),
     rule_definition!(
         "docs.missing-readme",

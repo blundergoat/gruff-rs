@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-07-13
+last_reviewed: 2026-07-14
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -193,6 +193,17 @@ Concrete instance from 2026-05-24: adding `network_security_rules.rs` to `rust_o
 The non-obvious failure mode is treating the wrapper organisation as fixed. The split is: `rust_block_rules` for per-`FunctionBlock` analyzers, `rust_other_rules` for per-file / per-line analyzers. When fan-out tension appears, look for modules in the wrong wrapper before reaching for the threshold dial or for file-merging.
 
 2026-06-07 extension: the rule also fires on the top-level `src/built_in_rules/mod.rs` itself, not only the two wrappers — it sat at exactly 8 direct `mod` declarations. Extracting a cohesive concern out of an over-long top-level module to clear `size.file-length` (here, splitting the `sensitive-data.pii-test-fixture` rule out of `secret_rules.rs`) tripped fan-out when the extraction was added as a 9th top-level sibling in `mod.rs`. Fix: nest the new sub-file under its semantic owner via `#[path]` instead of adding a top-level sibling — `secret_rules.rs` mounts it with `#[path = "pii_rules.rs"] mod pii_rules;` and re-exports the entry point (search: `pub(crate) use pii_rules::analyse_pii_test_fixture;`), mirroring how `behavior_rules.rs` nests `tls_sql` (search: `#[path = "behavior_rules/tls_sql.rs"]`). The file stays flat in the directory; only the module tree gains a level. Re-classification therefore also covers "nest under the owning module", not just "move between the two wrappers".
+
+**2026-07-14 extension:** re-owning a shared type can preserve module fan-out
+while breaking the crate-root name inherited by sibling modules through
+`use super::*`. Moving `FunctionBlock` into
+`src/built_in_rules/function_block_metrics.rs` (search: `pub(crate) struct FunctionBlock`)
+made the existing unqualified consumers in `src/analysis.rs`,
+`src/changed_region.rs`, and `src/diff.rs` fail to compile. Keep an intentional
+crate-root bridge in `src/main.rs` (search: `pub(crate) use built_in_rules::FunctionBlock;`)
+until every consumer is explicitly migrated.
+Before moving any root-owned shared type, search for unqualified consumers and
+run a compiling focused test immediately after the move.
 
 **How to apply:**
 

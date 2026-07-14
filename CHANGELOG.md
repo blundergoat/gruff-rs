@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Block rustdoc and function-length precision.** Function documentation rules now accept attached outer `/** */` comments alongside `///`, while `size.function-length` excludes attached rustdoc and attributes without moving existing finding identities.
 - **SQL-shaped dynamic-query warnings.** Formatted prose and non-SQL DSL text with isolated SQL words now stay quiet, while direct and one-hop `query`, `execute`, and `prepare` values retain supported statement and placeholder coverage.
 - **Narrower lock-across-await signal.** Buffered I/O and domain `.read()`/`.write()` results no longer masquerade as guards; zero-argument read/write acquisitions require same-function `Mutex`/`RwLock` evidence while explicit `.lock()` and supported guard-preserving suffixes remain covered.
 - **Zero-payload sensitive metadata markers.** JSON, SARIF, and hook findings now serialize detector-owned markers instead of partial secret or PHI previews while legacy `allowlists.secretPreviews` entries still suppress exact matches; structured fixture-PII message masking and its stable-identity migration are explicitly deferred to the coordinated family JSON break.
