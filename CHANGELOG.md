@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Risk-based network-security test scans.** Executable Rust tests now retain bind-all and SSRF findings alongside deserialization, XXE, and template/XSS checks; scoped mitigations replace blanket test-path suppression, and discard bindings no longer create false template findings.
 - **Punctuation-stable SAFETY rationales.** Meaningful comments such as `SAFETY: same-thread access` no longer trigger `docs.weak-safety-rationale`, while empty, generic, and circular assurances remain flagged.
 - **Block rustdoc and function-length precision.** Function documentation rules now accept attached outer `/** */` comments alongside `///`, while `size.function-length` excludes attached rustdoc and attributes without moving existing finding identities.
 - **SQL-shaped dynamic-query warnings.** Formatted prose and non-SQL DSL text with isolated SQL words now stay quiet, while direct and one-hop `query`, `execute`, and `prepare` values retain supported statement and placeholder coverage.

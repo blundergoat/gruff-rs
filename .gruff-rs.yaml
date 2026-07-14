@@ -221,7 +221,7 @@ rules:
   # Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.
   security.github-actions-unpinned-action:
     enabled: true
-  # Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.
+  # Flags all-interface listener literals in executable Rust, including tests and CI helpers.
   security.hardcoded-bind-all-interfaces:
     enabled: true
   # Flags non-cryptographic rand calls inside secret-like generation functions.

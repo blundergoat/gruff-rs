@@ -1,6 +1,6 @@
 ---
 category: security-analysis
-last_reviewed: 2026-07-13
+last_reviewed: 2026-07-14
 ---
 
 ## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
@@ -42,7 +42,9 @@ The non-obvious failure mode is treating "process object constructed" as equival
 
 The non-obvious failure mode is that candidate taint rules can create findings from detector-control booleans, not from user data. This is different from literal self-fire: calibration fixtures still pass, but dogfood reports the analyzer source as a security finding.
 
-Calibrate taint propagation so predicate/control bindings (`has_`, `is_`, `should_`, `matches_`, etc.) do not become tainted sink arguments, and keep source scans in the verification loop after every taint-style rule. The current guard lives in `src/built_in_rules/network_security_rules.rs` (search: `fn binding_name_is_predicate`). The same verification pass also caught `serde_yaml::from_str` in analyzer config parsing; local config/YAML parsing should stay silent unless the source evidence is actually request/env-derived.
+A second form appeared when an escaped template test used `let _ = Html(...)`. The local-binding parser retained Rust's discard target as a tainted name; `_` then matched itself on the sink line and produced a finding even though the real input had been escaped. A wildcard is not a variable and cannot carry data to a later sink, while names such as `_response` are real bindings and must remain traceable.
+
+Calibrate taint propagation so predicate/control bindings (`has_`, `is_`, `should_`, `matches_`, etc.) and the exact discard target `_` do not become tainted sink arguments, and keep source scans in the verification loop after every taint-style rule. The guards live in `src/built_in_rules/network_security_rules.rs` (search: `fn binding_name_is_predicate` and `fn let_binding`). Regression coverage lives in `src/tests/rule_behaviours/network_security_test_context_guards.rs` (search: `network_security_test_context_policy_matrix`). The original verification pass also caught `serde_yaml::from_str` in analyzer config parsing; local config/YAML parsing should stay silent unless the source evidence is actually request/env-derived.
 
 ## Footgun: A Rule Exemption That Counts Only Named Placeholders Hides Positional Injection
 

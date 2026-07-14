@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "network_security_test_context_guards.rs"]
+mod network_security_test_context_guards;
+
 /// Regression guard: `waste.unnecessary-clone-candidate` must skip clones
 /// whose result is immediately consumed by ownership-taking calls
 /// (`unwrap_or_else`, `unwrap_or`, `unwrap_or_default`, `into`, `into_iter`,
