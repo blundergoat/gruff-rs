@@ -55,6 +55,7 @@ Usage: scripts/preflight-checks.sh [options]
 Runs the local gruff-rs preflight suite:
   - bash syntax check for tracked and untracked shell scripts
   - shellcheck for shell scripts when shellcheck is installed
+  - post-turn safety hook exit-contract self-test
   - cargo fmt, clippy, and tests
   - crate version consistency between Cargo.toml and Cargo.lock
   - RustSec dependency audit, auto-installing cargo-audit when missing
@@ -549,6 +550,11 @@ check_shellcheck() {
   fi
 
   shellcheck "${shell_files[@]}"
+}
+
+# Exercise the Stop-hook fail-closed contract in isolated temporary repositories.
+post_turn_safety_self_test() {
+  bash "$REPO_ROOT/.goat-flow/hooks/post-turn-safety/post-turn-safety-self-test.sh"
 }
 
 # Require Cargo before any Rust, package, or analyzer check starts for the user.
@@ -1551,6 +1557,7 @@ run_preflight_suite() {
 
   run_preflight_check "shell syntax" check_shell_syntax
   run_preflight_check "shellcheck" check_shellcheck
+  run_preflight_check "post-turn safety" post_turn_safety_self_test
   run_preflight_check "version metadata" version_metadata_check
   run_preflight_check "dependency audit" dependency_audit_check
   run_preflight_check "action metadata" action_metadata_validation

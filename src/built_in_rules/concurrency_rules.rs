@@ -179,6 +179,11 @@ fn acquisition_has_lock_evidence(method: &str, receiver: &str, function_source: 
 /// Finds a receiver type containing `Mutex`/`RwLock` or a local lock constructor.
 /// This same-function text check intentionally does not resolve aliases or struct fields.
 fn receiver_has_local_lock_evidence(function_source: &str, receiver: &str) -> bool {
+    // Neither receiver-specific pattern can match without a lock type token.
+    if !function_source.contains("Mutex") && !function_source.contains("RwLock") {
+        return false;
+    }
+
     let escaped_receiver = regex::escape(receiver);
     let typed_receiver = Regex::new(&format!(
         r"(?s)\b{escaped_receiver}\s*:\s*[^=;{{}}]*\b(?:Mutex|RwLock)\b"

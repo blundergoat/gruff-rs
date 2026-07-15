@@ -576,12 +576,12 @@ main() {
   root="$(repo_root)"
   if [ -z "$root" ]; then
     printf 'post-turn-safety: git repository root unavailable; cannot scan changed content.\n' >&2
-    return 1
+    return 2
   fi
 
   cd "$root" || {
     printf 'post-turn-safety: cannot enter repository root %s.\n' "$root" >&2
-    return 1
+    return 2
   }
 
   scan_tracked_changes "$root"
