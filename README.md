@@ -295,7 +295,7 @@ Use `./.cargo-tools/bin/gruff-rs list-rules --format json --no-config` for the e
 
 <!-- gruff-docs:begin rule-id-examples -->
 
-Generated default config keeps `size.file-length` enabled for Rust source over 600 lines and marks `waste.unnecessary-clone-candidate` as opt-in, because a clone can be the clearer ownership boundary. `test-quality.long-test` counts from the first assertion onward so fixture setup does not dilute the test-signal check.
+Generated default config keeps `size.file-length` enabled for Rust source over 1000 substantive lines and marks `waste.unnecessary-clone-candidate` as opt-in, because a clone can be the clearer ownership boundary. `test-quality.long-test` counts from the first assertion onward so fixture setup does not dilute the test-signal check.
 
 <!-- gruff-docs:end rule-id-examples -->
 

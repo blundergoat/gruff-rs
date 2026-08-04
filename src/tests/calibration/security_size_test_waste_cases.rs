@@ -530,10 +530,13 @@ pub fn entry() {
         case(
             "size.file-length",
             Box::new(|root| {
-                let mut body = String::from("/// Probe.\npub fn entry() {}\n");
-                for index in 0..620 {
-                    body.push_str(&format!("// filler line {index}\n"));
+                // Substantive statements, not comment filler: file-length counts non-blank,
+                // non-comment lines only, and the strict fixture must clear the 1000 bar.
+                let mut body = String::from("/// Probe.\npub fn entry() {\n");
+                for index in 0..1005 {
+                    body.push_str(&format!("    let _ = {index};\n"));
                 }
+                body.push_str("}\n");
                 baseline_with_lib(root, &body);
             }),
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),

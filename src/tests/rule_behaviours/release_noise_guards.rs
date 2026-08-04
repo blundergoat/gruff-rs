@@ -333,6 +333,117 @@ pub(crate) fn github_actions_invalid_utf8_uses_existing_read_error_path() {
 }
 
 #[test]
+pub(crate) fn file_length_counts_comment_markers_inside_strings_as_code() {
+    // A `/*` inside a string literal must not start comment state: every generated line below is
+    // code, so the file crosses the 1000 substantive bar even though each line embeds a marker.
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let mut source = String::from("/// Probe.\npub fn entry() {\n");
+    for index in 0..1005 {
+        source.push_str(&format!("    let _ = \"/* marker {index} */\";\n"));
+    }
+    source.push_str("}\n");
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "size.file-length"),
+        "string-embedded comment markers must not hide substantive lines; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.file_path.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+pub(crate) fn file_length_ignores_comments_after_a_quote_char_literal() {
+    // A `'"'` char literal must not open string state in the comment projection: the comment
+    // padding after it stays free, so this tiny file never reaches the substantive bar.
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let mut source =
+        String::from("/// Probe.\npub fn entry() -> char {\n    let quote = '\"';\n    quote\n}\n");
+    for index in 0..1500 {
+        source.push_str(&format!("// documentation filler {index}\n"));
+    }
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "size.file-length"),
+        "comments after a quote char literal must stay free; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.file_path.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+pub(crate) fn file_length_leaves_block_comment_padding_free() {
+    // The same file shape padded with a nested block comment stays under the bar: documentation
+    // is free, so only the handful of code lines count.
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let mut source = String::from("/// Probe.\npub fn entry() {}\n/*\n");
+    for index in 0..1500 {
+        source.push_str(&format!("documentation line {index}\n"));
+    }
+    source.push_str("*/\n");
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "size.file-length"),
+        "block-comment padding must stay free under substantive counting; findings={:?}",
+        report
+            .findings
+            .iter()
+            .map(|finding| (&finding.rule_id, finding.file_path.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 pub(crate) fn file_length_skips_markdown_shell_and_agent_hooks_not_source() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -340,16 +451,19 @@ pub(crate) fn file_length_skips_markdown_shell_and_agent_hooks_not_source() {
     fs::create_dir_all(dir.path().join(".codex/hooks")).expect("hook dir");
     fs::create_dir_all(dir.path().join("scripts")).expect("scripts dir");
 
+    // The source fixture needs substantive statements: file-length counts non-blank,
+    // non-comment lines only, and the exempt shapes stay oversized on raw length.
     let mut markdown = String::from("# Review\n");
     let mut hook = String::from("#!/usr/bin/env bash\n");
     let mut script = String::from("#!/usr/bin/env bash\n");
-    let mut source = String::from("/// Long source fixture.\npub fn long_source() {}\n");
-    for index in 0..620 {
+    let mut source = String::from("/// Long source fixture.\npub fn long_source() {\n");
+    for index in 0..1005 {
         markdown.push_str(&format!("review line {index}\n"));
-        hook.push_str(&format!("# hook line {index}\n"));
-        script.push_str(&format!("# script line {index}\n"));
-        source.push_str(&format!("// source line {index}\n"));
+        hook.push_str(&format!("echo hook line {index}\n"));
+        script.push_str(&format!("echo script line {index}\n"));
+        source.push_str(&format!("    let _ = {index};\n"));
     }
+    source.push_str("}\n");
     fs::write(dir.path().join("REVIEW_improvements.md"), markdown).expect("review write");
     fs::write(dir.path().join(".codex/hooks/deny-dangerous.sh"), hook).expect("hook write");
     fs::write(dir.path().join("scripts/long_script.sh"), script).expect("script write");
