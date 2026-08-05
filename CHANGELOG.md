@@ -3,26 +3,27 @@
 ## Unreleased
 
 
-## v0.5.0 - 2026-08-05
+## v0.5.0 - 2026-08-06
 
+0.5.0 is a precision, report-safety, and supply-chain release. Size and security rules retune around substantive code, reports carry markers instead of secret or PHI payloads, and the action moves to `argv` with a pinned, verified install.
 
-- **file-length: 1000 substantive lines at error (family ratification, 2026-08-05).** Blank and comment-only lines are free via the string- and raw-string-aware comment projection (nested block comments tracked; a comment marker inside a string stays code, and a quote char literal cannot open phantom string state), replacing the Detekt-matched 600-line warning; `--fail-on` consumers see exit-code changes.
-- **Risk-based network-security test scans.** Executable Rust tests now retain bind-all and SSRF findings alongside deserialization, XXE, and template/XSS checks; scoped mitigations replace blanket test-path suppression, and discard bindings no longer create false template findings.
-- **Punctuation-stable SAFETY rationales.** Meaningful comments such as `SAFETY: same-thread access` no longer trigger `docs.weak-safety-rationale`, while empty, generic, and circular assurances remain flagged.
-- **Block rustdoc and function-length precision.** Function documentation rules now accept attached outer `/** */` comments alongside `///`, while `size.function-length` excludes attached rustdoc and attributes without moving existing finding identities.
-- **SQL-shaped dynamic-query warnings.** Formatted prose and non-SQL DSL text with isolated SQL words now stay quiet, while direct and one-hop `query`, `execute`, and `prepare` values retain supported statement and placeholder coverage.
-- **Narrower lock-across-await signal.** Buffered I/O and domain `.read()`/`.write()` results no longer masquerade as guards; zero-argument read/write acquisitions require same-function `Mutex`/`RwLock` evidence while explicit `.lock()` and supported guard-preserving suffixes remain covered.
-- **Zero-payload sensitive metadata markers.** JSON, SARIF, and hook findings now serialize detector-owned markers instead of partial secret or PHI previews while legacy `allowlists.secretPreviews` entries still suppress exact matches; structured fixture-PII message masking and its stable-identity migration are explicitly deferred to the coordinated family JSON break.
-- **Accurate secret-preview suppression guidance.** High-entropy false-positive mitigations now name the accepted `allowlists.secretPreviews` key and explain that reviewed legacy aliases suppress exact findings; the undocumented `secret_previews` spelling remains rejected.
-- **Validated rule relationships.** Rule registries now reject related-rule links that do not resolve, and `security.process-command` links to the shipped `sensitive-data.api-key-pattern` rule in detail output.
-- **Exact documentation drift checks.** Preflight now derives built-in rule and pillar counts plus release examples from config-independent catalogue and Cargo metadata, rejects stale anchors and phantom documented rules, and names the exact value and file to update.
-- **Inert Markdown finding fields.** Markdown reports now use delimiter-safe code spans for rule IDs and file paths, escape finding messages as plain text, and show CR/LF as visible text so untrusted values cannot inject headings, lists, tables, links, raw HTML, or code fences; GitHub workflow-command rendering remains a separate unchanged protocol.
-- **Visible accepted-abbreviation contract.** `gruff-rs init` now explains that `allowlists.acceptedAbbreviations` controls short-name acceptance, replaces the built-in list, and should be extended by appending project vocabulary to the visible 16-entry seed.
-- **Structured composite-action arguments.** The GitHub Action now accepts newline-delimited `argv`, rejects legacy `args` fail-closed, and contains working/output paths within the workspace.
-- **Exact, verified composite-action install.** The action now requires an exact binary version, downloads from the fixed project release origin, verifies the matching SHA-256 sidecar and archive members, and installs only the verified binary from a private runner directory; mutable `cargo-binstall@main` and `latest` paths are removed.
-- **Verified five-platform release candidates.** A non-publishing workflow now binds the source commit and Cargo package to Linux, macOS, and Windows archives, rejects incomplete or mismatched asset sets, and reuses those gates for serialized crate-first, draft-first tag publication.
-- **Pinned, least-privilege release execution.** CI and release workflows now use full commit SHAs for third-party actions, exact Rust/Cargo-tool versions, checksum-verified actionlint downloads, read-only defaults, and write access only for final GitHub publication; a contract test rejects moving refs, floating installs, or permission drift.
-- **Explicit composite-action security coverage.** Directly supplied `action.yml` and `action.yaml` files now receive event-interpolation, remote-shell, and full-SHA dependency checks, while workflow-only trigger and permission rules remain limited to workflows and ordinary scans retain project ignore policy. Broad-permission findings now distinguish workflow-level scoped writes and `write-all` from bounded job-scoped mappings.
+- **file-length: 1000 substantive lines at error (family ratification).** Blank and comment-only lines are free, replacing the 600-line warning.
+- **Zero-payload sensitive metadata markers.** JSON, SARIF, and hook findings serialize detector-owned markers instead of secret or PHI previews.
+- **Narrower lock-across-await signal.** I/O and domain `.read()`/`.write()` no longer read as guards; zero-arg calls need local lock evidence.
+- **SQL-shaped dynamic-query warnings.** Prose and non-SQL DSL text with isolated SQL words stay quiet; `query`/`execute` coverage remains.
+- **Risk-based network-security test scans.** Executable Rust tests keep bind-all and SSRF findings; scoped mitigations replace blanket suppression.
+- **Block rustdoc and function-length precision.** Doc rules accept outer `/** */` comments; `size.function-length` excludes rustdoc and attributes.
+- **Structured composite-action arguments.** The action accepts newline-delimited `argv`, rejects legacy `args`, and contains paths in the workspace.
+- **Explicit composite-action security coverage.** Supplied `action.yml` files now get event-interpolation, remote-shell, and full-SHA checks.
+- **Inert Markdown finding fields.** Rule IDs and paths use safe code spans and messages escape as text, so untrusted values cannot inject markup.
+- **Punctuation-stable SAFETY rationales.** Comments such as `SAFETY: same-thread access` no longer trigger `docs.weak-safety-rationale`.
+- **Exact, verified composite-action install.** The action pins an exact binary version, verifies the SHA-256 sidecar and archive members.
+- **Verified five-platform release candidates.** A non-publishing workflow binds commit and package to Linux, macOS, and Windows archives.
+- **Pinned, least-privilege release execution.** Workflows pin full SHAs and exact tool versions, and grant write only for final publication.
+- **Accurate secret-preview suppression guidance.** Mitigations name the accepted `allowlists.secretPreviews` key; `secret_previews` stays rejected.
+- **Visible accepted-abbreviation contract.** `gruff-rs init` explains that `allowlists.acceptedAbbreviations` replaces the built-in list.
+- **Validated rule relationships.** Registries reject related-rule links that do not resolve, and `security.process-command` links to a shipped rule.
+- **Exact documentation drift checks.** Preflight derives rule and pillar counts plus release examples from the catalogue and Cargo metadata.
 
 ## v0.4.0 - 2026-06-14
 
