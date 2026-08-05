@@ -151,7 +151,7 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("threshold and severity accepted");
-    assert_eq!(config.threshold("complexity.cognitive", 15.0), 20.0);
+    assert_eq!(config.threshold("complexity.cognitive"), 20.0);
     assert_eq!(
         config.severity("complexity.cognitive", Severity::Warning),
         Severity::Error

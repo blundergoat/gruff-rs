@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+
+## v0.5.0 - 2026-08-05
+
+
 - **file-length: 1000 substantive lines at error (family ratification, 2026-08-05).** Blank and comment-only lines are free via the string- and raw-string-aware comment projection (nested block comments tracked; a comment marker inside a string stays code, and a quote char literal cannot open phantom string state), replacing the Detekt-matched 600-line warning; `--fail-on` consumers see exit-code changes.
 - **Risk-based network-security test scans.** Executable Rust tests now retain bind-all and SSRF findings alongside deserialization, XXE, and template/XSS checks; scoped mitigations replace blanket test-path suppression, and discard bindings no longer create false template findings.
 - **Punctuation-stable SAFETY rationales.** Meaningful comments such as `SAFETY: same-thread access` no longer trigger `docs.weak-safety-rationale`, while empty, generic, and circular assurances remain flagged.

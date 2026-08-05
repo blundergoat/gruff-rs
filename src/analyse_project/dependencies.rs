@@ -200,7 +200,7 @@ pub(crate) fn analyse_lockfile_duplicates(
     if !config.is_rule_enabled(rule_id) {
         return;
     }
-    let allowed_versions = config.threshold(rule_id, 2.0) as usize;
+    let allowed_versions = config.threshold(rule_id) as usize;
     let by_name = group_locked_packages_by_name(lockfile);
     for (name, packages) in by_name {
         let versions: Vec<&str> = packages
@@ -262,7 +262,7 @@ fn duplicate_locked_version_finding(
         ),
         file_path: file_path.to_string(),
         line: Some(summary.first_line),
-        severity: config.severity(rule_id, Severity::Advisory),
+        severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
         pillar: Pillar::Security,
         confidence: Confidence::High,
         symbol: Some(summary.name.to_string()),

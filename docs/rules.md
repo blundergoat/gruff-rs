@@ -6,7 +6,7 @@
 
 | Pillar | Current scope |
 | --- | --- |
-| Size | File length, function length, and parameter-count thresholds. Function length counts the declaration through the closing brace, excluding attached rustdoc and attributes. File-length stays default-on for Rust source over 600 lines, while dependency lockfiles, Markdown docs, Codex/Claude hook scripts, declarative rule-definition tables, and calibration case tables are skipped because those surfaces are governed by different review contracts. |
+| Size | File length, function length, and parameter-count thresholds. Function length counts the declaration through the closing brace, excluding attached rustdoc and attributes. File-length stays default-on for Rust source over 1000 substantive lines, while dependency lockfiles, Markdown docs, Codex/Claude hook scripts, declarative rule-definition tables, and calibration case tables are skipped because those surfaces are governed by different review contracts. |
 | Complexity | Cyclomatic complexity, cognitive complexity, and nesting depth. |
 | Dead code | Private functions with no same-file call sites, unreachable statements, plus project-level private function, type, trait, const, static, struct, enum, and type-alias candidates whose names are not referenced elsewhere in discovered Rust sources when the run covers every discoverable Rust source under the selected project root. Partial-context path or diff runs suppress the project-level candidate rule and emit a diagnostic. |
 | Maintainability | Unwrap/expect, opt-in clone candidates, production panic/placeholder hazards, public API unwraps, narrow async/concurrency hazards, and loop-scoped allocation hot spots. |

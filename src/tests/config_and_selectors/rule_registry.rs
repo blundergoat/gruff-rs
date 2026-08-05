@@ -42,6 +42,25 @@ pub(crate) fn registry_rejects_duplicate_rule_ids_and_sorts_definitions() {
     assert!(rules::RuleRegistry::new(vec![duplicate, duplicate]).is_err());
 }
 
+/// Pin the ratified `size.file-length` bar. The catalogue is the only place this
+/// value lives, so an accidental edit here silently moves every scan's gate.
+#[test]
+pub(crate) fn file_length_keeps_ratified_substantive_line_bar() {
+    let registry = rules::builtin_registry();
+    let definition = registry
+        .get("size.file-length")
+        .expect("size.file-length ships in the catalogue");
+
+    assert_eq!(
+        definition
+            .threshold
+            .expect("size.file-length declares a threshold")
+            .default,
+        1000.0
+    );
+    assert_eq!(definition.default_severity, Severity::Error);
+}
+
 /// Keep the built-in catalogue out of the namespace reserved for user config.
 #[test]
 pub(crate) fn registry_reserves_custom_namespace() {

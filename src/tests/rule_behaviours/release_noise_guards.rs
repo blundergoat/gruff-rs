@@ -443,6 +443,52 @@ pub(crate) fn file_length_leaves_block_comment_padding_free() {
     );
 }
 
+/// Pin the no-config file-length gate end to end. The rule reads its bar from the
+/// catalogue, so this fails if a call site ever hardcodes a threshold or severity
+/// again and a `--no-config` scan stops matching what `list-rules` advertises.
+#[test]
+pub(crate) fn file_length_no_config_gate_matches_ratified_bar() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+
+    let mut under = String::from("/// Under the bar.\npub fn under() {\n");
+    for index in 0..900 {
+        under.push_str(&format!("    let _ = {index};\n"));
+    }
+    under.push_str("}\n");
+    let mut over = String::from("/// Over the bar.\npub fn over() {\n");
+    for index in 0..1005 {
+        over.push_str(&format!("    let _ = {index};\n"));
+    }
+    over.push_str("}\n");
+    fs::write(dir.path().join("src/under_bar.rs"), under).expect("under write");
+    fs::write(dir.path().join("src/over_bar.rs"), over).expect("over write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let file_length: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "size.file-length")
+        .map(|finding| (finding.file_path.as_str(), finding.severity))
+        .collect();
+    assert_eq!(
+        file_length,
+        vec![("src/over_bar.rs", Severity::Error)],
+        "only the file past the ratified bar should flag, at error severity",
+    );
+}
+
 #[test]
 pub(crate) fn file_length_skips_markdown_shell_and_agent_hooks_not_source() {
     let _guard = analysis_lock();

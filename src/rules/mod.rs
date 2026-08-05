@@ -171,6 +171,32 @@ pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
     REGISTRY.get_or_init(builtin_registry)
 }
 
+/// Catalogue default threshold for a configurable rule. Rule code reads this
+/// instead of repeating the number, because `list-rules` and the config that
+/// `init` generates render the catalogue: a second literal can disagree with the
+/// shipped default and silently change what a scan reports.
+pub(crate) fn builtin_threshold(rule_id: &str) -> f64 {
+    match builtin_registry_cached()
+        .get(rule_id)
+        .and_then(|definition| definition.threshold)
+    {
+        Some(threshold) => threshold.default,
+        // PANIC: a rule that reads a threshold but declares none is a catalogue
+        // defect, the same programmer-error class as an unresolvable related ID.
+        None => panic!("built-in rule `{rule_id}` reads a threshold it does not declare"),
+    }
+}
+
+/// Catalogue default severity for a configurable rule, kept single-sourced for
+/// the same reason as [`builtin_threshold`].
+pub(crate) fn builtin_severity(rule_id: &str) -> Severity {
+    match builtin_registry_cached().get(rule_id) {
+        Some(definition) => definition.default_severity,
+        // PANIC: rule code naming an ID the catalogue does not ship is a defect.
+        None => panic!("built-in rule `{rule_id}` is missing from the catalogue"),
+    }
+}
+
 const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));
 const COMPLEXITY_CYCLOMATIC_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(10.0));
 const COMPLEXITY_NESTING_DEPTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
@@ -180,7 +206,7 @@ const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(12.0));
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(2.0));
-const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(600.0));
+const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(1000.0));
 const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(50.0));
 const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(7.0));
 const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(120.0));

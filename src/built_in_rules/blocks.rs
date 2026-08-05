@@ -110,7 +110,7 @@ pub(crate) fn analyse_block_size(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "size.function-length";
-    let threshold = config.threshold(rule_id, 50.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     // Only executable source above the threshold asks the user to split a function.
     if block.executable_line_count > threshold && !block.body_is_declarative_literal {
         findings.push(block_finding_with_metadata(
@@ -122,7 +122,7 @@ pub(crate) fn analyse_block_size(
                 ),
                 file,
                 block,
-                severity: config.severity(rule_id, Severity::Warning),
+                severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::Size,
             },
             threshold_metadata(block.executable_line_count, threshold, "lines"),
@@ -131,7 +131,7 @@ pub(crate) fn analyse_block_size(
 
     let params = block.param_count;
     let rule_id = "size.parameter-count";
-    let threshold = config.threshold(rule_id, 7.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     // Functions over the parameter limit ask the user for a clearer input contract.
     if params > threshold {
         findings.push(block_finding_with_metadata(
@@ -140,7 +140,7 @@ pub(crate) fn analyse_block_size(
                 message: format!("Function `{}` declares {params} parameters.", block.name),
                 file,
                 block,
-                severity: config.severity(rule_id, Severity::Warning),
+                severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::Size,
             },
             threshold_metadata(params, threshold, "parameters"),
@@ -187,7 +187,7 @@ pub(crate) fn analyse_cyclomatic_complexity(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "complexity.cyclomatic";
-    let threshold = config.threshold(rule_id, 10.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     if cyclomatic <= threshold {
         return;
     }
@@ -200,7 +200,7 @@ pub(crate) fn analyse_cyclomatic_complexity(
             ),
             file,
             block,
-            severity: config.severity(rule_id, Severity::Warning),
+            severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
             pillar: Pillar::Complexity,
         },
         json!({
@@ -221,7 +221,7 @@ pub(crate) fn analyse_nesting_depth(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "complexity.nesting-depth";
-    let threshold = config.threshold(rule_id, 4.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     if nesting <= threshold {
         return;
     }
@@ -231,7 +231,7 @@ pub(crate) fn analyse_nesting_depth(
             message: format!("Function `{}` has nesting depth {nesting}.", block.name),
             file,
             block,
-            severity: config.severity(rule_id, Severity::Warning),
+            severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
             pillar: Pillar::Complexity,
         },
         json!({
@@ -258,7 +258,7 @@ pub(crate) fn analyse_cognitive_complexity(
 ) {
     let cognitive = cyclomatic + nesting.saturating_mul(2);
     let rule_id = "complexity.cognitive";
-    let threshold = ctx.config.threshold(rule_id, 15.0) as usize;
+    let threshold = ctx.config.threshold(rule_id) as usize;
     if cognitive <= threshold {
         return;
     }
@@ -271,7 +271,9 @@ pub(crate) fn analyse_cognitive_complexity(
             ),
             file: ctx.file,
             block: ctx.block,
-            severity: ctx.config.severity(rule_id, Severity::Warning),
+            severity: ctx
+                .config
+                .severity(rule_id, rules::builtin_severity(rule_id)),
             pillar: Pillar::Complexity,
         },
         json!({

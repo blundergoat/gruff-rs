@@ -131,7 +131,7 @@ pub(crate) fn analyse_test_size(
         return;
     }
     let rule_id = "test-quality.long-test";
-    let threshold = config.threshold(rule_id, 120.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     let effective_lines = long_test_effective_line_count(block);
     if effective_lines > threshold {
         findings.push(block_finding_with_metadata(
@@ -143,7 +143,7 @@ pub(crate) fn analyse_test_size(
                 ),
                 file,
                 block,
-                severity: config.severity(rule_id, Severity::Advisory),
+                severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::TestQuality,
             },
             json!({

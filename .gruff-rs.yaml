@@ -290,11 +290,11 @@ rules:
   # Flags HTTP(S) URLs that include embedded username and password credentials.
   sensitive-data.url-embedded-credentials:
     enabled: true
-  # Flags files over the configured line-count threshold.
+  # Flags files whose substantive line count exceeds the configured threshold.
   size.file-length:
     enabled: true
-    threshold: 600
-    severity: warning
+    threshold: 1000
+    severity: error
   # Flags functions over the configured line-count threshold.
   size.function-length:
     enabled: true

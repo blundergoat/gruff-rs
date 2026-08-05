@@ -37,7 +37,7 @@ fn analyse_file_length(
     }
     let line_count = substantive_line_count(&file.display_path, source);
     let rule_id = "size.file-length";
-    let threshold = config.threshold(rule_id, 1000.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     // Only files beyond the user's threshold add a size finding to the report.
     if line_count > threshold {
         findings.push(finding_with_metadata(
@@ -48,7 +48,7 @@ fn analyse_file_length(
                 ),
                 file,
                 line: Some(1),
-                severity: config.severity(rule_id, Severity::Error),
+                severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::Size,
             },
             threshold_metadata(line_count, threshold, "lines"),

@@ -37,6 +37,38 @@ pub(crate) fn default_config_round_trips_through_load_config() {
 }
 
 #[test]
+pub(crate) fn generated_config_reproduces_builtin_rule_defaults() {
+    // A generated config that disagrees with the catalogue makes the same file
+    // report differently depending on whether the project ever ran `init`, so this
+    // walks the rendered-then-parsed config rather than reading the catalogue twice.
+    let registry = rules::builtin_registry();
+    let body = render_default_config(&registry, &[], &BTreeMap::new());
+
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), &body);
+    let config = load_config(dir.path(), &default_test_options())
+        .expect("generated default config parses cleanly");
+
+    for definition in registry.definitions() {
+        let Some(threshold) = definition.threshold else {
+            continue;
+        };
+        assert_eq!(
+            config.threshold(definition.id),
+            threshold.default,
+            "generated config threshold drifts from the catalogue for `{}`",
+            definition.id,
+        );
+        assert_eq!(
+            config.severity(definition.id, definition.default_severity),
+            definition.default_severity,
+            "generated config severity drifts from the catalogue for `{}`",
+            definition.id,
+        );
+    }
+}
+
+#[test]
 pub(crate) fn accepted_abbreviations_match_family_contract() {
     // FAMILY-CONTRACT §8 owns this universal cross-port seed.
     const FAMILY_ABBREVIATIONS: &[&str] = &[

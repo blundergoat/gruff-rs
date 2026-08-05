@@ -569,10 +569,10 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
         "File length",
         Pillar::Size,
         RuleKind::Text,
-        Severity::Warning,
+        Severity::Error,
         Confidence::High,
         FILE_LENGTH_THRESHOLD,
-        "Flags files over the configured line-count threshold.",
+        "Flags files whose substantive line count exceeds the configured threshold.",
     ),
     rule_definition!(
         "size.function-length",
