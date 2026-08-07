@@ -1,7 +1,7 @@
 ---
 name: goat-critique
 description: "Use when a decision or analysis needs multi-lens critique to surface blind spots before shipping."
-goat-flow-skill-version: "1.13.1"
+goat-flow-skill-version: "1.15.0"
 ---
 # /goat-critique
 
@@ -13,10 +13,11 @@ Read `.goat-flow/skill-docs/skill-preamble.md` and `.goat-flow/skill-docs/skill-
 
 Use when a concrete artifact deserves multi-perspective critique before shipping: plan, security assessment, debug hypotheses, review findings, test strategy, architecture proposal, or refactor approach.
 
-**NOT this skill (pre-invocation routing):** Use when deciding which skill to invoke, not after explicit invocation.
-- No artifact exists yet → create one first (goat-review, goat-debug, etc.)
-- Simple factual question → answer directly
-- Trivial artifact (hotfix, single-file change) → consider goat-review instead before invocation; explicit `/goat-critique` still runs full protocol.
+## Boundary Commands
+
+- **NEVER:** Replace delegated critique with inline role-play, skip required phases, or auto-apply recommendations.
+- **ALWAYS:** Treat explicit invocation as consent to run the full delegated protocol against a concrete artifact.
+- **DEFER TO:** Before invocation only, create a missing artifact first, answer simple facts directly, or use `/goat-review` for a trivial artifact; explicit `/goat-critique` still runs in full.
 
 | Excuse | Reality |
 |--------|---------|
@@ -39,7 +40,7 @@ goat-critique runs only full delegated mode: Phases 1-5, 5.5 meta-audit, 5.6 out
 - Use the preamble's learning-loop retrieval on relevant `.goat-flow/learning-loop/footguns/` and `.goat-flow/learning-loop/lessons/`; record explicit misses instead of broad-loading buckets.
 - Delegation consent: proceed directly to Phase 1. Skill-chained entry: skip intake confirmation, use caller context; still run retrieval + rubric selection. All phases (1-5 + 5.5 + 5.6) always run.
 - **Differential mode detection:** If `.goat-flow/logs/critiques/` has a same-artifact slug within 30 days, offer differential mode: A/B receive prior log + artifact diff; C stays cold. Phase 5 adds delta counts and `[diff-of: <prior-uuid>]`.
-- **Read context map:** Read the selected rubric's context map (see `references/rubric-examples.md`) and pass to each sub-agent's spawn directive.
+- **Read context map:** Merge the selected rubric map from `references/rubric-examples.md` into the fixed A/B/C split; never replace baseline context.
 
 ## Phase 1 - Generate Competing Critiques
 
@@ -73,9 +74,9 @@ Full directives: `references/sub-agent-directives.md`.
 - **B (Alternatives):** SKEPTIC/ANALYST/STRATEGIST on alternatives, ranked by implementation friction. Must surface at least one alternative.
 - **C (Fresh Eyes):** No project context. Flags unstated assumptions and readability gaps. ISOLATION RULE enforced.
 
-Each sub-agent MUST return 3-7 findings plus required lens fields, severity, evidence, confidence, Proof class, rubric dimensions, overall assessment, and one strength; see `references/sub-agent-directives.md`.
+Each sub-agent normally returns 3-7 evidence-backed findings plus required lens fields, severity, evidence, confidence, Proof class, rubric dimensions, overall assessment, and one strength. Zero findings are valid only through the reference pack's clean-result attestation after one documented second pass.
 
-**Lens-finding floor:** A/B need >= 1 finding per lens or one re-run. C needs >= 1 unstated-assumption, readability-gap, or context-limited finding or one re-run. See anti-fabrication constraint and reference pack.
+**Lens coverage:** A/B must analyse every lens and C must probe assumptions/readability. A lens with no supported issue gets one documented second pass, then records `No supported finding` instead of inventing one. See the reference pack.
 
 ## Phase 2 - Rank and Compare
 
@@ -83,15 +84,15 @@ Execute in this order:
 
 **1. Context leak scan.** Grep Agent C output for `.goat-flow/`, `goat-*`, `architecture.md`, `config.yaml`, or project-specific namespace references. Only flag references absent from Agent C's input. Untraceable match = CONTEXT LEAK; discard and re-spawn stricter. **Framework-self exemption:** for artifacts inside `.goat-flow/`, `skills/goat-*`, or a goat-flow instruction file, skip `.goat-flow/` and `goat-*` term scans. Check only structural navigation leaks: file paths, config keys, or architecture sections absent from the input.
 
-**1b. Completeness gate.** Verify each sub-agent returned required fields (see Constraints). Incomplete → re-spawn once.
+**1b. Completeness gate.** Verify each sub-agent returned required fields in either its findings or a clean-result attestation (`Evidence reviewed:` through `Residual uncertainty:` and strength per the reference pack, plus B's unconditional ranked alternative). Incomplete → re-spawn once.
 
 **2. Classify each finding:** **Consensus** (≥2 agents, severity within ±1), **Split** (≥2 agents, severity differs ≥2 levels or explicit reject vs blocking), **Unique** (one agent only). Silence is not a dismiss; treat as Unique.
 
 **3. Score each sub-agent's critique** on Grounding, Specificity, Actionability, Coverage, and Calibration.
 
-**4. Verify sub-agent dimension coverage.** Skim each agent's findings; confirm each claimed dimension has substantive content. Demote unsubstantiated claims. Use orchestrator-verified dimensions as input to step 5.
+**4. Verify sub-agent dimension coverage.** Skim each agent's findings, or a clean attestation's `Rubric coverage:` entries; confirm each claimed dimension has substantive content or named evidence. Demote unsubstantiated claims. Use orchestrator-verified dimensions as input to step 5.
 
-**5. Compute rubric coverage gates.** Unaddressed mandatory dimensions → auto-generate HIGH coverage-gap finding. Unaddressed optional → auto-generate MEDIUM.
+**5. Compute rubric coverage gates.** A dimension is addressed by a substantive finding or step-4-verified attestation coverage. Unaddressed mandatory → auto-generate HIGH coverage-gap finding; optional → MEDIUM.
 
 **6. Spot-check OBSERVED claims.** For each finding marked OBSERVED, re-read the cited file + semantic anchor or proof artifact. Findings that fail spot-check get tagged `[evidence-gap: spot-check failed]`; Phase 3 decides retract or upgrade.
 
@@ -150,7 +151,7 @@ Then the full critique:
 
 **Proof Gate:** Apply the Proof Gate (see Constraints) to every synthesised finding before inclusion. Every synthesised finding must carry proof class `RUNTIME | CONTRACT-GREP | STATIC | NOT-REPRODUCED`.
 
-**Phase 5.5 - Meta-audit.** Spawn a lightweight meta-agent (budget: 2 tool calls, no context beyond the draft Phase 5 output). Audit the critique for internal consistency against the 10-point rubric in `references/rubric-examples.md`. If issues found, insert an `## Auto-Detected Issues` block before presenting. Verdict block updated with `Meta-score: N/100`.
+**Phase 5.5 - Meta-audit.** Give a 2-call meta-agent only the Phase 5 draft and the 10 checks in `references/rubric-examples.md`. Score each 0 or 10; their sum is `Meta-score`; no partial credit. Before presentation, insert non-empty `## Auto-Detected Issues`; add `Meta-score: N/100` to the verdict.
 
 **BLOCKING GATE:** Present the synthesised critique (including Meta-score if 5.5 produced one). "Options: (A) apply, (B) dig deeper, (C) re-run, (D) close. Default: D." After plan critique, suggest `/goat-plan`.
 
@@ -184,11 +185,11 @@ The rubric determines what sub-agents evaluate. Match to artifact type. Dimensio
 - MUST set max 5 tool-call budget per critique sub-agent; log calls/limit when exposed, otherwise unavailable markers. Do not claim mechanical enforcement when counts are unavailable.
 - MUST log per spawned critique/cross-exam/meta agent: id/handle if exposed, calls/limit, or unavailable markers.
 - MUST Scan Agent C output for context leaks before any other Phase 2 work. Only flag references absent from the input artifact. Any untraceable match = CONTEXT LEAK; discard and re-spawn.
-- MUST Check sub-agent completeness: verify 3-7 findings plus required lens fields against `references/sub-agent-directives.md`. Incomplete → re-spawn once; if still incomplete, record `sub-agent completeness limited`.
+- MUST Check sub-agent completeness: verify all required fields in the evidence-backed findings or a clean-result attestation after one documented second pass against `references/sub-agent-directives.md`. Incomplete → re-spawn once; if still incomplete, record `sub-agent completeness limited`.
 - MUST enforce cross-examination budget: Max 3 cross-examination agents total, max 3 tool calls per agent.
 - Recommendations are never auto-applied. After synthesis, stop. Do not enter implementation mode unless the user explicitly asks to apply changes.
 - MUST apply the Proof Gate from `skill-preamble.md` to every synthesised finding and preserve one proof class tag (`RUNTIME | CONTRACT-GREP | STATIC | NOT-REPRODUCED`) on each. Sub-agent reports are inputs to verify, not evidence to launder. Re-read applies to findings surviving to Phase 5 (typically 3-7 after Phase 3/4 filtering), not to all findings raised in Phase 1.
-- MUST NOT fabricate findings. Do not fabricate findings to meet the lens-finding floor; convergence allowed after one re-run.
+- MUST NOT fabricate findings. The 3-7 range is a normal target, never a quota; accept a complete clean-result attestation after the required second pass.
 - Universal constraints from skill-preamble.md apply.
 
 ## Output Format

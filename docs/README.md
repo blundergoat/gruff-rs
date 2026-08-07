@@ -14,7 +14,7 @@ Use these docs with the top-level README for the stable user-facing surface.
 
 ## Extra Docs
 
-- [Git Commit Standard](coding-standards/git-commit.md) - local coding standard.
+- [Git Commit Standard](coding-standards/git-commit-message.md) - local coding standard.
 
 ## Shared Contract
 

@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-07-14
+last_reviewed: 2026-08-08
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -452,3 +452,13 @@ structure is absent. For mixed-context formats, never use one raw substring ban
 across the entire rendered document; assert per context or parse the rendered
 format. Regression coverage lives in `src/tests/renderers/output.rs` (search:
 `markdown_renderer_keeps_hostile_finding_fields_in_one_inert_bullet`).
+
+## Lesson: Anchor Repeated-Line Patches To Their Owning Function
+
+**Created:** 2026-08-08
+**Decision changed:** In large files with repeated statements, every manual patch hunk must include its owning function and nearby semantic message, followed immediately by a diff against the pristine source.
+**Trigger phase:** ACT
+
+**What happened:** A three-hunk patch that matched only `return 1` changed the first three matching statements in a large shell hook instead of the intended scan-unavailable branches near `main`. The immediate diff against the official backup exposed unrelated changes in fallback budget and token-classification paths before the hook reached the workspace.
+
+**Prevention:** Include a unique function name, condition, or user-visible message in each patch hunk when the replacement text repeats. Compare the result with the pristine file before copying, installing, or testing it; if the diff names an unrelated function, revert those exact hunks before proceeding.

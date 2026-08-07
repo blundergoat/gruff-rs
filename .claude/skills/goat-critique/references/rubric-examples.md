@@ -1,13 +1,13 @@
 ---
-goat-flow-reference-version: "1.13.1"
+goat-flow-reference-version: "1.15.0"
 ---
 # Critique Rubric Examples (Reference Pack)
 
-*Extracted from the goat-critique SKILL.md to stay within the 2500-word skill cap. Canonical rubric definitions remain in SKILL.md; worked examples and context-map details live here.*
+*Extracted from the goat-critique SKILL.md to stay within the 2500-word skill cap. Artifact rubrics remain in SKILL.md; the canonical meta-audit rubric, worked examples, and context maps live here.*
 
 ## Rubric Context Maps
 
-Each rubric has a context map that Step 0 reads and passes to sub-agent spawn directives. Footgun/lesson entries mean targeted INDEX-first hits from those buckets, not whole-directory reads. Agent C's isolation enforcement (Phase 2 step 1 grep check) is unchanged regardless of context map. Generic fallback uses the default split.
+Each map lists additions to the fixed Context split in `SKILL.md` and never replaces it. Agents A and B keep their artifact, architecture, and rubric baseline; an empty C list means no additional project context, so C still reads artifact + rubric only. Footgun/lesson entries mean targeted INDEX-first hits from those buckets, not whole-directory reads. Agent C's isolation enforcement (Phase 2 step 1 grep check) is unchanged regardless of context map. Generic fallback uses the default split plus the additions below.
 
 ### Plan
 - **A:** targeted INDEX-first footgun/lesson hits, `.goat-flow/learning-loop/decisions/`
@@ -46,6 +46,8 @@ Each rubric has a context map that Step 0 reads and passes to sub-agent spawn di
 
 ## Worked examples
 
+> **Illustrative scenario - input/output shape only; never evidence.** Every artifact path, finding, command outcome, and prior-log id below is a placeholder. Live critique must substitute target-project files plus semantic anchors re-read in the current session.
+
 ### Full phase walkthrough: Phase 2 context-leak edge case
 
 - **Artifact:** `SKILL.md`
@@ -59,8 +61,8 @@ Each rubric has a context map that Step 0 reads and passes to sub-agent spawn di
 ```markdown
 ## Finding: Verification belongs after execution, not only during synthesis
 - **Severity:** HIGH | **Confidence:** HIGH
-- **Evidence:** a coordination lesson (search: "Phase 3 verification catches state drift invisible to plan-level reasoning") - live `wc -w` and `git show` checks found word-count and version drift after prior critique passes missed them
-- **Proof attempt:** Read the lesson entry and verified the recorded failure mode was post-plan state drift
+- **Evidence:** `<target-project>/plan.md` (search: "Verification gate") - current-session size and version checks found state drift after the draft plan was written
+- **Proof attempt:** Re-read the target plan's verification gate and ran the named current-state checks
 - **Proof class:** STATIC
 - **Evidence quality:** OBSERVED
 - **SKEPTIC:** A plan can look internally consistent while the repo has drifted underneath it
@@ -74,8 +76,8 @@ Each rubric has a context map that Step 0 reads and passes to sub-agent spawn di
 ```markdown
 ## Finding: Quick critique fallback would break the skill mechanism
 - **Severity:** HIGH | **Confidence:** HIGH
-- **Evidence:** local decision record (search: "goat-critique runs in one mode: full delegated") - accepted decision binds goat-critique to real delegated agents, not inline role-play
-- **Proof attempt:** Read the decision record and confirmed it rejects quick/inline fallback as self-talk under critique labels
+- **Evidence:** `<target-project>/decisions/critique-mode.md` (search: "delegated critique mode") - the current decision binds critique to isolated agents rather than inline role-play
+- **Proof attempt:** Re-read the target decision and confirmed that it rejects a quick inline fallback
 - **Proof class:** STATIC
 - **Evidence quality:** OBSERVED
 - **SKEPTIC:** Reintroducing quick mode would make the output promise multi-perspective critique without isolated contexts
@@ -101,7 +103,7 @@ When Step 0 detects a same-artifact critique log within 30 days and differential
 
 ## Meta-audit rubric (Phase 5.5)
 
-The meta-agent scores the draft critique against these 10 points:
+The meta-agent scores the draft critique against these 10 checks. Award 10 only when a check is fully satisfied, otherwise 0; partial credit is forbidden. `Meta-score` is the sum. Name every failed check under `## Auto-Detected Issues`.
 
 1. **Gate-finding match** - Gate value matches highest surviving severity
 2. **Evidence quality per finding** - every finding has Proof attempt + Proof class + Evidence quality fields

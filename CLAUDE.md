@@ -1,4 +1,4 @@
-# gruff-rs - goat-flow 1.10.1
+# gruff-rs - goat-flow 1.15.0
 
 Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
 
@@ -37,7 +37,7 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 
 ## Commit Messages
 
-Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit.md`.
+Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit-message.md`.
 
 ## Key Resources
 
@@ -110,5 +110,5 @@ Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to
 | Claude skills/config | `.claude/skills/`, `.claude/settings.json` |
 | Hooks (deny + quality) | `.goat-flow/hooks/` |
 | Peer instruction files | `AGENTS.md` (Codex) |
-| Commit guidance | `docs/coding-standards/git-commit.md` |
+| Commit guidance | `docs/coding-standards/git-commit-message.md` |
 | Workspace notes | `.goat-flow/plans/`, `.goat-flow/logs/sessions/` |
