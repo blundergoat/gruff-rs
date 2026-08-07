@@ -6,6 +6,10 @@
 #   - unavailable scanning blocks with exit 2;
 #   - an empty Git repository exits 0;
 #   - a changed file containing conflict markers blocks with exit 2.
+#
+# Every case runs twice, once per dispatch path: the Bash 4+ `main` and the
+# Bash 3 `fallback_main` reached via GOAT_FLOW_POST_TURN_SAFETY_FORCE_BASH3_FALLBACK.
+# Testing only the host's default shell hid a fail-open in the fallback branch.
 
 set -euo pipefail
 
@@ -28,9 +32,11 @@ fail_post_turn_safety_test() {
 
 run_hook_in() {
   local repository=$1
+  local force_fallback=$2
 
   set +e
-  HOOK_OUTPUT="$(cd "$repository" && bash "$HOOK" 2>&1)"
+  HOOK_OUTPUT="$(cd "$repository" \
+    && GOAT_FLOW_POST_TURN_SAFETY_FORCE_BASH3_FALLBACK="$force_fallback" bash "$HOOK" 2>&1)"
   HOOK_STATUS=$?
   set -e
 }
@@ -50,15 +56,9 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gruff-rs-post-turn-safety.XXXXXX")"
 trap cleanup_post_turn_safety_test EXIT
 
 mkdir -p "$WORK_DIR/no-git"
-run_hook_in "$WORK_DIR/no-git"
-expect_hook_status 2 "unavailable scan"
-[[ $HOOK_OUTPUT == *"git repository root unavailable; cannot scan changed content"* ]] \
-  || fail_post_turn_safety_test "unavailable scan did not explain the missing Git root"
 
 mkdir -p "$WORK_DIR/clean"
 git -C "$WORK_DIR/clean" init -q
-run_hook_in "$WORK_DIR/clean"
-expect_hook_status 0 "clean repository"
 
 mkdir -p "$WORK_DIR/hazard"
 git -C "$WORK_DIR/hazard" init -q
@@ -69,9 +69,30 @@ git -C "$WORK_DIR/hazard" init -q
   printf '%s\n' 'incoming content'
   printf '%s\n' '>>>>>>> branch'
 } >"$WORK_DIR/hazard/conflict.txt"
-run_hook_in "$WORK_DIR/hazard"
-expect_hook_status 2 "merge conflict"
-[[ $HOOK_OUTPUT == *"blocked merge conflict marker"* ]] \
-  || fail_post_turn_safety_test "merge conflict did not report its finding family"
 
-printf 'PASS: post-turn safety blocks unavailable scans and hazards while allowing clean repositories\n'
+for dispatch in default bash3-fallback; do
+  if [[ $dispatch == bash3-fallback ]]; then
+    force_fallback=1
+  else
+    force_fallback=0
+  fi
+
+  run_hook_in "$WORK_DIR/no-git" "$force_fallback"
+  expect_hook_status 2 "unavailable scan [$dispatch]"
+  [[ $HOOK_OUTPUT == *"git repository root unavailable; cannot scan changed content"* ]] \
+    || fail_post_turn_safety_test "unavailable scan [$dispatch] did not explain the missing Git root"
+
+  run_hook_in "$WORK_DIR/clean" "$force_fallback"
+  expect_hook_status 0 "clean repository [$dispatch]"
+
+  run_hook_in "$WORK_DIR/hazard" "$force_fallback"
+  expect_hook_status 2 "merge conflict [$dispatch]"
+  # The paths word this differently ("blocked merge conflict marker in X" versus
+  # "merge conflict marker in X (Bash 3 compatibility scan)"), so assert the
+  # finding family and the offending file, which both must name. Blocking itself
+  # is already pinned by the exit status above.
+  [[ $HOOK_OUTPUT == *"merge conflict marker in conflict.txt"* ]] \
+    || fail_post_turn_safety_test "merge conflict [$dispatch] did not report its finding family"
+done
+
+printf 'PASS: post-turn safety blocks unavailable scans and hazards while allowing clean repositories on both dispatch paths\n'

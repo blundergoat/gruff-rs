@@ -71,7 +71,7 @@
 `docs/` = Project documentation added outside the hot-path instruction file.
 `docs/rules.md` = Rust/text rule reference: pillars, rule scope, and the advisory/warning/error severity model.
 `docs/coding-standards/` = Local engineering policy docs.
-`../docs/coding-standards/git-commit-message.md` = Commit-message guidance used by goat-flow harness checks.
+`docs/coding-standards/git-commit-message.md` = Commit-message guidance used by goat-flow harness checks.
 `.goat-flow/` = Goat-flow setup, project memory, and local continuity structure.
 `.goat-flow/architecture.md` = Current system architecture and trust boundaries.
 `.goat-flow/code-map.md` = This repository map.

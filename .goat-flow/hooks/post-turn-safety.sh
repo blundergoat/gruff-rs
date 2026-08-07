@@ -610,8 +610,10 @@ fallback_main() {
 
   root=$(git rev-parse --show-toplevel 2>/dev/null) || root=""
   if [ -z "$root" ]; then
+    # A scan that cannot run must block, matching the Bash 4+ path and the
+    # incomplete-scan guard below.
     printf 'post-turn-safety: git repository root unavailable; cannot scan changed content.\n' >&2
-    return 1
+    return 2
   fi
 
   if git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
