@@ -2,16 +2,16 @@
 
 ## Unreleased
 
-- **Native Windows action paths.** `working-directory` and `output-file` accept a drive root such as `D:\a\repo\repo\crate` or a UNC share on Windows runners. The action converts them and `GITHUB_WORKSPACE` to one notation before comparing, so containment still fails closed; drive-relative values such as `C:crate` are rejected rather than guessed.
-- **FROM-less `SELECT` templates stay visible.** `security.sql-dynamic-query` recognises an all-interpolated `SELECT` with no `FROM`, which is valid in PostgreSQL and SQLite, without matching prose.
-- **Split download-to-shell pipelines report.** `security.github-actions-remote-shell` carries an unfinished pipeline across block-scalar lines, so a `curl` and its `bash` on separate lines are caught; a trailing `||` fallback ends the join.
-- **Stop-hook scan bypass closed.** The post-turn safety hook no longer skips an added line whose own text starts with `++`, on either the Bash 4+ or Bash 3 dispatch path. A `+++ ` line counts as a file header only directly after a `diff --git` section start.
-- **Release reruns fail closed on an existing draft.** The release-workflow contract now rejects `--clobber`, release deletion, and gating draft creation on an existence probe, pinning the deliberate no-reconciliation policy.
 
 ## v0.5.0 - 2026-08-06
 
 0.5.0 is a precision, report-safety, and supply-chain release. Size and security rules retune around substantive code, reports carry markers instead of secret or PHI payloads, and the action moves to `argv` with a pinned, verified install.
 
+- **Native Windows action paths.** `working-directory` and `output-file` accept a drive root such as `D:\a\repo\repo\crate` or a UNC share on Windows runners. The action converts them and `GITHUB_WORKSPACE` to one notation before comparing, so containment still fails closed; drive-relative values such as `C:crate` are rejected rather than guessed.
+- **FROM-less `SELECT` templates stay visible.** `security.sql-dynamic-query` recognises an all-interpolated `SELECT` with no `FROM`, which is valid in PostgreSQL and SQLite, without matching prose.
+- **Split download-to-shell pipelines report.** `security.github-actions-remote-shell` carries an unfinished pipeline across block-scalar lines, so a `curl` and its `bash` on separate lines are caught; a trailing `||` fallback ends the join.
+- **Stop-hook scan bypass closed.** The post-turn safety hook no longer skips an added line whose own text starts with `++`, on either the Bash 4+ or Bash 3 dispatch path. A `+++ ` line counts as a file header only directly after a `diff --git` section start.
+- **Release reruns fail closed on an existing draft.** The release-workflow contract now rejects `--clobber`, release deletion, and gating draft creation on an existence probe, pinning the deliberate no-reconciliation policy.
 - **file-length: 1000 substantive lines at error (family ratification).** Blank and comment-only lines are free, replacing the 600-line warning.
 - **Zero-payload sensitive metadata markers.** JSON, SARIF, and hook findings serialize detector-owned markers instead of secret or PHI previews.
 - **Narrower lock-across-await signal.** I/O and domain `.read()`/`.write()` no longer read as guards; zero-arg calls need local lock evidence.

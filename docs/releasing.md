@@ -111,8 +111,13 @@ package digest/file list, and checked-in target matrix.
 
 Do not substitute locally fabricated or current-host-only archives for this
 hosted five-runner proof. Do not create the release tag until the candidate run
-is recorded and the remaining release milestones, including immutable-release
-configuration, are complete.
+is recorded.
+
+Release assets are mutable. GitHub's immutable-releases setting is deliberately
+left disabled, so asset integrity rests on the co-located SHA-256 sidecars and on
+publishing only a draft whose complete verified asset set has already been
+checked. Consumers should verify the sidecar rather than assume an asset cannot
+change.
 
 ## Tag Publication
 
