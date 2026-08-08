@@ -55,6 +55,7 @@ Usage: scripts/preflight-checks.sh [options]
 Runs the local gruff-rs preflight suite:
   - bash syntax check for tracked and untracked shell scripts
   - shellcheck for shell scripts when shellcheck is installed
+  - deny-dangerous hook policy self-test (smoke tier)
   - post-turn safety hook exit-contract self-test
   - cargo fmt, clippy, and tests
   - crate version consistency between Cargo.toml and Cargo.lock
@@ -550,6 +551,13 @@ check_shellcheck() {
   fi
 
   shellcheck "${shell_files[@]}"
+}
+
+# Exercise the deny hook's policy corpus so a regression in the command guard
+# fails the build rather than silently widening what agents may run. Smoke is the
+# per-change tier; run --self-test=full when the hook or its policy modules change.
+deny_dangerous_self_test() {
+  bash "$REPO_ROOT/.goat-flow/hooks/deny-dangerous.sh" --self-test=smoke
 }
 
 # Exercise the Stop-hook fail-closed contract in isolated temporary repositories.
@@ -1557,6 +1565,7 @@ run_preflight_suite() {
 
   run_preflight_check "shell syntax" check_shell_syntax
   run_preflight_check "shellcheck" check_shellcheck
+  run_preflight_check "deny-dangerous policy" deny_dangerous_self_test
   run_preflight_check "post-turn safety" post_turn_safety_self_test
   run_preflight_check "version metadata" version_metadata_check
   run_preflight_check "dependency audit" dependency_audit_check
