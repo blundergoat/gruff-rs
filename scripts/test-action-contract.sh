@@ -45,6 +45,31 @@ if [[ ${STUB_EXIT_STATUS:-0} -ne 0 ]]; then
   exit "$STUB_EXIT_STATUS"
 fi
 STUB
+  # Stands in for Git Bash's cygpath on a Linux developer machine or CI runner. It mirrors the only behaviour the action
+  # depends on: a drive root and a UNC prefix are mount points, and backslashes become forward slashes.
+  cat >"$bin_dir/cygpath" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${STUB_CYGPATH_DRIVE_ROOT:?}"
+
+mode=$1
+value=$2
+[[ $mode == -u || $mode == -w ]] || {
+  printf 'stub cygpath: unsupported mode %s\n' "$mode" >&2
+  exit 2
+}
+
+if [[ $mode == -u ]]; then
+  # A UNC prefix keeps its double separator; a drive root maps to the mount point.
+  if [[ $value == '\\'* ]]; then
+    printf '%s\n' "//${value:2}" | tr '\\' '/'
+  else
+    printf '%s\n' "$STUB_CYGPATH_DRIVE_ROOT/${value:3}" | tr '\\' '/'
+  fi
+else
+  printf '%s\n' "$value" | tr '/' '\\'
+fi
+STUB
   cat >"$bin_dir/curl" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -153,7 +178,7 @@ if [[ -n ${STUB_TAR_LOG:-} ]]; then
 fi
 exec "$REAL_TAR" "$@"
 STUB
-  chmod +x "$bin_dir/gruff-rs" "$bin_dir/curl" "$bin_dir/tar"
+  chmod +x "$bin_dir/gruff-rs" "$bin_dir/curl" "$bin_dir/tar" "$bin_dir/cygpath"
 }
 
 # Decode the exact argument boundaries a workflow author supplied through argv.
@@ -197,6 +222,27 @@ run_action() {
     GRUFF_INPUT_WORKING_DIRECTORY=$working_directory \
     GRUFF_INPUT_OUTPUT_FILE=$output_file \
     GITHUB_WORKSPACE=$WORKSPACE \
+    STUB_ARGV_FILE=$ARGV_FILE \
+    STUB_CWD_FILE=$CWD_FILE \
+    PATH=$STUB_BIN:$PATH \
+    "$RUNNER" run
+}
+
+# Run the boundary as a Windows runner does: RUNNER_OS is Windows, cygpath is on PATH, and GITHUB_WORKSPACE arrives as a
+# native path rather than a POSIX one.
+run_action_on_windows() {
+  local argv=$1
+  local workspace=$2
+  local working_directory=${3:-}
+  local output_file=${4:-}
+
+  GRUFF_INPUT_ARGS="" \
+    GRUFF_INPUT_ARGV=$argv \
+    GRUFF_INPUT_WORKING_DIRECTORY=$working_directory \
+    GRUFF_INPUT_OUTPUT_FILE=$output_file \
+    GITHUB_WORKSPACE=$workspace \
+    RUNNER_OS=Windows \
+    STUB_CYGPATH_DRIVE_ROOT=$WORK_DIR \
     STUB_ARGV_FILE=$ARGV_FILE \
     STUB_CWD_FILE=$CWD_FILE \
     PATH=$STUB_BIN:$PATH \
@@ -333,6 +379,60 @@ assert_working_and_output_paths_are_contained() {
   status=$?
   set -e
   [[ $status -eq 2 ]] || fail "output-file target symlink was accepted"
+}
+
+# Prove a Windows runner's native paths resolve, and that containment still holds for them. GITHUB_WORKSPACE itself
+# arrives native on Windows, so converting the user's input without converting the workspace would compare two notations
+# and reject every absolute path as an escape.
+assert_windows_native_paths_resolve_and_stay_contained() {
+  # The cygpath stub maps drive root D: onto WORK_DIR, the way a real mount does.
+  local native_workspace='D:\workspace with spaces'
+  local native_working='D:\workspace with spaces\win-sub'
+  local native_outside='D:\outside'
+  local status
+
+  mkdir -p -- "$WORKSPACE/win-sub" "$WORK_DIR/outside"
+
+  # A native absolute working-directory inside the workspace must be honoured.
+  run_action_on_windows $'analyse\n.' "$native_workspace" "$native_working" >/dev/null
+  assert_nul_values "$CWD_FILE" "$WORKSPACE/win-sub"
+
+  # A relative input keeps its workspace-rooted meaning on Windows too.
+  run_action_on_windows $'analyse\n.' "$native_workspace" 'win-sub' >/dev/null
+  assert_nul_values "$CWD_FILE" "$WORKSPACE/win-sub"
+
+  # A native absolute output-file resolves against the converted workspace.
+  run_action_on_windows $'analyse\n.' "$native_workspace" 'win-sub' \
+    'D:\workspace with spaces\win-sub\report.sarif' >/dev/null
+  [[ $(<"$WORKSPACE/win-sub/report.sarif") == "stub-output" ]] \
+    || fail "native Windows output-file was not written"
+
+  # Containment is unchanged: a native path outside the workspace still fails.
+  set +e
+  run_action_on_windows $'analyse\n.' "$native_workspace" "$native_outside" \
+    >"$WORK_DIR/win-escape-output" 2>"$WORK_DIR/win-escape-error"
+  status=$?
+  set -e
+  [[ $status -eq 2 ]] || fail "native Windows working-directory escape was accepted"
+  grep -q 'escapes GITHUB_WORKSPACE' "$WORK_DIR/win-escape-error" \
+    || fail "native Windows escape did not report a containment failure"
+
+  # A drive-relative value such as C:report has no defined root, so it must not be silently treated as either absolute or
+  # workspace-relative.
+  set +e
+  run_action_on_windows $'analyse\n.' "$native_workspace" 'C:win-sub' \
+    >"$WORK_DIR/win-driverel-output" 2>"$WORK_DIR/win-driverel-error"
+  status=$?
+  set -e
+  [[ $status -eq 2 ]] || fail "drive-relative working-directory was accepted"
+
+  # Off Windows, a Windows-shaped path is not a path at all and must stay rejected.
+  set +e
+  run_action $'analyse\n.' 'D:\workspace with spaces\win-sub' \
+    >"$WORK_DIR/win-on-linux-output" 2>"$WORK_DIR/win-on-linux-error"
+  status=$?
+  set -e
+  [[ $status -eq 2 ]] || fail "Windows-shaped path was accepted on a non-Windows runner"
 }
 
 # Resolve only exact release versions before the installer constructs URLs.
@@ -695,6 +795,7 @@ run_action_contract_suite() {
   assert_legacy_args_fail_closed
   assert_blank_argv_line_is_rejected
   assert_working_and_output_paths_are_contained
+  assert_windows_native_paths_resolve_and_stay_contained
   assert_version_transport_is_structured
   assert_release_target_contract_covers_action_runners
   assert_verified_install_succeeds

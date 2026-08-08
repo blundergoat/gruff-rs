@@ -259,6 +259,7 @@ fn validate_github_publication_job(publish_github: &Mapping) -> Result<(), Strin
     require_job_need(publish_github, "publish_github", "asset_verify")?;
     require_job_need(publish_github, "publish_github", "publish_crate")?;
     require_tag_only_publication(publish_github, "publish_github")?;
+    require_fail_stop_draft_recovery(publish_github)?;
     let github_release_script = job_run_script(publish_github)?;
     // Without draft creation, the first public state could be an incomplete release.
     let draft_position = github_release_script
@@ -291,6 +292,36 @@ fn validate_github_publication_job(publish_github: &Mapping) -> Result<(), Strin
         .ok_or_else(|| {
             "GitHub draft, upload, verify, and publish stages are out of order".to_string()
         })
+}
+
+/// Pin the fail-stop recovery policy for a rerun that meets an existing draft.
+///
+/// 0.5.0 deliberately has no reconciliation path. `gh release create` fails when a release already exists for the tag, and
+/// `gh release upload` fails on an asset that is already attached, so a rerun stops rather than adopting remote state this
+/// run never verified. That is the whole policy, and each assertion here blocks one way of quietly dissolving it: adding
+/// `--clobber` would overwrite assets belonging to a draft built from a different commit; deleting an existing release
+/// would discard evidence an operator needs to investigate; and probing for a release before creating one would let a
+/// rerun skip creation and upload into whatever draft happened to be there. Real resumability is deferred, and building it
+/// means verifying an existing draft against the release manifest first, not relaxing one of these guards.
+fn require_fail_stop_draft_recovery(publish_github: &Mapping) -> Result<(), String> {
+    let github_release_script = job_run_script(publish_github)?;
+    (!github_release_script.contains("--clobber"))
+        .then_some(())
+        .ok_or_else(|| "GitHub publication must not clobber existing draft assets".to_string())?;
+    (!github_release_script.contains("gh release delete"))
+        .then_some(())
+        .ok_or_else(|| "GitHub publication must not delete an existing release".to_string())?;
+    let create_position = github_release_script
+        .find("gh release create")
+        .ok_or_else(|| "GitHub publication must create a draft".to_string())?;
+    // Verification reads the draft back, so `gh release view` is expected. It must come after creation: seeing it first
+    // would mean creation is gated on whether a release already exists.
+    match github_release_script.find("gh release view") {
+        Some(view_position) if view_position < create_position => {
+            Err("GitHub draft creation must not be gated on an existing-release probe".to_string())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Validate the candidate path and serialized crate-then-release publication path.
@@ -512,6 +543,36 @@ fn release_workflow_rejects_missing_draft_verification() {
     let error =
         validate_release_workflow(&workflow).expect_err("missing draft verification is rejected");
     assert!(error.contains("verify the complete draft"));
+}
+
+/// Prove a rerun cannot overwrite assets on a draft this run never verified.
+#[test]
+fn release_workflow_rejects_clobbering_existing_draft_assets() {
+    assert_workflow_yaml_mutation_rejected(
+        "gh release upload",
+        "gh release upload --clobber",
+        "must not clobber existing draft assets",
+    );
+}
+
+/// Prove recovery cannot discard the evidence an operator needs to investigate.
+#[test]
+fn release_workflow_rejects_deleting_an_existing_release() {
+    assert_workflow_yaml_mutation_rejected(
+        "gh release create",
+        "gh release delete --yes \"v$RELEASE_VERSION\" || true\n          gh release create",
+        "must not delete an existing release",
+    );
+}
+
+/// Prove creation cannot be skipped by probing for a release that already exists.
+#[test]
+fn release_workflow_rejects_gating_draft_creation_on_an_existence_probe() {
+    assert_workflow_yaml_mutation_rejected(
+        "gh release create",
+        "gh release view \"v$RELEASE_VERSION\" >/dev/null 2>&1 || gh release create",
+        "must not be gated on an existing-release probe",
+    );
 }
 
 /// Prove tag publication cannot skip creating the private draft staging area.

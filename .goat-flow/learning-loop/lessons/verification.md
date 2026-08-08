@@ -462,3 +462,25 @@ format. Regression coverage lives in `src/tests/renderers/output.rs` (search:
 **What happened:** A three-hunk patch that matched only `return 1` changed the first three matching statements in a large shell hook instead of the intended scan-unavailable branches near `main`. The immediate diff against the official backup exposed unrelated changes in fallback budget and token-classification paths before the hook reached the workspace.
 
 **Prevention:** Include a unique function name, condition, or user-visible message in each patch hunk when the replacement text repeats. Compare the result with the pristine file before copying, installing, or testing it; if the diff names an unrelated function, revert those exact hunks before proceeding.
+
+## Lesson: Milestone Estimate Tokens Must Terminate Their Checklist Item
+
+**Created:** 2026-08-08
+**Decision changed:** An `(est: N min category)` token carries no weight unless it is the last text in its checklist item; evidence prose after it silently drops the estimate.
+**Trigger phase:** VERIFY
+
+**What happened:** Four migrated proof items each carried `(est: N min proof)` followed by their literal evidence on the same item. `goat-flow plans check --strict` reported `proof counted work (5 min) does not equal the split component (25 min)` plus `3 testing gate item(s) missing an (est: ...) entry`. The tokens looked present in the file and were invisible to the parser, which anchors on `/\(est:\s*(\d+)\s*min(?:ute)?s?\s+([a-z]+)\)\s*$/` — end-of-item only.
+
+The same trap bit again a few edits later, in a form that is harder to see: a milestone had correct end-of-line tokens on every item, but a **prose paragraph after the last checkbox, inside the same `## Proof` section**, was absorbed into that final item. The estimate stopped being at the end of the item text, so exactly one item silently dropped out of the count. A blank line does not end an item. Anything that is not another checkbox belongs outside the section.
+
+**Prevention:** Keep proof and task items short with the estimate token last, and put literal evidence in a separate section that the milestone parser does not read as Proof. Two adjacent traps in the same parser: a heading is matched by prefix, so any H2 beginning `Proof ` (for example `## Proof evidence - 2026-08-08`) is read as a second Proof section and fails with `conflicting proof representations`; and the aliases that *are* read are `Proof`, `Verification Gate`, `Testing Gate`, `Scope`, `Exit Criteria`, `Kill Criteria`, `Stop Conditions`, and `Mid-Implementation Proof`. Name an evidence section something outside that set — `## Claim evidence` works.
+
+## Lesson: Strict Plan Validation Has No Honest Escape For A Missing Historical Estimate
+
+**Created:** 2026-08-08
+**Decision changed:** When a validator demands a field that historical evidence cannot truthfully supply, move the evidence outside the validator's scope; never back-fill the field.
+**Trigger phase:** READ
+
+**What happened:** Migrating a legacy plan set to the goat-flow 1.15.0 contract produced 80 strict errors. Most were truthful re-expressions of data the files already carried — dated statuses to the bare lifecycle vocabulary, a `## Depends On` section to the `**Depends on:**` field, an untagged human acceptance box to `[human]`. One was not: strict mode hard-requires a parseable `**Effort estimate:**` product/proof/other split on every milestone in the directory. `Actual:` has honest non-numeric states (`unavailable:`, `retrospective:`, `incomplete:`); `Effort estimate` has none, and `plans check` accepts only a directory, so there is no per-file exemption. Writing estimates onto already-complete milestones would have invented planning data they never carried.
+
+**Prevention:** `plans check` does not recurse into subdirectories, so a `history/` subdirectory holds completed pre-contract milestones with their bytes preserved while strict validates the executable root. Two consequences worth stating wherever the result is reported: a green `--strict` then means "the executable root satisfies the contract", not "every milestone was validated"; and a live milestone that still has open work belongs in the root, with its already-delivered checklist items moved verbatim into a non-parsed section so the forward estimate covers only what remains.

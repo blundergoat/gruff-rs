@@ -101,6 +101,8 @@ cargo install --path . --locked --root ./.cargo-tools
 | `analyse [paths...]` | Run the analyzer and print findings. |
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
+| `hook [paths...]` | Emit `gruff.hook.v1` JSON for coding-agent hooks. |
+| `check-ignore <paths...>` | Report whether gruff would ignore each path and why, without running analysis. |
 | `init` | Generate a starter `.gruff-rs.yaml`. |
 | `list-rules` | Print rule metadata as text or JSON, optionally filtered by selector. |
 | `dashboard` | Serve the local browser dashboard. |
@@ -169,7 +171,10 @@ jobs:
 Starting in v0.5.0, the action accepts arguments only through `argv`: one
 literal argument per non-empty line. Spaces within a line remain part of that
 argument; blank lines are rejected. `working-directory` and `output-file` must
-resolve inside `GITHUB_WORKSPACE`, including after resolving symlinks. The
+resolve inside `GITHUB_WORKSPACE`, including after resolving symlinks. On
+Windows runners these accept native paths — a drive root such as
+`D:\a\repo\repo\crate` or a UNC share — alongside POSIX and relative forms; a
+drive-relative value such as `C:crate` names no root and is rejected. The
 action installs the matching binary and invokes `gruff-rs` without reparsing
 the constructed argument array.
 
@@ -402,7 +407,7 @@ never count toward any gate.
 
 The dashboard renders HTML reports on demand. It has no authentication and must not be exposed to untrusted networks; keep the default loopback bind unless the environment is trusted.
 
-In polyglot repositories, `gruff-rs` defaults to port `8766` while `gruff-go`, `gruff-php`, and `gruff-py` default to `8765`; use `--port` when running multiple dashboards at the same time.
+In polyglot repositories, `gruff-rs` defaults to port `8766` while `gruff-go`, `gruff-php`, and `gruff-py` default to `8765` and `gruff-ts` defaults to `8767`; use `--port` when running multiple dashboards at the same time.
 
 ## Trust Boundary
 
@@ -435,13 +440,20 @@ cargo clippy --all-targets -- -D warnings
 bin/gruff-rs analyse . --format json --no-baseline
 ```
 
-`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, documentation drift fixtures, and a dogfood scan of the whole project gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
+`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, shell lint, the deny and stop hook exit-contract self-tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, documentation drift fixtures, and a dogfood scan of the whole project gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
 
 ## Documentation
 
+- [Documentation index](docs/README.md) - starting point for the guides below.
+- [Mission](docs/mission.md) - what gruff governs and why.
+- [Configuration](docs/configuration.md) - config discovery, selectors, exclusions, and custom rules.
+- [Rules](docs/rules.md) - rule IDs, severities, thresholds, and remediation guidance.
+- [Output Formats](docs/output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.
+- [CI Integration](docs/ci-integration.md) - GitHub Actions, SARIF upload, baselines, and patch diff scans.
+- [Dashboard](docs/dashboard.md) - local dashboard flags and safety model.
+- [Releasing](docs/releasing.md) - release checks and packaging notes.
 - [Changelog](CHANGELOG.md)
 - [Upgrading](UPGRADING.md)
-- [Rules](docs/rules.md)
 - [Action metadata](action.yml)
 - [Fixture notes](fixtures/README.md)
 - [Test fixture notes](tests/fixtures/README.md)

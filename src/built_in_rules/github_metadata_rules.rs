@@ -321,6 +321,8 @@ fn push_github_actions_summary_findings(
 struct WorkflowRunState {
     in_run_block: bool,
     run_indent: usize,
+    /// Shell text carried forward when a block line leaves a pipeline unfinished.
+    pending_pipeline: Option<String>,
 }
 
 impl WorkflowRunState {
@@ -333,9 +335,22 @@ impl WorkflowRunState {
             self.run_indent = line_indent(line);
             let value = after_run.trim();
             self.in_run_block = value.is_empty() || is_yaml_block_scalar(value);
+            self.pending_pipeline = None;
             return is_remote_download_piped_to_shell(after_run);
         }
-        self.in_run_block && is_remote_download_piped_to_shell(trimmed)
+        if !self.in_run_block {
+            return false;
+        }
+        // A downloader and its shell can sit on separate block lines, so an
+        // unfinished pipeline carries forward and is matched against the join.
+        let joined = match self.pending_pipeline.take() {
+            Some(previous) => format!("{previous} {trimmed}"),
+            None => trimmed.to_string(),
+        };
+        if is_unfinished_shell_pipeline(trimmed) {
+            self.pending_pipeline = Some(joined.clone());
+        }
+        is_remote_download_piped_to_shell(&joined)
     }
 
     /// Close a block when the next non-empty YAML key returns to its indentation.
@@ -343,8 +358,16 @@ impl WorkflowRunState {
         // Blank lines do not end a shell block visible to the metadata scan.
         if self.in_run_block && indent <= self.run_indent && !trimmed.is_empty() {
             self.in_run_block = false;
+            self.pending_pipeline = None;
         }
     }
+}
+
+/// Reports whether a shell line leaves a pipeline open for the following line.
+/// A trailing `||` is a logical fallback rather than a pipe, so it ends the join.
+fn is_unfinished_shell_pipeline(trimmed: &str) -> bool {
+    let command_text = trimmed.split('#').next().unwrap_or(trimmed).trim_end();
+    command_text.ends_with('\\') || (command_text.ends_with('|') && !command_text.ends_with("||"))
 }
 
 /// Return a normalized `uses:` dependency, or no value when the line is another key.

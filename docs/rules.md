@@ -51,7 +51,7 @@ Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, 
 
 `test-quality.long-test` counts the test body from the first assertion onward, so fixture setup before the first assertion does not trigger the rule. `waste.unnecessary-clone-candidate` is opt-in because ownership-preserving clones can be the more readable and verifiable choice.
 
-## Threshold calibration
+## Threshold Calibration
 
 Threshold defaults are anchored to documented peer analyzers where one exists, and called out as gruff-specific where no peer ships a comparable numeric default.
 

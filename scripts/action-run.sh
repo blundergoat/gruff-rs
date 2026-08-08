@@ -103,6 +103,40 @@ path_is_within() {
   [[ $root == "/" || $candidate == "$root" || $candidate == "$root/"* ]]
 }
 
+# Reports whether a value is a rooted native Windows path: a drive root such as `D:\x` or `D:/x`, or a UNC share such as
+# `\\server\share`. A drive-relative value such as `C:x` is deliberately excluded, because it names no root this action
+# could resolve, and guessing one would silently relocate the user's scan.
+is_windows_rooted_path() {
+  local value=$1
+  local windows_rooted_regex='^([A-Za-z]:[\/]|\\\\)'
+
+  [[ $value =~ $windows_rooted_regex ]]
+}
+
+# Convert a rooted native Windows path into the POSIX form Bash can open.
+#
+# Every path the action compares must share one notation. GitHub sets GITHUB_WORKSPACE to a native path on Windows
+# runners, so converting a user's input without converting the workspace would compare `/d/a/...` against `D:\a\...` and
+# reject every absolute path as an escape. Converting both keeps containment meaningful. Relative inputs are returned
+# untouched so they keep their workspace-rooted meaning, and non-Windows runners are never rewritten.
+to_posix_path() {
+  local value=$1
+  local label=$2
+  local converted
+
+  if [[ ${RUNNER_OS:-} != Windows ]] || ! is_windows_rooted_path "$value"; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  command -v cygpath >/dev/null 2>&1 \
+    || fail_action "$label needs cygpath to convert a Windows path: $value"
+  converted=$(cygpath -u "$value") \
+    || fail_action "unable to convert $label for bash: $value"
+  # An empty conversion would silently become a relative path below.
+  [[ -n $converted ]] || fail_action "unable to convert $label for bash: $value"
+  printf '%s\n' "$converted"
+}
+
 # Resolve an existing directory so symlink escapes are visible to the user.
 canonical_existing_directory() {
   local candidate=$1
@@ -119,18 +153,22 @@ canonical_existing_directory() {
 resolve_working_directory() {
   local workspace=$1
   local working_directory_input=${GRUFF_INPUT_WORKING_DIRECTORY:-}
+  local resolved_input
   local candidate
   local canonical
 
   contains_line_break "$working_directory_input" \
     && fail_action "working-directory must not contain line breaks"
+  # A Windows runner supplies native paths; resolve to one notation before use. The original input is kept for messages
+  # so users see what they wrote.
+  resolved_input=$(to_posix_path "$working_directory_input" "working-directory")
   # An empty field means the user wants to analyse the workspace root.
-  if [[ -z $working_directory_input ]]; then
+  if [[ -z $resolved_input ]]; then
     candidate=$workspace
-  elif [[ $working_directory_input == /* ]]; then
-    candidate=$working_directory_input
+  elif [[ $resolved_input == /* ]]; then
+    candidate=$resolved_input
   else
-    candidate=$workspace/$working_directory_input
+    candidate=$workspace/$resolved_input
   fi
   canonical=$(canonical_existing_directory "$candidate" "working-directory")
   path_is_within "$canonical" "$workspace" \
@@ -185,6 +223,7 @@ resolve_output_file() {
   local workspace=$1
   local working_directory=$2
   local output_file_input=${GRUFF_INPUT_OUTPUT_FILE:-}
+  local resolved_input
   local candidate
   local requested_parent
   local canonical_parent
@@ -194,11 +233,13 @@ resolve_output_file() {
   # An empty output-file means the user wants analyzer output in the job log.
   [[ -n $output_file_input ]] || return 0
   contains_line_break "$output_file_input" && fail_action "output-file must not contain line breaks"
+  # Same notation reconciliation as working-directory; messages keep the original.
+  resolved_input=$(to_posix_path "$output_file_input" "output-file")
   # An absolute path is allowed only when its resolved parent remains in scope.
-  if [[ $output_file_input == /* ]]; then
-    candidate=$output_file_input
+  if [[ $resolved_input == /* ]]; then
+    candidate=$resolved_input
   else
-    candidate=$working_directory/$output_file_input
+    candidate=$working_directory/$resolved_input
   fi
   filename=$(basename -- "$candidate")
   # An empty or directory-like basename cannot represent the requested report.
@@ -251,6 +292,9 @@ run_gruff() {
   # An empty workspace means the action cannot contain the user's file paths.
   [[ -n $workspace_input ]] || fail_action "GITHUB_WORKSPACE is required"
   contains_line_break "$workspace_input" && fail_action "GITHUB_WORKSPACE must not contain line breaks"
+  # GitHub sets this to a native path on Windows runners. Convert it first so the workspace and the user's paths are
+  # compared in one notation.
+  workspace_input=$(to_posix_path "$workspace_input" "GITHUB_WORKSPACE")
   workspace=$(canonical_existing_directory "$workspace_input" "GITHUB_WORKSPACE")
   working_directory=$(resolve_working_directory "$workspace")
   output_file=$(resolve_output_file "$workspace" "$working_directory")

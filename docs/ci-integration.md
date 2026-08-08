@@ -34,7 +34,13 @@ jobs:
 The composite action's `argv` input uses one literal argument per non-empty
 line. It never treats spaces or shell metacharacters within a line as syntax.
 Relative `working-directory` and `output-file` paths are rooted in the
-workspace; lexical and symlink escapes fail before the analyzer runs.
+workspace; lexical and symlink escapes fail before the analyzer runs. Windows
+runners may use native paths for both — a drive root such as
+`D:\a\repo\repo\crate` or a UNC share — because the action converts them and
+`GITHUB_WORKSPACE` to one notation before comparing them. Containment is
+unchanged: a native path outside the workspace still fails closed. A
+drive-relative value such as `C:crate` names no root the action can resolve, so
+it is rejected rather than guessed.
 
 Replace `FULL_40_CHARACTER_COMMIT_SHA` with the reviewed full commit SHA for
 v0.5.0 and keep `version: 0.5.0` aligned with that review. A full SHA pins the
@@ -125,9 +131,13 @@ it to scope its own work:
 
 ```sh
 cargo run -- check-ignore --format json src/app.css vendor/lib.rs src/main.rs
-# [{ "path": "vendor/lib.rs", "ignored": true, "source": "config", "pattern": "vendor/**" },
+# [{ "path": "src/app.css", "ignored": false, "source": null, "pattern": null },
+#  { "path": "vendor/lib.rs", "ignored": true, "source": "config", "pattern": "vendor/**" },
 #  { "path": "src/main.rs", "ignored": false, "source": null, "pattern": null }]
 ```
+
+The array carries one entry per input path, in the order given, so a caller can
+pair results with its own path list by index.
 
 Exit codes mirror `git check-ignore`: `0` when at least one path is ignored, `1`
 when none are, `2` on error. Text output lists the ignored paths; add `-v` to

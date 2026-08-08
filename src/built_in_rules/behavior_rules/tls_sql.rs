@@ -269,6 +269,10 @@ fn template_is_flaggable(template: &str) -> bool {
         r"(?ix)^
         (?:
             SELECT\b.*\bFROM\b
+          # A FROM-less SELECT is valid in PostgreSQL and SQLite. Placeholders
+          # normalise to spaces, so requiring no literal word after SELECT keeps
+          # an all-interpolated SELECT template visible without matching prose.
+          | SELECT\b [\s,()*.]* $
           | INSERT\b.*\bINTO\b
           | UPDATE\b.*\bSET\b
           | DELETE(?:\s+[A-Z_][A-Z0-9_.$]*(?:\s*,\s*[A-Z_][A-Z0-9_.$]*)*)?\s+FROM\b

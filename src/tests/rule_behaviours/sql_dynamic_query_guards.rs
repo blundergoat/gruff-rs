@@ -253,6 +253,31 @@ pub fn identifier_interpolation(prefix: &str, schema: &str, table: &str) {
     );
 }
 
+/// Keeps FROM-less SELECT statements visible while ordinary prose stays quiet.
+/// PostgreSQL and SQLite accept a SELECT with no FROM clause, so an all-placeholder
+/// template is still an injection sink.
+#[test]
+pub(crate) fn sql_dynamic_query_flags_from_less_select() {
+    let _guard = analysis_lock();
+    let body = r#"/// Probe.
+pub fn from_less(expression: &str) {
+    let _computed = db.query(&format!("SELECT {expression}"));
+    let _projection = db.query(&format!("SELECT {expression}, {expression}"));
+    let _prose = db.query(&format!("select the option {expression}"));
+    let _upload = db.query(&format!("Select a file to upload: {expression}"));
+    let _word_prefix = db.query(&format!("selected items {expression}"));
+}
+"#;
+
+    let report = analyse_sql_fixture(body);
+    assert_eq!(
+        sql_dynamic_lines(&report),
+        vec![3, 4],
+        "FROM-less SELECT must report while prose stays quiet; findings={:?}",
+        sql_dynamic_findings(&report)
+    );
+}
+
 /// Analyses one synthetic Rust source as a config-free project from a CLI user's perspective.
 fn analyse_sql_fixture(body: &str) -> AnalysisReport {
     let dir = tempdir().expect("tempdir");

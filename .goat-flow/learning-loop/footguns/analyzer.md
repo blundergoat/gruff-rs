@@ -65,7 +65,11 @@ Calibrate by requiring an explicit dereference or reference token: `iter().any(|
 
 `fixtures/sample.rs` (search: `let api_key =`) intentionally includes secret-looking strings, command execution, a long parameter list, and a weak test. Do not "fix" this file as ordinary bad code unless the replacement still proves the analyzer reports those rule families.
 
-The non-obvious failure mode is losing analyzer coverage while making the repository appear cleaner. The smoke command `cargo run -- analyse fixtures --format json --fail-on none` currently reports findings from this fixture.
+The non-obvious failure mode is losing analyzer coverage while making the repository appear cleaner.
+
+**Corrected 2026-08-08:** the smoke command `cargo run -- analyse fixtures --format json --fail-on none` reports **zero** findings and zero analysed files, because `.gruff-rs.yaml` authoritatively ignores `fixtures/**` (ADR-018). It proves the CLI exits 0, and so does the `fixture JSON scan` preflight check; neither proves this fixture still calibrates anything. To see the calibration set, add `--no-config`: `cargo run -- analyse fixtures --format json --fail-on none --no-config --no-baseline` reports 3 analysed files and 16 findings, including `sensitive-data.aws-access-key` at line 16. Compare that sorted finding set before and after any fixture edit.
+
+The AWS-key line also carries a `goat-flow-allow-secret` marker for the Stop hook. That marker is hook-only — `gruff` has no inline allow-marker handling — so it cannot suppress the analyzer finding. See ADR-022 for the threat boundary and why a `fixtures/**` exemption was rejected.
 
 ## Footgun: Code-Shape Rules Can Scan Fixture Strings
 
