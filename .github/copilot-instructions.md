@@ -36,7 +36,7 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 
 ## Commit Messages
 
-Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `../docs/coding-standards/git-commit-message.md`.
+Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit-message.md`.
 
 ## Key Resources
 
@@ -108,5 +108,5 @@ Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to
 | Copilot skills/config | `.github/skills/`, `.github/hooks/` |
 | Hooks (deny + quality) | `.goat-flow/hooks/` |
 | Peer instruction files | `CLAUDE.md`, `AGENTS.md` |
-| Commit guidance | `../docs/coding-standards/git-commit-message.md` |
+| Commit guidance | `docs/coding-standards/git-commit-message.md` |
 | Workspace notes | `.goat-flow/plans/`, `.goat-flow/logs/sessions/` |
