@@ -15,9 +15,10 @@
 #
 # Exit codes:
 #   0  clean scan, no findings
-#   2  findings blocked; the scan could not run (no git root or work dir); or the scan hit its wall-clock budget before
-#      completion. Every one of those blocks, because a scan that did not finish cannot report a clean turn, and hosts
-#      treat a non-blocking status as "nothing found". stderr explains which case applied.
+#   2  findings blocked; the scan could not run (no git root or work dir); the scan hit its wall-clock budget before
+#      completion; or a changed file exceeded the byte cap and went unread. Every one of those blocks, because a scan
+#      that did not finish cannot report a clean turn, and hosts treat a non-blocking status as "nothing found".
+#      stderr explains which case applied and names the limit to raise.
 #
 # Scan boundary:
 #   Coverage is relative to HEAD. The hook scans unstaged worktree changes, the staged index, and untracked files that Git
@@ -50,6 +51,9 @@ fallback_reported="
 fallback_conflict_path=""
 fallback_conflict_state=0
 fallback_bail=0
+# Changed files the byte cap kept out of the scan. A skipped file is unscanned content, not clean
+# content, so this count blocks the turn the same way an exhausted wall-clock budget does.
+fallback_oversized=0
 fallback_max_seconds="${GOAT_FLOW_POST_TURN_SAFETY_MAX_SECONDS:-60}"
 fallback_max_bytes="${GOAT_FLOW_POST_TURN_SAFETY_MAX_BYTES:-1048576}"
 fallback_max_findings="${GOAT_FLOW_POST_TURN_SAFETY_MAX_FINDINGS:-20}"
@@ -496,8 +500,13 @@ fallback_diff_path_within_byte_cap() {
   fi
   # An empty or invalid size cannot prove that the file fits the scan limit.
   case "$changed_file_bytes" in '' | *[!0-9]*) return 1 ;; esac
-  # Files over the limit are skipped consistently on both supported shells.
-  [ "$changed_file_bytes" -le "$fallback_max_bytes" ]
+  # Files over the limit are skipped consistently on both supported shells, and each skip is
+  # counted so the user is told their content went unscanned instead of being shown a clean turn.
+  if [ "$changed_file_bytes" -gt "$fallback_max_bytes" ]; then
+    fallback_oversized=$((fallback_oversized + 1))
+    return 1
+  fi
+  return 0
 }
 
 # Decode one default Git diff destination header into the literal repository path.
@@ -618,7 +627,11 @@ fallback_scan_file() {
   LC_ALL=C grep -Iq . "$full_path" 2>/dev/null || return 0
   size=$(wc -c <"$full_path" 2>/dev/null | tr -d '[:space:]')
   case "$size" in '' | *[!0-9]*) return 0 ;; esac
-  [ "$size" -le "$fallback_max_bytes" ] || return 0
+  # Content past the byte cap is left unread, so it is recorded as unscanned rather than passed over.
+  if [ "$size" -gt "$fallback_max_bytes" ]; then
+    fallback_oversized=$((fallback_oversized + 1))
+    return 0
+  fi
 
   fallback_conflict_path=""
   fallback_conflict_state=0
@@ -671,6 +684,11 @@ fallback_main() {
     printf 'post-turn-safety: Bash 3 compatibility scan incomplete (budget %ss exceeded).\n' "$fallback_max_seconds" >&2
     return 2
   fi
+  # Content the byte cap skipped was never read, so the turn cannot be reported as clean either.
+  if [ "$fallback_oversized" -ne 0 ]; then
+    printf 'post-turn-safety: scan incomplete, %s changed file(s) exceed the %s-byte cap and went unscanned (raise GOAT_FLOW_POST_TURN_SAFETY_MAX_BYTES to scan them).\n' "$fallback_oversized" "$fallback_max_bytes" >&2
+    return 2
+  fi
   return 0
 }
 
@@ -708,6 +726,9 @@ merge_conflict_scan_state=0
 # files (never under-counts) so the incomplete-scan message stays honest.
 BAIL=0
 PENDING_FILES=0
+# Changed files the byte cap kept out of SCANNABLE. Their content was never read, so the turn ends
+# blocked rather than clean - the same rule the wall-clock budget already follows.
+OVERSIZED_FILES=0
 
 budget_check() {
   if ((BAIL == 0)) && ((SECONDS >= MAX_SECONDS)); then
@@ -1202,6 +1223,10 @@ gate_scannable_files() {
         [[ "${sizes[i]}" =~ ^[[:space:]]*([0-9]+) ]] || continue
         if ((BASH_REMATCH[1] <= MAX_FILE_BYTES)); then
           SCANNABLE["${chunk[i]}"]=2
+        else
+          # Held back as too large. Whether that hid anything is only known after the text filter
+          # below, because binary content was never in scope for this scanner.
+          SCANNABLE["${chunk[i]}"]=3
         fi
       done
     else
@@ -1212,16 +1237,23 @@ gate_scannable_files() {
         case "$size" in '' | *[!0-9]*) continue ;; esac
         if [ "$size" -le "$MAX_FILE_BYTES" ]; then
           SCANNABLE["${chunk[i]}"]=2
+        else
+          # Held back as too large; the text filter below decides whether that hid real content.
+          SCANNABLE["${chunk[i]}"]=3
         fi
       done
     fi
 
-    # Only paths marked 2 (size gate passed) are promoted to 1 (scannable);
-    # leftover 2 markers fail every "= 1" admission test downstream, so they
-    # need no separate cleanup.
+    # This loop sees only text files, so it settles both outcomes of the size gate. Paths marked 2
+    # (within the cap) become 1 and get scanned. Paths marked 3 (over the cap) are text the user
+    # changed and nobody read, so they are counted as unscanned and will block the turn. A large
+    # binary file appears in neither list and stays clean, because it was never in scope. Leftover
+    # 2 and 3 markers fail every "= 1" admission test downstream, so they need no separate cleanup.
     while IFS= read -r -d '' path; do
       if [ "${SCANNABLE[$path]:-0}" = 2 ]; then
         SCANNABLE["$path"]=1
+      elif [ "${SCANNABLE[$path]:-0}" = 3 ]; then
+        OVERSIZED_FILES=$((OVERSIZED_FILES + 1))
       fi
     done < <(LC_ALL=C grep -IlZ -e . -- "${chunk[@]}" 2>/dev/null || true)
   done
@@ -1625,6 +1657,12 @@ main() {
   fi
 
   if ((BAIL)); then
+    return 2
+  fi
+
+  # Content the byte cap skipped was never read, so the turn cannot be reported as clean either.
+  if ((OVERSIZED_FILES)); then
+    printf 'post-turn-safety: scan incomplete, %s changed file(s) exceed the %s-byte cap and went unscanned (raise GOAT_FLOW_POST_TURN_SAFETY_MAX_BYTES to scan them).\n' "$OVERSIZED_FILES" "$MAX_FILE_BYTES" >&2
     return 2
   fi
 

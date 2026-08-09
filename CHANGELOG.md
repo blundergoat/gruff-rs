@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Oversized changed files block the turn instead of passing as clean.** The post-turn safety hook counted a changed file above the byte cap as scanned, so padding a credential-bearing file past 1 MiB ended the turn with exit 0 and no output on both dispatch paths. Oversized text files now report how many went unread and name `GOAT_FLOW_POST_TURN_SAFETY_MAX_BYTES`; large binary files stay clean because they were never in scope.
+- **Policy hooks run when the project path contains a symlink.** The Bash launcher compared the invoked path against its own resolved module path, so a symlinked project directory reaching it through the `CLAUDE_PROJECT_DIR` fallback made it load, run no hook, and exit 0 — which every supported host reads as an allowed tool call. Both sides of the comparison now resolve symlinks first.
+- **Write-tool denies restored for secret paths.** `.claude/settings.json` denied only `Read` and `Edit` for `secrets/**`, `*.pem`, `*.key`, `.ssh/**`, `.aws/**`, `.gnupg/**`, `.npmrc`, `.pypirc`, `*.pfx`, `credentials*`, `.kube/config`, and env files, so the distinct `Write` tool could create or overwrite any of them unchallenged.
+- **More env-file variants denied.** `.env.prod`, `.env.dev`, `.env.stage`, `.env.ci`, `.env.secret`, and `.env.backup` join the deny list for all three file tools; the Bash deny hook already covered them, but it never sees direct `Read`, `Edit`, or `Write` calls.
 
 ## v0.5.0 - 2026-08-06
 
