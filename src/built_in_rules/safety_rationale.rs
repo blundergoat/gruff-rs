@@ -1,23 +1,119 @@
 //! Safety-rationale helpers preserve nearby comments for unsafe-block rules.
-//! The line analyzer uses this module to find `SAFETY:` text and decide whether
-//! that text explains enough for a documentation finding to stay silent.
+//! The line analyzer resolves case-insensitive markers through a bounded comment
+//! prelude, then decides whether the combined rationale explains enough.
 
-/// Returns the first `SAFETY:` rationale in an unsafe line's three-line window.
-/// `None` means the user supplied no marker for `security.unsafe-block`.
+const SAFETY_MARKER: &[u8] = b"SAFETY:";
+const SAFETY_RATIONALE_LOOKBACK_LINES: usize = 16;
+
+/// Return the nearest rationale in the bounded comment prelude before an unsafe line.
+/// `None` means no marker is connected to the block without crossing executable code.
 pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
-    let start = line_index.saturating_sub(3);
+    let first_candidate = line_index.saturating_sub(SAFETY_RATIONALE_LOOKBACK_LINES);
+    let mut continuation_lines: Vec<&str> = Vec::new();
 
-    // Inspect raw lines so the scan can see comments removed from Rust code text.
-    for line in lines[start..=line_index].iter() {
-        // The first marker owns the rationale reported for this unsafe block.
-        if let Some(position) = line.find("SAFETY:") {
-            let rationale = &line[position + "SAFETY:".len()..];
-            return Some(rationale.to_string());
+    // Walk toward the marker so continuation comments can be restored to source order.
+    for candidate_index in (first_candidate..=line_index).rev() {
+        let line = lines[candidate_index];
+
+        // The string masker keeps a same-line literal from posing as a rationale comment.
+        if candidate_index == line_index {
+            if let Some(rationale) = safety_rationale_in_comment(line) {
+                return Some(rationale);
+            }
+            continue;
+        }
+
+        let comment_text = rust_comment_text(line);
+        if let Some(marker_position) =
+            safety_marker_position(line).filter(|_| comment_text.is_some())
+        {
+            return Some(join_safety_rationale(
+                line,
+                marker_position,
+                &continuation_lines,
+            ));
+        }
+
+        match comment_text {
+            Some(comment) => continuation_lines.push(comment),
+            // Attributes may sit between a safety comment and the unsafe expression they annotate.
+            None if is_rust_attribute_line(line) => {}
+            None => break,
         }
     }
 
     // No marker leaves the unsafe block visible to the missing-rationale rule.
     None
+}
+
+/// Return a rationale only when the unsafe line contains a real Rust comment marker.
+fn safety_rationale_in_comment(line: &str) -> Option<String> {
+    let string_masked_line = crate::strip_rust_string_literals(line);
+    crate::extract_rust_comments(&string_masked_line)
+        .into_iter()
+        .find_map(|comment| {
+            let marker_position = safety_marker_position(&comment.text)?;
+            let marker_end = marker_position + SAFETY_MARKER.len();
+            Some(trim_comment_suffix(&comment.text[marker_end..]).to_string())
+        })
+}
+
+/// Join marker text and following comment lines in their original source order.
+fn join_safety_rationale<'a>(
+    marker_line: &'a str,
+    marker_position: usize,
+    continuation_lines: &[&'a str],
+) -> String {
+    let marker_end = marker_position + SAFETY_MARKER.len();
+    let marker_text = trim_comment_suffix(&marker_line[marker_end..]);
+    let mut rationale_parts = Vec::with_capacity(continuation_lines.len() + 1);
+    if !marker_text.is_empty() {
+        rationale_parts.push(marker_text);
+    }
+    // Backward discovery is reversed so the final rationale reads like the source comment.
+    for continuation in continuation_lines.iter().rev() {
+        if !continuation.is_empty() {
+            rationale_parts.push(continuation);
+        }
+    }
+    rationale_parts.join(" ")
+}
+
+/// Find the byte offset of an ASCII case-insensitive `SAFETY:` marker.
+fn safety_marker_position(line: &str) -> Option<usize> {
+    line.as_bytes()
+        .windows(SAFETY_MARKER.len())
+        .position(|candidate| candidate.eq_ignore_ascii_case(SAFETY_MARKER))
+}
+
+/// Return user-written text from a standalone Rust line-comment or block-comment line.
+fn rust_comment_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if let Some(comment) = trimmed.strip_prefix("//") {
+        return Some(trim_comment_suffix(
+            comment.trim_start_matches(['/', '!']).trim(),
+        ));
+    }
+    if let Some(comment) = trimmed.strip_prefix("/*") {
+        return Some(trim_comment_suffix(comment));
+    }
+    if trimmed == "*/" {
+        return Some("");
+    }
+    trimmed
+        .strip_prefix('*')
+        .map(|comment| trim_comment_suffix(comment))
+}
+
+/// Remove a closing block-comment delimiter without changing rationale punctuation.
+fn trim_comment_suffix(comment: &str) -> &str {
+    comment.trim().trim_end_matches("*/").trim()
+}
+
+/// Return whether one complete outer attribute may connect a comment to an unsafe expression.
+fn is_rust_attribute_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("#[") && trimmed.ends_with(']')
 }
 
 /// Returns whether nearby `SAFETY:` text is empty, ceremonial, or too brief.

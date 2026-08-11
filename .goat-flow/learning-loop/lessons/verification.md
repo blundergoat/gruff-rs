@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-12
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -458,10 +458,14 @@ format. Regression coverage lives in `src/tests/renderers/output.rs` (search:
 **Created:** 2026-08-08
 **Decision changed:** In large files with repeated statements, every manual patch hunk must include its owning function and nearby semantic message, followed immediately by a diff against the pristine source.
 **Trigger phase:** ACT
+**Incident count:** 3
+**Latest occurrence:** 2026-08-12
 
 **What happened:** A three-hunk patch that matched only `return 1` changed the first three matching statements in a large shell hook instead of the intended scan-unavailable branches near `main`. The immediate diff against the official backup exposed unrelated changes in fallback budget and token-classification paths before the hook reached the workspace.
 
-**Prevention:** Include a unique function name, condition, or user-visible message in each patch hunk when the replacement text repeats. Compare the result with the pristine file before copying, installing, or testing it; if the diff names an unrelated function, revert those exact hunks before proceeding.
+Two rule-retuning hunks repeated the error: one put opt-in configuration in the wrong test; another put a test inside a raw string. Readback caught the first, and the compiler caught the second.
+
+**Prevention:** Anchor each hunk with its unique owner and message. Read the owner and scoped diff immediately; correct misplaced hunks before testing.
 
 ## Lesson: Milestone Estimate Tokens Must Terminate Their Checklist Item
 

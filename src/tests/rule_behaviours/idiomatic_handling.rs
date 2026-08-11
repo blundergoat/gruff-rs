@@ -75,10 +75,9 @@ pub fn triggered_by() -> bool { true }
     }
 }
 
-/// Regression guard: `security.unsafe-block` must still find nearby `SAFETY:`
-/// rationale comments after the raw/code-only split. The unsafe-block
-/// rule uses the raw (comment-preserved) line view so it can read the
-/// `SAFETY:` marker.
+/// Regression guard: documented unsafe blocks stay silent across accepted comment shapes.
+/// The unsafe-block rule uses the raw line view so it can read mixed-case and multiline
+/// rationales before deciding whether a security finding is warranted.
 #[test]
 pub(crate) fn unsafe_block_still_sees_safety_rationale_comment() {
     let _guard = analysis_lock();
@@ -88,6 +87,25 @@ pub(crate) fn unsafe_block_still_sees_safety_rationale_comment() {
         r##"/// Probe.
 pub fn explained() {
     // SAFETY: this block constructs a raw pointer but never dereferences it.
+    unsafe {
+        std::ptr::null::<i32>();
+    }
+}
+
+/// Probe.
+pub fn explained_mixed_case() {
+    // Safety: this block constructs a raw pointer but never dereferences it.
+    unsafe {
+        std::ptr::null::<i32>();
+    }
+}
+
+/// Probe.
+pub fn explained_multiline() {
+    // safety:
+    // the pointer remains valid for the duration of this operation,
+    // and no mutable reference aliases the returned value.
+    #[allow(unused_unsafe)]
     unsafe {
         std::ptr::null::<i32>();
     }
@@ -121,6 +139,15 @@ pub fn unexplained() {
             1,
             "expected exactly one unsafe-block finding (the unexplained one); findings={unsafe_findings:?}"
         );
+    let weak_rationales: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.weak-safety-rationale")
+        .collect();
+    assert!(
+        weak_rationales.is_empty(),
+        "continued rationale text must prevent weak-rationale findings; findings={weak_rationales:?}"
+    );
 }
 
 /// Config round-trip guard: the three naming options

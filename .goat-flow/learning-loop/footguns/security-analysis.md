@@ -1,6 +1,6 @@
 ---
 category: security-analysis
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-12
 ---
 
 ## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
@@ -36,11 +36,21 @@ A 2026-08-11 scan of clap measured 1,265 `security.process-command` findings bec
 
 An initial import collector treated every unrelated glob, including `use rayon::prelude::*`, as possible contrary `Command` evidence. That suppressed three genuine calls in rust-clippy's `lintcheck/src/main.rs` despite its explicit `use std::process::{Command, Stdio}`. A glob path is not evidence that it exports a specific name. Explicit standard-library imports remain authoritative; a non-standard import is contrary evidence only when its final imported name is actually `Command` or `process`.
 
-Evidence: `src/built_in_rules/behavior_rules.rs` (search: `struct ProcessCommandImports`) records constructor provenance, and `src/tests/rule_behaviours/release_noise_guards.rs` (search: `process_command_requires_std_import_provenance`) covers an explicit standard-library import beside an unrelated glob.
+Evidence: `src/built_in_rules/behavior_rules.rs` (search: `struct TopLevelProcessCommandImports`) records constructor provenance, and `src/tests/rule_behaviours/release_noise_guards.rs` (search: `process_command_requires_std_import_provenance`) covers an explicit standard-library import beside an unrelated glob.
 
 `src/built_in_rules/behavior_rules.rs` (search: `fn analyse_process_commands`) reports `security.process-command` only when `process_command_risk_signals` finds a concrete risk shape such as shell execution, dynamic executable, dynamic arguments, environment changes, or working-directory changes. Reporting every `Command::new(...)` constructor creates release-blocking noise for fixed executable helpers and cleanup commands.
 
 The non-obvious failure mode is treating "process object constructed" as equivalent to "security-relevant process execution." Builder helpers that return `Command` and fixed cleanup commands such as `taskkill /PID <pid> /F /T` should stay silent, while dynamic shell execution must still fire. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `process_command_skips_builders_and_fixed_pid_cleanup`) and `src/tests/scenarios/calibration_extras.rs` (search: `calibration_security_process_command_detects_code_not_fixture_text`).
+
+## Footgun: Safety Rationale Matching Must Follow Comment Structure
+
+**Status:** active | **Created:** 2026-08-12 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Resolve `SAFETY:` case-insensitively through a bounded, contiguous comment prelude; allow complete outer attributes to bridge the prelude, and stop at executable code.
+**Trigger phase:** ACT
+
+`src/built_in_rules/safety_rationale.rs` (search: `fn find_nearby_safety_rationale`) originally searched only the unsafe line and its three predecessors for the exact uppercase spelling `SAFETY:`. It missed common `Safety:` comments and longer explanations split across comment lines. Expanding only the numeric window would create the opposite error: an unrelated rationale could vouch for an unsafe block across intervening code.
+
+A 2026-08-12 tokio scan classified 802 unsafe sites: 303 had a connected rationale and 499 did not. The corrected analyzer reports those 499 undocumented sites, down from 704 findings before case-insensitive, structured lookback. `src/tests/rule_behaviours/safety_rationale_guards.rs` (search: `nearby_safety_rationale_accepts_case_and_multiline_comments`) covers spelling, continuation comments, and attributes; the companion `nearby_safety_rationale_stops_at_code_and_sixteen_lines` test pins both boundaries.
 
 ## Footgun: Candidate Taint Rules Can Taint Their Own Predicate Booleans
 
