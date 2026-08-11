@@ -278,17 +278,18 @@ the full Rust suite does not exercise the analyzer's own source-shape rubric.
 ## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
 
 **Created:** 2026-05-23
+**Decision changed:** Run the focused dogfood scan after a rule helper gains branching state, before full preflight.
+**Trigger phase:** VERIFY
+**Incident count:** 2
+**Latest occurrence:** 2026-08-12
 
-When adding analyzer rules, run a focused dogfood scan before final preflight if
-the implementation introduces new helpers in `src/built_in_rules/` (search:
-`analyse_weak_crypto`). In M55, Rust tests and calibration passed, but
-`cargo run --quiet -- analyse . --format json --fail-on none --no-baseline`
-reported a new `size.parameter-count` warning for a helper that threaded file,
-line-start, findings, dedupe, primitive, and byte-index parameters separately.
-
-Prefer a small context/reporter struct for repeated finding construction, then
-rerun the dogfood scan at the same threshold before treating the verification
-failure as closed.
+Focused behavior tests do not exercise dogfood shape gates. In M55 they missed
+`size.parameter-count` in `src/built_in_rules/behavior_rules.rs` (search:
+`analyse_weak_crypto`). On 2026-08-12 they missed four shape findings in
+`src/built_in_rules/safety_rationale.rs` (search: `struct SafetyPreludeScanner`).
+Run `bin/gruff-rs analyse . --format text --no-baseline` after changing a
+stateful rule helper. Prefer a small context or scanner struct, then repeat the
+dogfood gate before closing verification.
 
 ## Lesson: Cargo Test Accepts One Name Filter Before Harness Args
 

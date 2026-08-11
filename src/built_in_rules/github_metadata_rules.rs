@@ -1,6 +1,6 @@
 //! Deterministic rules for GitHub workflows and explicit composite actions.
 //! Path shape plus source origin selects the understood metadata contract,
-//! then shared step rules and workflow-only rules feed the normal report.
+//! then structurally placed step rules and workflow-only rules feed the normal report.
 
 use super::super::*;
 
@@ -184,6 +184,7 @@ pub(super) fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut
 #[derive(Default)]
 struct GithubMetadataScanState {
     run: WorkflowRunState,
+    steps: GithubStepState,
     workflow_permissions: WorkflowPermissionsState,
     workflow_summary: WorkflowSecuritySummary,
 }
@@ -229,8 +230,8 @@ fn analyse_github_actions_line(
     line: &str,
 ) {
     let trimmed = line.trim();
-    // Both workflows and composite actions can depend on third-party `uses:` steps.
-    if let Some(action) = workflow_uses_value(trimmed) {
+    // Only a `uses:` property attached directly to a real step names an action dependency.
+    if let Some(action) = scan_state.steps.action_dependency(line, metadata_kind) {
         maybe_push_unpinned_action(unit, findings, metadata_kind, line_number, action);
     }
     // Composite action metadata has no workflow-level permissions contract.
@@ -370,13 +371,139 @@ fn is_unfinished_shell_pipeline(trimmed: &str) -> bool {
     command_text.ends_with('\\') || (command_text.ends_with('|') && !command_text.ends_with("||"))
 }
 
-/// Return a normalized `uses:` dependency, or no value when the line is another key.
-fn workflow_uses_value(trimmed: &str) -> Option<&str> {
+/// Return a normalized `uses:` value from plain or list-item property syntax.
+fn github_step_uses_value(trimmed: &str) -> Option<&str> {
     let value = trimmed
         .strip_prefix("- ")
         .unwrap_or(trimmed)
         .strip_prefix("uses:")?;
     Some(normalize_yaml_scalar(value))
+}
+
+/// One open `steps:` sequence and the indentation of its direct list items.
+#[derive(Clone, Copy, Debug)]
+struct OpenGithubSteps {
+    steps_indent: usize,
+    item_indent: Option<usize>,
+}
+
+/// One YAML mapping key that can establish a supported GitHub metadata path.
+#[derive(Debug)]
+struct GithubMappingScope {
+    indent: usize,
+    key: String,
+}
+
+/// Locate action dependencies without treating arbitrary YAML keys named `uses` as steps.
+#[derive(Default)]
+struct GithubStepState {
+    mapping_scopes: Vec<GithubMappingScope>,
+    open_steps: Option<OpenGithubSteps>,
+}
+
+impl GithubStepState {
+    /// Return the action dependency attached directly to a step on this line.
+    fn action_dependency<'a>(
+        &mut self,
+        line: &'a str,
+        metadata_kind: GithubMetadataKind,
+    ) -> Option<&'a str> {
+        let trimmed = line.trim();
+        // Empty and comment-only lines preserve the surrounding YAML path.
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return None;
+        }
+        let indent = line_indent(line);
+        let dependency = self.dependency_in_open_steps(indent, trimmed);
+        self.update_mapping_path(indent, trimmed, metadata_kind);
+        dependency
+    }
+
+    /// Check direct list-item and continuation properties inside the current `steps:` sequence.
+    fn dependency_in_open_steps<'a>(&mut self, indent: usize, trimmed: &'a str) -> Option<&'a str> {
+        let mut open_steps = self.open_steps?;
+        let is_list_item = trimmed.starts_with("- ");
+        // A peer mapping closes `steps`; an indentationless list item at the same level remains valid.
+        if indent <= open_steps.steps_indent && !is_list_item {
+            self.open_steps = None;
+            return None;
+        }
+        // The first list item fixes the direct sequence indentation for all following steps.
+        if open_steps.item_indent.is_none() && is_list_item && indent >= open_steps.steps_indent {
+            open_steps.item_indent = Some(indent);
+            self.open_steps = Some(open_steps);
+        }
+        let item_indent = open_steps.item_indent?;
+        if is_list_item {
+            return (indent == item_indent)
+                .then(|| github_step_uses_value(trimmed))
+                .flatten();
+        }
+        // A continuation property begins two columns after `- `; deeper keys belong to `with`,
+        // `env`, or another nested mapping and cannot name the step dependency.
+        (indent == item_indent + 2)
+            .then(|| github_step_uses_value(trimmed))
+            .flatten()
+    }
+
+    /// Maintain the mapping ancestors needed to recognise workflow and action `steps:` blocks.
+    fn update_mapping_path(
+        &mut self,
+        indent: usize,
+        trimmed: &str,
+        metadata_kind: GithubMetadataKind,
+    ) {
+        // Returning to a peer key closes that key's mapping before the new line is classified.
+        while self
+            .mapping_scopes
+            .last()
+            .is_some_and(|scope| scope.indent >= indent)
+        {
+            self.mapping_scopes.pop();
+        }
+        let Some((key, value)) = yaml_mapping_entry(trimmed) else {
+            return;
+        };
+        let normalized_value = normalize_yaml_scalar(value);
+        if key == "steps"
+            && normalized_value.is_empty()
+            && self.has_supported_steps_parent(metadata_kind)
+        {
+            self.open_steps = Some(OpenGithubSteps {
+                steps_indent: indent,
+                item_indent: None,
+            });
+        }
+        // Only an empty mapping value can contain later indented child keys.
+        if normalized_value.is_empty() {
+            self.mapping_scopes.push(GithubMappingScope {
+                indent,
+                key: key.to_string(),
+            });
+        }
+    }
+
+    /// Check the exact metadata path GitHub assigns step semantics.
+    fn has_supported_steps_parent(&self, metadata_kind: GithubMetadataKind) -> bool {
+        match metadata_kind {
+            GithubMetadataKind::Action => {
+                self.mapping_scopes.len() == 1 && self.mapping_scopes[0].key == "runs"
+            }
+            GithubMetadataKind::Workflow => {
+                self.mapping_scopes.len() == 2 && self.mapping_scopes[0].key == "jobs"
+            }
+        }
+    }
+}
+
+/// Split one plain YAML mapping entry; sequence items are handled by step state instead.
+fn yaml_mapping_entry(trimmed: &str) -> Option<(&str, &str)> {
+    if trimmed.starts_with("- ") {
+        return None;
+    }
+    let (key, value) = trimmed.split_once(':')?;
+    let normalized_key = key.trim().trim_matches('"').trim_matches('\'');
+    (!normalized_key.is_empty()).then_some((normalized_key, value))
 }
 
 /// Strip a trailing YAML inline comment (` #...`). YAML requires whitespace before

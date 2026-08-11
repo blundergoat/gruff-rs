@@ -104,3 +104,50 @@ pub(crate) fn nearby_safety_rationale_stops_at_code_and_sixteen_lines() {
         "a marker beyond the bounded prelude must stay unresolved"
     );
 }
+
+#[test]
+/// Plain block-comment lines count as rationale text, but dereferences remain executable code.
+pub(crate) fn nearby_safety_rationale_follows_block_comment_boundaries() {
+    let block_comment_lines = [
+        "    /* SAFETY: caller validated pointer alignment and",
+        "       the allocation remains live for this read.",
+        "    */",
+        "    unsafe { read_pointer() }",
+    ];
+    assert_eq!(
+        crate::built_in_rules::find_nearby_safety_rationale(&block_comment_lines, 3).as_deref(),
+        Some("caller validated pointer alignment and the allocation remains live for this read.")
+    );
+
+    let marker_inside_block = [
+        "    /*",
+        "       SAFETY: caller validated pointer alignment and",
+        "       the allocation remains live for this read.",
+        "    */",
+        "    unsafe { read_pointer() }",
+    ];
+    assert_eq!(
+        crate::built_in_rules::find_nearby_safety_rationale(&marker_inside_block, 4).as_deref(),
+        Some("caller validated pointer alignment and the allocation remains live for this read.")
+    );
+
+    let dereference_lines = [
+        "    // SAFETY: caller validated pointer alignment",
+        "    *destination = value;",
+        "    unsafe { read_pointer() }",
+    ];
+    assert!(
+        crate::built_in_rules::find_nearby_safety_rationale(&dereference_lines, 2).is_none(),
+        "an executable dereference must end the rationale prelude"
+    );
+
+    let inline_block_comment = [
+        "    // SAFETY: old rationale must not cross executable code",
+        "    prepare_pointer(); /* unrelated note */",
+        "    unsafe { read_pointer() }",
+    ];
+    assert!(
+        crate::built_in_rules::find_nearby_safety_rationale(&inline_block_comment, 2).is_none(),
+        "a trailing block comment must not disguise executable code as rationale text"
+    );
+}

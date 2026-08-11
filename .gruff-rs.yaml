@@ -194,7 +194,8 @@ rules:
   # Flags placeholder identifiers such as foo, bar, baz, and qux.
   naming.placeholder-identifier:
     enabled: true
-  # Flags two-letter `let` bindings and function parameters outside accepted abbreviations, except conventional typed `cx` context parameters.
+  # Flags two-letter `let` bindings and function parameters outside accepted
+  # abbreviations, except conventional typed `cx` context parameters.
   naming.short-variable:
     enabled: true
   # Flags clone calls inside loop bodies as allocation hot spot candidates.

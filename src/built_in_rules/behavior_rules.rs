@@ -58,10 +58,9 @@ pub(crate) struct LineRuleContext<'a> {
 impl LineRuleContext<'_> {
     fn analyse_line(&self, line_index: usize, findings: &mut Vec<Finding>) {
         let line_number = line_index + 1;
-        let raw_line = self.raw_lines[line_index];
         let source_line = self.source_lines[line_index];
         let code_only_line = self.code_only_lines[line_index];
-        self.analyse_safety_line(raw_line, line_index, line_number, findings);
+        self.analyse_safety_line(code_only_line, line_index, line_number, findings);
         self.analyse_waste_line(code_only_line, source_line, line_number, findings);
     }
 
@@ -96,12 +95,13 @@ fn file_path_is_test_code(display_path: &str) -> bool {
 impl LineRuleContext<'_> {
     fn analyse_safety_line(
         &self,
-        line: &str,
+        code_only_line: &str,
         line_index: usize,
         line_number: usize,
         findings: &mut Vec<Finding>,
     ) {
-        let has_unsafe = static_regex(&UNSAFE_BLOCK_REGEX, r"\bunsafe\s*\{").is_match(line);
+        let has_unsafe =
+            static_regex(&UNSAFE_BLOCK_REGEX, r"\bunsafe\s*\{").is_match(code_only_line);
         if !has_unsafe {
             return;
         }
@@ -186,112 +186,309 @@ pub(crate) fn analyse_process_commands(
 ) {
     let command_regex = static_regex(
         &PROCESS_COMMAND_REGEX,
-        r"(?P<constructor>std::process::Command|process::Command|Command)::new\s*\(",
+        r"\b(?P<constructor>std::process::Command|process::Command|Command)::new\s*\(",
     );
-    let imports = TopLevelProcessCommandImports::from_uses(ast);
-    // Comments cannot execute a process, so only code contributes constructors and risk signals.
-    let code_only_source =
-        strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
-    let searchable_lines: Vec<&str> = code_only_source.lines().collect();
-    let source_lines: Vec<&str> = source.lines().collect();
+    let import_scopes = ProcessCommandImportScopes::from_ast(ast);
+    let source_views = ProcessCommandSourceViews::from_source(source);
+    let literal_preserving_lines: Vec<&str> =
+        source_views.literal_preserving_code.lines().collect();
+    let code_only_lines: Vec<&str> = source_views.code_only.lines().collect();
     // Keep each finding anchored to the source line that constructs the process command.
-    for (line_index, line) in searchable_lines.iter().enumerate() {
+    for (line_index, line) in code_only_lines.iter().enumerate() {
+        let line_number = line_index + 1;
+        let imports = import_scopes.imports_at_line(line_number);
         let constructs_std_process_command = command_regex.captures_iter(line).any(|captures| {
-            captures
-                .name("constructor")
-                .is_some_and(|constructor| imports.is_std_process_constructor(constructor.as_str()))
+            captures.name("constructor").is_some_and(|constructor| {
+                constructor_has_no_outer_path(line, constructor)
+                    && imports.is_std_process_constructor(constructor.as_str())
+            })
         });
         // A same-named builder is harmless unless its import proves this is the standard-library type.
         if !constructs_std_process_command {
             continue;
         }
-        let raw_window = line_window(&source_lines, line_index);
-        let searchable_window = line_window(&searchable_lines, line_index);
+        let window_end = process_command_window_end(&code_only_lines, line_index);
+        let literal_preserving_window = literal_preserving_lines[line_index..window_end].join("\n");
+        let code_only_window = code_only_lines[line_index..window_end].join("\n");
         // Builder factories and fixed test cleanup lack the execution risk this rule reports.
-        if process_command_is_returned_builder(&source_lines, line_index)
-            || process_command_is_fixed_taskkill_cleanup(&raw_window)
+        if process_command_is_returned_builder(
+            &literal_preserving_lines,
+            line_index,
+            &literal_preserving_window,
+        ) || process_command_is_fixed_taskkill_cleanup(&literal_preserving_window)
         {
             continue;
         }
-        let risk_signals = process_command_risk_signals(&raw_window, &searchable_window);
+        let risk_signals =
+            process_command_risk_signals(&literal_preserving_window, &code_only_window);
         // Fixed commands without a concrete risk shape do not warrant a security warning.
         if risk_signals.is_empty() {
             continue;
         }
-        push_process_command_finding(file, line_index + 1, risk_signals, findings);
+        push_process_command_finding(file, line_number, risk_signals, findings);
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-/// Top-level import bindings that can resolve `Command::new` or `process::Command::new`.
-///
-/// Conflicting explicit bindings stay unresolved so a same-named third-party builder cannot
-/// become a security finding.
-struct TopLevelProcessCommandImports {
-    bare_command_from_std: bool,
-    bare_command_from_other: bool,
-    process_module_from_std: bool,
-    process_module_from_other: bool,
+/// Reject a constructor match captured as the suffix of another qualified Rust path.
+fn constructor_has_no_outer_path(line: &str, constructor: regex::Match<'_>) -> bool {
+    !line[..constructor.start()].trim_end().ends_with("::")
 }
 
-impl TopLevelProcessCommandImports {
-    /// Collect bindings from top-level `use` items before source-text matching begins.
-    fn from_uses(ast: &syn::File) -> Self {
-        let mut imports = Self::default();
-        // Nested scopes need lexical resolution, so only unambiguous top-level imports are accepted.
-        for item_use in ast.items.iter().filter_map(|item| match item {
-            syn::Item::Use(item_use) => Some(item_use),
-            _ => None,
-        }) {
-            collect_process_command_bindings(&item_use.tree, &mut Vec::new(), &mut imports);
+/// Comment-safe source projections used by process constructor and risk matching.
+struct ProcessCommandSourceViews {
+    literal_preserving_code: String,
+    code_only: String,
+}
+
+impl ProcessCommandSourceViews {
+    /// Mask comments in both views while retaining string literals only for literal risk checks.
+    fn from_source(source: &str) -> Self {
+        let string_masked = strip_rust_string_literals(source);
+        let code_only = strip_rust_comments_after_string_mask(&string_masked);
+        debug_assert_eq!(source.len(), string_masked.len());
+        debug_assert_eq!(source.len(), code_only.len());
+
+        let mut literal_preserving_bytes = source.as_bytes().to_vec();
+        // The two masks differ only at comment bytes, so applying that difference to the original
+        // retains quoted executable names without letting comment examples become risk evidence.
+        for (index, (string_masked_byte, code_only_byte)) in
+            string_masked.bytes().zip(code_only.bytes()).enumerate()
+        {
+            if string_masked_byte != code_only_byte {
+                literal_preserving_bytes[index] = b' ';
+            }
         }
-        imports
+        let literal_preserving_code = String::from_utf8(literal_preserving_bytes)
+            .expect("comment masking preserves valid UTF-8 source");
+        Self {
+            literal_preserving_code,
+            code_only,
+        }
+    }
+}
+
+/// Provenance of one constructor name inside a lexical Rust scope.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ProcessImportProvenance {
+    #[default]
+    Unbound,
+    StandardLibrary,
+    Other,
+    Conflicting,
+}
+
+impl ProcessImportProvenance {
+    /// Add an explicit binding without guessing which conflicting import Rust resolves.
+    fn record(&mut self, new_provenance: Self) {
+        *self = match (*self, new_provenance) {
+            (Self::Unbound, provenance) => provenance,
+            (Self::StandardLibrary, Self::StandardLibrary) => Self::StandardLibrary,
+            (Self::Other, Self::Other) => Self::Other,
+            (existing, Self::Unbound) => existing,
+            _ => Self::Conflicting,
+        };
     }
 
+    /// Let a local binding shadow its enclosing scope; absent names inherit normally.
+    fn shadow(self, local: Self) -> Self {
+        if local == Self::Unbound {
+            self
+        } else {
+            local
+        }
+    }
+}
+
+/// Import bindings that can resolve `Command::new` or `process::Command::new`.
+#[derive(Clone, Copy, Debug, Default)]
+struct ProcessCommandImports {
+    bare_command: ProcessImportProvenance,
+    process_module: ProcessImportProvenance,
+}
+
+impl ProcessCommandImports {
     /// Return whether a matched constructor spelling resolves to `std::process::Command`.
     fn is_std_process_constructor(self, constructor: &str) -> bool {
         match constructor {
             "std::process::Command" => true,
-            "Command" => self.bare_command_from_std && !self.bare_command_from_other,
-            "process::Command" => self.process_module_from_std && !self.process_module_from_other,
+            "Command" => self.bare_command == ProcessImportProvenance::StandardLibrary,
+            "process::Command" => self.process_module == ProcessImportProvenance::StandardLibrary,
             _ => false,
+        }
+    }
+
+    /// Apply bindings declared in a nested block while retaining unshadowed outer names.
+    fn shadowed_by(self, local: Self) -> Self {
+        Self {
+            bare_command: self.bare_command.shadow(local.bare_command),
+            process_module: self.process_module.shadow(local.process_module),
         }
     }
 
     /// Record only bindings that can affect the two constructor spellings this rule accepts.
     fn record_binding(&mut self, source_path: &[String], local_name: &str) {
         // Only a local `Command` binding can resolve the bare constructor spelling.
-        if local_name == "Command" {
-            // The exact standard-library path proves provenance; another explicit path conflicts.
-            if is_import_path(source_path, &["std", "process", "Command"]) {
-                self.bare_command_from_std = true;
-            } else if source_path
+        if local_name == "Command"
+            && source_path
                 .last()
                 .is_some_and(|segment| segment == "Command")
-            {
-                self.bare_command_from_other = true;
-            }
+        {
+            let provenance = if is_import_path(source_path, &["std", "process", "Command"]) {
+                ProcessImportProvenance::StandardLibrary
+            } else {
+                ProcessImportProvenance::Other
+            };
+            self.bare_command.record(provenance);
         }
         // A local `process` module binding governs the `process::Command` spelling.
-        if local_name == "process" {
-            // Preserve the same conservative conflict rule used for bare `Command`.
-            if is_import_path(source_path, &["std", "process"]) {
-                self.process_module_from_std = true;
-            } else if source_path
+        if local_name == "process"
+            && source_path
                 .last()
                 .is_some_and(|segment| segment == "process")
-            {
-                self.process_module_from_other = true;
-            }
+        {
+            let provenance = if is_import_path(source_path, &["std", "process"]) {
+                ProcessImportProvenance::StandardLibrary
+            } else {
+                ProcessImportProvenance::Other
+            };
+            self.process_module.record(provenance);
         }
     }
+}
+
+/// Effective imports for one nested source range.
+#[derive(Clone, Copy, Debug)]
+struct ScopedProcessCommandImports {
+    start_line: usize,
+    end_line: usize,
+    depth: usize,
+    imports: ProcessCommandImports,
+}
+
+/// Resolve process constructor names at the source line where they appear.
+struct ProcessCommandImportScopes {
+    file_imports: ProcessCommandImports,
+    nested_scopes: Vec<ScopedProcessCommandImports>,
+}
+
+impl ProcessCommandImportScopes {
+    /// Collect file, module, function, and nested-block imports from the parsed source.
+    fn from_ast(ast: &syn::File) -> Self {
+        let file_imports = process_command_imports_from_items(&ast.items);
+        let mut collector = ProcessCommandScopeCollector {
+            active_imports: file_imports,
+            depth: 0,
+            nested_scopes: Vec::new(),
+        };
+        // File-level imports are already recorded; visit every other item for nested scopes.
+        for item in &ast.items {
+            if !matches!(item, syn::Item::Use(_)) {
+                collector.visit_item(item);
+            }
+        }
+        Self {
+            file_imports,
+            nested_scopes: collector.nested_scopes,
+        }
+    }
+
+    /// Return the innermost import scope containing a one-based source line.
+    fn imports_at_line(&self, line_number: usize) -> ProcessCommandImports {
+        self.nested_scopes
+            .iter()
+            .filter(|scope| line_number >= scope.start_line && line_number <= scope.end_line)
+            .max_by_key(|scope| scope.depth)
+            .map(|scope| scope.imports)
+            .unwrap_or(self.file_imports)
+    }
+}
+
+/// Walk nested Rust scopes while preserving the imports visible to each child block.
+struct ProcessCommandScopeCollector {
+    active_imports: ProcessCommandImports,
+    depth: usize,
+    nested_scopes: Vec<ScopedProcessCommandImports>,
+}
+
+impl ProcessCommandScopeCollector {
+    /// Enter one source range with the imports that resolve names inside it.
+    fn push_scope(&mut self, span: proc_macro2::Span, imports: ProcessCommandImports) {
+        self.nested_scopes.push(ScopedProcessCommandImports {
+            start_line: span.start().line,
+            end_line: span.end().line,
+            depth: self.depth,
+            imports,
+        });
+    }
+}
+
+impl<'ast> Visit<'ast> for ProcessCommandScopeCollector {
+    /// Apply block-local imports to functions, closures, and nested expression blocks.
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        let local_imports = process_command_imports_from_statements(&block.stmts);
+        let enclosing_imports = self.active_imports;
+        self.active_imports = enclosing_imports.shadowed_by(local_imports);
+        self.depth += 1;
+        self.push_scope(block.span(), self.active_imports);
+        syn::visit::visit_block(self, block);
+        self.depth -= 1;
+        self.active_imports = enclosing_imports;
+    }
+
+    /// Start each inline module with its own imports; module children do not inherit `use` items.
+    fn visit_item_mod(&mut self, item_mod: &'ast syn::ItemMod) {
+        let Some((_, module_items)) = &item_mod.content else {
+            return;
+        };
+        let enclosing_imports = self.active_imports;
+        self.active_imports = process_command_imports_from_items(module_items);
+        self.depth += 1;
+        self.push_scope(item_mod.span(), self.active_imports);
+        // Module imports already contribute to the scope, so only their sibling items need visits.
+        for item in module_items {
+            if !matches!(item, syn::Item::Use(_)) {
+                self.visit_item(item);
+            }
+        }
+        self.depth -= 1;
+        self.active_imports = enclosing_imports;
+    }
+}
+
+/// Collect relevant imports declared directly in one module or source file.
+fn process_command_imports_from_items(items: &[syn::Item]) -> ProcessCommandImports {
+    let use_trees = items.iter().filter_map(|item| match item {
+        syn::Item::Use(item_use) => Some(&item_use.tree),
+        _ => None,
+    });
+    process_command_imports_from_trees(use_trees)
+}
+
+/// Collect relevant imports declared directly in one executable block.
+fn process_command_imports_from_statements(statements: &[syn::Stmt]) -> ProcessCommandImports {
+    let use_trees = statements.iter().filter_map(|statement| match statement {
+        syn::Stmt::Item(syn::Item::Use(item_use)) => Some(&item_use.tree),
+        _ => None,
+    });
+    process_command_imports_from_trees(use_trees)
+}
+
+/// Merge relevant `use` trees that share one lexical namespace.
+fn process_command_imports_from_trees<'a>(
+    use_trees: impl Iterator<Item = &'a syn::UseTree>,
+) -> ProcessCommandImports {
+    let mut imports = ProcessCommandImports::default();
+    for use_tree in use_trees {
+        collect_process_command_bindings(use_tree, &mut Vec::new(), &mut imports);
+    }
+    imports
 }
 
 /// Walk one `use` tree and retain bindings relevant to process-command provenance.
 fn collect_process_command_bindings(
     tree: &syn::UseTree,
     path_prefix: &mut Vec<String>,
-    imports: &mut TopLevelProcessCommandImports,
+    imports: &mut ProcessCommandImports,
 ) {
     match tree {
         syn::UseTree::Path(path) => {
@@ -325,7 +522,9 @@ fn collect_process_command_bindings(
         syn::UseTree::Glob(_) => {
             // Only `std::process::*` proves that the glob exports the standard `Command` type.
             if is_import_path(path_prefix, &["std", "process"]) {
-                imports.bare_command_from_std = true;
+                imports
+                    .bare_command
+                    .record(ProcessImportProvenance::StandardLibrary);
             }
         }
         syn::UseTree::Group(group) => {
@@ -500,14 +699,17 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
-fn process_command_risk_signals(raw_window: &str, searchable_window: &str) -> Vec<&'static str> {
+fn process_command_risk_signals(
+    literal_preserving_window: &str,
+    code_only_window: &str,
+) -> Vec<&'static str> {
     let mut signals = Vec::new();
 
     if static_regex(
         &PROCESS_SHELL_INTERPRETER_REGEX,
-        r#"(?i)(?:std::process::Command|process::Command|Command)::new\s*\(\s*"(?:sh|bash|dash|zsh|cmd|powershell|pwsh)"\s*\)"#,
+        r#"(?i)\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"(?:sh|bash|dash|zsh|cmd|powershell|pwsh)"\s*\)"#,
     )
-    .is_match(raw_window)
+    .is_match(literal_preserving_window)
     {
         signals.push("shell-interpreter");
     }
@@ -515,15 +717,15 @@ fn process_command_risk_signals(raw_window: &str, searchable_window: &str) -> Ve
         &PROCESS_SHELL_ARG_REGEX,
         r#"\.(?:arg|args)\s*\([^)]*"(?:-c|/C)""#,
     )
-    .is_match(raw_window)
+    .is_match(literal_preserving_window)
     {
         signals.push("shell-command-argument");
     }
     if static_regex(
         &PROCESS_DYNAMIC_EXECUTABLE_REGEX,
-        r"(?:std::process::Command|process::Command|Command)::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_:]*::)",
+        r"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_:]*::)",
     )
-    .is_match(searchable_window)
+    .is_match(code_only_window)
     {
         signals.push("dynamic-executable");
     }
@@ -531,26 +733,83 @@ fn process_command_risk_signals(raw_window: &str, searchable_window: &str) -> Ve
         &PROCESS_DYNAMIC_ARGUMENT_REGEX,
         r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
     )
-    .is_match(searchable_window)
+    .is_match(code_only_window)
     {
         signals.push("dynamic-arguments");
     }
-    if raw_window.contains(".env(") || raw_window.contains(".envs(") {
+    if code_only_window.contains(".env(") || code_only_window.contains(".envs(") {
         signals.push("custom-environment");
     }
-    if raw_window.contains(".current_dir(") {
+    if code_only_window.contains(".current_dir(") {
         signals.push("custom-working-directory");
     }
 
     signals
 }
 
-fn line_window(lines: &[&str], line_index: usize) -> String {
-    let end = usize::min(line_index + 8, lines.len());
-    lines[line_index..end].join("\n")
+/// End one bounded process-builder statement before risk evidence can leak from its neighbour.
+fn process_command_window_end(code_only_lines: &[&str], line_index: usize) -> usize {
+    let maximum_end = usize::min(line_index + 8, code_only_lines.len());
+    let statement_end = code_only_lines[line_index..maximum_end]
+        .iter()
+        .position(|line| line.contains(';'))
+        .map(|offset| line_index + offset + 1)
+        .unwrap_or(maximum_end);
+    let Some(binding_name) = process_command_binding_name(code_only_lines[line_index]) else {
+        return statement_end;
+    };
+
+    let mut window_end = statement_end;
+    // A named builder can be configured or executed by later statements; stop at the first
+    // substantive line that no longer refers to that exact binding.
+    for (offset, line) in code_only_lines[statement_end..maximum_end]
+        .iter()
+        .enumerate()
+    {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !line_contains_identifier(line, binding_name) {
+            break;
+        }
+        window_end = statement_end + offset + 1;
+    }
+    window_end
 }
 
-fn process_command_is_returned_builder(source_lines: &[&str], line_index: usize) -> bool {
+/// Return the local variable assigned from a process constructor on the same line.
+fn process_command_binding_name(line: &str) -> Option<&str> {
+    static PROCESS_COMMAND_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &PROCESS_COMMAND_BINDING_REGEX,
+        r"\blet\s+(?:mut\s+)?(?P<binding>[A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=\s*(?:std::process::Command|process::Command|Command)::new\s*\(",
+    )
+    .captures(line)?
+    .name("binding")
+    .map(|binding| binding.as_str())
+}
+
+/// Match one Rust identifier without accepting it as a prefix or suffix of another name.
+fn line_contains_identifier(line: &str, identifier: &str) -> bool {
+    line.match_indices(identifier).any(|(start, _)| {
+        let before_is_identifier = line[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric());
+        let end = start + identifier.len();
+        let after_is_identifier = line[end..]
+            .chars()
+            .next()
+            .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric());
+        !before_is_identifier && !after_is_identifier
+    })
+}
+
+fn process_command_is_returned_builder(
+    source_lines: &[&str],
+    line_index: usize,
+    command_window: &str,
+) -> bool {
     let Some(function_line_index) = (0..=line_index)
         .rev()
         .take(24)
@@ -565,7 +824,7 @@ fn process_command_is_returned_builder(source_lines: &[&str], line_index: usize)
         r"->\s*(?:(?:std::process::|process::)?Command)\b",
     )
     .is_match(&signature)
-        && !process_command_has_execution_sink(&line_window(source_lines, line_index))
+        && !process_command_has_execution_sink(command_window)
 }
 
 fn process_command_has_execution_sink(raw_window: &str) -> bool {

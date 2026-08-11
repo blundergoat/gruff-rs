@@ -417,8 +417,8 @@ assert_windows_native_paths_resolve_and_stay_contained() {
   grep -q 'escapes GITHUB_WORKSPACE' "$WORK_DIR/win-escape-error" \
     || fail "native Windows escape did not report a containment failure"
 
-  # A drive-relative value such as C:report has no defined root, so it must not be silently treated as either absolute or
-  # workspace-relative.
+  # A drive-relative value such as C:report has no defined root, so it must not be
+  # silently treated as either absolute or workspace-relative.
   set +e
   run_action_on_windows $'analyse\n.' "$native_workspace" 'C:win-sub' \
     >"$WORK_DIR/win-driverel-output" 2>"$WORK_DIR/win-driverel-error"
@@ -452,7 +452,7 @@ assert_version_transport_is_structured() {
   set -e
   [[ $status -eq 2 && ! -e $WORKSPACE/version-injected ]] \
     || fail "hostile version was not rejected inertly"
-  [[ $(<"$WORK_DIR/version-error") == "gruff-rs action: version must be an exact semantic version" ]] \
+  [[ $(<"$WORK_DIR/version-error") == "gruff-rs action: version must be an exact X.Y.Z release version" ]] \
     || fail "invalid version value leaked into workflow guidance"
 
   rm -f -- "$github_output"
@@ -483,10 +483,22 @@ assert_version_transport_is_structured() {
   grep -q "does not match action release tag" "$WORK_DIR/mismatch-error" \
     || fail "mismatched version guidance is missing"
 
+  rm -f -- "$github_output"
+  set +e
   GRUFF_INPUT_VERSION=0.5.0-rc.1 GRUFF_ACTION_REF="" GITHUB_OUTPUT=$github_output \
-    "$RUNNER" resolve-version
-  [[ $(<"$github_output") == "value=0.5.0-rc.1" ]] \
-    || fail "explicit prerelease version did not resolve"
+    "$RUNNER" resolve-version >"$WORK_DIR/prerelease-output" 2>"$WORK_DIR/prerelease-error"
+  status=$?
+  set -e
+  [[ $status -eq 2 && ! -e $github_output ]] \
+    || fail "prerelease version was accepted as a published binary"
+
+  set +e
+  GRUFF_INPUT_VERSION=0.5.0+local.1 GRUFF_ACTION_REF="" GITHUB_OUTPUT=$github_output \
+    "$RUNNER" resolve-version >"$WORK_DIR/build-version-output" 2>"$WORK_DIR/build-version-error"
+  status=$?
+  set -e
+  [[ $status -eq 2 && ! -e $github_output ]] \
+    || fail "build-metadata version was accepted as a published binary"
 }
 
 # Calculate a fixture checksum with the same portable tools used in production.

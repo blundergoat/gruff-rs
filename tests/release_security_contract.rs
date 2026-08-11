@@ -450,6 +450,23 @@ fn validate_actionlint_checksums(dependency_installer: &str) -> Result<(), Strin
     Ok(())
 }
 
+/// Require checksum failure to stop setup before the downloaded archive reaches `tar`.
+fn validate_actionlint_checksum_is_fail_closed(dependency_installer: &str) -> Result<(), String> {
+    let checksum_command = logical_shell_commands(dependency_installer)
+        .into_iter()
+        .find(|command| command.starts_with("verify_download_checksum "))
+        .ok_or_else(|| "dependency installer is missing its checksum command".to_string())?;
+    let required_guard =
+        "verify_download_checksum \"$expected_checksum\" \"$downloaded_archive\" || fail_install";
+    checksum_command
+        .starts_with(required_guard)
+        .then_some(())
+        .ok_or_else(|| {
+            "dependency installer must stop immediately when actionlint checksum verification fails"
+                .to_string()
+        })
+}
+
 /// Validate every target that becomes a downloadable release archive for users.
 fn validate_release_target_pins(release_targets: &str) -> Result<(), String> {
     // Each target binds one downloadable archive row to a user-visible platform.
@@ -474,6 +491,7 @@ fn validate_tool_and_target_pins() -> Result<(), String> {
     validate_workflow_tool_versions(&ci_workflow, &release_workflow)?;
     validate_local_checker_versions(&dependency_installer, &preflight)?;
     validate_actionlint_checksums(&dependency_installer)?;
+    validate_actionlint_checksum_is_fail_closed(&dependency_installer)?;
     validate_release_target_pins(&release_targets)?;
 
     validate_direct_cargo_installs(&[
@@ -500,6 +518,36 @@ fn live_release_paths_are_pinned_and_least_privilege() {
     validate_tool_and_target_pins().expect("release tools and targets must stay exact");
 }
 
+/// Prove Codex denies every env-file suffix while keeping the reviewed sample editable.
+#[test]
+fn codex_env_permissions_cover_nonstandard_variants() {
+    let config_text = read_workspace_text(".codex/config.toml");
+    let config: toml::Value =
+        toml::from_str(&config_text).expect("Codex project config must remain valid TOML");
+    let workspace_rules = config
+        .get("permissions")
+        .and_then(|value| value.get("goat-flow"))
+        .and_then(|value| value.get("filesystem"))
+        .and_then(|value| value.get(":workspace_roots"))
+        .and_then(toml::Value::as_table)
+        .expect("Codex project config must define workspace filesystem rules");
+
+    assert_eq!(
+        workspace_rules
+            .get("**/.env*")
+            .and_then(toml::Value::as_str),
+        Some("deny"),
+        "one broad deny must cover standard and nonstandard env filenames"
+    );
+    assert_eq!(
+        workspace_rules
+            .get("**/.env.example")
+            .and_then(toml::Value::as_str),
+        Some("write"),
+        "the non-secret sample must retain normal workspace editing access"
+    );
+}
+
 /// Prove a familiar moving checkout tag fails with an actionable repair message.
 #[test]
 fn mutable_action_tag_is_rejected_by_contract() {
@@ -515,6 +563,26 @@ fn mutable_action_tag_is_rejected_by_contract() {
             .expect_err("a moving checkout tag must fail the supply-chain contract");
     assert!(
         contract_error.contains("must use a full 40-character commit SHA"),
+        "unexpected contract feedback: {contract_error}"
+    );
+}
+
+/// Prove removing the checksum failure guard breaks the release security contract.
+#[test]
+fn unchecked_actionlint_checksum_is_rejected_by_contract() {
+    let dependency_installer = read_workspace_text("scripts/dependency-install.sh");
+    let guarded_checksum =
+        "|| fail_install \"downloaded actionlint archive failed SHA-256 verification\"";
+    let unchecked_installer = dependency_installer.replacen(guarded_checksum, "|| true", 1);
+    assert_ne!(
+        unchecked_installer, dependency_installer,
+        "negative mutation must remove the live checksum failure guard"
+    );
+    let contract_error = validate_actionlint_checksum_is_fail_closed(&unchecked_installer)
+        .expect_err("an unchecked checksum must fail the supply-chain contract");
+
+    assert!(
+        contract_error.contains("stop immediately"),
         "unexpected contract feedback: {contract_error}"
     );
 }

@@ -150,6 +150,37 @@ pub fn unexplained() {
     );
 }
 
+/// Comment examples containing `unsafe` are documentation, not executable unsafe sites.
+#[test]
+pub(crate) fn unsafe_block_ignores_comment_only_examples() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Example: `unsafe { read_pointer() }` needs a caller contract.
+pub fn documented() {}
+
+/*
+unsafe { another_example() }
+*/
+pub fn block_documented() {}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_missing_rule(&report, "security.unsafe-block");
+}
+
 /// Config round-trip guard: the three naming options
 /// (`predicatePrefixes`, `extraPlaceholders`, `extraGenericNames`) plumb
 /// through the typed-option config and influence rule dispatch. Wrong

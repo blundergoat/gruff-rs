@@ -12,41 +12,20 @@ fail_action() {
   exit 2
 }
 
-# Accept exact SemVer releases and reject moving or malformed version labels.
-version_is_valid() {
+# Accept the core release shape that maps one-to-one to published archive names.
+is_core_release_version() {
   local candidate_version=$1
-  local semver_regex='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
-  local version_without_build
-  local prerelease_identifiers
-  local prerelease_identifier
+  local core_release_regex='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
-  [[ $candidate_version =~ $semver_regex ]] || return 1
-  version_without_build=${candidate_version%%+*}
-  [[ $version_without_build == *-* ]] || return 0
-  prerelease_identifiers=${version_without_build#*-}
-  # Prerelease identifiers need an extra SemVer leading-zero check.
-  while [[ -n $prerelease_identifiers ]]; do
-    prerelease_identifier=${prerelease_identifiers%%.*}
-    # A version such as rc.01 cannot identify an exact SemVer release.
-    if [[ $prerelease_identifier =~ ^[0-9]+$ && ${#prerelease_identifier} -gt 1 \
-      && $prerelease_identifier == 0* ]]; then
-      return 1
-    fi
-    # More dotted identifiers mean the user's prerelease still needs checking.
-    if [[ $prerelease_identifiers == *.* ]]; then
-      prerelease_identifiers=${prerelease_identifiers#*.}
-    else
-      prerelease_identifiers=""
-    fi
-  done
+  [[ $candidate_version =~ $core_release_regex ]]
 }
 
 # Give workflow authors one version error before any release URL is constructed.
-require_valid_version() {
+require_core_release_version() {
   local candidate_version=$1
 
-  version_is_valid "$candidate_version" \
-    || fail_action "version must be an exact semantic version"
+  is_core_release_version "$candidate_version" \
+    || fail_action "version must be an exact X.Y.Z release version"
 }
 
 # Resolve a tag or explicit input into the exact binary version shown to users.
@@ -60,18 +39,18 @@ resolve_version() {
     [[ $action_reference == v* ]] \
       || fail_action "version is required when the action ref is not an exact vX.Y.Z release tag"
     requested_version=${action_reference#v}
-    version_is_valid "$requested_version" \
+    is_core_release_version "$requested_version" \
       || fail_action "version is required when the action ref is not an exact vX.Y.Z release tag"
   else
-    require_valid_version "$requested_version"
+    require_core_release_version "$requested_version"
     action_release_version=${action_reference#v}
     # An exact action tag and explicit binary version must describe one release.
-    if [[ $action_reference == v* ]] && version_is_valid "$action_release_version" \
+    if [[ $action_reference == v* ]] && is_core_release_version "$action_release_version" \
       && [[ $requested_version != "$action_release_version" ]]; then
       fail_action "version $requested_version does not match action release tag $action_reference"
     fi
   fi
-  require_valid_version "$requested_version"
+  require_core_release_version "$requested_version"
   # An empty command-file path means the install step cannot receive the version.
   [[ -n ${GITHUB_OUTPUT:-} ]] || fail_action "GITHUB_OUTPUT is required while resolving the version"
   printf 'value=%s\n' "$requested_version" >>"$GITHUB_OUTPUT"

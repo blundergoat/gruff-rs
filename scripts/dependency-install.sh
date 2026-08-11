@@ -241,7 +241,8 @@ install_actionlint() {
   curl -fsSL --proto '=https' --tlsv1.2 \
     -o "$downloaded_archive" \
     "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_${release_platform}.tar.gz"
-  verify_download_checksum "$expected_checksum" "$downloaded_archive"
+  verify_download_checksum "$expected_checksum" "$downloaded_archive" \
+    || fail_install "downloaded actionlint archive failed SHA-256 verification"
   tar -xzf "$downloaded_archive" -C "$temporary_directory" actionlint
   install -m 0755 "$extracted_binary" "$actionlint_path"
   # A mismatched result would make local and hosted workflow checks disagree.

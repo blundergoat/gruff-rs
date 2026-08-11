@@ -97,7 +97,7 @@ pub fn run_shell(command: &str) {
 }
 
 #[test]
-/// Resolve process constructors from imports before applying command-risk heuristics.
+/// Resolve process constructors from lexical imports before applying command-risk heuristics.
 pub(crate) fn process_command_requires_std_import_provenance() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -116,8 +116,28 @@ pub(crate) fn process_command_requires_std_import_provenance() {
             "pub fn run(input: &str) {\n    let _ = std::process::Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
         ),
         (
+            "function_std_bare.rs",
+            "pub fn run(input: &str) {\n    use std::process::Command;\n    let _ = Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
+            "block_std_module.rs",
+            "pub fn run(input: &str) {\n    if !input.is_empty() {\n        use std::process;\n        let _ = process::Command::new(\"sh\").arg(\"-c\").arg(input);\n    }\n}\n",
+        ),
+        (
+            "root_clap_shadowed.rs",
+            "use clap::Command;\n\npub fn run(input: &str) {\n    use std::process::Command;\n    let _ = Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
             "clap_bare.rs",
             "use clap::Command;\n\npub fn app(input: &str) {\n    let _ = Command::new(\"app\").arg(input);\n}\n",
+        ),
+        (
+            "function_clap_bare.rs",
+            "pub fn app(input: &str) {\n    use clap::Command;\n    let _ = Command::new(\"app\").arg(input);\n}\n",
+        ),
+        (
+            "root_std_shadowed.rs",
+            "use std::process::Command;\n\npub fn app(input: &str) {\n    use clap::Command;\n    let _ = Command::new(\"app\").arg(input);\n}\n",
         ),
         (
             "unimported_bare.rs",
@@ -150,10 +170,17 @@ pub(crate) fn process_command_requires_std_import_provenance() {
         .collect();
     assert_eq!(
         process_findings.len(),
-        3,
+        6,
         "only standard-library process constructors should report; findings={process_findings:?}"
     );
-    for expected_file_name in ["std_bare.rs", "std_module.rs", "std_qualified.rs"] {
+    for expected_file_name in [
+        "std_bare.rs",
+        "std_module.rs",
+        "std_qualified.rs",
+        "function_std_bare.rs",
+        "block_std_module.rs",
+        "root_clap_shadowed.rs",
+    ] {
         assert!(
             process_findings
                 .iter()
@@ -161,6 +188,73 @@ pub(crate) fn process_command_requires_std_import_provenance() {
             "expected {expected_file_name} to report; findings={process_findings:?}"
         );
     }
+}
+
+/// Prove constructor matching and risk evidence come only from executable process code.
+#[test]
+pub(crate) fn process_command_ignores_name_suffixes_and_comment_risk() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use std::process::Command;
+
+struct AppCommand;
+
+impl AppCommand {
+    fn new(_name: &str) -> Self {
+        Self
+    }
+
+    fn arg(self, _value: &str) -> Self {
+        self
+    }
+}
+
+mod other {
+    pub(super) struct Command;
+
+    impl Command {
+        pub(super) fn new(_name: &str) -> AppCommand {
+            AppCommand
+        }
+    }
+
+    use super::AppCommand;
+}
+
+pub fn configure_app(input: &str) {
+    let _ = AppCommand::new("sh").arg("-c").arg(input);
+    let _ = other::Command::new("sh").arg("-c").arg(input);
+}
+
+pub fn print_message() {
+    let _ = Command::new("echo").arg("hello").status();
+    // Command::new("bash").arg("-c").arg(input);
+}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let process_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.process-command")
+        .collect();
+
+    assert!(
+        process_findings.is_empty(),
+        "same-suffix builders and comment-only risk must stay silent; findings={process_findings:?}"
+    );
 }
 
 /// Prove workflow event gates recognise scalar, list, and mapping `on:` forms.
@@ -293,6 +387,55 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
             .all(|finding| finding.file_path != "nested/not-action.yml"),
         "non-action YAML received GitHub metadata findings: {action_findings:?}"
     );
+}
+
+/// Prove `uses:` reports only a dependency attached directly to a GitHub step.
+#[test]
+pub(crate) fn github_actions_uses_requires_step_placement() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        "action.yml",
+        "name: placement\ninputs:\n  uses:\n    description: Not an action dependency.\nruns:\n  using: composite\n  steps:\n    - name: Configure\n      with:\n        uses: acme/config-value@v1\n    - name: Run dependency\n      uses: acme/tool@v1\n    - uses: acme/pinned@1111111111111111111111111111111111111111\nmetadata:\n  runs:\n    steps:\n      - uses: acme/nested-action-value@v1\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/placement.yml",
+        "name: placement\nenv:\n  uses: acme/env-value@v1\njobs:\n  reusable:\n    uses: acme/reusable/.github/workflows/check.yml@v1\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Configure\n        with:\n          uses: acme/config-value@v1\n      - uses: acme/workflow-tool@v1\nmetadata:\n  jobs:\n    fake:\n      steps:\n        - uses: acme/nested-workflow-value@v1\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![
+                PathBuf::from("action.yml"),
+                PathBuf::from(".github/workflows/placement.yml"),
+            ],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("explicit action analysis succeeds");
+    let unpinned_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.github-actions-unpinned-action")
+        .collect();
+
+    assert_eq!(
+        unpinned_findings.len(),
+        2,
+        "only direct step dependencies should report; findings={unpinned_findings:?}"
+    );
+    assert!(unpinned_findings
+        .iter()
+        .any(|finding| { finding.file_path == "action.yml" && finding.line == Some(12) }));
+    assert!(unpinned_findings.iter().any(|finding| {
+        finding.file_path == ".github/workflows/placement.yml" && finding.line == Some(13)
+    }));
 }
 
 /// Prove a download-to-shell pipeline still reports when the author splits it

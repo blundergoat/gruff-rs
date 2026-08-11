@@ -239,6 +239,48 @@ pub fn entry(values: &[String]) -> Vec<String> {
 }
 
 #[test]
+/// Placeholder detection remains active when short-variable checks exempt a narrow binding.
+pub(crate) fn placeholder_identifier_checks_loop_and_closure_bindings() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Normalize input strings.
+pub fn entry(values: &[String]) -> Vec<String> {
+    for foo in values {
+        println!("{foo}");
+    }
+    values.iter().map(|bar| bar.trim().to_string()).collect()
+}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let placeholder_names: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "naming.placeholder-identifier")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+
+    assert_eq!(
+        placeholder_names,
+        vec!["foo", "bar"],
+        "short-lived placeholders must remain visible; names={placeholder_names:?}"
+    );
+    assert_missing_rule(&report, "naming.short-variable");
+}
+
+#[test]
 /// The configured abbreviation list directly controls short-variable findings.
 pub(crate) fn short_variable_uses_configured_abbreviations() {
     let _guard = analysis_lock();

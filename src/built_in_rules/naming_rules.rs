@@ -2,9 +2,9 @@ use super::*;
 
 /// Analyze durable local and parameter names for the built-in naming rules.
 ///
-/// `let` patterns and function parameters are checked recursively. Short-lived loop and closure
-/// bindings stay silent because their narrow context usually supplies the missing meaning. The
-/// same pass reports a local that shadows a same-file free function.
+/// Every supported binding pattern is checked for placeholder names. Short-variable findings stay
+/// limited to durable `let` bindings and function parameters because loop and closure context
+/// usually supplies enough meaning. The same pass reports same-file function shadowing.
 pub(crate) fn analyse_naming_patterns(
     file: &SourceFile,
     ast: &syn::File,
@@ -54,12 +54,18 @@ struct NamingPatternVisitor<'a> {
     same_file_free_fns: &'a BTreeSet<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingLifetime {
+    Durable,
+    ShortLived,
+}
+
 impl NamingPatternVisitor<'_> {
-    fn visit_pat_idents(&mut self, pat: &syn::Pat) {
+    fn visit_pat_idents(&mut self, pat: &syn::Pat, binding_lifetime: BindingLifetime) {
         walk_pat_idents(pat, &mut |ident| {
             let name = ident.to_string();
             let line = line_from_span(ident.span().start());
-            self.check_name(&name, line);
+            self.check_name(&name, line, binding_lifetime);
         });
     }
 
@@ -71,7 +77,7 @@ impl NamingPatternVisitor<'_> {
             .push(identifier_shadow_finding(&self.file.display_path, shadow));
     }
 
-    fn check_name(&mut self, name: &str, line: usize) {
+    fn check_name(&mut self, name: &str, line: usize, binding_lifetime: BindingLifetime) {
         if self.name_is_placeholder(name) {
             self.findings.push(placeholder_identifier_finding(
                 &self.file.display_path,
@@ -79,7 +85,7 @@ impl NamingPatternVisitor<'_> {
                 line,
             ));
         }
-        if self.name_is_too_short(name) {
+        if binding_lifetime == BindingLifetime::Durable && self.name_is_too_short(name) {
             self.findings
                 .push(short_variable_finding(&self.file.display_path, name, line));
         }
@@ -205,7 +211,7 @@ fn short_variable_finding(file_path: &str, name: &str, line: usize) -> Finding {
 
 impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
     fn visit_local(&mut self, local: &'ast syn::Local) {
-        self.visit_pat_idents(&local.pat);
+        self.visit_pat_idents(&local.pat, BindingLifetime::Durable);
         self.check_identifier_shadow(local);
         syn::visit::visit_local(self, local);
     }
@@ -214,10 +220,22 @@ impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
         // Rust poll and lint APIs conventionally pair `cx` with a typed context parameter.
         if let syn::FnArg::Typed(pat_type) = arg {
             if !is_conventional_context_parameter(pat_type) {
-                self.visit_pat_idents(&pat_type.pat);
+                self.visit_pat_idents(&pat_type.pat, BindingLifetime::Durable);
             }
         }
         syn::visit::visit_fn_arg(self, arg);
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.visit_pat_idents(&expression.pat, BindingLifetime::ShortLived);
+        syn::visit::visit_expr_for_loop(self, expression);
+    }
+
+    fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
+        for input in &expression.inputs {
+            self.visit_pat_idents(input, BindingLifetime::ShortLived);
+        }
+        syn::visit::visit_expr_closure(self, expression);
     }
 }
 

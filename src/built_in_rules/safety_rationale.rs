@@ -9,7 +9,7 @@ const SAFETY_RATIONALE_LOOKBACK_LINES: usize = 16;
 /// `None` means no marker is connected to the block without crossing executable code.
 pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
     let first_candidate = line_index.saturating_sub(SAFETY_RATIONALE_LOOKBACK_LINES);
-    let mut continuation_lines: Vec<&str> = Vec::new();
+    let mut prelude = SafetyPreludeScanner::default();
 
     // Walk toward the marker so continuation comments can be restored to source order.
     for candidate_index in (first_candidate..=line_index).rev() {
@@ -23,27 +23,104 @@ pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) ->
             continue;
         }
 
-        let comment_text = rust_comment_text(line);
-        if let Some(marker_position) =
-            safety_marker_position(line).filter(|_| comment_text.is_some())
-        {
-            return Some(join_safety_rationale(
-                line,
-                marker_position,
-                &continuation_lines,
-            ));
-        }
-
-        match comment_text {
-            Some(comment) => continuation_lines.push(comment),
-            // Attributes may sit between a safety comment and the unsafe expression they annotate.
-            None if is_rust_attribute_line(line) => {}
-            None => break,
+        match prelude.scan_line(line) {
+            SafetyPreludeStep::Found(rationale) => return Some(rationale),
+            SafetyPreludeStep::Continue => {}
+            SafetyPreludeStep::Boundary => break,
         }
     }
 
     // No marker leaves the unsafe block visible to the missing-rationale rule.
     None
+}
+
+/// A marker found while walking backwards through a block comment, pending its opener.
+struct PendingBlockMarker<'a> {
+    line: &'a str,
+    marker_position: usize,
+    continuation_count: usize,
+}
+
+/// Stateful backward scan of the comment prelude attached to one unsafe expression.
+#[derive(Default)]
+struct SafetyPreludeScanner<'a> {
+    continuation_lines: Vec<&'a str>,
+    inside_block_comment: bool,
+    pending_block_marker: Option<PendingBlockMarker<'a>>,
+}
+
+enum SafetyPreludeStep {
+    Found(String),
+    Continue,
+    Boundary,
+}
+
+impl<'a> SafetyPreludeScanner<'a> {
+    /// Consume one earlier line without accepting a block marker until its opener is validated.
+    fn scan_line(&mut self, line: &'a str) -> SafetyPreludeStep {
+        let was_inside_block_comment = self.inside_block_comment;
+        let comment_text = backward_comment_text(line, &mut self.inside_block_comment);
+        let marker_position = safety_marker_position(line).filter(|_| comment_text.is_some());
+        self.remember_pending_marker(line, marker_position);
+
+        let validated_block_opener =
+            was_inside_block_comment && !self.inside_block_comment && comment_text.is_some();
+        if validated_block_opener {
+            if let Some(rationale) = self.take_pending_rationale() {
+                return SafetyPreludeStep::Found(rationale);
+            }
+        }
+        if let Some(marker_position) = marker_position.filter(|_| !self.inside_block_comment) {
+            return SafetyPreludeStep::Found(join_safety_rationale(
+                line,
+                marker_position,
+                &self.continuation_lines,
+            ));
+        }
+
+        self.continue_or_stop(line, comment_text)
+    }
+
+    /// Retain the nearest inner marker while the scan searches for a standalone block opener.
+    fn remember_pending_marker(&mut self, line: &'a str, marker_position: Option<usize>) {
+        if !self.inside_block_comment || self.pending_block_marker.is_some() {
+            return;
+        }
+        if let Some(marker_position) = marker_position {
+            self.pending_block_marker = Some(PendingBlockMarker {
+                line,
+                marker_position,
+                continuation_count: self.continuation_lines.len(),
+            });
+        }
+    }
+
+    /// Build a stored marker using only continuation text discovered below that marker.
+    fn take_pending_rationale(&mut self) -> Option<String> {
+        let pending = self.pending_block_marker.take()?;
+        Some(join_safety_rationale(
+            pending.line,
+            pending.marker_position,
+            &self.continuation_lines[..pending.continuation_count],
+        ))
+    }
+
+    /// Keep contiguous comment text and complete attributes; executable code ends the prelude.
+    fn continue_or_stop(
+        &mut self,
+        line: &'a str,
+        comment_text: Option<&'a str>,
+    ) -> SafetyPreludeStep {
+        match comment_text {
+            Some(comment) if self.pending_block_marker.is_none() => {
+                self.continuation_lines.push(comment);
+                SafetyPreludeStep::Continue
+            }
+            Some(_) => SafetyPreludeStep::Continue,
+            None if is_rust_attribute_line(line) => SafetyPreludeStep::Continue,
+            None => SafetyPreludeStep::Boundary,
+        }
+    }
 }
 
 /// Return a rationale only when the unsafe line contains a real Rust comment marker.
@@ -86,23 +163,47 @@ fn safety_marker_position(line: &str) -> Option<usize> {
         .position(|candidate| candidate.eq_ignore_ascii_case(SAFETY_MARKER))
 }
 
-/// Return user-written text from a standalone Rust line-comment or block-comment line.
-fn rust_comment_text(line: &str) -> Option<&str> {
+/// Return comment text while walking backwards through a standalone comment prelude.
+fn backward_comment_text<'a>(line: &'a str, inside_block_comment: &mut bool) -> Option<&'a str> {
     let trimmed = line.trim();
+    // After a closing delimiter, every preceding line is comment text until its opener.
+    if *inside_block_comment {
+        if let Some((prefix, comment)) = trimmed.split_once("/*") {
+            *inside_block_comment = false;
+            return prefix
+                .trim()
+                .is_empty()
+                .then(|| trim_block_comment_line(comment));
+        }
+        return Some(trim_block_comment_line(trimmed));
+    }
     if let Some(comment) = trimmed.strip_prefix("//") {
         return Some(trim_comment_suffix(
             comment.trim_start_matches(['/', '!']).trim(),
         ));
     }
-    if let Some(comment) = trimmed.strip_prefix("/*") {
+    // A complete one-line block comment needs no backward continuation state.
+    if let Some(comment) = trimmed
+        .strip_prefix("/*")
+        .filter(|_| trimmed.ends_with("*/"))
+    {
         return Some(trim_comment_suffix(comment));
     }
-    if trimmed == "*/" {
-        return Some("");
+    // A block comment following executable code cannot bridge that code to the unsafe block.
+    if trimmed.contains("/*") {
+        return None;
     }
-    trimmed
-        .strip_prefix('*')
-        .map(|comment| trim_comment_suffix(comment))
+    if let Some(comment) = trimmed.strip_suffix("*/") {
+        *inside_block_comment = true;
+        return Some(trim_block_comment_line(comment));
+    }
+    None
+}
+
+/// Remove optional decorative `*` syntax from one known block-comment line.
+fn trim_block_comment_line(comment: &str) -> &str {
+    let trimmed = comment.trim();
+    trim_comment_suffix(trimmed.strip_prefix('*').unwrap_or(trimmed))
 }
 
 /// Remove a closing block-comment delimiter without changing rationale punctuation.
