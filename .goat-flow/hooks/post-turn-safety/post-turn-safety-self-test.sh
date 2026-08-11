@@ -123,7 +123,10 @@ for dispatch in default bash3-fallback; do
 
   run_hook_in "$WORK_DIR/no-git" "$force_fallback"
   expect_hook_status 2 "unavailable scan [$dispatch]"
-  [[ $HOOK_OUTPUT == *"git repository root unavailable; cannot scan changed content"* ]] \
+  # Releases word this differently ("git repository root unavailable; cannot scan changed content" through 1.15.0,
+  # "scan incomplete (git repository root unavailable)" from 1.15.1), so assert the reason the user is shown rather
+  # than one release's phrasing. Blocking itself is already pinned by the exit status above.
+  [[ $HOOK_OUTPUT == *"git repository root unavailable"* ]] \
     || fail_post_turn_safety_test "unavailable scan [$dispatch] did not explain the missing Git root"
 
   run_hook_in "$WORK_DIR/clean" "$force_fallback"

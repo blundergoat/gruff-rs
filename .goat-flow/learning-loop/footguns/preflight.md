@@ -1,38 +1,42 @@
 ---
 category: preflight
-last_reviewed: 2026-07-15
+last_reviewed: 2026-08-11
 ---
 
-## Footgun: Preflight Dogfood Output Is Truncated To 20 Findings
+## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
 
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Treat a failing preflight check's on-screen output as the tail of the evidence, never the whole of it. Re-run that one check unwrapped before triaging, and never infer a finding total from what preflight printed.
+**Trigger phase:** VERIFY
 
-`scripts/preflight-checks.sh` (search: `dogfood_source_scan` and `sed -n '1,20p'`) caps the dogfood failure list shown to the user at 20 lines. The "First matching findings" header in the preflight output is literal - it is the FIRST 20, not the total. There is no count of how many findings were truncated.
+`scripts/preflight-checks.sh` (search: `run_preflight_check`) pipes every failing check's combined output through `tail -20` before indenting it. The cap applies to all 24 checks, not just the dogfood scan, and it keeps the **last** 20 lines - the opposite end from what an unlucky reader assumes.
 
-The non-obvious failure mode is misclassifying findings from incomplete data. On 2026-05-24 the preflight reported 20 findings; a triage classified all 20 as false positives and applied 20 exclusions; the next preflight run reported a new set of 20 findings drawn from a deeper pool of 31 hidden findings. The first triage looked complete but had only seen 20 of 51 actual findings.
+For the dogfood scan the ordering makes this worse than a plain cut. `analyse --format text` prints its header first (`Composite:` and the `Findings: N total · N error · N warning · N advisory` count line), then `Diagnostics:`, and the `Findings:` list **last**. Roughly a dozen non-finding lines sit above the list, so `tail -20` starts eating the header once a failing scan passes about fourteen findings: it keeps the bottom of the findings list and scrolls the composite score and the total count off the top. Past that point preflight output alone cannot tell you how many findings there are, and a real failure is usually well past it.
 
-Symptoms that indicate truncation:
+The non-obvious failure mode is misclassifying findings from incomplete data. On 2026-05-24 the preflight showed 20 findings; a triage classified all 20 as false positives and applied 20 exclusions; the next run showed a new set of 20 drawn from a deeper pool. The first triage looked complete but had seen 20 of 51.
 
-- Fixing the 20 visible findings produces another batch of ~20 on the next run, with no obvious source.
-- The score shown next to "Score:" in the preflight output drops only marginally even after silencing many findings.
-- The findings shown are alphabetical by file path or rule ID, with the last finding sharing a prefix with what would be the 21st (e.g. all 20 are under `src/tests/calibration/` and end just before `src/tests/scenarios/` would start).
+**Symptoms:** fixing every visible finding produces another batch of similar size on the next run with no obvious source; no `Findings: N total` line appears in the preflight output at all; the visible findings are the alphabetically *last* ones by path, with the first file in the tree absent.
 
-Get the full picture by running the dogfood scan directly without the preflight wrapper:
+**Why it happens:** the cap lives in the shared check runner, so it is applied uniformly and knows nothing about which check produced the output or where that check's summary line sits within it.
+
+**Evidence:** `scripts/preflight-checks.sh` (search: `tail -20`) is the single truncation site, inside the failure branch of `run_preflight_check`. `scripts/preflight-checks.sh` (search: `dogfood_scan`) is the whole check body: `bin/gruff-rs analyse . --format text --no-baseline`, gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`. Measured on 2026-08-11 against a 10-finding scan: 22 lines of output, `tail -20` starting three lines in, so the header was already being clipped from the top while the count line still survived. Each further finding pushes the cut one line deeper into it.
+
+**Prevention:** get the full picture by re-running the scan directly, from the repository root so cross-file dead-code signal stays authoritative:
 
 ```bash
-./target/debug/gruff-rs analyse src --format text --fail-on advisory --no-baseline 2>&1 \
+bin/gruff-rs analyse . --format text --no-baseline 2>&1 \
   | grep -E "^- \[" | wc -l                       # total count
-./target/debug/gruff-rs analyse src --format text --fail-on advisory --no-baseline 2>&1 \
+bin/gruff-rs analyse . --format text --no-baseline 2>&1 \
   | grep -E "^- \[" | sed -E 's/.*\] [^ ]+ ([^ ]+) -.*/\1/' | sort | uniq -c | sort -rn  # by rule
-./target/debug/gruff-rs analyse src --format text --fail-on advisory --no-baseline 2>&1 \
+bin/gruff-rs analyse . --format text --no-baseline 2>&1 \
   | grep -E "^- \[" | sed -E 's/.*\] ([^:]+):.*/\1/' | sort | uniq -c | sort -rn         # by file
 ```
 
-These commands mirror what `dogfood_source_scan` runs internally (search: `cargo run --quiet -- analyse src --format text --fail-on` in `scripts/preflight-checks.sh`) but emit every finding instead of the first 20.
+These run exactly what the check runs and emit every finding. Scanning a subpath such as `src` instead suppresses the cross-file dead-code rule and reports a different finding set than the gate.
 
 Same caveat for the `summary` command: when triaging from `gruff-rs summary` output (the "Top file offenders" table), that's a top-10 of files - it does not enumerate every offender. Use the analyse-text invocation above to confirm whether unlisted files also have findings.
 
-Resist the temptation to "fix the truncation" by widening the `sed` window: the cap is there to keep the preflight report readable. The right move is to know when you need the full list and run the unwrapped command above.
+Resist the temptation to "fix the truncation" by widening the `tail` window: the cap is there to keep the preflight report readable across all 24 checks. The right move is to know when you need the full list and run the unwrapped command above.
 
 ## Footgun: Stale Target Binaries Can Invalidate CLI Proofs
 

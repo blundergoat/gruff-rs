@@ -7,9 +7,9 @@
 
 ## Context
 
-By mid-May the project's `.gruff-rs.yaml` had accumulated ~15 `exclude:` entries to silence findings that were "true by the rule's letter but not its intent" - sensitive-data errors on calibration fixtures, dead-code advisories on test helpers re-exported to sibling modules, long-test advisories on integration tests that bundle assertions with shared setup, etc. Each exclude lived in `.gruff-rs.yaml` (search: `paths.ignore`) with a documented `reason:` field, and each became a per-project maintenance item: when fixture paths moved or rule IDs changed, the excludes had to follow.
+By mid-May the project's `.gruff-rs.yaml` had accumulated ~15 `exclude:` entries to silence findings that were "true by the rule's letter but not its intent" - sensitive-data errors on calibration fixtures, dead-code advisories on test helpers re-exported to sibling modules, long-test advisories on integration tests that bundle assertions with shared setup, etc. Each one lived in a top-level `exclude:` block with a documented `reason:` field, and each became a per-project maintenance item: when fixture paths moved or rule IDs changed, the excludes had to follow. That block is post-analysis report suppression and is now absent from the config entirely; it is not the discovery-time `paths:` / `ignore:` surface, which is unrelated to this ADR and must stay intact - see `.gruff-rs.yaml` (search: `or top-level `) for the comment that draws the distinction.
 
-The dogfood scan running through `scripts/preflight-checks.sh` (search: `dogfood_source_scan`) gates the local release pipeline. Maintaining the exclusion list scaled badly: the cost of each new noisy finding was an exclusion-add + doc-rationale, not a fix that improved the rule for every other consumer of gruff-rs.
+The dogfood scan running through `scripts/preflight-checks.sh` (search: `dogfood_scan`) gates the local release pipeline. Maintaining the exclusion list scaled badly: the cost of each new noisy finding was an exclusion-add + doc-rationale, not a fix that improved the rule for every other consumer of gruff-rs.
 
 ## Decision
 

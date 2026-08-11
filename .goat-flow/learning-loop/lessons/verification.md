@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-08-08
+last_reviewed: 2026-08-11
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -484,3 +484,17 @@ The same trap bit again a few edits later, in a form that is harder to see: a mi
 **What happened:** Migrating a legacy plan set to the goat-flow 1.15.0 contract produced 80 strict errors. Most were truthful re-expressions of data the files already carried — dated statuses to the bare lifecycle vocabulary, a `## Depends On` section to the `**Depends on:**` field, an untagged human acceptance box to `[human]`. One was not: strict mode hard-requires a parseable `**Effort estimate:**` product/proof/other split on every milestone in the directory. `Actual:` has honest non-numeric states (`unavailable:`, `retrospective:`, `incomplete:`); `Effort estimate` has none, and `plans check` accepts only a directory, so there is no per-file exemption. Writing estimates onto already-complete milestones would have invented planning data they never carried.
 
 **Prevention:** `plans check` does not recurse into subdirectories, so a `history/` subdirectory holds completed pre-contract milestones with their bytes preserved while strict validates the executable root. Two consequences worth stating wherever the result is reported: a green `--strict` then means "the executable root satisfies the contract", not "every milestone was validated"; and a live milestone that still has open work belongs in the root, with its already-delivered checklist items moved verbatim into a non-parsed section so the forward estimate covers only what remains.
+
+## Lesson: A Dead Anchor Proves The Anchor Moved, Not That The Behaviour Went Away
+
+**Created:** 2026-08-11
+**Decision changed:** When a learning-loop anchor greps to zero, treat that as "locate the behaviour again", never as "the hazard is resolved". Read the current implementation before resolving, deleting, or downgrading the entry.
+**Trigger phase:** VERIFY
+
+**What happened:** A footgun warned that preflight truncates the dogfood failure list. Grepping its three cited anchors returned zero hits, and the named function had been renamed, so the entry was written up as describing behaviour that no longer existed. It did exist. The truncation had moved out of the per-check body into the shared check runner, where it also flipped direction - from the first 20 lines to the last 20. Reading the current implementation instead of trusting the zero-hit greps turned a "delete this stale entry" conclusion into a repair that made the footgun sharper than the original, because the relocated cap now hides the finding-count line that the old wording assumed was visible.
+
+The same zero-result trap sits one level up in tooling: `goat-flow stats --check` reported a clean bucket throughout, because its anchor validator only recognises `` `file` (search: `anchor`) `` and silently skips compound forms such as ``(search: `a` and `b`)`` or ``(search: `a` in `file`)``. A green freshness gate is evidence that the checked anchors resolve, not that every anchor was checked.
+
+**Evidence:** `scripts/preflight-checks.sh` (search: `tail -20`) holds the relocated cap inside the failure branch of `run_preflight_check`; `scripts/preflight-checks.sh` (search: `dogfood_scan`) is the renamed check body the dead anchor used to name. The gate's matcher is the installed goat-flow CLI's `SEARCH_ANCHOR_REGEX`, under its `dist/cli/facts/shared/` tree; it is dependency code, not durable project evidence, so reproduce the boundary with `goat-flow stats --check` rather than citing that path.
+
+**Prevention:** Before resolving or deleting any learning-loop entry on grep evidence, do two things: search the cited file for the *behaviour* (a nearby keyword, the enclosing function, the symptom string) rather than only the dead symbol, and re-read the region that owns it. Keep anchors in the `` `file` (search: `anchor`) `` shape so the freshness gate can actually see them; a compound anchor reads fine to a human and is invisible to the check.

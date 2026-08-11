@@ -1,5 +1,5 @@
 {
   "devDependencies": {
-    "@blundergoat/goat-flow": "^1.7.0"
+    "@blundergoat/goat-flow": "^1.15.1"
   }
 }
