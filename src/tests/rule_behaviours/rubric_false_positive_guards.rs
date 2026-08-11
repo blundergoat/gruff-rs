@@ -183,18 +183,34 @@ pub(crate) fn file_length_skips_dependency_lockfiles() {
 }
 
 #[test]
-pub(crate) fn short_variable_skips_single_letter_bindings() {
+/// Short-lived loop and closure bindings stay idiomatic; a named local remains in scope.
+pub(crate) fn short_variable_skips_short_lived_bindings() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
         dir.path(),
         r#"/// Probe.
+pub fn poll_once(cx: &mut std::task::Context<'_>) {
+    let _ = cx.waker();
+}
+
+/// An unrelated two-letter parameter still needs a clearer name.
+pub fn retain_plain_parameter(cx: usize) -> usize {
+    cx
+}
+
+/// Normalize input strings.
 pub fn entry(values: &[String]) -> Vec<String> {
+    for aa in values {
+        println!("{aa}");
+    }
+    let zz = values.len();
     values
         .iter()
-        .map(|s| s.trim())
+        .map(|bb| bb.trim())
         .filter_map(|v| v.parse::<u32>().map_err(|e| e.to_string()).ok())
         .map(|n| n.to_string())
+        .take(zz)
         .collect()
 }
 "#,
@@ -209,14 +225,54 @@ pub fn entry(values: &[String]) -> Vec<String> {
         },
     )
     .expect("analysis succeeds");
-    let short_names: Vec<&Finding> = report
+    let short_names: Vec<&str> = report
         .findings
         .iter()
         .filter(|finding| finding.rule_id == "naming.short-variable")
+        .filter_map(|finding| finding.symbol.as_deref())
         .collect();
-    assert!(
-        short_names.is_empty(),
-        "single-letter closure/error bindings must stay silent; findings={short_names:?}"
+    assert_eq!(
+        short_names,
+        vec!["cx", "zz"],
+        "only the unrelated parameter and longer-lived local should report; names={short_names:?}"
+    );
+}
+
+#[test]
+/// The configured abbreviation list directly controls short-variable findings.
+pub(crate) fn short_variable_uses_configured_abbreviations() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Combine two counters.
+pub fn combine(ok: usize, id: usize) -> usize {
+    ok + id
+}
+"#,
+    );
+    write_config(dir.path(), "allowlists:\n  acceptedAbbreviations: [ok]\n");
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let short_names: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "naming.short-variable")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+
+    assert_eq!(
+        short_names,
+        vec!["id"],
+        "configured `ok` should be accepted while replaced built-in `id` reports; names={short_names:?}"
     );
 }
 
@@ -445,7 +501,8 @@ pub fn start_chat(session_id: String) -> String {
 }
 
 #[test]
-pub(crate) fn unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap() {
+/// The opt-in unwrap rule preserves its narrow assertion-subject exemption.
+pub(crate) fn opt_in_unwrap_rule_skips_assertion_subject_but_reports_setup_unwrap() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -475,11 +532,15 @@ mod tests {
 }
 "#,
     );
+    write_config(
+        dir.path(),
+        "rules:\n  test-quality.unwrap-in-test:\n    enabled: true\n",
+    );
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -503,7 +564,7 @@ mod tests {
             finding.rule_id == "test-quality.unwrap-in-test"
                 && finding.symbol.as_deref() == Some("setup_unwrap_still_reports")
         }),
-        "setup unwraps must still be reported; findings={:?}",
+        "the explicitly enabled rule must still report setup unwraps; findings={:?}",
         report
             .findings
             .iter()

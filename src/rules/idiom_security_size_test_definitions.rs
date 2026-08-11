@@ -148,7 +148,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::Medium,
         None,
-        "Flags very short local variable names outside accepted abbreviations.",
+        "Flags two-letter `let` bindings and function parameters outside accepted abbreviations, except conventional typed `cx` context parameters.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "Domain abbreviations specific to the project (e.g. `aws`, `kms`, `ssn`).",
@@ -674,16 +674,19 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         ],
         related: &[],
     ),
-    rule_definition!(
-        "test-quality.unwrap-in-test",
-        "Unwrap in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags unwrap calls in tests.",
-    ),
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "test-quality.unwrap-in-test",
+            "Unwrap in test",
+            Pillar::TestQuality,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::High,
+            None,
+            "Opt-in style check for unwrap calls in tests.",
+        )
+    },
     rule_definition!(
         "test-quality.should-panic-without-expected",
         "Should-panic without expected message",

@@ -92,8 +92,8 @@ pub(crate) fn function_length_skips_declarative_vec_body() {
 
 /// Regression guard: `waste.unwrap-expect` must skip test code (functions
 /// annotated with `#[test]` and any function inside a `#[cfg(test)]`
-/// module). The dedicated `test-quality.unwrap-in-test` rule covers the
-/// test-side concern.
+/// module). The opt-in `test-quality.unwrap-in-test` rule covers the test-side
+/// style concern when a project enables it.
 #[test]
 pub(crate) fn unwrap_expect_skips_cfg_test_module() {
     let _guard = analysis_lock();
@@ -121,11 +121,15 @@ mod tests {
 }
 "##,
     );
+    write_config(
+        dir.path(),
+        "rules:\n  test-quality.unwrap-in-test:\n    enabled: true\n",
+    );
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -147,7 +151,7 @@ mod tests {
         .collect();
     assert!(
         !in_test.is_empty(),
-        "test-quality.unwrap-in-test must still fire on test-mode unwraps; findings={:?}",
+        "explicitly enabled test-quality.unwrap-in-test must fire on test-mode unwraps; findings={:?}",
         report
             .findings
             .iter()

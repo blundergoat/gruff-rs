@@ -96,6 +96,73 @@ pub fn run_shell(command: &str) {
     assert_eq!(process_commands[0].line, Some(19));
 }
 
+#[test]
+/// Resolve process constructors from imports before applying command-risk heuristics.
+pub(crate) fn process_command_requires_std_import_provenance() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    let provenance_cases = [
+        (
+            "std_bare.rs",
+            "use rayon::prelude::*;\nuse std::process::Command;\n\npub fn run(input: &str) {\n    let _ = Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
+            "std_module.rs",
+            "use std::process;\n\npub fn run(input: &str) {\n    let _ = process::Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
+            "std_qualified.rs",
+            "pub fn run(input: &str) {\n    let _ = std::process::Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
+            "clap_bare.rs",
+            "use clap::Command;\n\npub fn app(input: &str) {\n    let _ = Command::new(\"app\").arg(input);\n}\n",
+        ),
+        (
+            "unimported_bare.rs",
+            "pub fn run(input: &str) {\n    let _ = Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
+            "comment_only.rs",
+            "/// `std::process::Command::new(\"sh\").arg(input)` is example text.\npub fn documented() {}\n",
+        ),
+    ];
+    for (fixture_name, fixture_source) in provenance_cases {
+        fs::write(dir.path().join("src").join(fixture_name), fixture_source)
+            .expect("write Rust case");
+    }
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let process_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.process-command")
+        .collect();
+    assert_eq!(
+        process_findings.len(),
+        3,
+        "only standard-library process constructors should report; findings={process_findings:?}"
+    );
+    for expected_file_name in ["std_bare.rs", "std_module.rs", "std_qualified.rs"] {
+        assert!(
+            process_findings
+                .iter()
+                .any(|finding| finding.file_path.ends_with(expected_file_name)),
+            "expected {expected_file_name} to report; findings={process_findings:?}"
+        );
+    }
+}
+
 /// Prove workflow event gates recognise scalar, list, and mapping `on:` forms.
 #[test]
 pub(crate) fn github_actions_security_events_accept_scalar_on_values() {

@@ -1,6 +1,6 @@
 ---
 category: security-analysis
-last_reviewed: 2026-07-14
+last_reviewed: 2026-08-11
 ---
 
 ## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
@@ -28,7 +28,15 @@ The non-obvious failure mode is globally removing `(?i)` to fix false positives,
 
 ## Footgun: Process Command Needs Risk Signals
 
-**Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
+**Status:** active | **Created:** 2026-05-23 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Resolve a bare `Command` from explicit imports before running risk-signal checks; do not treat unrelated glob imports as conflicts.
+**Trigger phase:** ACT
+
+A 2026-08-11 scan of clap measured 1,265 `security.process-command` findings because `analyse_process_commands` accepted every bare `Command::new` before checking where `Command` came from. Reusing the parsed `syn::File` and accepting bare constructors only after a root `use std::process::Command` reduced clap to 6 genuine fully qualified process executions. The same pass masks comments before constructor matching, so rust-clippy's two documentation examples no longer report.
+
+An initial import collector treated every unrelated glob, including `use rayon::prelude::*`, as possible contrary `Command` evidence. That suppressed three genuine calls in rust-clippy's `lintcheck/src/main.rs` despite its explicit `use std::process::{Command, Stdio}`. A glob path is not evidence that it exports a specific name. Explicit standard-library imports remain authoritative; a non-standard import is contrary evidence only when its final imported name is actually `Command` or `process`.
+
+Evidence: `src/built_in_rules/behavior_rules.rs` (search: `struct ProcessCommandImports`) records constructor provenance, and `src/tests/rule_behaviours/release_noise_guards.rs` (search: `process_command_requires_std_import_provenance`) covers an explicit standard-library import beside an unrelated glob.
 
 `src/built_in_rules/behavior_rules.rs` (search: `fn analyse_process_commands`) reports `security.process-command` only when `process_command_risk_signals` finds a concrete risk shape such as shell execution, dynamic executable, dynamic arguments, environment changes, or working-directory changes. Reporting every `Command::new(...)` constructor creates release-blocking noise for fixed executable helpers and cleanup commands.
 

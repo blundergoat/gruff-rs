@@ -194,7 +194,7 @@ rules:
   # Flags placeholder identifiers such as foo, bar, baz, and qux.
   naming.placeholder-identifier:
     enabled: true
-  # Flags very short local variable names outside accepted abbreviations.
+  # Flags two-letter `let` bindings and function parameters outside accepted abbreviations, except conventional typed `cx` context parameters.
   naming.short-variable:
     enabled: true
   # Flags clone calls inside loop bodies as allocation hot spot candidates.
@@ -325,9 +325,9 @@ rules:
   # Flags assertions that prove a value the code already fixes instead of behavior: literal tautologies (`assert!(true)`, `assert_eq!(1, 1)`) and an immutable literal binding asserted against its own value (`let x = 5; assert_eq!(x, 5)`).
   test-quality.trivial-assertion:
     enabled: true
-  # Flags unwrap calls in tests.
+  # Opt-in style check for unwrap calls in tests.
   test-quality.unwrap-in-test:
-    enabled: true
+    enabled: false
   # Flags clone calls that may be avoidable.
   waste.unnecessary-clone-candidate:
     enabled: false

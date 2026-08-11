@@ -177,34 +177,169 @@ impl LineRuleContext<'_> {
     }
 }
 
+/// Report risky standard-library process builders after resolving their constructor imports.
 pub(crate) fn analyse_process_commands(
     file: &SourceFile,
     source: &str,
+    ast: &syn::File,
     findings: &mut Vec<Finding>,
 ) {
     let command_regex = static_regex(
         &PROCESS_COMMAND_REGEX,
-        r"(std::process::Command|Command)::new\s*\(",
+        r"(?P<constructor>std::process::Command|process::Command|Command)::new\s*\(",
     );
-    let searchable = strip_rust_string_literals(source);
-    let searchable_lines: Vec<&str> = searchable.lines().collect();
+    let imports = TopLevelProcessCommandImports::from_uses(ast);
+    // Comments cannot execute a process, so only code contributes constructors and risk signals.
+    let code_only_source =
+        strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
+    let searchable_lines: Vec<&str> = code_only_source.lines().collect();
     let source_lines: Vec<&str> = source.lines().collect();
+    // Keep each finding anchored to the source line that constructs the process command.
     for (line_index, line) in searchable_lines.iter().enumerate() {
-        if command_regex.is_match(line) {
-            let raw_window = line_window(&source_lines, line_index);
-            let searchable_window = line_window(&searchable_lines, line_index);
-            if process_command_is_returned_builder(&source_lines, line_index)
-                || process_command_is_fixed_taskkill_cleanup(&raw_window)
-            {
-                continue;
-            }
-            let risk_signals = process_command_risk_signals(&raw_window, &searchable_window);
-            if risk_signals.is_empty() {
-                continue;
-            }
-            push_process_command_finding(file, line_index + 1, risk_signals, findings);
+        let constructs_std_process_command = command_regex.captures_iter(line).any(|captures| {
+            captures
+                .name("constructor")
+                .is_some_and(|constructor| imports.is_std_process_constructor(constructor.as_str()))
+        });
+        // A same-named builder is harmless unless its import proves this is the standard-library type.
+        if !constructs_std_process_command {
+            continue;
+        }
+        let raw_window = line_window(&source_lines, line_index);
+        let searchable_window = line_window(&searchable_lines, line_index);
+        // Builder factories and fixed test cleanup lack the execution risk this rule reports.
+        if process_command_is_returned_builder(&source_lines, line_index)
+            || process_command_is_fixed_taskkill_cleanup(&raw_window)
+        {
+            continue;
+        }
+        let risk_signals = process_command_risk_signals(&raw_window, &searchable_window);
+        // Fixed commands without a concrete risk shape do not warrant a security warning.
+        if risk_signals.is_empty() {
+            continue;
+        }
+        push_process_command_finding(file, line_index + 1, risk_signals, findings);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+/// Top-level import bindings that can resolve `Command::new` or `process::Command::new`.
+///
+/// Conflicting explicit bindings stay unresolved so a same-named third-party builder cannot
+/// become a security finding.
+struct TopLevelProcessCommandImports {
+    bare_command_from_std: bool,
+    bare_command_from_other: bool,
+    process_module_from_std: bool,
+    process_module_from_other: bool,
+}
+
+impl TopLevelProcessCommandImports {
+    /// Collect bindings from top-level `use` items before source-text matching begins.
+    fn from_uses(ast: &syn::File) -> Self {
+        let mut imports = Self::default();
+        // Nested scopes need lexical resolution, so only unambiguous top-level imports are accepted.
+        for item_use in ast.items.iter().filter_map(|item| match item {
+            syn::Item::Use(item_use) => Some(item_use),
+            _ => None,
+        }) {
+            collect_process_command_bindings(&item_use.tree, &mut Vec::new(), &mut imports);
+        }
+        imports
+    }
+
+    /// Return whether a matched constructor spelling resolves to `std::process::Command`.
+    fn is_std_process_constructor(self, constructor: &str) -> bool {
+        match constructor {
+            "std::process::Command" => true,
+            "Command" => self.bare_command_from_std && !self.bare_command_from_other,
+            "process::Command" => self.process_module_from_std && !self.process_module_from_other,
+            _ => false,
         }
     }
+
+    /// Record only bindings that can affect the two constructor spellings this rule accepts.
+    fn record_binding(&mut self, source_path: &[String], local_name: &str) {
+        // Only a local `Command` binding can resolve the bare constructor spelling.
+        if local_name == "Command" {
+            // The exact standard-library path proves provenance; another explicit path conflicts.
+            if is_import_path(source_path, &["std", "process", "Command"]) {
+                self.bare_command_from_std = true;
+            } else if source_path
+                .last()
+                .is_some_and(|segment| segment == "Command")
+            {
+                self.bare_command_from_other = true;
+            }
+        }
+        // A local `process` module binding governs the `process::Command` spelling.
+        if local_name == "process" {
+            // Preserve the same conservative conflict rule used for bare `Command`.
+            if is_import_path(source_path, &["std", "process"]) {
+                self.process_module_from_std = true;
+            } else if source_path
+                .last()
+                .is_some_and(|segment| segment == "process")
+            {
+                self.process_module_from_other = true;
+            }
+        }
+    }
+}
+
+/// Walk one `use` tree and retain bindings relevant to process-command provenance.
+fn collect_process_command_bindings(
+    tree: &syn::UseTree,
+    path_prefix: &mut Vec<String>,
+    imports: &mut TopLevelProcessCommandImports,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            path_prefix.push(path.ident.to_string());
+            collect_process_command_bindings(&path.tree, path_prefix, imports);
+            path_prefix.pop();
+        }
+        syn::UseTree::Name(name) if name.ident == "self" => {
+            // `use path::{self}` binds the final path segment under its existing name.
+            if let Some(local_name) = path_prefix.last() {
+                imports.record_binding(path_prefix, local_name);
+            }
+        }
+        syn::UseTree::Name(name) => {
+            path_prefix.push(name.ident.to_string());
+            imports.record_binding(path_prefix, &name.ident.to_string());
+            path_prefix.pop();
+        }
+        syn::UseTree::Rename(rename) => {
+            let source_name = rename.ident.to_string();
+            let local_name = rename.rename.to_string();
+            // A renamed `self` binds the accumulated path rather than another child segment.
+            if source_name == "self" {
+                imports.record_binding(path_prefix, &local_name);
+            } else {
+                path_prefix.push(source_name);
+                imports.record_binding(path_prefix, &local_name);
+                path_prefix.pop();
+            }
+        }
+        syn::UseTree::Glob(_) => {
+            // Only `std::process::*` proves that the glob exports the standard `Command` type.
+            if is_import_path(path_prefix, &["std", "process"]) {
+                imports.bare_command_from_std = true;
+            }
+        }
+        syn::UseTree::Group(group) => {
+            // Every grouped child inherits the path accumulated before the braces.
+            for item in &group.items {
+                collect_process_command_bindings(item, path_prefix, imports);
+            }
+        }
+    }
+}
+
+/// Compare a collected import path with the standard-library path required by the caller.
+fn is_import_path(path: &[String], expected: &[&str]) -> bool {
+    path.iter().map(String::as_str).eq(expected.iter().copied())
 }
 
 pub(crate) fn analyse_insecure_rng_for_secrets(
@@ -370,7 +505,7 @@ fn process_command_risk_signals(raw_window: &str, searchable_window: &str) -> Ve
 
     if static_regex(
         &PROCESS_SHELL_INTERPRETER_REGEX,
-        r#"(?i)(std::process::Command|Command)::new\s*\(\s*"(?:sh|bash|dash|zsh|cmd|powershell|pwsh)"\s*\)"#,
+        r#"(?i)(?:std::process::Command|process::Command|Command)::new\s*\(\s*"(?:sh|bash|dash|zsh|cmd|powershell|pwsh)"\s*\)"#,
     )
     .is_match(raw_window)
     {
@@ -386,7 +521,7 @@ fn process_command_risk_signals(raw_window: &str, searchable_window: &str) -> Ve
     }
     if static_regex(
         &PROCESS_DYNAMIC_EXECUTABLE_REGEX,
-        r"(std::process::Command|Command)::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_:]*::)",
+        r"(?:std::process::Command|process::Command|Command)::new\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_:]*::)",
     )
     .is_match(searchable_window)
     {
@@ -425,7 +560,11 @@ fn process_command_is_returned_builder(source_lines: &[&str], line_index: usize)
     };
     let signature = source_lines[function_line_index..=line_index].join(" ");
     static COMMAND_RETURN_REGEX: OnceLock<Regex> = OnceLock::new();
-    static_regex(&COMMAND_RETURN_REGEX, r"->\s*(?:std::process::)?Command\b").is_match(&signature)
+    static_regex(
+        &COMMAND_RETURN_REGEX,
+        r"->\s*(?:(?:std::process::|process::)?Command)\b",
+    )
+    .is_match(&signature)
         && !process_command_has_execution_sink(&line_window(source_lines, line_index))
 }
 
@@ -466,7 +605,7 @@ fn process_command_is_fixed_taskkill_cleanup(raw_window: &str) -> bool {
     static TASKKILL_PID_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(
         &TASKKILL_PID_REGEX,
-        r#"Command::new\s*\(\s*"taskkill"\s*\)[\s\S]*\.args\s*\(\s*\[\s*"/PID"\s*,\s*&?[A-Za-z_][A-Za-z0-9_]*\.to_string\(\)\s*,\s*"/F"\s*,\s*"/T"\s*\]"#,
+        r#"(?:std::process::Command|process::Command|Command)::new\s*\(\s*"taskkill"\s*\)[\s\S]*\.args\s*\(\s*\[\s*"/PID"\s*,\s*&?[A-Za-z_][A-Za-z0-9_]*\.to_string\(\)\s*,\s*"/F"\s*,\s*"/T"\s*\]"#,
     )
     .is_match(raw_window)
 }

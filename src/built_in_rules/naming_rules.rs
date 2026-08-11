@@ -1,12 +1,10 @@
 use super::*;
 
-/// AST-aware migration of `naming.short-variable` and
-/// `naming.placeholder-identifier`. Visits every binding `Pat::Ident` in
-/// `let`/`for` patterns, function parameters, closure parameters, and
-/// destructured patterns (tuple, tuple-struct, struct, slice). The
-/// previous regex-based dispatch only saw `let`/`for` simple bindings.
-/// Also emits `naming.identifier-shadow` when a same-file free function
-/// `X` is shadowed by `let X = X(...)`.
+/// Analyze durable local and parameter names for the built-in naming rules.
+///
+/// `let` patterns and function parameters are checked recursively. Short-lived loop and closure
+/// bindings stay silent because their narrow context usually supplies the missing meaning. The
+/// same pass reports a local that shadows a same-file free function.
 pub(crate) fn analyse_naming_patterns(
     file: &SourceFile,
     ast: &syn::File,
@@ -212,23 +210,37 @@ impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
         syn::visit::visit_local(self, local);
     }
 
-    fn visit_expr_for_loop(&mut self, for_loop: &'ast syn::ExprForLoop) {
-        self.visit_pat_idents(&for_loop.pat);
-        syn::visit::visit_expr_for_loop(self, for_loop);
-    }
-
     fn visit_fn_arg(&mut self, arg: &'ast syn::FnArg) {
+        // Rust poll and lint APIs conventionally pair `cx` with a typed context parameter.
         if let syn::FnArg::Typed(pat_type) = arg {
-            self.visit_pat_idents(&pat_type.pat);
+            if !is_conventional_context_parameter(pat_type) {
+                self.visit_pat_idents(&pat_type.pat);
+            }
         }
         syn::visit::visit_fn_arg(self, arg);
     }
+}
 
-    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
-        for input in &closure.inputs {
-            self.visit_pat_idents(input);
-        }
-        syn::visit::visit_expr_closure(self, closure);
+/// Recognize the ecosystem-standard `cx` name only when its declared type is a context.
+fn is_conventional_context_parameter(parameter: &syn::PatType) -> bool {
+    let syn::Pat::Ident(identifier) = parameter.pat.as_ref() else {
+        return false;
+    };
+    identifier.ident == "cx" && is_context_type(&parameter.ty)
+}
+
+/// Return whether a parameter type ends in `Context`, including references and grouping.
+fn is_context_type(parameter_type: &syn::Type) -> bool {
+    match parameter_type {
+        syn::Type::Reference(reference) => is_context_type(&reference.elem),
+        syn::Type::Group(group) => is_context_type(&group.elem),
+        syn::Type::Paren(parenthesized) => is_context_type(&parenthesized.elem),
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident.to_string().ends_with("Context")),
+        _ => false,
     }
 }
 

@@ -113,17 +113,24 @@ pub(crate) fn default_config_emits_every_built_in_rule() {
 }
 
 #[test]
-pub(crate) fn default_config_marks_clone_candidate_opt_in() {
-    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
-    let clone_entry = body
-        .split("  waste.unnecessary-clone-candidate:")
-        .nth(1)
-        .and_then(|rest| rest.split("\n  waste.").next())
-        .expect("clone candidate rule entry exists");
-    assert!(
-        clone_entry.contains("    enabled: false"),
-        "clone-candidate should be opt-in in generated defaults; entry={clone_entry}"
-    );
+/// Generated config keeps style-preference rules visible without enabling them.
+pub(crate) fn generated_config_disables_opt_in_rules() {
+    let generated_config = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+
+    for (rule_id, next_rule_prefix) in [
+        ("test-quality.unwrap-in-test", "\n  test-quality."),
+        ("waste.unnecessary-clone-candidate", "\n  waste."),
+    ] {
+        let rule_entry = generated_config
+            .split(&format!("  {rule_id}:"))
+            .nth(1)
+            .and_then(|remaining_config| remaining_config.split(next_rule_prefix).next())
+            .expect("opt-in rule entry exists");
+        assert!(
+            rule_entry.contains("    enabled: false"),
+            "{rule_id} should be opt-in in generated defaults; entry={rule_entry}"
+        );
+    }
 }
 
 #[test]
