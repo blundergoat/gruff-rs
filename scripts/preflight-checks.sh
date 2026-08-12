@@ -430,6 +430,112 @@ release_version_is_newer() {
   ((left_patch > right_patch))
 }
 
+# Security fixes this repository carries on top of the managed goat-flow hook templates, as "hook<TAB>anchor<TAB>reason"
+# rows. Each upgrade has silently reverted at least one of them, so presence is asserted rather than assumed. Anchors
+# are semantic on purpose: byte comparison would trip on an upstream reflow and would also fail once upstream adopts a
+# fix, which is the outcome we want to keep passing. See .goat-flow/hooks/local-deltas/README.md.
+MANAGED_HOOK_DELTAS=(
+  $'post-turn-safety.sh\tis_line_allowlisted\tline-scoped goat-flow-allow-secret marker (ADR-022)'
+  $'post-turn-safety.sh\t"@@ "*)\tonly a real hunk header is skipped, so an added "++" line is still scanned'
+  $'run-with-bash.mjs\tsymlinkFreePath\tlauncher resolves symlinks before comparing its own path'
+)
+
+# Prove every local hook delta is still present in the installed managed hooks. A goat-flow install or hooks sync
+# restores these files from the template, which silently removes each fix; this check is what notices.
+managed_hook_deltas_present() {
+  local hooks_dir="${1:-$REPO_ROOT/.goat-flow/hooks}"
+  local -a missing=()
+  local row hook_name anchor reason
+
+  for row in "${MANAGED_HOOK_DELTAS[@]}"; do
+    IFS=$'\t' read -r hook_name anchor reason <<<"$row"
+    # An absent hook file means the managed install is broken in a way a grep cannot describe.
+    if [[ ! -f "$hooks_dir/$hook_name" ]]; then
+      printf 'managed hook deltas: %s is missing from %s\n' "$hook_name" "$hooks_dir" >&2
+      return 1
+    fi
+    # A missing anchor means an upgrade reverted this fix and the repository is running unprotected.
+    if ! grep -qF -- "$anchor" "$hooks_dir/$hook_name"; then
+      missing+=("$hook_name: $reason (anchor: $anchor)")
+    fi
+  done
+
+  # Naming the fix and its anchor lets the reader restore it from local-deltas/ without re-deriving what was lost.
+  if ((${#missing[@]} > 0)); then
+    printf 'managed hook deltas: reverted by an install or sync; reapply from .goat-flow/hooks/local-deltas/:\n' >&2
+    printf '  %s\n' "${missing[@]}" >&2
+    return 1
+  fi
+
+  printf '%s local hook deltas present\n' "${#MANAGED_HOOK_DELTAS[@]}"
+}
+
+# Rule forms Claude never matches in permissions.deny/allow/ask. Such a rule warns at launch and enforces nothing, so
+# it reads as protection that does not exist. See ADR-023.
+INERT_PERMISSION_TOOLS='["Write","MultiEdit","NotebookEdit","Glob"]'
+
+# Prove the agent settings still pair Read with Edit on every secret path and carry no inert rule form. An Edit deny
+# already refuses the Write tool, so pairing - not one entry per tool name - is the invariant worth guarding.
+permission_rule_hygiene() {
+  local settings_file="${1:-$REPO_ROOT/.claude/settings.json}"
+  local inert
+  local unpaired
+
+  require_jq_for_preflight
+
+  # Absent settings would leave every secret-path deny unverified for this repository.
+  if [[ ! -f "$settings_file" ]]; then
+    printf 'permission rule hygiene: %s is missing\n' "$settings_file" >&2
+    return 1
+  fi
+  # Malformed JSON cannot establish which paths the agent actually refuses.
+  if ! jq -e 'type == "object"' "$settings_file" >/dev/null 2>&1; then
+    printf 'permission rule hygiene: %s is not valid JSON\n' "$settings_file" >&2
+    return 1
+  fi
+
+  # An unmatched tool prefix anywhere in deny/allow/ask is the regression this check exists to catch.
+  inert=$(jq -r --argjson inert_tools "$INERT_PERMISSION_TOOLS" '
+    (.permissions // {})
+    | ((.deny // []) + (.allow // []) + (.ask // []))
+    | map(select(type == "string"))
+    | map(select(. as $rule | ($inert_tools | index($rule | split("(")[0])) != null))
+    | unique
+    | .[]
+  ' "$settings_file") || {
+    printf 'permission rule hygiene: could not read permissions from %s\n' "$settings_file" >&2
+    return 1
+  }
+  # Naming each offending rule lets the reader delete it without re-deriving which forms are inert.
+  if [[ -n "$inert" ]]; then
+    printf 'permission rule hygiene: inert rule forms (never matched; use Read/Edit instead, see ADR-023):\n' >&2
+    printf '%s\n' "$inert" | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  # A path denied for reading but not editing (or the reverse) is a real one-sided hole in the deny list.
+  unpaired=$(jq -r '
+    (.permissions.deny // []) as $deny
+    | ([$deny[] | select(startswith("Read(")) | .[5:-1]] | sort) as $read_paths
+    | ([$deny[] | select(startswith("Edit(")) | .[5:-1]] | sort) as $edit_paths
+    | (($read_paths - $edit_paths) | map("denied for Read but not Edit: " + .))
+      + (($edit_paths - $read_paths) | map("denied for Edit but not Read: " + .))
+    | .[]
+  ' "$settings_file") || {
+    printf 'permission rule hygiene: could not compare Read and Edit denies in %s\n' "$settings_file" >&2
+    return 1
+  }
+  # An unpaired path is reported verbatim so the fix is a copy of the missing line.
+  if [[ -n "$unpaired" ]]; then
+    printf 'permission rule hygiene: unpaired secret-path denies:\n' >&2
+    printf '%s\n' "$unpaired" | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  printf 'Read/Edit denies paired on %s paths; no inert rule forms\n' \
+    "$(jq -r '[(.permissions.deny // [])[] | select(startswith("Read("))] | length' "$settings_file")"
+}
+
 # Keep manifest, lockfile, tag, and changelog versions aligned for users and publishers.
 version_metadata_check() {
   local manifest_version
@@ -1567,6 +1673,8 @@ run_preflight_suite() {
   run_preflight_check "shellcheck" check_shellcheck
   run_preflight_check "deny-dangerous policy" deny_dangerous_self_test
   run_preflight_check "post-turn safety" post_turn_safety_self_test
+  run_preflight_check "permission rule hygiene" permission_rule_hygiene
+  run_preflight_check "managed hook deltas" managed_hook_deltas_present
   run_preflight_check "version metadata" version_metadata_check
   run_preflight_check "dependency audit" dependency_audit_check
   run_preflight_check "action metadata" action_metadata_validation

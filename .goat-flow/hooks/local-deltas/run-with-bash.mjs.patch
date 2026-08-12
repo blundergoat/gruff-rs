@@ -1,0 +1,39 @@
+--- /home/devgoat/.nvm/versions/node/v22.22.1/lib/node_modules/@blundergoat/goat-flow/workflow/hooks/run-with-bash.mjs	2026-08-11 17:24:55.930458591 +1000
++++ .goat-flow/hooks/run-with-bash.mjs	2026-08-11 18:01:36.993182561 +1000
+@@ -720,13 +720,34 @@
+   );
+ }
+ 
++/**
++ * Reduce a path to the file it really names, following any symlinked parent directory.
++ * Use before comparing two spellings of this launcher, because the agent host and Node can
++ * describe the same file differently and a mismatch would silently skip the user's hook.
++ * Error behavior: never throws - a path that cannot be resolved is returned as given.
++ *
++ * @param {string} candidatePath - Path to reduce; an unreadable path is returned unchanged.
++ * @returns {string} Resolved path, or the original spelling when the filesystem cannot resolve it.
++ */
++function symlinkFreePath(candidatePath) {
++  try {
++    return realpathSync(candidatePath);
++  } catch {
++    // For example, the file was replaced mid-launch; the original spelling still has to compare.
++    return candidatePath;
++  }
++}
++
+ const launchedModuleArgument = process.argv[1];
+ let launchedModulePath = "";
+ // Import-only tests omit an invoked path; direct hook execution supplies one.
+ if (launchedModuleArgument) {
+-  launchedModulePath = resolve(launchedModuleArgument);
++  // The host may reach this file through a symlinked project directory, so both sides of the
++  // comparison below are reduced to the real file. Comparing raw spellings let the launcher load
++  // its exports, run no hook, and exit 0 - which every supported host reads as "guard passed".
++  launchedModulePath = symlinkFreePath(resolve(launchedModuleArgument));
+ }
+-const currentModulePath = fileURLToPath(import.meta.url);
++const currentModulePath = symlinkFreePath(fileURLToPath(import.meta.url));
+ let launchedAsProgram = launchedModulePath === currentModulePath;
+ // Windows paths are case-insensitive from the user's shell even when strings differ.
+ if (process.platform === "win32") {
