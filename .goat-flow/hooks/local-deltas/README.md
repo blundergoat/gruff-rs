@@ -8,7 +8,7 @@ template, and each upgrade has silently reverted them at least once.
 
 ```bash
 TPL="$(npm root -g)/@blundergoat/goat-flow/workflow/hooks"
-for f in post-turn-safety.sh run-with-bash.mjs; do
+for f in post-turn-safety.sh run-with-bash.mjs deny-dangerous.sh; do
   diff -u "$TPL/$f" ".goat-flow/hooks/$f" > ".goat-flow/hooks/local-deltas/$f.patch"
 done
 ```
@@ -41,8 +41,17 @@ release. The delta check below is what actually protects the fixes.
 | --- | --- | --- |
 | `symlinkFreePath` | Resolves both sides of the launcher's self-identity comparison before comparing | A symlinked project directory reaching the launcher through the `CLAUDE_PROJECT_DIR` fallback makes it load, run no hook, and exit 0 — which every supported host reads as "guard passed". |
 
+### `deny-dangerous.sh` — 10 lines, two fixes
+
+| Anchor | What it does | What breaks without it |
+| --- | --- | --- |
+| `watch --any-unknown-flag` | An option `strip_watch_payload_command` does not recognise is skipped rather than aborting normalisation | `watch --any-unknown-flag rm -rf /` reaches the policy modules as a `watch` invocation, matches nothing, and is allowed. Pinned by the `watch unknown long option` and `watch unknown short option` self-test cases. |
+| `parallel --any-unknown-flag` | Same repair in `strip_parallel_payload_command` | `parallel --any-unknown-flag rm -rf /` is allowed for the same reason. `strip_xargs_payload_command` already skipped unknown options, so this restores agreement between the three wrapper parsers. Pinned by the two `parallel unknown … option` self-test cases. |
+
+Both fixes belong upstream; send them there and drop this delta once a release carries them.
+
 ## Files upstream owns outright
 
-`deny-dangerous.sh` and its `patterns-*.sh` modules, `deny-dangerous-self-test.sh`,
-`gruff-code-quality.sh`, `hook-launch-runtime.mjs`, and `hook-provider-adapters.mjs` are
+The `patterns-*.sh` modules, `deny-dangerous-self-test.sh` (apart from the four wrapper cases noted
+above), `gruff-code-quality.sh`, `hook-launch-runtime.mjs`, and `hook-provider-adapters.mjs` are
 byte-identical to the 1.15.1 templates. Do not patch them here; send fixes upstream.

@@ -1,0 +1,50 @@
+--- /home/devgoat/.nvm/versions/node/v22.22.1/lib/node_modules/@blundergoat/goat-flow/workflow/hooks/deny-dangerous.sh	2026-08-11 17:24:55.934458723 +1000
++++ .goat-flow/hooks/deny-dangerous.sh	2026-08-13 05:56:06.524726572 +1000
+@@ -982,7 +982,7 @@
+ 
+   local watch_word_index=1
+   local watch_word=""
+-  # Skip only known watch options; unknown grammar remains visible and unmodified.
++  # Skip watch options, known or not, so the repeated payload stays visible to policy.
+   while [[ "$watch_word_index" -lt "${#watch_words[@]}" ]]; do
+     watch_word="${watch_words[$watch_word_index]}"
+     case "$watch_word" in
+@@ -1002,8 +1002,13 @@
+         watch_word_index=$((watch_word_index + 1))
+         continue
+         ;;
++      # An unrecognised option must not abandon normalisation: returning here would leave the
++      # wrapper word as the whole command, so `watch --any-unknown-flag rm -rf /` would reach the
++      # policy modules as a `watch` invocation and match nothing. Skipping keeps searching for the
++      # payload, which is how strip_xargs_payload_command already treats unknown options.
+       -*)
+-        return 1
++        watch_word_index=$((watch_word_index + 1))
++        continue
+         ;;
+     esac
+     break
+@@ -1028,7 +1033,7 @@
+ 
+   local parallel_word_index=1
+   local parallel_word=""
+-  # Skip common options while leaving unfamiliar grammar visible to other checks.
++  # Skip parallel options, known or not, so the downstream payload stays visible to policy.
+   while [[ "$parallel_word_index" -lt "${#parallel_words[@]}" ]]; do
+     parallel_word="${parallel_words[$parallel_word_index]}"
+     case "$parallel_word" in
+@@ -1048,8 +1053,13 @@
+         parallel_word_index=$((parallel_word_index + 1))
+         continue
+         ;;
++      # An unrecognised option must not abandon normalisation: returning here would leave the
++      # wrapper word as the whole command, so `parallel --any-unknown-flag rm -rf /` would reach the
++      # policy modules as a `parallel` invocation and match nothing. Skipping keeps searching for the
++      # payload, which is how strip_xargs_payload_command already treats unknown options.
+       -*)
+-        return 1
++        parallel_word_index=$((parallel_word_index + 1))
++        continue
+         ;;
+     esac
+     break

@@ -35,7 +35,7 @@ When a rule fires on legitimate code, prefer the following remedies, in order:
 
 - New rules added to the registry must include a calibration positive/negative case that is robust against the rule's own carve-outs (e.g. a sensitive-data positive case must NOT live under `**/tests/calibration/**`, or it will be skipped by `path_is_calibration_fixture`).
 - The `.gruff-rs.yaml` ships as a faithful registry snapshot - `gruff-rs init` regenerates it with the same defaults. Any per-project exclusion is a deliberate choice the project owner is accepting.
-- The footgun at `.goat-flow/footguns/calibration.md` (search: `Footgun: Threshold tuning ripples`) documents the ripple effects of threshold and rule changes that this policy makes more common.
+- The footgun at `.goat-flow/learning-loop/footguns/calibration.md` (search: `Footgun: Threshold Tuning Ripples`) documents the ripple effects of threshold and rule changes that this policy makes more common.
 
 ## Reversibility
 

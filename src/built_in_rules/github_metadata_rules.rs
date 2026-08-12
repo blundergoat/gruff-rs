@@ -15,10 +15,14 @@ pub(super) fn analyse_ci_github_event_shell_interpolation(
     };
 
     let mut state = RunBlockState::default();
+    // Step tracking runs alongside the shell state so an input named `run` cannot open a step.
+    let mut steps = GithubStepState::default();
     // Each source line can open, continue, or close the shell step a user configured.
     for (line_index, line) in unit.source.lines().enumerate() {
+        let line_has_event_shell = state.line_has_event_shell_interpolation(line);
+        steps.track_line(line, metadata_kind);
         // A match becomes one line-scoped finding in the normal report.
-        if state.line_has_event_shell_interpolation(line) {
+        if line_has_event_shell && steps.is_inside_step_item() {
             push_github_event_shell_finding(unit, findings, metadata_kind, line_index + 1);
         }
     }
@@ -249,8 +253,10 @@ fn analyse_github_actions_line(
             json!({}),
         );
     }
-    // Both metadata kinds can place remote-download commands in shell steps.
-    if scan_state.run.line_has_remote_shell(line) {
+    // Both metadata kinds can place remote-download commands in shell steps. The state machine
+    // still sees every line so block scalars stay tracked, but only a real step can report.
+    let line_has_remote_shell = scan_state.run.line_has_remote_shell(line);
+    if line_has_remote_shell && scan_state.steps.is_inside_step_item() {
         push_remote_shell_finding(unit, findings, metadata_kind, line_number);
     }
     // Event and secret summary state exists only for workflow triggers.
@@ -417,6 +423,20 @@ impl GithubStepState {
         let dependency = self.dependency_in_open_steps(indent, trimmed);
         self.update_mapping_path(indent, trimmed, metadata_kind);
         dependency
+    }
+
+    /// Advance the YAML path for one line when only the position, not a dependency, is needed.
+    /// The event-interpolation scan uses this to reach the same step awareness as `uses:`.
+    fn track_line(&mut self, line: &str, metadata_kind: GithubMetadataKind) {
+        let _ = self.action_dependency(line, metadata_kind);
+    }
+
+    /// Whether the line just tracked sits inside a real step list item.
+    /// Shell keys carry step semantics only here: a top-level input named `run` is metadata, so its
+    /// `description` and `default` text must not be parsed as a command the user would execute.
+    fn is_inside_step_item(&self) -> bool {
+        self.open_steps
+            .is_some_and(|open_steps| open_steps.item_indent.is_some())
     }
 
     /// Check direct list-item and continuation properties inside the current `steps:` sequence.

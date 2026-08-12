@@ -261,9 +261,46 @@ fn format_start_in_match(source: &str, match_start: usize, match_end: usize) -> 
         .map(|relative| match_start + relative)
 }
 
+/// English words that mark a sentence rather than a select list or update target. A real column
+/// list is identifiers, commas, functions, stars, and aliases; it does not contain bare articles or
+/// conjunctions. Only the clause between the verb and its partner keyword is inspected, so a
+/// `WHERE` literal containing ordinary prose still leaves a genuine query flaggable.
+const STATEMENT_CLAUSE_PROSE_WORDS: &[&str] = &[
+    "the", "an", "of", "so", "about", "for", "this", "that", "your", "our", "please", "then",
+];
+
+/// Reports whether the clause between `SELECT`/`UPDATE` and its partner keyword reads as prose.
+/// `Select the note from the archive` satisfies the bare keyword shape but is a user-facing string.
+fn statement_clause_is_prose(sql_shape_text: &str) -> bool {
+    static STATEMENT_CLAUSE_REGEX: OnceLock<Regex> = OnceLock::new();
+    let clause_regex = static_regex(
+        &STATEMENT_CLAUSE_REGEX,
+        r"(?is)^\s*(?:SELECT|UPDATE)\b(.*?)\b(?:FROM|SET)\b",
+    );
+    let Some(captures) = clause_regex.captures(sql_shape_text) else {
+        return false;
+    };
+    let Some(clause) = captures.get(1) else {
+        return false;
+    };
+    // Underscores stay inside a word so an identifier such as `the_table` is not read as an article.
+    clause
+        .as_str()
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|word| {
+            STATEMENT_CLAUSE_PROSE_WORDS
+                .iter()
+                .any(|prose_word| word.eq_ignore_ascii_case(prose_word))
+        })
+}
+
 /// Reports whether a format template retains a supported SQL statement shape after placeholders.
 fn template_is_flaggable(template: &str) -> bool {
     let sql_shape_text = normalise_sql_shape_text(&format_literal_fragments(template));
+    // A sentence that merely opens with a statement verb is not a query the user is building.
+    if statement_clause_is_prose(&sql_shape_text) {
+        return false;
+    }
     static_regex(
         &SQL_DYNAMIC_QUERY_SHAPE_REGEX,
         r"(?ix)^
@@ -554,6 +591,15 @@ mod tests {
             "MERGE INTO {table} USING src ON id = {id}"
         ));
         assert!(template_is_flaggable("GRANT ALL ON {table} TO {user}"));
+        // A sentence may open with a statement verb and still reach its partner keyword. Only the
+        // clause between the two is inspected, so an identifier such as `the_id` stays flaggable.
+        assert!(!template_is_flaggable(
+            "Select the note from the archive about {topic}"
+        ));
+        assert!(!template_is_flaggable(
+            "Update the settings so the profile name is set to {name}"
+        ));
+        assert!(template_is_flaggable("SELECT the_id FROM {table}"));
         assert!(!template_is_flaggable("Show the report from {source}"));
         assert!(!template_is_flaggable(
             "From the archive, select the note about {topic}"

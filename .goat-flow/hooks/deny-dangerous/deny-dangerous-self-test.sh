@@ -792,6 +792,13 @@ run_full() {
   expect_block writes "watch -n 1 git push origin main" "watch wrapped git push"
   expect_block writes "parallel git push origin main" "parallel wrapped git push"
   expect_block writes "parallel --halt soon,fail=1 git push origin main" "parallel halt value before git push"
+  # An option the wrapper parser does not know must not hide the payload. Before these cases the
+  # watch and parallel parsers abandoned normalisation on any unrecognised option, so a single
+  # unknown flag turned a blocked command into an allowed `watch`/`parallel` invocation.
+  expect_block writes "watch --nosuchoption git push origin main" "watch unknown long option before git push"
+  expect_block writes "watch -zz git push origin main" "watch unknown short option before git push"
+  expect_block writes "parallel --nosuchoption git push origin main" "parallel unknown long option before git push"
+  expect_block writes "parallel -zz git push origin main" "parallel unknown short option before git push"
   expect_block writes "bash -lc \$'git push origin main'" "ansi-c bash-c git push"
   expect_allow writes "find . -name x -print" "find print without executable action"
   expect_allow writes "watch -n 1 git status" "watch wrapped git status"

@@ -243,9 +243,16 @@ show_preflight_summary() {
     printf '\n'
   fi
 
-  # Zero failures gives contributors the single literal line used as gate evidence.
+  # Zero failures gives contributors the single literal line used as gate evidence. The skip count
+  # is named in that same line because it is quoted on its own as proof: without it, a run where an
+  # optional linter was absent is indistinguishable from one where every check executed.
   if ((FAILED == 0)); then
-    printf '  %sAll %d/%d checks passed%s  %s(%s)%s\n' "$GREEN$BOLD" "$PASSED" "$TOTAL" "$RESET" "$DIM" "$elapsed" "$RESET"
+    if ((${#SKIPPED[@]} > 0)); then
+      printf '  %sAll %d/%d checks passed, %d skipped%s  %s(%s)%s\n' \
+        "$GREEN$BOLD" "$PASSED" "$TOTAL" "${#SKIPPED[@]}" "$RESET" "$DIM" "$elapsed" "$RESET"
+    else
+      printf '  %sAll %d/%d checks passed%s  %s(%s)%s\n' "$GREEN$BOLD" "$PASSED" "$TOTAL" "$RESET" "$DIM" "$elapsed" "$RESET"
+    fi
     printf '\n'
     return 0
   fi
@@ -438,6 +445,9 @@ MANAGED_HOOK_DELTAS=(
   $'post-turn-safety.sh\tis_line_allowlisted\tline-scoped goat-flow-allow-secret marker (ADR-022)'
   $'post-turn-safety.sh\t"@@ "*)\tonly a real hunk header is skipped, so an added "++" line is still scanned'
   $'run-with-bash.mjs\tsymlinkFreePath\tlauncher resolves symlinks before comparing its own path'
+  $'deny-dangerous.sh\twatch --any-unknown-flag\tan unknown watch option skips instead of abandoning normalisation'
+  $'deny-dangerous.sh\tparallel --any-unknown-flag\tan unknown parallel option skips instead of abandoning normalisation'
+  $'deny-dangerous/deny-dangerous-self-test.sh\twatch unknown long option\tregression cases that pin the two wrapper repairs above'
 )
 
 # Prove every local hook delta is still present in the installed managed hooks. A goat-flow install or hooks sync

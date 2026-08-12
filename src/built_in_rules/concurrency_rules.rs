@@ -184,16 +184,31 @@ fn receiver_has_local_lock_evidence(function_source: &str, receiver: &str) -> bo
         return false;
     }
 
-    let escaped_receiver = regex::escape(receiver);
-    let typed_receiver = Regex::new(&format!(
-        r"(?s)\b{escaped_receiver}\s*:\s*[^=;{{}}]*\b(?:Mutex|RwLock)\b"
-    ))
-    .expect("escaped Rust receiver keeps the typed-lock regex valid");
-    let constructed_receiver = Regex::new(&format!(
-        r"(?s)\blet\s+(?:mut\s+)?{escaped_receiver}\s*(?::[^=;{{}}]+)?=\s*[^;{{}}]*\b(?:Mutex|RwLock)\s*::\s*new\s*\("
-    ))
-    .expect("escaped Rust receiver keeps the lock-constructor regex valid");
-    typed_receiver.is_match(function_source) || constructed_receiver.is_match(function_source)
+    // Both patterns capture the bound name instead of interpolating the receiver, so they compile
+    // once for the process rather than twice per candidate binding. Comparing the captured name is
+    // equivalent to the previous word-bounded interpolation: a longer identifier ending in the
+    // receiver text captures its own full name and fails the equality check.
+    static TYPED_LOCK_RECEIVER_REGEX: OnceLock<Regex> = OnceLock::new();
+    static CONSTRUCTED_LOCK_RECEIVER_REGEX: OnceLock<Regex> = OnceLock::new();
+    let typed_receiver = static_regex(
+        &TYPED_LOCK_RECEIVER_REGEX,
+        r"(?s)\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=;{}]*\b(?:Mutex|RwLock)\b",
+    );
+    let constructed_receiver = static_regex(
+        &CONSTRUCTED_LOCK_RECEIVER_REGEX,
+        r"(?s)\blet\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=;{}]+)?=\s*[^;{}]*\b(?:Mutex|RwLock)\s*::\s*new\s*\(",
+    );
+    let names_receiver = |captures: regex::Captures<'_>| {
+        captures
+            .get(1)
+            .is_some_and(|bound_name| bound_name.as_str() == receiver)
+    };
+    typed_receiver
+        .captures_iter(function_source)
+        .any(names_receiver)
+        || constructed_receiver
+            .captures_iter(function_source)
+            .any(names_receiver)
 }
 
 fn lock_suffix_is_guard_preserving(mut suffix: &str) -> bool {
