@@ -1,5 +1,5 @@
 --- /home/devgoat/.nvm/versions/node/v22.22.1/lib/node_modules/@blundergoat/goat-flow/workflow/hooks/post-turn-safety.sh	2026-08-11 17:24:55.938458854 +1000
-+++ .goat-flow/hooks/post-turn-safety.sh	2026-08-11 18:01:37.001182895 +1000
++++ .goat-flow/hooks/post-turn-safety.sh	2026-08-13 19:29:25.203795241 +1000
 @@ -499,7 +499,7 @@
  }
  
@@ -9,16 +9,20 @@
  # so either execution path cannot silently define a different security policy.
  AWS_TOKEN_RE='(AKIA|ASIA)[A-Z0-9]{16}'
  GITHUB_LEGACY_TOKEN_RE='gh[pousr]_[A-Za-z0-9_]{30,}'
-@@ -511,6 +511,18 @@
+@@ -511,6 +511,22 @@
  PLACEHOLDER_ALL_X_RE='^(gh[pousr]_|github_pat_|npm_|sk-)?x+$'
  PLACEHOLDER_MARKER_RE='(^|[_-])(example|placeholder|changeme|change-me|change_me|dummy|fake|sample|test|redacted|xxxx|your-token|your_token|your-key|your_key|your-api-key|your_api_key|not-a-secret)([_-]|$)'
  
 +# A calibration fixture must be allowed to keep a secret-looking token on one exact line without exempting its file or
 +# directory, so both scan paths honour the same line-scoped marker. Copying a marker onto a genuine credential is a
 +# reviewable change on that line.
++#
++# Exactly one marker is recognised, per ADR-022. Third-party pragmas such as `gitleaks:allow` are deliberately not
++# honoured: they are routine annotations in repositories running other scanners, so a reviewer reads them as ordinary
++# tooling noise rather than as a claim about this hook. The narrow marker keeps the exception visible in review.
 +is_line_allowlisted() {
 +  case "$1" in
-+    *goat-flow-allow-secret* | *gitleaks:allow* | *'pragma: allowlist secret'*)
++    *goat-flow-allow-secret*)
 +      return 0
 +      ;;
 +  esac
@@ -28,23 +32,29 @@
  # Recognize varied literal values so ordinary words do not interrupt the user's turn.
  has_credential_entropy() {
    local value="$1"
-@@ -974,6 +986,7 @@
-   fallback_budget_check || return 1
-   # A Windows-edited line carries one trailing CR; remove it before user-facing detectors run.
-   line="${line%$'\r'}"
-+  is_line_allowlisted "$line" && return 0
+@@ -993,6 +1009,10 @@
+       ;;
+   esac
  
-   fallback_reset_conflict "$path"
-   case "$line" in
-@@ -1954,6 +1967,7 @@
- 
-   # A Windows-edited line carries one trailing CR; remove it before user-facing detectors run.
-   line="${line%$'\r'}"
++  # ADR-022 scopes the marker to intentional calibration *secrets*, so it is applied after conflict detection above.
++  # Placing it earlier would also hide an unresolved merge conflict whose marker line happened to carry the comment.
 +  is_line_allowlisted "$line" && return 0
++
+   # A changed AWS-shaped value tells the user which credential family to rotate.
+   if [[ "$line" =~ $AWS_TOKEN_RE ]]; then
+     token="${BASH_REMATCH[0]}"
+@@ -1957,6 +1977,10 @@
  
    scan_merge_conflict_marker "$path" "$line"
  
-@@ -2304,8 +2318,12 @@
++  # ADR-022 scopes the marker to intentional calibration *secrets*, so it is applied after conflict detection above.
++  # Placing it earlier would also hide an unresolved merge conflict whose marker line happened to carry the comment.
++  is_line_allowlisted "$line" && return 0
++
+   # A private-key header means the changed file can expose a complete key block.
+   if [[ "$line" =~ $PRIVATE_KEY_RE ]]; then
+     report_finding "$path" "private key block"
+@@ -2304,8 +2328,12 @@
      fi
  
      ((cur_active)) || continue

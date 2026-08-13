@@ -514,9 +514,13 @@ PLACEHOLDER_MARKER_RE='(^|[_-])(example|placeholder|changeme|change-me|change_me
 # A calibration fixture must be allowed to keep a secret-looking token on one exact line without exempting its file or
 # directory, so both scan paths honour the same line-scoped marker. Copying a marker onto a genuine credential is a
 # reviewable change on that line.
+#
+# Exactly one marker is recognised, per ADR-022. Third-party pragmas such as `gitleaks:allow` are deliberately not
+# honoured: they are routine annotations in repositories running other scanners, so a reviewer reads them as ordinary
+# tooling noise rather than as a claim about this hook. The narrow marker keeps the exception visible in review.
 is_line_allowlisted() {
   case "$1" in
-    *goat-flow-allow-secret* | *gitleaks:allow* | *'pragma: allowlist secret'*)
+    *goat-flow-allow-secret*)
       return 0
       ;;
   esac
@@ -986,7 +990,6 @@ fallback_scan_line() {
   fallback_budget_check || return 1
   # A Windows-edited line carries one trailing CR; remove it before user-facing detectors run.
   line="${line%$'\r'}"
-  is_line_allowlisted "$line" && return 0
 
   fallback_reset_conflict "$path"
   case "$line" in
@@ -1005,6 +1008,10 @@ fallback_scan_line() {
       fallback_conflict_state=0
       ;;
   esac
+
+  # ADR-022 scopes the marker to intentional calibration *secrets*, so it is applied after conflict detection above.
+  # Placing it earlier would also hide an unresolved merge conflict whose marker line happened to carry the comment.
+  is_line_allowlisted "$line" && return 0
 
   # A changed AWS-shaped value tells the user which credential family to rotate.
   if [[ "$line" =~ $AWS_TOKEN_RE ]]; then
@@ -1967,9 +1974,12 @@ scan_line() {
 
   # A Windows-edited line carries one trailing CR; remove it before user-facing detectors run.
   line="${line%$'\r'}"
-  is_line_allowlisted "$line" && return 0
 
   scan_merge_conflict_marker "$path" "$line"
+
+  # ADR-022 scopes the marker to intentional calibration *secrets*, so it is applied after conflict detection above.
+  # Placing it earlier would also hide an unresolved merge conflict whose marker line happened to carry the comment.
+  is_line_allowlisted "$line" && return 0
 
   # A private-key header means the changed file can expose a complete key block.
   if [[ "$line" =~ $PRIVATE_KEY_RE ]]; then

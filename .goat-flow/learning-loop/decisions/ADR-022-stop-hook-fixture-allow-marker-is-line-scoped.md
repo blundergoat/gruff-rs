@@ -42,8 +42,10 @@ its payload redacted to `[redacted:aws-access-key]`.
 
 ## Threat Boundary
 
-The marker suppresses the *hook's* line-level judgement, nothing else. It does
-not affect analyzer findings, baselines, fingerprints, or report output. Its
+The marker suppresses the *hook's* line-level **secret** judgement, nothing
+else. Merge-conflict detection runs before it on both scan paths, so a conflict
+marker carrying the comment still blocks the turn. It does not affect analyzer
+findings, baselines, fingerprints, or report output. Its
 blast radius is exactly one line, and adding it to a second line is a reviewable
 diff on that line. A reviewer seeing `goat-flow-allow-secret` in a diff should
 treat it as a claim requiring justification, the same as a suppression comment.
@@ -55,7 +57,9 @@ restores the pre-decision behaviour, in which any turn touching
 `fixtures/sample.rs` blocks at Stop. Regression coverage lives in
 `.goat-flow/hooks/post-turn-safety/post-turn-safety-self-test.sh` (search:
 `fixture-marked`), which asserts both directions: the marked line passes and the
-identical token without a marker still blocks, on both dispatch paths.
+identical token without a marker still blocks, on both dispatch paths. A second
+case (search: `conflict-marked`) pins the boundary above by opening a conflict
+triplet on a marked line and requiring the turn to block anyway.
 
 ## Maintenance Note
 

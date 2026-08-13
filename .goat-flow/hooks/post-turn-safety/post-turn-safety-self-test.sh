@@ -182,6 +182,14 @@ init_tracked_change_repo "$WORK_DIR/fixture-marked" \
 init_tracked_change_repo "$WORK_DIR/fixture-bare" \
   "        let api_key = \"$HAZARD_TOKEN\";"
 
+# The marker is a secret exception (ADR-022), not a whole-line scan bypass. Carrying it on a conflict marker must not
+# hide the conflict, so this triplet opens on a marked line and still has to block.
+init_tracked_change_repo "$WORK_DIR/conflict-marked" '<<<<<<< HEAD goat-flow-allow-secret'
+{
+  printf '%s\n' '======='
+  printf '%s\n' '>>>>>>> branch'
+} >>"$WORK_DIR/conflict-marked/changed.txt"
+
 # Untracked text above the cap takes the whole-file gate, which must record it as unread. Reporting it as scanned is
 # how a padded credential file once ended the turn clean.
 mkdir -p "$WORK_DIR/oversized-untracked"
@@ -237,6 +245,11 @@ for dispatch in default bash3-fallback; do
 
   run_hook_in "$WORK_DIR/fixture-bare" "$force_fallback"
   expect_hook_status 2 "unmarked intentional token [$dispatch]"
+
+  run_hook_in "$WORK_DIR/conflict-marked" "$force_fallback"
+  expect_hook_status 2 "allow marker on a conflict marker [$dispatch]"
+  [[ $HOOK_OUTPUT == *"merge conflict marker in changed.txt"* ]] \
+    || fail_post_turn_safety_test "allow marker on a conflict marker [$dispatch] did not report its finding family"
 
   run_hook_in "$WORK_DIR/oversized-untracked" "$force_fallback" "$OVERSIZE_CAP_BYTES"
   expect_hook_status 2 "oversized untracked text [$dispatch]"

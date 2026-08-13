@@ -28,11 +28,12 @@ release. The delta check below is what actually protects the fixes.
 
 ## The deltas
 
-### `post-turn-safety.sh` — 22 lines, two fixes
+### `post-turn-safety.sh` — 31 lines, three fixes
 
 | Anchor | What it does | What breaks without it |
 | --- | --- | --- |
-| `is_line_allowlisted` | Honours a line-scoped `goat-flow-allow-secret` marker on both scan paths | Every turn touching `fixtures/sample.rs` blocks on a calibration token the repository is required to keep. See ADR-022. |
+| `is_line_allowlisted` | Honours a line-scoped `goat-flow-allow-secret` marker on both scan paths, and only that marker | Every turn touching `fixtures/sample.rs` blocks on a calibration token the repository is required to keep. See ADR-022. Recognising third-party pragmas such as `gitleaks:allow` instead would let routine tooling comments disable the secret scan on their line. |
+| the `is_line_allowlisted` call site on both scan paths | Applies the marker after merge-conflict detection, so it exempts secrets only | A conflict marker line carrying the comment hides the whole conflict, and the turn ends clean with an unresolved merge in the tree. Pinned by the `conflict-marked` self-test case. |
 | the `"@@ "*` case in the diff walk | Skips only a real hunk header, not any line starting with `+++` | An added source line beginning with `++` renders as `+++…` under `--unified=0` and is dropped, so a credential on it ends the turn with exit 0. Pinned by the `plusplus` and `plusplus-space` self-test cases. |
 
 ### `run-with-bash.mjs` — 25 lines, one fix
