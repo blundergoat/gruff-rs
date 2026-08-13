@@ -178,7 +178,12 @@ pub(crate) fn function_reference_count(source: &str, name: &str) -> usize {
                 let escaped = regex::escape(name);
                 let identifier = Regex::new(&format!(r"\b{escaped}\b"))
                     .expect("generated function-reference regex compiles");
-                let definition = Regex::new(&format!(r"\bfn\s+{escaped}\s*\("))
+                // The optional parameter list keeps a generic or lifetime-bound definition
+                // subtractable. Without it `fn helper<T>(..)` never matches, so the definition
+                // counts as one of its own references and the function reads as used forever.
+                // Excluding parentheses rather than `>` lets a nested bound such as
+                // `<T: Into<String>>` be consumed whole.
+                let definition = Regex::new(&format!(r"\bfn\s+{escaped}\s*(?:<[^()]*>)?\s*\("))
                     .expect("generated function-definition regex compiles");
                 (identifier, definition)
             })
