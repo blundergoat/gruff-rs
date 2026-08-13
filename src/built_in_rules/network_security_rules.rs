@@ -326,7 +326,12 @@ fn unsafe_deserialization_argument(line: &str, taint: &FunctionTaint) -> Option<
     static DESERIALIZATION_SINK_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
         &DESERIALIZATION_SINK_REGEX,
-        r"(?:serde_yaml::from_(?:str|reader|slice)|bincode::(?:deserialize|deserialize_from)|rmp_serde::from_(?:slice|read)|serde_pickle::from_(?:slice|reader))\s*\(\s*&?(?P<arg>[a-z_][a-z0-9_]*)",
+        // The optional turbofish keeps `serde_yaml::from_str::<Config>(body)` visible. These sinks
+        // frequently cannot infer their type parameter, so the annotated spelling is the common one
+        // and matching only the bare call left the dominant form of the pattern unreported. The
+        // argument excludes parentheses rather than `>` so a nested generic such as
+        // `::<Vec<String>>` is still consumed whole.
+        r"(?:serde_yaml::from_(?:str|reader|slice)|bincode::(?:deserialize|deserialize_from)|rmp_serde::from_(?:slice|read)|serde_pickle::from_(?:slice|reader))(?:::<[^()]*>)?\s*\(\s*&?(?P<arg>[a-z_][a-z0-9_]*)",
     );
     let argument = regex.captures(line)?.name("arg")?.as_str();
     taint.is_tainted(argument).then(|| argument.to_string())

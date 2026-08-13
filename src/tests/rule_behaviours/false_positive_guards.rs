@@ -56,6 +56,81 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
     );
 }
 
+/// Regression guard: every `sensitive-data.api-key-pattern` alternative is a vendor prefix, so a
+/// match must begin one. The bare `sk-` arm previously had no left boundary and matched inside any
+/// word ending in "sk", so ordinary hyphenated prose such as the GitHub docs URL
+/// `...security-hardening-for-github-actions#understanding-the-risk-of-script-injections` was
+/// reported as a credential. A genuine `sk-` key must still be reported.
+#[test]
+pub(crate) fn api_key_pattern_ignores_words_ending_in_sk() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn documentation_links() -> [&'static str; 3] {
+    [
+        "https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#understanding-the-risk-of-script-injections",
+        "task-management-configuration-defaults",
+        "disk-usage-monitoring-subsystem-notes",
+    ]
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let keys: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.api-key-pattern")
+        .collect();
+    assert!(
+        keys.is_empty(),
+        "hyphenated prose containing \"sk-\" must stay silent; findings={keys:?}"
+    );
+}
+
+/// Regression guard: the boundary added above must not cost a real detection. A vendor-prefixed
+/// key still has to be reported wherever it appears as its own token.
+#[test]
+pub(crate) fn api_key_pattern_still_reports_a_real_vendor_key() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "/// Probe.\npub fn client_token() -> &'static str {\n    \"sk-",
+            "abcdefghij0123456789ABCDEFGH",
+            "\"\n}\n"
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "sensitive-data.api-key-pattern"),
+        "a vendor-prefixed key must still be reported"
+    );
+}
+
 /// Regression guard: `size.function-length` must skip a function whose body is
 /// a single declarative literal (here, a 70-entry `vec![...]`). Function
 /// length is intended to flag logic, not table-data registries.

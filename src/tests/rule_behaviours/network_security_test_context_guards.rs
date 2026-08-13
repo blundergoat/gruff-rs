@@ -68,6 +68,46 @@ fn finding_paths_for_rule<'a>(report: &'a AnalysisReport, rule_id: &str) -> Vec<
     finding_paths
 }
 
+/// Regression guard: these sinks often cannot infer their type parameter, so the turbofish spelling
+/// is the common one. Matching only the bare call left `serde_yaml::from_str::<Config>(body)` and
+/// its siblings unreported, which is the dominant form of the pattern the rule exists to find.
+#[test]
+pub(crate) fn unsafe_deserialization_reports_turbofish_sinks() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "/// Decode caller-provided bytes with an annotated type.\n",
+            "pub fn decode_payload(body: &[u8]) { let _ = bincode::deserialize::<String>(body); }\n",
+            // Deliberately not named `*config*` or `*yaml*`: `yaml_config_parse_is_intentional`
+            // exempts those, and this guard is about the turbofish, not that exemption.
+            "/// Parse caller-provided YAML with an annotated type.\n",
+            "pub fn parse_manifest(body: &str) { let _ = serde_yaml::from_str::<Vec<String>>(body); }\n",
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let sinks: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.unsafe-deserialization")
+        .collect();
+    assert_eq!(
+        sinks.len(),
+        2,
+        "both turbofish deserialization sinks must be reported; findings={sinks:?}"
+    );
+}
+
 /// Prove executable risks stay visible across source contexts while semantic negatives stay quiet.
 #[test]
 pub(crate) fn network_security_test_context_policy_matrix() {
