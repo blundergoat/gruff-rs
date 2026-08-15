@@ -300,7 +300,9 @@ run_preflight_check() {
 
   start_check_line "$check_name"
   started_at=$(date +%s%N)
-  output=$("$@" 2>&1)
+  # Preflight is a batch gate, so no check may wait on a terminal. Closing stdin keeps a check that reads a
+  # provider payload - the post-turn safety hook reads its Stop JSON that way - from blocking forever on a TTY.
+  output=$("$@" 2>&1 </dev/null)
   status=$?
   elapsed=$(elapsed_since "$started_at")
 
