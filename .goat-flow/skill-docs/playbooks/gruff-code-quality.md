@@ -14,7 +14,7 @@ Set `target` from the requested language; another gruff binary is not enough.
 ```bash
 target=gruff-ts  # gruff-go | gruff-rs | gruff-ts | gruff-php | gruff-py
 found=
-for candidate in "vendor/bin/$target" "node_modules/.bin/$target" ".cargo-tools/bin/$target" "$HOME/.local/bin/$target" "$target"; do
+for candidate in "bin/$target" "vendor/bin/$target" "node_modules/.bin/$target" ".cargo-tools/bin/$target" "$HOME/.local/bin/$target" "$target"; do
   if [ -x "$candidate" ]; then found="$candidate"; break; fi
   if command -v "$candidate" >/dev/null 2>&1; then found="$(command -v "$candidate")"; break; fi
 done
@@ -23,7 +23,9 @@ test -n "$found"
 "$found" --help
 ```
 
-If no binary is found, try the ecosystem wrapper before declaring gruff unavailable: `npx gruff-ts --version`, `go tool gruff-go --version`, `uv run gruff-py --version`. If gruff cannot run, say so and use the project's normal lint/typecheck/tests; do not invent gruff findings.
+A repository-local `bin/<target>` wrapper is checked first because a gruff port dogfoods itself from its own checkout; in `gruff-rs` that wrapper is what `scripts/preflight-checks.sh` runs.
+
+If no binary is found, try the ecosystem wrapper before declaring gruff unavailable: `npx gruff-ts --version`, `go tool gruff-go --version`, `uv run gruff-py --version`, `cargo run --quiet -- --version` from a gruff-rs checkout. If gruff cannot run, say so and use the project's normal lint/typecheck/tests; do not invent gruff findings.
 
 ## Intent
 
@@ -65,7 +67,7 @@ gruff-ts list-rules --format json
 - Use `check-ignore <path>` to verify a config ignore before planning CONFIGURE/SKIP.
 - Use `dashboard` or `report` only when the installed tool exposes it and the user needs an artifact.
 
-Exit codes matter: `analyse` may exit `1` because findings exist; that is not tool failure. Exit `2` is a real diagnostic such as parse error, missing path, or rejected config. Use `--fail-on none` for pure reporting when supported; gruff-go/gruff-rs may spell the threshold `--min-severity`.
+Exit codes matter: `analyse` may exit `1` because findings exist; that is not tool failure. Exit `2` is a real diagnostic such as parse error, missing path, or rejected config. Use `--fail-on none` for pure reporting when supported. Confirm the threshold flag against `analyse --help` for the installed port rather than assuming a spelling; `gruff-rs` exposes `--fail-on` and `--fail-on-new` and has no `--min-severity`.
 
 ## JSON Triage
 

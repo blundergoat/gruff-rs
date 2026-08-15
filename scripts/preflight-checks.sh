@@ -440,14 +440,16 @@ release_version_is_newer() {
 # Security fixes this repository carries on top of the managed goat-flow hook templates, as "hook<TAB>anchor<TAB>reason"
 # rows. Each upgrade has silently reverted at least one of them, so presence is asserted rather than assumed. Anchors
 # are semantic on purpose: byte comparison would trip on an upstream reflow and would also fail once upstream adopts a
-# fix, which is the outcome we want to keep passing. See .goat-flow/hooks/local-deltas/README.md.
+# fix, which is the outcome we want to keep passing - so `goat-flow audit --check-drift` reporting these hooks as
+# drifted is the expected state, not a repair signal. Every reason states what breaks without the fix, because this
+# table is the only place that harm is recorded; the hook files themselves are tracked, so git is the recovery source.
 MANAGED_HOOK_DELTAS=(
-  $'post-turn-safety.sh\tis_line_allowlisted\tline-scoped goat-flow-allow-secret marker (ADR-022)'
-  $'post-turn-safety.sh\t"@@ "*)\tonly a real hunk header is skipped, so an added "++" line is still scanned'
-  $'run-with-bash.mjs\tsymlinkFreePath\tlauncher resolves symlinks before comparing its own path'
-  $'deny-dangerous.sh\twatch --any-unknown-flag\tan unknown watch option skips instead of abandoning normalisation'
-  $'deny-dangerous.sh\tparallel --any-unknown-flag\tan unknown parallel option skips instead of abandoning normalisation'
-  $'deny-dangerous/deny-dangerous-self-test.sh\twatch unknown long option\tregression cases that pin the two wrapper repairs above'
+  $'post-turn-safety.sh\tis_line_allowlisted\tline-scoped goat-flow-allow-secret marker (ADR-022); without it every turn touching fixtures/sample.rs blocks on a calibration token the repository must keep'
+  $'post-turn-safety.sh\t"@@ "*)\tonly a real hunk header is skipped; without it an added line rendering as "+++" under --unified=0 is dropped and a credential on it ends the turn with exit 0'
+  $'run-with-bash.mjs\tsymlinkFreePath\tlauncher resolves symlinks before comparing its own path; without it a symlinked project directory loads the launcher, runs no hook, and exits 0 as "guard passed"'
+  $'deny-dangerous.sh\twatch --any-unknown-flag\tan unknown watch option skips instead of abandoning normalisation; without it "watch --any-unknown-flag rm -rf /" reaches the policy modules as a bare watch call and is allowed'
+  $'deny-dangerous.sh\tparallel --any-unknown-flag\tan unknown parallel option skips instead of abandoning normalisation; without it "parallel --any-unknown-flag rm -rf /" is allowed for the same reason'
+  $'deny-dangerous/deny-dangerous-self-test.sh\twatch unknown long option\tregression cases pinning the two wrapper repairs above; without them a reverted wrapper parser still passes --self-test=full'
 )
 
 # Prove every local hook delta is still present in the installed managed hooks. A goat-flow install or hooks sync
@@ -470,14 +472,52 @@ managed_hook_deltas_present() {
     fi
   done
 
-  # Naming the fix and its anchor lets the reader restore it from local-deltas/ without re-deriving what was lost.
+  # Naming the fix, its harm, and its anchor lets the reader restore it from git without re-deriving what was lost.
   if ((${#missing[@]} > 0)); then
-    printf 'managed hook deltas: reverted by an install or sync; reapply from .goat-flow/hooks/local-deltas/:\n' >&2
+    printf 'managed hook deltas: reverted by an install or sync; restore with: git checkout <rev-before-the-install> -- .goat-flow/hooks/\n' >&2
     printf '  %s\n' "${missing[@]}" >&2
     return 1
   fi
 
   printf '%s local hook deltas present\n' "${#MANAGED_HOOK_DELTAS[@]}"
+}
+
+# Correctness fixes this repository carries on top of the managed goat-flow skill docs, as "doc<TAB>anchor<TAB>reason"
+# rows, in the same shape and for the same reason as MANAGED_HOOK_DELTAS above. `goat-flow install` rewrites these files
+# from the template, so a repair that is right for this repository but not yet upstream needs an assertion or it leaves
+# silently. Anchors are semantic; every reason states what breaks without the fix.
+MANAGED_DOC_DELTAS=(
+  $'skill-docs/playbooks/gruff-code-quality.md\t"bin/$target"\tthe availability probe checks the repo-local wrapper first; without it the probe returns empty inside gruff-rs and an agent following CLAUDE.md READ declares the analyzer unavailable in its own repository'
+  $'skill-docs/playbooks/gruff-code-quality.md\trather than assuming a spelling\tthe threshold guidance sends the reader to analyse --help instead of naming a flag; without it an agent runs the suggested --min-severity, which this port does not expose, and reads the exit 2 as a config fault'
+)
+
+# Prove every local skill-doc delta is still present in the installed managed docs. Same failure mode as the hook
+# deltas: the template wins on reinstall and nothing else notices the loss.
+managed_doc_deltas_present() {
+  local docs_dir="${1:-$REPO_ROOT/.goat-flow}"
+  local -a missing=()
+  local row doc_name anchor reason
+
+  for row in "${MANAGED_DOC_DELTAS[@]}"; do
+    IFS=$'\t' read -r doc_name anchor reason <<<"$row"
+    # An absent doc means the managed install is broken in a way a grep cannot describe.
+    if [[ ! -f "$docs_dir/$doc_name" ]]; then
+      printf 'managed doc deltas: %s is missing from %s\n' "$doc_name" "$docs_dir" >&2
+      return 1
+    fi
+    # A missing anchor means an install reverted this fix and the doc is guiding agents wrongly again.
+    if ! grep -qF -- "$anchor" "$docs_dir/$doc_name"; then
+      missing+=("$doc_name: $reason (anchor: $anchor)")
+    fi
+  done
+
+  if ((${#missing[@]} > 0)); then
+    printf 'managed doc deltas: reverted by an install; restore with: git checkout <rev-before-the-install> -- .goat-flow/skill-docs/\n' >&2
+    printf '  %s\n' "${missing[@]}" >&2
+    return 1
+  fi
+
+  printf '%s local doc deltas present\n' "${#MANAGED_DOC_DELTAS[@]}"
 }
 
 # Rule forms Claude never matches in permissions.deny/allow/ask. Such a rule warns at launch and enforces nothing, so
@@ -1685,6 +1725,7 @@ run_preflight_suite() {
   run_preflight_check "post-turn safety" post_turn_safety_self_test
   run_preflight_check "permission rule hygiene" permission_rule_hygiene
   run_preflight_check "managed hook deltas" managed_hook_deltas_present
+  run_preflight_check "managed doc deltas" managed_doc_deltas_present
   run_preflight_check "version metadata" version_metadata_check
   run_preflight_check "dependency audit" dependency_audit_check
   run_preflight_check "action metadata" action_metadata_validation

@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-08-11
+last_reviewed: 2026-08-14
 ---
 
 ## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
@@ -9,7 +9,7 @@ last_reviewed: 2026-08-11
 **Decision changed:** Treat a failing preflight check's on-screen output as the tail of the evidence, never the whole of it. Re-run that one check unwrapped before triaging, and never infer a finding total from what preflight printed.
 **Trigger phase:** VERIFY
 
-`scripts/preflight-checks.sh` (search: `run_preflight_check`) pipes every failing check's combined output through `tail -20` before indenting it. The cap applies to all 24 checks, not just the dogfood scan, and it keeps the **last** 20 lines - the opposite end from what an unlucky reader assumes.
+`scripts/preflight-checks.sh` (search: `run_preflight_check`) pipes every failing check's combined output through `tail -20` before indenting it. The cap applies to every check, not just the dogfood scan, and it keeps the **last** 20 lines - the opposite end from what an unlucky reader assumes.
 
 For the dogfood scan the ordering makes this worse than a plain cut. `analyse --format text` prints its header first (`Composite:` and the `Findings: N total · N error · N warning · N advisory` count line), then `Diagnostics:`, and the `Findings:` list **last**. Roughly a dozen non-finding lines sit above the list, so `tail -20` starts eating the header once a failing scan passes about fourteen findings: it keeps the bottom of the findings list and scrolls the composite score and the total count off the top. Past that point preflight output alone cannot tell you how many findings there are, and a real failure is usually well past it.
 
@@ -36,7 +36,7 @@ These run exactly what the check runs and emit every finding. Scanning a subpath
 
 Same caveat for the `summary` command: when triaging from `gruff-rs summary` output (the "Top file offenders" table), that's a top-10 of files - it does not enumerate every offender. Use the analyse-text invocation above to confirm whether unlisted files also have findings.
 
-Resist the temptation to "fix the truncation" by widening the `tail` window: the cap is there to keep the preflight report readable across all 24 checks. The right move is to know when you need the full list and run the unwrapped command above.
+Resist the temptation to "fix the truncation" by widening the `tail` window: the cap is there to keep the preflight report readable across every check. The right move is to know when you need the full list and run the unwrapped command above.
 
 ## Footgun: Stale Target Binaries Can Invalidate CLI Proofs
 
