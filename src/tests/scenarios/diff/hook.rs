@@ -1,3 +1,7 @@
+//! Hook capability, changed-region, and native new-only comparison contracts.
+//! These tests keep serialized hook findings stable while line shifts and
+//! duplicate identities are matched by occurrence count.
+
 use super::*;
 
 #[test]
@@ -58,7 +62,7 @@ pub(crate) fn hook_accepts_flags_before_and_after_paths() {
 pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_metadata() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
-    write_secret_oversized_rust_file(dir.path(), 601);
+    write_secret_oversized_rust_file(dir.path(), 1001);
 
     let report = run_project_analysis(
         dir.path(),
@@ -79,8 +83,8 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
     assert!(file_length["remediation"]
         .as_str()
         .is_some_and(|text| !text.is_empty()));
-    assert_eq!(file_length["metadata"]["measured"], 601);
-    assert_eq!(file_length["metadata"]["threshold"], 600);
+    assert_eq!(file_length["metadata"]["measured"], 1001);
+    assert_eq!(file_length["metadata"]["threshold"], 1000);
     assert_eq!(file_length["metadata"]["unit"], "lines");
     assert_eq!(file_length["metadata"]["direction"], "above");
     assert!(file_length["stableIdentity"].as_str().is_some());
@@ -99,7 +103,7 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
 pub(crate) fn hook_changed_region_drops_file_scope_without_anchor_residual() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
-    write_secret_oversized_rust_file(dir.path(), 601);
+    write_secret_oversized_rust_file(dir.path(), 1001);
 
     let report = run_project_analysis(
         dir.path(),
@@ -159,8 +163,8 @@ pub(crate) fn hook_stable_identity_survives_line_shift_and_measured_value_change
     assert_eq!(line_ten.stable_identity, line_eleven.stable_identity);
     assert_ne!(line_ten.fingerprint, line_eleven.fingerprint);
 
-    let six_oh_one = file_length_finding(601);
-    let six_oh_two = file_length_finding(602);
+    let six_oh_one = file_length_finding(1001);
+    let six_oh_two = file_length_finding(1002);
     assert_eq!(six_oh_one.stable_identity, six_oh_two.stable_identity);
     assert_eq!(six_oh_one.scope, FindingScope::File);
 }
@@ -172,7 +176,7 @@ pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_ne
     let dir = tempdir().expect("tempdir");
     let baseline_path = dir.path().join("baseline.json");
 
-    write_oversized_rust_file(dir.path(), 601);
+    write_oversized_rust_file(dir.path(), 1001);
     let before = analyse_lib_no_config(dir.path());
     let size = before
         .findings
@@ -182,7 +186,7 @@ pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_ne
         .clone();
     write_baseline(&baseline_path, &[size]).expect("baseline write");
 
-    write_oversized_rust_file(dir.path(), 602);
+    write_oversized_rust_file(dir.path(), 1002);
     let after = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -198,7 +202,7 @@ pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_ne
 
     write_oversized_rust_file(dir.path(), 599);
     write_baseline(&baseline_path, &[]).expect("empty baseline write");
-    write_oversized_rust_file(dir.path(), 601);
+    write_oversized_rust_file(dir.path(), 1001);
     let newly_crossed = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -218,11 +222,11 @@ pub(crate) fn hook_diff_new_only_uses_stable_identity_for_file_scope_thresholds(
     let _guard = analysis_lock();
     let existing = tempdir().expect("tempdir");
     init_git_repo(existing.path());
-    write_oversized_rust_file(existing.path(), 601);
+    write_oversized_rust_file(existing.path(), 1001);
     git(existing.path(), &["add", "src/lib.rs"]);
     git(existing.path(), &["commit", "-m", "base"]);
 
-    write_oversized_rust_file(existing.path(), 602);
+    write_oversized_rust_file(existing.path(), 1002);
     let mut current = analyse_lib_no_config(existing.path());
     assert_has_rule(&current, "size.file-length");
     let options = hook_diff_test_options();
@@ -241,7 +245,7 @@ pub(crate) fn hook_diff_new_only_uses_stable_identity_for_file_scope_thresholds(
     write_oversized_rust_file(newly_crossing.path(), 599);
     git(newly_crossing.path(), &["add", "src/lib.rs"]);
     git(newly_crossing.path(), &["commit", "-m", "base"]);
-    write_oversized_rust_file(newly_crossing.path(), 601);
+    write_oversized_rust_file(newly_crossing.path(), 1001);
     let mut current = analyse_lib_no_config(newly_crossing.path());
     let base_identities = crate::hook::diff_base_stable_identities(
         newly_crossing.path(),
@@ -344,7 +348,7 @@ pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
     init_git_repo(repo.path());
     // A non-ASCII filename forces git's default `core.quotePath` C-quoting; the
     // `-z` ls-tree in export_git_base_tree is what keeps this from hard-erroring.
-    write_named_oversized_rust_file(repo.path(), "src/café.rs", 601);
+    write_named_oversized_rust_file(repo.path(), "src/café.rs", 1001);
     git(repo.path(), &["add", "-A"]);
     git(repo.path(), &["commit", "-m", "base"]);
 
@@ -368,7 +372,7 @@ pub(crate) fn hook_diff_base_export_handles_newline_filenames() {
     let _guard = analysis_lock();
     let repo = tempdir().expect("tempdir");
     init_git_repo(repo.path());
-    write_named_oversized_rust_file(repo.path(), "src/line\nbreak.rs", 601);
+    write_named_oversized_rust_file(repo.path(), "src/line\nbreak.rs", 1001);
     git(repo.path(), &["add", "-A"]);
     git(repo.path(), &["commit", "-m", "base"]);
 
@@ -447,7 +451,7 @@ fn write_secret_oversized_rust_file(root: &Path, lines: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     let mut source = String::from("const LEAKED_KEY: &str = \"AKIA1234567890ABCDEF\";\n");
     for index in 1..lines {
-        source.push_str(&format!("// filler {index}\n"));
+        source.push_str(&format!("pub const FILLER_{index}: usize = {index};\n"));
     }
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
@@ -455,7 +459,7 @@ fn write_secret_oversized_rust_file(root: &Path, lines: usize) {
 fn write_oversized_rust_file(root: &Path, lines: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     let source = (0..lines)
-        .map(|index| format!("// filler {index}\n"))
+        .map(|index| format!("pub const FILLER_{index}: usize = {index};\n"))
         .collect::<String>();
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
@@ -466,7 +470,7 @@ fn write_named_oversized_rust_file(root: &Path, rel: &str, lines: usize) {
         fs::create_dir_all(parent).expect("parent dir");
     }
     let source = (0..lines)
-        .map(|index| format!("// filler {index}\n"))
+        .map(|index| format!("pub const FILLER_{index}: usize = {index};\n"))
         .collect::<String>();
     fs::write(&path, source).expect("named lib write");
 }
@@ -525,17 +529,17 @@ fn git(root: &Path, args: &[&str]) {
 fn file_length_finding(lines: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "size.file-length".to_string(),
-        message: format!("File has {lines} lines, above the threshold of 600."),
+        message: format!("File has {lines} substantive lines, above the threshold of 1000."),
         file_path: "src/lib.rs".to_string(),
         line: Some(1),
-        severity: Severity::Warning,
+        severity: Severity::Error,
         pillar: Pillar::Size,
         confidence: Confidence::High,
         symbol: None,
         remediation: None,
         metadata: json!({
             "measured": lines,
-            "threshold": 600,
+            "threshold": 1000,
             "unit": "lines",
             "direction": "above"
         }),

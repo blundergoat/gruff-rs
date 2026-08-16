@@ -1,3 +1,7 @@
+//! Built-in rule metadata and the validated catalogue served to CLI users.
+//! The registry keeps configuration, analysis, rule detail, and renderers on
+//! one deterministic set of IDs whose public relationship links all resolve.
+
 use crate::{Confidence, Pillar, Severity};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -70,26 +74,49 @@ pub(crate) struct RuleDefinition {
 
 #[derive(Debug)]
 /// Sorted registry for built-in rule metadata.
+/// Config loading, analysis, and `list-rules` share this catalogue, so its IDs
+/// must be unique and every relationship must resolve before a scan begins.
 pub(crate) struct RuleRegistry {
     definitions: Vec<RuleDefinition>,
 }
 
 impl RuleRegistry {
-    /// Build a sorted rule registry and reject duplicate rule ids.
+    /// Build a sorted registry for scan and rule-detail consumers.
+    /// Reject IDs or relationships that the resulting catalogue cannot serve.
     pub(crate) fn new(mut definitions: Vec<RuleDefinition>) -> Result<Self, String> {
         definitions.sort_by(|left, right| left.id.cmp(right.id));
         let mut seen = BTreeSet::new();
+
+        // Every catalogue consumer needs stable, unique built-in IDs before lookup begins.
         for definition in &definitions {
+            // Config-defined rules own `custom.*`, so a built-in entry there is ambiguous.
             if definition.id.starts_with("custom.") {
                 return Err(format!(
                     "built-in rule id `{}` uses reserved custom namespace",
                     definition.id
                 ));
             }
+
+            // Duplicate IDs would make config and rule-detail lookup order-dependent.
             if !seen.insert(definition.id) {
                 return Err(format!("duplicate rule id `{}`", definition.id));
             }
         }
+
+        // Rule-detail links must resolve inside the complete catalogue shown to the user.
+        for definition in &definitions {
+            // Each declared relationship is validated independently for precise diagnostics.
+            for &related_rule in definition.related_rules {
+                // A missing target would send the user to a rule that the CLI cannot explain.
+                if !seen.contains(related_rule) {
+                    return Err(format!(
+                        "rule `{}` references unknown related rule `{related_rule}`",
+                        definition.id
+                    ));
+                }
+            }
+        }
+
         Ok(Self { definitions })
     }
 
@@ -128,7 +155,7 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
     match RuleRegistry::new(builtin_definitions()) {
         Ok(registry) => registry,
         Err(error) => {
-            // PANIC: duplicate built-in rule ids are programmer errors caught by tests.
+            // PANIC: catalogue defects are programmer errors, such as linking to a retired ID.
             panic!("invalid built-in rule definitions: {error}");
         }
     }
@@ -144,6 +171,32 @@ pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
     REGISTRY.get_or_init(builtin_registry)
 }
 
+/// Catalogue default threshold for a configurable rule. Rule code reads this
+/// instead of repeating the number, because `list-rules` and the config that
+/// `init` generates render the catalogue: a second literal can disagree with the
+/// shipped default and silently change what a scan reports.
+pub(crate) fn builtin_threshold(rule_id: &str) -> f64 {
+    match builtin_registry_cached()
+        .get(rule_id)
+        .and_then(|definition| definition.threshold)
+    {
+        Some(threshold) => threshold.default,
+        // PANIC: a rule that reads a threshold but declares none is a catalogue
+        // defect, the same programmer-error class as an unresolvable related ID.
+        None => panic!("built-in rule `{rule_id}` reads a threshold it does not declare"),
+    }
+}
+
+/// Catalogue default severity for a configurable rule, kept single-sourced for
+/// the same reason as [`builtin_threshold`].
+pub(crate) fn builtin_severity(rule_id: &str) -> Severity {
+    match builtin_registry_cached().get(rule_id) {
+        Some(definition) => definition.default_severity,
+        // PANIC: rule code naming an ID the catalogue does not ship is a defect.
+        None => panic!("built-in rule `{rule_id}` is missing from the catalogue"),
+    }
+}
+
 const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));
 const COMPLEXITY_CYCLOMATIC_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(10.0));
 const COMPLEXITY_NESTING_DEPTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));
@@ -153,7 +206,7 @@ const ARCHITECTURE_PUBLIC_API_SURFACE_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(12.0));
 const DEPENDENCY_DUPLICATE_LOCKED_VERSION_THRESHOLD: Option<ThresholdDefinition> =
     Some(threshold(2.0));
-const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(600.0));
+const FILE_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(1000.0));
 const FUNCTION_LENGTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(50.0));
 const PARAMETER_COUNT_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(7.0));
 const TEST_LONG_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(120.0));

@@ -1,3 +1,7 @@
+//! Built-in rule dispatch and shared analyzer vocabulary.
+//! Focused sibling modules evaluate source units, then this parent combines
+//! their deterministic findings for the configured report pipeline.
+
 pub(crate) use super::*;
 
 mod helpers;
@@ -287,7 +291,7 @@ fn analyse_rust_rules(
             .as_slice()
     });
     analyse_block_dependent_rust_rules(unit, config, families, blocks, findings);
-    analyse_rust_source_rules(unit, families, findings);
+    analyse_rust_source_rules(unit, ast, families, findings);
     analyse_rust_ast_rules(unit, ast, config, families, findings);
 }
 
@@ -302,7 +306,7 @@ fn analyse_block_dependent_rust_rules(
         return;
     };
     if families.has_block_rules() {
-        analyse_blocks(unit.file, blocks, config, families, findings);
+        analyse_blocks(unit, blocks, config, families, findings);
     }
     if families.network_block_security {
         analyse_ssrf_candidate(unit.file, blocks, findings);
@@ -316,11 +320,12 @@ fn analyse_block_dependent_rust_rules(
 
 fn analyse_rust_source_rules(
     unit: &SourceUnit<'_>,
+    ast: &syn::File,
     families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
     if families.process_commands {
-        analyse_process_commands(unit.file, unit.source, findings);
+        analyse_process_commands(unit.file, unit.source, ast, findings);
     }
     if families.sql_dynamic_query {
         analyse_sql_dynamic_query(unit.file, unit.source, findings);

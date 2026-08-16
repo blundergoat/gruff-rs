@@ -1,3 +1,7 @@
+//! Registry definitions for idiom, security, size, and test-quality rules.
+//! The catalogue feeds rule listing and documentation with stable IDs,
+//! descriptions, relationships, options, and false-positive guidance.
+
 use super::*;
 
 pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
@@ -144,7 +148,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::Medium,
         None,
-        "Flags very short local variable names outside accepted abbreviations.",
+        "Flags two-letter `let` bindings and function parameters outside accepted abbreviations, except conventional typed `cx` context parameters.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "Domain abbreviations specific to the project (e.g. `aws`, `kms`, `ssn`).",
@@ -174,7 +178,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags GitHub event values interpolated directly into workflow shell steps.",
+        "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
     ),
     rule_definition!(
         "security.github-actions-broad-permissions",
@@ -184,7 +188,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags workflow permissions that grant broad write access.",
+        "Flags workflow-level scoped writes and permissions: write-all grants.",
     ),
     rule_definition!(
         "security.github-actions-pull-request-target",
@@ -204,7 +208,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags workflow shell steps that pipe remote downloads into an interpreter.",
+        "Flags GitHub Actions shell steps that pipe remote downloads into an interpreter.",
     ),
     rule_definition!(
         "security.github-actions-secrets-in-pr",
@@ -224,7 +228,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags third-party workflow actions that are not pinned to a full commit SHA.",
+        "Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.",
     ),
     rule_definition!(
         "performance.clone-in-loop",
@@ -271,7 +275,10 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
                 mitigation: "Add an `exclude:` entry for that path in `.gruff-rs.yaml` with a documented reason, or refactor the call into a helper that the rule's path-aware skip recognises (`tests/`, `fixtures/`).",
             },
         ],
-        related: &["security.insecure-rng-for-secrets", "sensitive-data.api-key"],
+        related: &[
+            "security.insecure-rng-for-secrets",
+            "sensitive-data.api-key-pattern",
+        ],
     ),
     rule_definition!(
         "security.insecure-rng-for-secrets",
@@ -291,11 +298,11 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags SQL-keyword-bearing dynamic query arguments such as query(format!(...)).",
+        "Flags SQL-shaped format! values passed directly or through one local binding to query, execute, or prepare.",
         false_positives: &[
             FalsePositiveShape {
-                shape: "SQL-keyword-bearing non-SQL DSL text passed to a method named query, execute, or prepare.",
-                mitigation: "Rename the wrapper method if possible, or add an `exclude:` entry for the reviewed path and message.",
+                shape: "A non-SQL DSL whose formatted text has a supported SQL statement shape and reaches a method named query, execute, or prepare.",
+                mitigation: "Rename the reviewed wrapper method if possible, or add an `exclude:` entry for that path and message.",
             },
             FalsePositiveShape {
                 shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",
@@ -363,7 +370,12 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags request URLs derived from local input without nearby allow-list evidence.",
+        "Flags request URLs derived from local input without nearby allow-list evidence, including in executable test source.",
+        false_positives: &[FalsePositiveShape {
+            shape: "An isolated integration test intentionally sends a caller-provided URL to a local mock service.",
+            mitigation: "Parse the URL and enforce a visible loopback or host allowlist before the request; if the unsafe call is the behavior under test, add an `exclude:` entry limited to that harness path and message.",
+        }],
+        related: &[],
     ),
     rule_definition!(
         "security.template-injection-xss",
@@ -373,7 +385,12 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags HTML/template output that includes request-derived values without local escaping evidence.",
+        "Flags request-derived HTML/template output without visible escaping, including in executable test source.",
+        false_positives: &[FalsePositiveShape {
+            shape: "A rendering test passes raw input to a custom wrapper that performs escaping outside the matched function.",
+            mitigation: "Make escaping visible before the supported sink, or add an `exclude:` entry limited to the reviewed test path and message.",
+        }],
+        related: &[],
     ),
     rule_definition!(
         "security.hardcoded-bind-all-interfaces",
@@ -383,7 +400,12 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.",
+        "Flags all-interface listener literals in executable Rust, including tests and CI helpers.",
+        false_positives: &[FalsePositiveShape {
+            shape: "An integration harness intentionally listens on every interface so another container or host can connect.",
+            mitigation: "Prefer loopback for same-host tests; otherwise add a documented `exclude:` entry limited to the harness path and bind-all message.",
+        }],
+        related: &[],
     ),
     rule_definition!(
         "security.unsafe-deserialization",
@@ -393,7 +415,12 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags YAML or binary deserialization of data derived from local input.",
+        "Flags local-input YAML or binary deserialization in executable Rust, including tests.",
+        false_positives: &[FalsePositiveShape {
+            shape: "A test deserializes trusted bytes from a checked-in fixture, but the bytes arrive through a function parameter.",
+            mitigation: "Read the trusted fixture directly with `include_bytes!` or otherwise keep its fixed provenance visible; if indirection is required, add an exact path-and-message `exclude:` entry.",
+        }],
+        related: &["security.xxe-candidate"],
     ),
     rule_definition!(
         "security.xxe-candidate",
@@ -403,7 +430,12 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags XML parser options that enable external entity or DTD resolution.",
+        "Flags executable XML parser options that enable external entities or DTD loading, including in tests.",
+        false_positives: &[FalsePositiveShape {
+            shape: "A security or conformance test deliberately enables external entities for an isolated parser probe.",
+            mitigation: "Keep the dangerous option in a dedicated reviewed test and add an exact path-and-message `exclude:` entry; do not disable the rule for all test paths.",
+        }],
+        related: &["security.unsafe-deserialization"],
     ),
 ];
 
@@ -470,11 +502,11 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         false_positives: &[
             FalsePositiveShape {
                 shape: "Zero-separator CamelCase or mixed-case identifiers that are high entropy but not secrets.",
-                mitigation: "Prefer a separator-bearing identifier when practical, or add the deterministic redacted preview to `secret_previews` after review.",
+                mitigation: "Prefer a separator-bearing identifier when practical. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
             },
             FalsePositiveShape {
                 shape: "Manifest checksum or signature fields whose value shape alone is indistinguishable from secret material.",
-                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible; otherwise document the field and use `secret_previews` for the reviewed value.",
+                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
             },
         ],
         related: &["sensitive-data.api-key-pattern", "sensitive-data.jwt-token"],
@@ -527,7 +559,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Severity::Error,
         Confidence::High,
         None,
-        "Flags SSN, MRN, and Medicare-style health identifiers with redacted previews.",
+        "Flags SSN, MRN, and Medicare-style health identifiers with zero-payload category markers.",
     ),
 ];
 
@@ -537,10 +569,10 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
         "File length",
         Pillar::Size,
         RuleKind::Text,
-        Severity::Warning,
+        Severity::Error,
         Confidence::High,
         FILE_LENGTH_THRESHOLD,
-        "Flags files over the configured line-count threshold.",
+        "Flags files whose substantive line count exceeds the configured threshold.",
     ),
     rule_definition!(
         "size.function-length",
@@ -550,7 +582,7 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         FUNCTION_LENGTH_THRESHOLD,
-        "Flags functions over the configured line-count threshold.",
+        "Flags functions whose declaration and body exceed the line threshold, excluding attached rustdoc and attributes.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "Functions whose body is a single declarative literal (large match table, builder chain).",
@@ -642,16 +674,19 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         ],
         related: &[],
     ),
-    rule_definition!(
-        "test-quality.unwrap-in-test",
-        "Unwrap in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags unwrap calls in tests.",
-    ),
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "test-quality.unwrap-in-test",
+            "Unwrap in test",
+            Pillar::TestQuality,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::High,
+            None,
+            "Opt-in style check for unwrap calls in tests.",
+        )
+    },
     rule_definition!(
         "test-quality.should-panic-without-expected",
         "Should-panic without expected message",

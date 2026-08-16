@@ -18,20 +18,24 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 
 ## Status At A Glance
 
+<!-- gruff-docs:begin release-status -->
+
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.3.0` package line |
+| Release line | Published `0.5.0` package line |
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
-| Rule catalogue | 87 rules across 11 pillars |
+| Rule catalogue | 85 rules across 11 pillars |
 | Primary config | `.gruff-rs.yaml` (requires `schemaVersion: gruff-rs.config.v1`) |
 | Analysis schema | `gruff.analysis.v2` |
 | Baseline schema | `gruff.baseline.v1` |
 | Severity gate | `--fail-on` with `none`, `advisory`, `warning`, `error`; per-subcommand defaults via `minimumSeverity:` in `.gruff-rs.yaml` |
 | Dashboard | `127.0.0.1:8766` by default |
 
-Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are the stable contract for the `0.3.x` line.
+<!-- gruff-docs:end release-status -->
+
+Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are the stable contract for the `0.5.x` line.
 
 ## Requirements
 
@@ -43,11 +47,15 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 
 Install into a repository-local tool directory:
 
+<!-- gruff-docs:begin install-version -->
+
 ```bash
-cargo install gruff-rs --locked --version 0.3.0 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 0.5.0 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```
+
+<!-- gruff-docs:end install-version -->
 
 Prebuilt binary, also into a repository-local tool directory:
 
@@ -93,6 +101,8 @@ cargo install --path . --locked --root ./.cargo-tools
 | `analyse [paths...]` | Run the analyzer and print findings. |
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
+| `hook [paths...]` | Emit `gruff.hook.v1` JSON for coding-agent hooks. |
+| `check-ignore <paths...>` | Report whether gruff would ignore each path and why, without running analysis. |
 | `init` | Generate a starter `.gruff-rs.yaml`. |
 | `list-rules` | Print rule metadata as text or JSON, optionally filtered by selector. |
 | `dashboard` | Serve the local browser dashboard. |
@@ -134,18 +144,67 @@ Generic CI command:
 
 The repo ships a composite GitHub Action:
 
+<!-- gruff-docs:begin action-version -->
+
 ```yaml
 jobs:
   gruff:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: blundergoat/gruff-rs@v0.3.0
+      # Replace the placeholder with the reviewed commit for v0.5.0.
+      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.5.0
         with:
-          args: analyse . --format sarif --fail-on warning --no-baseline
+          version: 0.5.0
+          argv: |
+            analyse
+            .
+            --format
+            sarif
+            --fail-on
+            warning
+            --no-baseline
 ```
 
-The action installs the matching binary via `cargo-binstall` and runs `gruff-rs` with the supplied args. Pin to a tag for reproducibility. See [`action.yml`](action.yml) for inputs.
+<!-- gruff-docs:end action-version -->
+
+Starting in v0.5.0, the action accepts arguments only through `argv`: one
+literal argument per non-empty line. Spaces within a line remain part of that
+argument; blank lines are rejected. `working-directory` and `output-file` must
+resolve inside `GITHUB_WORKSPACE`, including after resolving symlinks. On
+Windows runners these accept native paths — a drive root such as
+`D:\a\repo\repo\crate` or a UNC share — alongside POSIX and relative forms; a
+drive-relative value such as `C:crate` names no root and is rejected. The
+action installs the matching binary and invokes `gruff-rs` without reparsing
+the constructed argument array.
+
+Replace `FULL_40_CHARACTER_COMMIT_SHA` with the reviewed full commit SHA for
+the release. A full SHA is the immutable action-code pin; the matching explicit
+`version` selects the binary release. An exact action tag such as `vX.Y.Z` can
+infer the matching `version: X.Y.Z`, but a tag can move and is therefore not reproducible.
+`latest` is not accepted.
+
+The installer downloads only from the fixed `blundergoat/gruff-rs` GitHub
+release origin, verifies the archive against its matching `.sha256` sidecar,
+checks the expected member set, and puts only the verified binary directory on
+the workflow path. The checksum detects corruption or a mismatched download;
+because the archive and checksum share one release channel, it does not prove
+publisher authenticity. The 0.5.0 release gate therefore also requires GitHub
+release immutability before publication. Install, checksum/archive, and
+analyzer-execution errors name the failing stage. See [`action.yml`](action.yml)
+for inputs.
+
+The former free-form `args` input is a hard cut. Any non-empty value exits with
+this migration error and is never parsed or executed:
+
+```text
+gruff-rs action: input 'args' is no longer supported; use 'argv' with one literal argument per non-empty line, for example:
+argv: |
+  analyse
+  .
+  --format
+  sarif
+```
 
 ## Configuration
 
@@ -168,7 +227,26 @@ paths:
     - fixtures/**
 
 allowlists:
-  acceptedAbbreviations: [id, db, io, ui]
+  # acceptedAbbreviations controls which short names naming.short-variable permits.
+  # This configured list replaces (not merges) built-ins; keep these seeds and
+  # append project vocabulary below.
+  acceptedAbbreviations:
+    - age
+    - app
+    - db
+    - fs
+    - id
+    - io
+    - key
+    - log
+    - max
+    - min
+    - now
+    - raw
+    - rx
+    - tx
+    - ui
+    - url
   secretPreviews: []
 
 rules:
@@ -187,13 +265,20 @@ exclude:
     reason: "test-only synthetic command"
 ```
 
+`gruff-rs init` emits that universal seed visibly. Because a configured
+`acceptedAbbreviations` list replaces the built-ins, keep the seeded entries
+and append project vocabulary instead of replacing the list with only the new
+tokens.
+
 Selectors can target exact rule IDs, dotted prefixes such as `security.*`, or public pillars such as `Security`.
 
 Unknown `minimumSeverity:` keys are rejected with a useful error: setting `minimumSeverity.summary: advisory` errors with `unknown command "summary" in minimumSeverity: gruff-rs's summary does not gate exit code. Valid keys: analyse, report.` The off-switch value is `none` (gruff-rs convention; sibling ports may use `never`).
 
 ## Rules And Pillars
 
-The catalogue contains 87 rules:
+<!-- gruff-docs:begin rule-catalogue -->
+
+The catalogue contains 85 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -202,16 +287,22 @@ The catalogue contains 87 rules:
 | `design` | 3 |
 | `documentation` | 11 |
 | `maintainability` | 11 |
-| `modernisation` | 6 |
+| `modernisation` | 5 |
 | `naming` | 5 |
 | `security` | 23 |
 | `sensitive-data` | 11 |
 | `size` | 3 |
-| `test-quality` | 8 |
+| `test-quality` | 7 |
 
-Use `./.cargo-tools/bin/gruff-rs list-rules --format json` for the exact rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
+<!-- gruff-docs:end rule-catalogue -->
 
-Generated default config keeps `size.file-length` enabled for Rust source over 600 lines and marks `waste.unnecessary-clone-candidate` as opt-in, because a clone can be the clearer ownership boundary. `test-quality.long-test` counts from the first assertion onward so fixture setup does not dilute the test-signal check.
+Use `./.cargo-tools/bin/gruff-rs list-rules --format json --no-config` for the exact built-in rule metadata. See [Rules](docs/rules.md) for rule families, limits, and deferred checks.
+
+<!-- gruff-docs:begin rule-id-examples -->
+
+Generated default config keeps `size.file-length` enabled for Rust source over 1000 substantive lines and marks `waste.unnecessary-clone-candidate` as opt-in, because a clone can be the clearer ownership boundary. `test-quality.long-test` counts from the first assertion onward so fixture setup does not dilute the test-signal check.
+
+<!-- gruff-docs:end rule-id-examples -->
 
 ## Custom Rules
 
@@ -227,7 +318,7 @@ custom_rules:
     pattern: '(?m)^[ \t]*//[ \t]*HACK\b'
 ```
 
-Custom rules are intentionally regex-only in `0.3.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
+Custom rules are intentionally regex-only in `0.5.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
 
 ## Baselines And Changed-Code Scans
 
@@ -316,7 +407,7 @@ never count toward any gate.
 
 The dashboard renders HTML reports on demand. It has no authentication and must not be exposed to untrusted networks; keep the default loopback bind unless the environment is trusted.
 
-In polyglot repositories, `gruff-rs` defaults to port `8766` while `gruff-go`, `gruff-php`, and `gruff-py` default to `8765`; use `--port` when running multiple dashboards at the same time.
+In polyglot repositories, `gruff-rs` defaults to port `8766` while `gruff-go`, `gruff-php`, and `gruff-py` default to `8765` and `gruff-ts` defaults to `8767`; use `--port` when running multiple dashboards at the same time.
 
 ## Trust Boundary
 
@@ -324,7 +415,11 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 ## Stability Contract
 
-`0.3.x` is the active release line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are the contract for this line. Larger contract changes move to a later release line. See [UPGRADING.md](UPGRADING.md) for the full contract.
+<!-- gruff-docs:begin release-line -->
+
+`0.5.x` is the active release line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are the contract for this line. Larger contract changes move to a later release line. See [UPGRADING.md](UPGRADING.md) for the full contract.
+
+<!-- gruff-docs:end release-line -->
 
 ## How It Compares
 
@@ -345,13 +440,19 @@ cargo clippy --all-targets -- -D warnings
 bin/gruff-rs analyse . --format json --no-baseline
 ```
 
-`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, and a dogfood scan of the whole project gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
+`scripts/preflight-checks.sh` runs formatting, Clippy, unit tests, shell lint, the deny and stop hook exit-contract self-tests, rule listing, JSON and SARIF fixture scans, patch-input diff smoke tests, selector/exclusion/custom-rule smokes, documentation drift fixtures, and a dogfood scan of the whole project gated by `minimumSeverity.analyse` in `.gruff-rs.yaml`.
 
 ## Documentation
 
+- [Documentation index](docs/README.md) - starting point for the guides below.
+- [Mission](docs/mission.md) - what gruff governs and why.
+- [Configuration](docs/configuration.md) - config discovery, selectors, exclusions, and custom rules.
+- [Rules](docs/rules.md) - rule IDs, severities, thresholds, and remediation guidance.
+- [Output Formats](docs/output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.
+- [CI Integration](docs/ci-integration.md) - GitHub Actions, SARIF upload, baselines, and patch diff scans.
+- [Dashboard](docs/dashboard.md) - local dashboard flags and safety model.
 - [Changelog](CHANGELOG.md)
 - [Upgrading](UPGRADING.md)
-- [Rules](docs/rules.md)
 - [Action metadata](action.yml)
 - [Fixture notes](fixtures/README.md)
 - [Test fixture notes](tests/fixtures/README.md)

@@ -7,9 +7,9 @@
 
 ## Context
 
-By mid-May the project's `.gruff-rs.yaml` had accumulated ~15 `exclude:` entries to silence findings that were "true by the rule's letter but not its intent" - sensitive-data errors on calibration fixtures, dead-code advisories on test helpers re-exported to sibling modules, long-test advisories on integration tests that bundle assertions with shared setup, etc. Each exclude lived in `.gruff-rs.yaml` (search: `paths.ignore`) with a documented `reason:` field, and each became a per-project maintenance item: when fixture paths moved or rule IDs changed, the excludes had to follow.
+By mid-May the project's `.gruff-rs.yaml` had accumulated ~15 `exclude:` entries to silence findings that were "true by the rule's letter but not its intent" - sensitive-data errors on calibration fixtures, dead-code advisories on test helpers re-exported to sibling modules, long-test advisories on integration tests that bundle assertions with shared setup, etc. Each one lived in a top-level `exclude:` block with a documented `reason:` field, and each became a per-project maintenance item: when fixture paths moved or rule IDs changed, the excludes had to follow. That block is post-analysis report suppression and is now absent from the config entirely; it is not the discovery-time `paths:` / `ignore:` surface, which is unrelated to this ADR and must stay intact - see `.gruff-rs.yaml` (search: `or top-level `) for the comment that draws the distinction.
 
-The dogfood scan running through `scripts/preflight-checks.sh` (search: `dogfood_source_scan`) gates the local release pipeline. Maintaining the exclusion list scaled badly: the cost of each new noisy finding was an exclusion-add + doc-rationale, not a fix that improved the rule for every other consumer of gruff-rs.
+The dogfood scan running through `scripts/preflight-checks.sh` (search: `dogfood_scan`) gates the local release pipeline. Maintaining the exclusion list scaled badly: the cost of each new noisy finding was an exclusion-add + doc-rationale, not a fix that improved the rule for every other consumer of gruff-rs.
 
 ## Decision
 
@@ -35,7 +35,7 @@ When a rule fires on legitimate code, prefer the following remedies, in order:
 
 - New rules added to the registry must include a calibration positive/negative case that is robust against the rule's own carve-outs (e.g. a sensitive-data positive case must NOT live under `**/tests/calibration/**`, or it will be skipped by `path_is_calibration_fixture`).
 - The `.gruff-rs.yaml` ships as a faithful registry snapshot - `gruff-rs init` regenerates it with the same defaults. Any per-project exclusion is a deliberate choice the project owner is accepting.
-- The footgun at `.goat-flow/footguns/calibration.md` (search: `Footgun: Threshold tuning ripples`) documents the ripple effects of threshold and rule changes that this policy makes more common.
+- The footgun at `.goat-flow/learning-loop/footguns/calibration.md` (search: `Footgun: Threshold Tuning Ripples`) documents the ripple effects of threshold and rule changes that this policy makes more common.
 
 ## Reversibility
 

@@ -5,8 +5,8 @@
 # - Filesystem allow/deny policy uses Codex permission profiles, not Claude's
 #   settings.json permissions.allow/permissions.deny syntax
 # - Hook registrations live in .codex/hooks.json for goat-flow installs
-# - The shipped codex-hooks.json template registers the PreToolUse deny hook
-# - Command deny policy still lives in the Bash-matched PreToolUse hook because
+# - The shipped codex-hooks.json template registers Bash-matched guardrail hooks
+# - Command deny policy still lives in those PreToolUse hooks because
 #   Codex permission profiles describe filesystem/network access, not shell
 #   command pattern denies like git push or sudo
 default_permissions = "goat-flow"
@@ -22,11 +22,10 @@ extends = ":workspace"
 glob_scan_max_depth = 3
 
 [permissions.goat-flow.filesystem.":workspace_roots"]
-# Codex deny rules win over same-profile read rules. Unlike Claude settings,
-# Codex cannot re-allow recursive sample env reads behind a broad filename
-# deny, so .env.example is intentionally denied here to keep .env* variants
-# protected consistently across agents.
+# Codex applies the most specific matching path, so the reviewed sample can
+# remain editable inside the broader deny for real and nonstandard env files.
 "**/.env*" = "deny"
+"**/.env.example" = "write"
 "**/secrets/**" = "deny"
 "**/.ssh/**" = "deny"
 "**/.aws/**" = "deny"

@@ -1,13 +1,13 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.15.1"
 ---
 # Critique Rubric Examples (Reference Pack)
 
-*Extracted from the goat-critique SKILL.md to stay within the 2500-word skill cap. Canonical rubric definitions remain in SKILL.md; worked examples and context-map details live here.*
+*Extracted from the goat-critique SKILL.md to stay within the 2500-word skill cap. Artifact rubrics remain in SKILL.md; the canonical meta-audit rubric, worked examples, and context maps live here.*
 
 ## Rubric Context Maps
 
-Each rubric has a context map that Step 0 reads and passes to sub-agent spawn directives. Footgun/lesson entries mean targeted INDEX-first hits from those buckets, not whole-directory reads. Agent C's isolation enforcement (Phase 2 step 1 grep check) is unchanged regardless of context map. Generic fallback uses the default split.
+Each map lists additions to the fixed Context split in `SKILL.md` and never replaces it. Agents A and B keep their artifact, architecture, and rubric baseline; an empty C list means no additional project context, so C still reads artifact + rubric only. Footgun/lesson entries mean targeted INDEX-first hits from those buckets, not whole-directory reads. Agent C's isolation enforcement (Phase 2 step 1 grep check) is unchanged regardless of context map. Generic fallback uses the default split plus the additions below.
 
 ### Plan
 - **A:** targeted INDEX-first footgun/lesson hits, `.goat-flow/learning-loop/decisions/`
@@ -46,39 +46,64 @@ Each rubric has a context map that Step 0 reads and passes to sub-agent spawn di
 
 ## Worked examples
 
+> **Illustrative scenario - input/output shape only; never evidence.** Every artifact path, finding, command outcome, and prior-log id below is a placeholder. Live critique must substitute target-project files plus semantic anchors re-read in the current session.
+
+### Full phase walkthrough: Phase 2 context-leak edge case
+
+- **Artifact:** `SKILL.md`
+- **Rubric:** Generic fallback
+- **Agent C output under review:** "The Context leak scan section names `goat-critique` and `.goat-flow`; do not discard those references when they are copied from artifact text."
+- **Phase 2 actions:** grep Agent C output for forbidden terms; apply the framework-self exemption because the artifact is a goat-flow skill; verify each project term is traceable to the artifact text; still check for structural navigation leaks such as config keys or architecture sections absent from Agent C's input.
+- **Expected Phase 2 result:** `no context leak - framework-self terms traceable to artifact; proceed to completeness gate`.
+
 ### Example: Plan rubric critique output
 
 ```markdown
-## Finding: Migration sequencing risk
+## Finding: Verification belongs after execution, not only during synthesis
 - **Severity:** HIGH | **Confidence:** HIGH
-- **Evidence:** Milestone plan excerpt (search: "Phase 2 additions") - Phase 2 additions depend on Phase 1 extraction completing first
-- **Proof attempt:** Read the milestone plan excerpt, confirmed extraction must precede additions
+- **Evidence:** `<target-project>/plan.md` (search: "Verification gate") - current-session size and version checks found state drift after the draft plan was written
+- **Proof attempt:** Re-read the target plan's verification gate and ran the named current-state checks
 - **Proof class:** STATIC
 - **Evidence quality:** OBSERVED
-- **SKEPTIC:** If extraction doesn't reclaim enough words, Phase 2 additions blow the 2500 cap
-- **ANALYST:** Current 2532w minus ~100w extraction gives ~80w budget for additions; tight but feasible
-- **STRATEGIST:** Extract first, measure, then add incrementally - abort additions if buffer insufficient
-- **Rubric dimensions:** sequencing quality [M], integration safety [M]
+- **SKEPTIC:** A plan can look internally consistent while the repo has drifted underneath it
+- **ANALYST:** The failure appeared only when live commands re-checked the current files, so synthesis alone was insufficient
+- **STRATEGIST:** Keep an execution-adjacent verification gate and cite the command output before closing the milestone
+- **Rubric dimensions:** validation coverage [O], sequencing quality [M]
 ```
 
-### Example: Security assessment rubric critique output
+### Example: Architecture/refactor rubric critique output
 
 ```markdown
-## Finding: Unvalidated input in API handler
-- **Severity:** CRITICAL | **Confidence:** HIGH
-- **Evidence:** `src/api/handler.ts` (search: "database query") - user input passed directly to database query
-- **Proof attempt:** Read handler.ts around the database query, confirmed no sanitization before query construction
+## Finding: Quick critique fallback would break the skill mechanism
+- **Severity:** HIGH | **Confidence:** HIGH
+- **Evidence:** `<target-project>/decisions/critique-mode.md` (search: "delegated critique mode") - the current decision binds critique to isolated agents rather than inline role-play
+- **Proof attempt:** Re-read the target decision and confirmed that it rejects a quick inline fallback
 - **Proof class:** STATIC
 - **Evidence quality:** OBSERVED
-- **SKEPTIC:** SQL injection vector; worst case is full database compromise
-- **ANALYST:** Direct string interpolation in query; parameterised queries would eliminate the risk at zero performance cost
-- **STRATEGIST:** Immediate fix: switch to parameterised queries. Defer: full input validation audit
-- **Rubric dimensions:** exploitability calibration [M], attack surface coverage [M]
+- **SKEPTIC:** Reintroducing quick mode would make the output promise multi-perspective critique without isolated contexts
+- **ANALYST:** `/goat-review` already covers lightweight single-context review, so the fallback duplicates another skill and weakens this one
+- **STRATEGIST:** Keep goat-critique full-delegated and route low-ceremony requests to goat-review
+- **Rubric dimensions:** blast radius accuracy [M], migration safety [M], dependency impact [O]
 ```
+
+### Example: Differential mode delta block (Phase 5 Verdict)
+
+When Step 0 detects a same-artifact critique log within 30 days and differential mode is active, Phase 5 appends a delta block to the Verdict comparing this run against the prior one. Worked example for a plan re-critiqued after the author resolved two findings and added a milestone:
+
+```markdown
+## Verdict
+- **Gate:** CONCERNS  <!-- one HIGH survives -->
+- **Delta vs prior critique [diff-of: a1b2c]:** Resolved: 2 | Regressed: 0 | New: 1 | Unchanged: 1
+```
+
+- **Resolved (2):** the prior MILE-03 sequencing gap and the missing rollback step are absent from the current artifact.
+- **New (1):** the added milestone introduces an untested integration boundary (HIGH) - this drives the CONCERNS gate.
+- **Unchanged (1):** the prior MEDIUM on task specificity persists.
+- Counts come from matching this run's findings against the prior log's findings by title/anchor; `[diff-of: a1b2c]` cites the `<rand5>` slug of the prior critique's filename.
 
 ## Meta-audit rubric (Phase 5.5)
 
-The meta-agent scores the draft critique against these 10 points:
+The meta-agent scores the draft critique against these 10 checks. Award 10 only when a check is fully satisfied, otherwise 0; partial credit is forbidden. `Meta-score` is the sum. Name every failed check under `## Auto-Detected Issues`. When all 10 checks pass, write exactly `No failed meta-audit checks.` A clean attestation is not an issue and must not be expanded into one.
 
 1. **Gate-finding match** - Gate value matches highest surviving severity
 2. **Evidence quality per finding** - every finding has Proof attempt + Proof class + Evidence quality fields

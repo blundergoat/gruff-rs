@@ -14,11 +14,59 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo run -- analyse src --format sarif --fail-on none > gruff-rs.sarif
+      # Replace the placeholder with the reviewed commit for v0.5.0.
+      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.5.0
+        with:
+          version: 0.5.0
+          argv: |
+            analyse
+            src
+            --format
+            sarif
+            --fail-on
+            none
+          output-file: gruff-rs.sarif
       - uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: gruff-rs.sarif
+```
+
+The composite action's `argv` input uses one literal argument per non-empty
+line. It never treats spaces or shell metacharacters within a line as syntax.
+Relative `working-directory` and `output-file` paths are rooted in the
+workspace; lexical and symlink escapes fail before the analyzer runs. Windows
+runners may use native paths for both — a drive root such as
+`D:\a\repo\repo\crate` or a UNC share — because the action converts them and
+`GITHUB_WORKSPACE` to one notation before comparing them. Containment is
+unchanged: a native path outside the workspace still fails closed. A
+drive-relative value such as `C:crate` names no root the action can resolve, so
+it is rejected rather than guessed.
+
+Replace `FULL_40_CHARACTER_COMMIT_SHA` with the reviewed full commit SHA for
+v0.5.0 and keep `version: 0.5.0` aligned with that review. A full SHA pins the
+action code immutably. An exact action tag can infer its matching binary
+version, but tags can move; a full-SHA caller must always supply `version`.
+`latest` and omitted versions on non-release refs fail closed.
+
+Installation downloads the exact platform archive and its `.sha256` sidecar
+from the fixed `blundergoat/gruff-rs` GitHub release origin. It verifies the
+checksum and archive members before installing only the binary into a private
+`RUNNER_TEMP` directory. This checksum catches corruption or a mismatched
+asset, but it is not publisher authentication because both files come from the
+same release channel. The 0.5.0 release gate also requires GitHub release
+immutability before publication. Errors identify the install,
+checksum/archive, or analyzer-execution stage.
+
+The former `args` command string is intentionally unsupported starting in
+v0.5.0. Any non-empty legacy value fails with exactly:
+
+```text
+gruff-rs action: input 'args' is no longer supported; use 'argv' with one literal argument per non-empty line, for example:
+argv: |
+  analyse
+  .
+  --format
+  sarif
 ```
 
 ## Quality Gate
@@ -83,9 +131,13 @@ it to scope its own work:
 
 ```sh
 cargo run -- check-ignore --format json src/app.css vendor/lib.rs src/main.rs
-# [{ "path": "vendor/lib.rs", "ignored": true, "source": "config", "pattern": "vendor/**" },
+# [{ "path": "src/app.css", "ignored": false, "source": null, "pattern": null },
+#  { "path": "vendor/lib.rs", "ignored": true, "source": "config", "pattern": "vendor/**" },
 #  { "path": "src/main.rs", "ignored": false, "source": null, "pattern": null }]
 ```
+
+The array carries one entry per input path, in the order given, so a caller can
+pair results with its own path list by index.
 
 Exit codes mirror `git check-ignore`: `0` when at least one path is ignored, `1`
 when none are, `2` on error. Text output lists the ignored paths; add `-v` to
@@ -98,3 +150,19 @@ Run the full local gate before releases:
 ```sh
 scripts/preflight-checks.sh
 ```
+
+Ordinary project analysis remains config-aware, so this repository's
+`.gruff-rs.yaml` continues to exclude `.github/**` from broad dogfood scans.
+Preflight has a separate named security check that enumerates the exact live
+`.github/workflows/*.yml` and `.yaml` files plus root `action.yml`, then supplies
+those paths with `--no-config --no-baseline`. That explicit bypass audits
+checked-in automation without weakening the project's normal ignore policy or
+recursively discovering arbitrary local actions.
+
+An explicitly supplied file named exactly `action.yml` or `action.yaml` receives
+the step rules that understand both workflow and composite-action syntax:
+direct `github.event.*` shell interpolation, remote downloads piped into a
+shell, and third-party `uses:` dependencies without full commit SHAs. Workflow
+permissions, `pull_request_target`, and pull-request secret checks remain
+workflow-only because action metadata has no workflow trigger or permission
+contract.

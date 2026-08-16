@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-06-14
+last_reviewed: 2026-08-16
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -14,6 +14,17 @@ The concrete trap is a two-file crate where `src/lib.rs` declares `fn helper_use
 Keep project-level dead-code tied to a coverage fact, not path-string guesses. The guard lives in `ProjectCoverage` (search: `diff_selection_narrowed`) and the rule suppresses itself with `partial-context-rule-suppressed` when coverage is partial. Regression coverage: `src/tests/project_tests/dead_code.rs` (search: `dead_code_partial_context_suppresses_cross_file_candidate`, `dead_code_diff_patch_partial_context_suppresses_candidate`, `dead_code_partial_context_coverage_tracks_actual_rust_file_universe`).
 
 **2026-06-14 extension:** the coverage test itself must be "did we analyse every discoverable file", i.e. `!discoverable.is_subset(&analysed)`. `ProjectCoverage::is_partial` (`src/source.rs` search: `fn is_partial`) first used `analysed != discoverable && analysed.is_subset(discoverable)`, which only treats a PROPER SUBSET as partial. When the sets are incomparable - analysed carries an out-of-walk extra (an explicitly named gitignored `.rs`) AND misses a discoverable file - that returned "complete" and let the cross-file candidate emit on an incomplete index. Regression: `src/source.rs` (search: `fn is_partial_flags_any_uncovered_discoverable_file`).
+
+**2026-07-13 extension:** discovery is not proof that a Rust source contributed
+to the project index. A file can be discovered but fail during byte reading or
+UTF-8 conversion and therefore never enter `ParsedSource`; treating the
+discovery set as analysed revives deletion guidance from an incomplete index.
+`build_project_context` (`src/project/mod.rs`, search:
+`selected_rust_files.is_subset`) now replaces the selected set with paths that
+produced Rust ASTs and marks any missing selected input incomplete. Keep the
+`read-error` fatal and separately emit partial-context suppression. Regression:
+`src/tests/project_tests/dead_code_coverage.rs` (search:
+`dead_code_partial_context_suppresses_candidate_when_rust_read_fails`).
 
 ## Footgun: Enriched Rule Definitions Require A `related` Arm
 
@@ -48,28 +59,17 @@ The non-obvious failure mode is matching every `iter().any(|x| ARG == OTHER)` sh
 
 Calibrate by requiring an explicit dereference or reference token: `iter().any(|x| *x == y)` (deref pattern, items are `&T` comparing to `T`) or `iter().any(|x| x == &y)` (RHS-ref pattern, items are `&T` comparing to `&T`). Bare `|x| x == y` stays silent because the only way that compiles is through `PartialEq` cross-type impls, where `.contains()` likely needs an allocation. Regression coverage: `src/tests/calibration/cases_pillar_expansion.rs` (search: `modernisation.manual-contains`) uses `*item == target` so the deref shape stays detected.
 
-## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
-
-**Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
-
-`src/built_in_rules/path_traversal_rules.rs` (search: `fn analyse_path_traversal_candidate`) flags filesystem path construction from non-literal identifiers. A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
-
-- **Path-typed parameters in utility helpers**: `fn absolutize(root: &Path, path: &Path) -> PathBuf { root.join(path) }`. The `path` argument cannot carry an unconstrained string segment — it was already path-typed upstream.
-- **Validate-then-trust pattern**: `default_root.join(requested).canonicalize()?` followed by `.starts_with(default_root)`. The join is dangerous in isolation but resolved and re-checked immediately after.
-- **Identifier names that signal validation**: `safe`, `sanitized`, `normalized`, `validated`, `file_name` — common in code that has just finished validating.
-- **Test infrastructure**: paths constructed inside `tests/` directories are not attack surfaces.
-
-The non-obvious failure mode is shipping a candidate rule whose recall is high but whose precision collapses on idiomatic Rust. Users either silence it project-wide or stop reading its findings.
-
-Calibrate with three guards before emitting the finding (kept in `path_traversal_finding_is_suppressed`): (1) safe-arg list restricted to validation-outcome and base-path-convention names (no slot-describing names like `dir`, `parent`, `target`); (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 25 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fires.
-
 ## Footgun: Fixture Findings Are Intentional
 
 **Status:** active | **Created:** 2026-05-13 | **Evidence:** ACTUAL_MEASURED
 
 `fixtures/sample.rs` (search: `let api_key =`) intentionally includes secret-looking strings, command execution, a long parameter list, and a weak test. Do not "fix" this file as ordinary bad code unless the replacement still proves the analyzer reports those rule families.
 
-The non-obvious failure mode is losing analyzer coverage while making the repository appear cleaner. The smoke command `cargo run -- analyse fixtures --format json --fail-on none` currently reports findings from this fixture.
+The non-obvious failure mode is losing analyzer coverage while making the repository appear cleaner.
+
+**Corrected 2026-08-08:** the smoke command `cargo run -- analyse fixtures --format json --fail-on none` reports **zero** findings and zero analysed files, because `.gruff-rs.yaml` authoritatively ignores `fixtures/**` (ADR-018). It proves the CLI exits 0, and so does the `fixture JSON scan` preflight check; neither proves this fixture still calibrates anything. To see the calibration set, add `--no-config`: `cargo run -- analyse fixtures --format json --fail-on none --no-config --no-baseline` reports 3 analysed files and 16 findings, including `sensitive-data.aws-access-key` at line 16. Compare that sorted finding set before and after any fixture edit.
+
+The AWS-key line also carries a `goat-flow-allow-secret` marker for the Stop hook. That marker is hook-only — `gruff` has no inline allow-marker handling — so it cannot suppress the analyzer finding. See ADR-022 for the threat boundary and why a `fixtures/**` exemption was rejected.
 
 ## Footgun: Code-Shape Rules Can Scan Fixture Strings
 
@@ -103,13 +103,15 @@ The non-obvious failure mode is testing multi-secret JSON on one physical line a
 
 **Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
 
-`src/built_in_rules/text_rules.rs` (search: `fn analyse_ci_github_event_shell_interpolation`) scans GitHub Actions YAML as deterministic text, not with a YAML parser. Workflow shell steps commonly appear as list-item mappings (`- run: ...`), not only as bare `run:` keys, so key-oriented string checks can miss the most common positive shape.
+`src/built_in_rules/github_metadata_rules.rs` (search: `fn analyse_ci_github_event_shell_interpolation`) scans GitHub Actions YAML as deterministic text, not with a YAML parser. Workflow shell steps commonly appear as list-item mappings (`- run: ...`), not only as bare `run:` keys, so key-oriented string checks can miss the most common positive shape.
 
 M54 calibration first caught this as `ci.github-event-shell-interpolation: positive=MISS negative=silent`. Regression coverage now lives in `src/tests/calibration/security_size_test_waste_cases.rs` (search: `ci.github-event-shell-interpolation`) and `src/tests/scenarios/calibration_extras.rs` (search: `calibration_security_rubric_improvements_have_false_positive_guards`). When adding workflow text rules without a YAML parser, include both `run:` and `- run:` positive/negative fixtures, plus a block scalar case if continuation lines matter.
 
-2026-06-05 extension: event detection has the same YAML-shape trap. `src/built_in_rules/text_rules.rs` (search: `fn workflow_line_contains_event`) originally matched `on: [pull_request]`, mapping keys (`on:\n  pull_request:`), and list items, but missed scalar events (`on: pull_request` / `on: pull_request_target`). That made `security.github-actions-secrets-in-pr` and `security.github-actions-pull-request-target` silent for a common valid workflow form. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_security_events_accept_scalar_on_values`).
+2026-06-05 extension: event detection has the same YAML-shape trap. `src/built_in_rules/github_metadata_rules.rs` (search: `fn workflow_event_in_scalar`, then the retired line matcher it replaced) originally matched `on: [pull_request]`, mapping keys (`on:\n  pull_request:`), and list items, but missed scalar events (`on: pull_request` / `on: pull_request_target`). That made `security.github-actions-secrets-in-pr` and `security.github-actions-pull-request-target` silent for a common valid workflow form. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_security_events_accept_scalar_on_values`).
 
-**How to apply:** every new GitHub Actions text rule needs fixtures for scalar, mapping, and list event syntax where event gating matters. Prefer a real YAML parser only if the rule needs nesting semantics; otherwise keep the text matcher deterministic but enumerate common YAML surface forms.
+2026-08-16 extension: the trap runs in both directions, and a key's *placement* matters as much as its spelling. Matching an event name anywhere on a line made a `with:` input named `pull_request` gate a push-only workflow as a pull-request workflow, so `security.github-actions-secrets-in-pr` fired on a workflow with no such trigger; the replacement (`src/built_in_rules/github_metadata_rules.rs`, search: `struct WorkflowTriggerState`) tracks the top-level `on` mapping instead. The same edit fixed three spelling misses in the other direction: quoted keys (`"on":`, `- "uses":`, `- "run":`, now normalised by `fn normalize_yaml_key`), block headers carrying an indentation or chomping indicator or a trailing comment (`run: |2`, `>2-`, `run: | # note`, now accepted by `fn is_yaml_block_scalar`), flow mappings (`on: {push: null, pull_request: null}`, handled by `fn workflow_event_in_scalar`), and `${{secrets.X}}` without interior whitespace (`fn line_has_secret_expression`). A block header that fails to parse is the costliest miss of the group: it silences every line of the step, not just the header. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_events_require_top_level_on_placement`, `github_actions_step_keys_accept_quoted_and_indented_block_forms`).
+
+**How to apply:** every new GitHub Actions text rule needs fixtures for scalar, mapping, and list event syntax where event gating matters, plus a quoted-key spelling of any key it matches and a negative fixture placing that same key somewhere it has no meaning (`with:`, `env:`, an action input). Prefer a real YAML parser only if the rule needs nesting semantics; otherwise keep the text matcher deterministic but enumerate common YAML surface forms and assert placement, not just spelling.
 
 ## Footgun: check-ignore Needs Hierarchical Gitignore Context
 
@@ -131,22 +133,6 @@ The non-obvious failure mode is treating all string-literal references as equall
 
 **2026-06-14 extension (external scan, OPEN gap):** the structured-reference extractor `src/parser/mod.rs` (search: `fn append_serde_default_references`) recognises only the `default = "..."` serde key (regex `\bdefault\s*=\s*"..."`). An external scan of a serde-heavy repo (goose) flagged custom `deserialize_with` / `serialize_with` / `skip_serializing_if` / `with` functions (e.g. `deserialize_modalities` via `#[serde(deserialize_with = "...")]`, `is_default_permissions` via `skip_serializing_if`) as `dead-code.unused-private-function` and `dead-code.unused-private-item-candidate`, because those attribute strings are the functions' only call sites and the extractor never appends them. Not yet fixed. Before treating dead-code findings on serde-heavy crates as authoritative, broaden the recognised serde attribute keys to the reference-bearing set (`with`, `serialize_with`, `deserialize_with`, `skip_serializing_if`, `default`), and add a fixture per key.
 
-## Footgun: Secret-Key Case Sensitivity Depends On File Kind
-
-**Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
-
-`src/built_in_rules/secret_rules.rs` (search: `fn config_like_secret_regex`) intentionally allows lowercase secret-like keys only for structured config formats such as YAML, JSON, TOML, `.env`, and properties files. Rust source and prose/script-like text stay uppercase-only for `sensitive-data.hardcoded-env-value`, because lowercase identifiers such as `secret_access_key`, `secret_json`, `touches_secret`, and detector variable names are usually runtime values or scanner implementation details rather than committed secret assignments.
-
-The non-obvious failure mode is globally removing `(?i)` to fix false positives, which breaks real structured config coverage such as `database_password: yaml-secret-123`. The opposite mistake is making every text file case-insensitive, which reintroduces shell, Markdown, and Rust variable false positives. Regression coverage: `src/tests/scenarios/calibration_extras.rs` (search: `calibration_hardcoded_env_value_detects_structured_config_keys`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `sensitive_data_rules_skip_common_placeholder_and_detector_contexts`).
-
-## Footgun: Process Command Needs Risk Signals
-
-**Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
-
-`src/built_in_rules/behavior_rules.rs` (search: `fn analyse_process_commands`) reports `security.process-command` only when `process_command_risk_signals` finds a concrete risk shape such as shell execution, dynamic executable, dynamic arguments, environment changes, or working-directory changes. Reporting every `Command::new(...)` constructor creates release-blocking noise for fixed executable helpers and cleanup commands.
-
-The non-obvious failure mode is treating "process object constructed" as equivalent to "security-relevant process execution." Builder helpers that return `Command` and fixed cleanup commands such as `taskkill /PID <pid> /F /T` should stay silent, while dynamic shell execution must still fire. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `process_command_skips_builders_and_fixed_pid_cleanup`) and `src/tests/scenarios/calibration_extras.rs` (search: `calibration_security_process_command_detects_code_not_fixture_text`).
-
 ## Footgun: Loop-Scoped Rules Must Mask Comments
 
 **Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
@@ -161,7 +147,7 @@ The non-obvious failure mode is masking strings but not comments for loop-scoped
 
 `src/built_in_rules/test_rules.rs` (search: `fn body_contains_only_assertion_subject_unwraps`) exempts `test-quality.unwrap-in-test` only when every `.unwrap()` is inside an assertion macro and the unwrap receiver is a call result. A broad "inside assert macro" exemption hides setup variables such as `assert_eq!(v.unwrap(), 2)`, which existing regression coverage expects to remain visible.
 
-The non-obvious failure mode is treating all assertion unwraps as equivalent. Unwrapping a direct function call in an assertion can be the subject under test; unwrapping a local variable inside an assertion can still hide setup intent. Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (search: `unwrap_expect_skips_cfg_test_module`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `unwrap_in_test_skips_assertion_subject_but_reports_setup_unwrap`).
+The non-obvious failure mode is treating all assertion unwraps as equivalent. Unwrapping a direct function call in an assertion can be the subject under test; unwrapping a local variable inside an assertion can still hide setup intent. Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (search: `unwrap_expect_skips_cfg_test_module`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `opt_in_unwrap_rule_skips_assertion_subject_but_reports_setup_unwrap`).
 
 ## Footgun: Test-Quality Assertion Rules Must Mask Comments
 
@@ -202,16 +188,6 @@ The non-obvious failure mode is that the rule appears correct (calibration passe
 
 Regression coverage for this specific case: `src/tests/calibration/cases_pillar_expansion.rs` (search: `security.hardcoded-bind-all-interfaces`); the positive case is a Rust fn returning a `"0.0.0.0:8080"` literal, the negative returns `"127.0.0.1:8080"`. Calibration would not have caught the self-fire because calibration runs in a tempdir; only dogfood revealed it. Pairs with [[rule-precision]] for the broader candidate-rule defence pattern.
 
-## Footgun: Candidate Taint Rules Can Taint Their Own Predicate Booleans
-
-**Status:** active | **Created:** 2026-05-31 | **Evidence:** ACTUAL_MEASURED
-
-`src/built_in_rules/network_security_rules.rs` (search: `fn analyse_template_injection_xss`) uses a bounded same-function taint model. A first cut treated every function parameter as tainted and propagated taint through any local binding whose RHS mentioned a tainted name. The rule then self-fired on its own helper because `fn template_sink_argument(line: &str, ...)` has a tainted `line` parameter, `let has_sink = line.contains("Html(format!") ...` became a tainted local, and the later `if !has_sink` line looked like an unescaped template sink candidate.
-
-The non-obvious failure mode is that candidate taint rules can create findings from detector-control booleans, not from user data. This is different from literal self-fire: calibration fixtures still pass, but dogfood reports the analyzer source as a security finding.
-
-Calibrate taint propagation so predicate/control bindings (`has_`, `is_`, `should_`, `matches_`, etc.) do not become tainted sink arguments, and keep source scans in the verification loop after every taint-style rule. The current guard lives in `src/built_in_rules/network_security_rules.rs` (search: `fn binding_name_is_predicate`). The same verification pass also caught `serde_yaml::from_str` in analyzer config parsing; local config/YAML parsing should stay silent unless the source evidence is actually request/env-derived.
-
 ## Footgun: Wrapper-Module Fan-Out Hits 8 When Adding New Rule Files
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
@@ -224,6 +200,17 @@ The non-obvious failure mode is treating the wrapper organisation as fixed. The 
 
 2026-06-07 extension: the rule also fires on the top-level `src/built_in_rules/mod.rs` itself, not only the two wrappers — it sat at exactly 8 direct `mod` declarations. Extracting a cohesive concern out of an over-long top-level module to clear `size.file-length` (here, splitting the `sensitive-data.pii-test-fixture` rule out of `secret_rules.rs`) tripped fan-out when the extraction was added as a 9th top-level sibling in `mod.rs`. Fix: nest the new sub-file under its semantic owner via `#[path]` instead of adding a top-level sibling — `secret_rules.rs` mounts it with `#[path = "pii_rules.rs"] mod pii_rules;` and re-exports the entry point (search: `pub(crate) use pii_rules::analyse_pii_test_fixture;`), mirroring how `behavior_rules.rs` nests `tls_sql` (search: `#[path = "behavior_rules/tls_sql.rs"]`). The file stays flat in the directory; only the module tree gains a level. Re-classification therefore also covers "nest under the owning module", not just "move between the two wrappers".
 
+**2026-07-14 extension:** re-owning a shared type can preserve module fan-out
+while breaking the crate-root name inherited by sibling modules through
+`use super::*`. Moving `FunctionBlock` into
+`src/built_in_rules/function_block_metrics.rs` (search: `pub(crate) struct FunctionBlock`)
+made the existing unqualified consumers in `src/analysis.rs`,
+`src/changed_region.rs`, and `src/diff.rs` fail to compile. Keep an intentional
+crate-root bridge in `src/main.rs` (search: `pub(crate) use built_in_rules::FunctionBlock;`)
+until every consumer is explicitly migrated.
+Before moving any root-owned shared type, search for unqualified consumers and
+run a compiling focused test immediately after the move.
+
 **How to apply:**
 
 - Before adding a new built-in rule file, check `wc -l src/built_in_rules/rust_block_rules.rs src/built_in_rules/rust_other_rules.rs` and count the `#[path]` declarations. If the wrapper is already at 7 or 8, the next addition will break the rule.
@@ -233,73 +220,23 @@ The non-obvious failure mode is treating the wrapper organisation as fixed. The 
 
 Regression coverage: this footgun re-fires every time the catalogue grows and a new rule file lands. No dedicated regression test — dogfood scan catches it.
 
+## Resolved Entries
+
 ## Footgun: Complexity Scanners Count Control-Flow Keywords In Comments
 
-**Status:** active | **Created:** 2026-05-30 | **Evidence:** ACTUAL_MEASURED
-
-`src/built_in_rules/blocks.rs` (search: `let searchable_body = strip_rust_string_literals`) feeds the complexity scanners — `fn analyse_block_complexity` (cyclomatic via `CYCLOMATIC_COMPLEXITY_REGEX`), `fn approximate_npath`, `fn max_nesting_depth`, and cognitive — a body with string literals masked but COMMENTS intact. Control-flow words (`if`, `for`, `match`, `while`, `loop`, `&&`, `||`, `?`) inside `//` and `///` comments are therefore counted as real decisions. This is the complexity-pillar twin of "Loop-Scoped Rules Must Mask Comments" above: the perf rules already comment-mask; the complexity rules do not.
-
-Concrete instance (2026-05-30, external scan): a private `validate_script_path` with THREE flat `if` guards and ZERO loops reported `complexity.npath` 128. The branch-keyword count came back as 7 = 3 real `if` + 4 occurrences of the word "for" inside its comments ("Check **for** path traversal", "a script path **for** security"). NPath exponentiates (2^7 = 128 > threshold 100) so it crossed the line, while `complexity.cyclomatic` only summed (7 + 1 = 8 <= 10) and stayed silent — which is why npath fired alone on clean, well-documented code.
-
-The non-obvious failure mode: the more faithfully an agent follows the doc-comment mandate (`.goat-flow/decisions/ADR-015-mission-agent-code-governance.md`), the more control-flow prose its comments carry, and the more the complexity metrics inflate — the analyzer penalises the documentation it requires. `?`-dense idiomatic error handling also reads higher than its real decision complexity.
-
-**How to apply:**
-
-- Fix: derive a comment-masked body for the complexity scanners — reuse `strip_rust_comments_after_string_mask` (search in `src/built_in_rules/modernisation_rules.rs`) over the string-masked body, localized to `analyse_block_complexity` so the perf / error-handling / concurrency rules that share `searchable_body` are unaffected. Tracked by milestone M00c.
-- `?` (error-propagation) counts toward cyclomatic but reads linearly; weight it deliberately (M00c).
-- `complexity.npath` was removed entirely (M00) because exponentiation made this inflation cross threshold while adding no signal cyclomatic / cognitive / nesting don't already carry.
-- Regression coverage to add when fixed: a complexity calibration case whose body contains control-flow words only in comments and stays silent.
-
-## Footgun: A Rule Exemption That Counts Only Named Placeholders Hides Positional Injection
-
-**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
-
-`src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn fixed_placeholder_arity_is_safe`) exempts `security.sql-dynamic-query` for the safe IN-clause idiom: a `let placeholders = repeat_n("?", n).join(",")` list bound through `params_from_iter`. The original exemption extracted only NAMED placeholders from the `format!` template, so positional `{}` and indexed `{0}` placeholders were invisible to it. `format!("... WHERE status = {} AND id IN ({placeholders})", status)` had its only *named* placeholder (`placeholders`) proven safe, the `all(...)` check passed, and the rule silently dropped a real injection sink. Positional `{}` is the most common `format!` form, so the gap masked the dominant shape, not an edge case.
-
-The non-obvious failure mode is a security false-NEGATIVE introduced by a precision exemption: the placeholder enumerator filtered to simple identifiers and dropped non-identifier placeholders instead of treating them as un-proven. An exemption is itself a rule, and a skip predicate must enumerate EVERY placeholder and require all of them to be proven safe - never just the ones it can name.
-
-Fix: `fn placeholder_arg_names` now returns every placeholder token (positional `{}` -> empty string, indexed `{0}` -> digits) and `fixed_placeholder_arity_is_safe` requires each to be a simple identifier AND a proven `?` list. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_rejects_value_interpolation_beside_placeholder_list`) probes both positional `{}` and indexed `{0}`. Pairs with [[rule-precision]]: an exemption's false negatives cost as much as the rule's false positives.
-
-## Footgun: High-Entropy Inert Skip Was Tuned To One Model-ID Shape, Not A Safe Principle
-
-**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
-
-`src/built_in_rules/helpers.rs` (search: `fn is_structured_high_entropy_non_secret`) skips inert high-entropy strings so `sensitive-data.high-entropy-string` (error severity) does not fire on base64 alphabets, word slugs, and model identifiers. The original model-ID recogniser demanded a `provider/Family/Model` slash structure with all-uppercase-or-digit version codes. Real model catalogues carry far more variety, so it missed bare names with no slash (`Llama-4-Maverick-17B-128E-Instruct-FP8`), single-slash ids, and lowercase size codes (`480b`, `a35b`). A scan of an AI-tooling repo's catalogue (`goose .../canonical_models.json`) produced ~92 error-severity false positives from model identifiers alone, and no real leaked credential was present among the 173 high-entropy hits across five repos.
-
-The non-obvious failure mode is an error-severity secret rule whose inert-skip is enumerated from the author's example shapes: it looks correct on fixtures and floods on real data, and because it is error severity it FAILS a hook/CI gate on model-name strings - the false-positive-as-command-to-change-correct-code problem this tool exists to avoid. A structured-non-secret skip must be defined by a *safe separating principle*, not a hand-tuned shape.
-
-Fix: `fn is_separated_identifier_slug` recognises any separator-delimited slug where every segment is short and alphanumeric and at least two are word-like, but refuses the skip when any non-word segment exceeds 6 chars - because a real secret is either contiguous (one segment), carries base64 padding (`+`/`=`), or hides a long high-entropy run, none of which pass. This removed 100 of 101 model-catalogue FPs across five external repos with zero collateral on any other rule, while every real-secret fixture stayed flagged. Regression coverage: `src/built_in_rules/helpers.rs` (search: `high_entropy_skips_model_identifiers_without_masking_secrets`) asserts the model IDs skip AND that opaque tokens / separated secret blobs keep flagging. Residual: a CamelCase name with a short acronym tail whose non-word segment exceeds 6 chars (`WizardLM-2-8x22B`) still flags; closing it would loosen the safety bound, so it is left. Pairs with [[rule-precision]].
-
-## Footgun: Text Proof/Evidence Helpers Match Names Too Loosely
-
-**Status:** active | **Created:** 2026-06-14 | **Evidence:** ACTUAL_MEASURED
-
-Several rules "prove" a value safe, or find "evidence" it is risky, by scanning nearby source text for a binding or function. Done with `starts_with`, substring `find`, or `rfind("\nfn ")`, those matches are too loose in two recurring ways - they ignore word boundaries and they cross function boundaries - and the failure is a silent false negative in a SECURITY rule.
-
-Concrete instances (2026-06-14, PR review): `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn placeholder_binding_is_fixed_question_list`) scoped its fixed-`?` proof window with `rfind("\nfn ")`, which only matches a bare `fn` at column zero - so for `pub fn`/`async fn`/`impl` methods (the common case) the window spilled into earlier functions and a helper's `let placeholders = ...join(",")` vouched for an untrusted `placeholders` parameter elsewhere. Same file, `line_is_name_binding` used `starts_with("let {name}")`, so `placeholders` was proven by an unrelated `placeholders_safe` binding. The identical shape lived in `src/built_in_rules/path_traversal_rules.rs` (search: `fn window_has_receiver_path_binding`): a plain `find("let {receiver}")` let a `files_backup` binding vouch for a `files` receiver, and `let mut` bindings were missed entirely.
-
-Fix pattern: scope the window to the ENCLOSING function (reuse `is_function_start_line` to find the start, not `rfind("\nfn ")`), and require a non-identifier char after a name match so `x` does not match `x_suffix`; cover both `let` and `let mut`. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_proof_is_scoped_to_current_function_and_exact_name`) and `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `path_traversal_reaches_accessor_receivers_and_let_mut_bindings`).
-
-When adding any "look at nearby text for a binding/usage named X" helper, default to word-boundary checks and current-function scope, and add a negative fixture with a prefix-collision name (`X_safe`) plus a `let mut` binding. Pairs with [[rule-precision]].
-
-## Footgun: Clearing Git Env Vars Does Not Fully Neutralise The Subprocess
-
-**Status:** active | **Created:** 2026-06-14 | **Evidence:** OBSERVED
-
-`src/changed_region.rs` (search: `fn git_command`) hardens the diff subprocess by removing `GIT_EXTERNAL_DIFF` and pointing config/hooks at `/dev/null`. That does NOT stop `git diff` from running an external diff driver configured by the repository's OWN committed `diff.external` (or a `.gitattributes` `diff=<driver>` mapping) - attacker-controlled data in an untrusted tree. Env hygiene neutralises the environment, not the repo's committed config.
-
-The diff path is opt-in behind `--diff-git-unsafe` (ADR-019), but `.goat-flow/architecture.md` claims the diff subprocess "does not execute arbitrary code", so the gap also makes a committed claim untrue. Fix: pass `--no-ext-diff` on every `git diff` invocation (`src/changed_region.rs` search: `fn git_diff_patch`) - it disables both global `diff.external` and attribute-driven drivers. `--no-ext-diff` is a diff/log option, so it cannot live in the shared `git_command` builder (cat-file/ls-tree reject it); add it per diff arg vector.
-
-When hardening any subprocess against an untrusted tree, enumerate the ways the tree's OWN committed files (config, attributes, hooks, ignore files) can change behaviour, not just environment variables. Pairs with ADR-019.
-
-## Resolved Entries
+**Status:** resolved | **Created:** 2026-05-30 | **Resolved:** 2026-07-13 | **Evidence:** ACTUAL_MEASURED
+**hallucination-risk:** high
+**Symptoms:** Control-flow words inside Rust comments inflated cyclomatic and NPath measurements, so well-documented functions could receive complexity findings for decisions they did not contain.
+**Why it happened:** `analyse_block_complexity` originally consumed the string-masked `searchable_body` without removing comments. The stale entry also pointed at `.goat-flow/decisions/ADR-015-mission-agent-code-governance.md` instead of the live `.goat-flow/learning-loop/decisions/ADR-015-mission-agent-code-governance.md` decision.
+**Resolution:** `src/built_in_rules/blocks.rs` (search: `let code_only_body = strip_rust_comments_after_string_mask(searchable_body);`) now comment-masks the body before cyclomatic, nesting, and cognitive analysis. `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `complexity_rules_ignore_comment_keywords_and_question_marks`) proves comment-only keywords stay silent. `complexity.npath` was separately removed under ADR-016.
+**Prevention:** Keep every complexity metric on `code_only_body`, and retain the comment-keyword regression whenever the scanner or Rust masking pipeline changes.
 
 ## Footgun: Report Exclusions Are Not Discovery Ignores
 
 **Status:** resolved | **Created:** 2026-05-16 | **Resolved:** 2026-05-18 | **Evidence:** ACTUAL_MEASURED
 **hallucination-risk:** high
 **Symptoms:** Adding a richer exclusion DSL by widening `paths.ignore` can hide committed files from security and sensitive-data rules instead of only suppressing reviewed findings.
-**Why it happened:** `src/config_loader/mod.rs` (search: `config.ignored_paths = string_array(ignore, "paths.ignore")`) treats `paths.ignore` as discovery-time policy. ADR-004 also separates Git ignore rules from gruff config ignores, while M23 research in `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `Exclusions hide reported issues but do not skip analysis`) identified report-level exclusions as a different layer.
+**Why it happened:** `src/config_loader/mod.rs` (search: `config.ignored_paths = string_array(ignore, "paths.ignore")`) treats `paths.ignore` as discovery-time policy. ADR-004 also separates Git ignore rules from gruff config ignores.
 **Resolution:** `src/analysis.rs` (search: `apply_report_exclusions`) adds top-level `exclude` entries that run after exact baselines and before patch filtering. They require reasons, record suppression counts, and filter `AnalysisReport.findings` without changing source discovery.
 **Prevention:** Keep `paths.ignore` for "do not read" policy. Use top-level `exclude` for reviewed report suppressions with reasons and counts.
 
@@ -308,7 +245,7 @@ When hardening any subprocess against an untrusted tree, enumerate the ways the 
 **Status:** resolved | **Created:** 2026-05-16 | **Resolved:** 2026-05-18 | **Evidence:** ACTUAL_MEASURED
 **hallucination-risk:** high
 **Symptoms:** Treating `--diff` as a pure report filter could accidentally preserve or expand a trust-boundary violation.
-**Why it happened:** `src/diff.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument. M23 research in `.goat-flow/scratchpad/related-projects/semgrep/STUDY.md` (search: `Baseline setup executes Git`) and `.goat-flow/scratchpad/related-projects/golangci-lint/STUDY.md` (search: `New-code-only mode is a line-level diff filter`) showed that safer new-code filtering can be modeled from patch data after analysis instead of executing Git during ordinary scans.
+**Why it happened:** `src/diff.rs` (search: `fn changed_files`) shells out to `git diff --name-only` and accepts an arbitrary mode/ref argument.
 **Resolution:** `src/main.rs` (search: `DiffSelection::Patch`) adds `--diff-patch` as the safe no-execute path and gates the Git-backed mode behind explicit `--diff-git-unsafe`, with a `diff-git-unsafe` run diagnostic when that path is used.
 **Prevention:** Keep patch-input line filtering as the default diff route. If direct Git/ref diff needs more behavior, add a separate trust-boundary ADR covering hooks, external diff drivers, path normalization, timeouts, and failure diagnostics.
 

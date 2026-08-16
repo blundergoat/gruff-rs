@@ -1,6 +1,6 @@
 ---
 category: verification
-last_reviewed: 2026-06-14
+last_reviewed: 2026-08-12
 ---
 
 ## Lesson: New Rules Need A Deep Scan Against An External Repo Before Shipping
@@ -196,6 +196,16 @@ allow just to finish the milestone. In M31, threading suppression state pushed
 the summaries and SARIF-only suppressed findings into a small state struct kept
 the pipeline explicit and lint-clean.
 
+**2026-07-13 extension:** M07 added metadata kind to the GitHub line analyzer
+and shared finding emitter, pushing both to eight arguments. The first
+`cargo clippy --all-targets -- -D warnings` run rejected both helpers. Grouping
+per-file rule state in `src/built_in_rules/github_metadata_rules.rs` (search:
+`struct GithubMetadataScanState`) and user-visible finding copy in the same file
+(search: `struct GithubStepFinding`) removed the structural warning without a
+lint allow or behavior change. When a rule change threads one more concern
+through an existing seven-argument helper, introduce a vocabulary-named state
+or descriptor before the full gate rather than waiting for Clippy to force it.
+
 ## Lesson: Regex Match Starts Can Hide Useful Source Lines
 
 **Created:** 2026-05-18
@@ -232,20 +242,54 @@ preflight. The same dogfood pass also catches helper naming drift, e.g.
 boolean helper names in `src/built_in_rules/docs_rules.rs` must keep accepted
 predicate prefixes like `has_`.
 
+**Updated 2026-07-13:** New integration-test files need the same focused
+dogfood pass even when they are well below the file-length threshold. M05's
+release workflow graph tests passed 12/12, but full preflight still found a
+102-line validator, vague mutation parameters named `to`, and YAML parsing
+whose helper names did not express that the input was controlled test data.
+Split contract validation by the user-visible workflow stages, use semantic
+mutation names such as `replacement_text`, and name intentional local parsers
+for the format they review (for example, `replace_workflow_yaml_text`). Run a
+focused dogfood scan on the new test file before the full preflight so shape
+and security-review findings are corrected as design feedback, not suppressed.
+
+**Updated 2026-07-14 (M12):** A 29-line rationale table pushed
+`src/tests/rule_behaviours/rust_rules.rs` to 628 lines, while the companion
+classifier pushed `src/built_in_rules/helpers.rs` to 613. Focused tests and
+Clippy passed; only repository dogfood exposed both 600-line breaches. Moving
+the table to `safety_rationale_guards.rs` and the cohesive production helpers
+to `safety_rationale.rs` preserved the same focused filters without formatter
+exemptions or threshold suppression. Registering both as new top-level modules
+then pushed their parents from eight to nine children, so the final wiring
+nests them under `idiomatic_handling.rs` and `behavior_rules.rs`; focused
+dogfood returned zero findings. Check both the destination line count and the
+parent fan-out before adding a cohesive test/helper, then split and nest
+ownership before the full gate when either owner is already at its limit.
+
+**Updated 2026-07-14 (M14):** Three strict-config and metadata contracts pushed
+`src/tests/config_and_selectors/config.rs` from 559 to 640 lines. Formatting,
+Clippy, focused tests, and the full suite all passed, but a focused dogfood scan
+reported `size.file-length`. Moving the new contracts plus the existing legacy
+suppression scenario into the nested `secret_previews.rs` module keeps the
+config test owner below 600 lines and its parent below the fan-out threshold.
+Check the destination line count before adding even small contract-test groups;
+the full Rust suite does not exercise the analyzer's own source-shape rubric.
+
 ## Lesson: Rule Helpers Must Pass Dogfood Shape Gates
 
 **Created:** 2026-05-23
+**Decision changed:** Run the focused dogfood scan after a rule helper gains branching state, before full preflight.
+**Trigger phase:** VERIFY
+**Incident count:** 2
+**Latest occurrence:** 2026-08-12
 
-When adding analyzer rules, run a focused dogfood scan before final preflight if
-the implementation introduces new helpers in `src/built_in_rules/` (search:
-`analyse_weak_crypto`). In M55, Rust tests and calibration passed, but
-`cargo run --quiet -- analyse . --format json --fail-on none --no-baseline`
-reported a new `size.parameter-count` warning for a helper that threaded file,
-line-start, findings, dedupe, primitive, and byte-index parameters separately.
-
-Prefer a small context/reporter struct for repeated finding construction, then
-rerun the dogfood scan at the same threshold before treating the verification
-failure as closed.
+Focused behavior tests do not exercise dogfood shape gates. In M55 they missed
+`size.parameter-count` in `src/built_in_rules/behavior_rules.rs` (search:
+`analyse_weak_crypto`). On 2026-08-12 they missed four shape findings in
+`src/built_in_rules/safety_rationale.rs` (search: `struct SafetyPreludeScanner`).
+Run `bin/gruff-rs analyse . --format text --no-baseline` after changing a
+stateful rule helper. Prefer a small context or scanner struct, then repeat the
+dogfood gate before closing verification.
 
 ## Lesson: Cargo Test Accepts One Name Filter Before Harness Args
 
@@ -333,3 +377,129 @@ When capturing `gruff-rs` CLI output to a file for parsing (`... list-rules --fo
 - Capture CLI output to a unique path (`mktemp` or `...$$.json`), not a shared `/tmp/<tool>.json`, when other workspace ports may run concurrently.
 - Before drawing a conclusion from a captured artifact, sanity-check it against source: `rg` one id you expect and one you don't in `src/rules/`. A surprising result (rules from another language) is far more likely a clobbered artifact than a real finding.
 - This is a specific case of the universal rule: verify against current source before asserting; never fabricate codebase facts from a stale or swapped artifact.
+
+## Lesson: Expand Abbreviated Commit IDs From Git, Not Memory
+
+**Created:** 2026-07-13
+
+An abbreviated commit ID is enough for human navigation but not enough to
+reconstruct a full hash. During the 0.5.0 plan verification, the graph checks
+were correct but the verification command invented full-length expansions for
+`a3f20f2` and `2f6a25b`; the resulting exact-hash assertions failed even though
+the live ancestry and tree relationship had not changed.
+
+**Prevention:** When exact identity matters, capture it with `git rev-parse`
+in the same verification command and report that value. If a plan intentionally
+records only an abbreviation, compare it with `git rev-parse --short` or treat
+the abbreviation as a display anchor. Never pad or infer the unseen suffix of
+a Git object ID from memory or prior prose.
+
+## Lesson: Keep Compound Verification Checks Wrapper-Safe And Scoped
+
+**Created:** 2026-07-13
+
+A combined plan-consistency check failed before executing any repository
+assertion because a literal backtick matcher conflicted with the JavaScript
+tool wrapper. After that was corrected, the repository safety hook rejected the
+same command for exceeding its chained-segment limit. The first reference pass
+also scanned untouched sections of a parent multi-repository prompt and
+reported missing files owned by sibling ports.
+
+**Prevention:** Split verification into bounded commands before reaching hook
+limits, avoid shell tokens that conflict with the outer tool-call syntax (for
+example, match Markdown backticks as `\x60`), and scope reference resolution to
+the files or sections actually changed. A broad repository/workspace reference
+audit is a separate check and must model intentionally future-created and
+sibling-owned paths explicitly.
+
+**2026-07-13 extension:** M07 broadened an existing workflow-event regression
+test from scalar `on:` values to scalar, list, and mapping forms, then renamed
+the test even though its original scalar contract still applied. `goat-flow
+stats --check` caught the learning-loop reference that the rename made stale.
+When expanding a referenced test without invalidating its original contract,
+preserve the established semantic anchor; rename it only when the meaning truly
+changes and every approved reference can move with it.
+
+## Lesson: Use concat! For Whitespace-Sensitive Multiline Assertions
+
+**Created:** 2026-07-13
+
+The first M01 generated-config contract used a Rust string with backslash line
+continuations around explicit `\n` escapes. Rust stripped indentation following
+the physical continuation, so the expected bytes lost the two leading spaces
+on later YAML comment lines. The implementation was correct, but the test stayed
+red after the generator changed.
+
+**Prevention:** Build exact multiline expectations with `concat!` and one
+quoted logical line per argument. Include the actual rendered value in the
+assertion failure message. Reserve backslash continuations for prose where
+leading whitespace is irrelevant, not byte-sensitive YAML, JSON, or renderer
+contracts.
+
+## Lesson: Renderer Injection Assertions Must Respect Output Context
+
+**Created:** 2026-07-14
+
+M08's first green Markdown encoding still failed a broad
+`!markdown.contains("<script>")` assertion. The message had correctly encoded
+its HTML-looking text, while the same text in a file path remained safely
+inside the dynamic code span produced by `src/render/markdown.rs` (search:
+`fn markdown_code_span`). The assertion treated inert code content as raw HTML
+and therefore rejected the correct output grammar.
+
+**Prevention:** Keep an exact golden for delimiter-safe code fields, then
+isolate the plain-text field before asserting that HTML, links, or other
+structure is absent. For mixed-context formats, never use one raw substring ban
+across the entire rendered document; assert per context or parse the rendered
+format. Regression coverage lives in `src/tests/renderers/output.rs` (search:
+`markdown_renderer_keeps_hostile_finding_fields_in_one_inert_bullet`).
+
+## Lesson: Anchor Repeated-Line Patches To Their Owning Function
+
+**Created:** 2026-08-08
+**Decision changed:** In large files with repeated statements, every manual patch hunk must include its owning function and nearby semantic message, followed immediately by a diff against the pristine source.
+**Trigger phase:** ACT
+**Incident count:** 3
+**Latest occurrence:** 2026-08-12
+
+**What happened:** A three-hunk patch that matched only `return 1` changed the first three matching statements in a large shell hook instead of the intended scan-unavailable branches near `main`. The immediate diff against the official backup exposed unrelated changes in fallback budget and token-classification paths before the hook reached the workspace.
+
+Two rule-retuning hunks repeated the error: one put opt-in configuration in the wrong test; another put a test inside a raw string. Readback caught the first, and the compiler caught the second.
+
+**Prevention:** Anchor each hunk with its unique owner and message. Read the owner and scoped diff immediately; correct misplaced hunks before testing.
+
+## Lesson: Milestone Estimate Tokens Must Terminate Their Checklist Item
+
+**Created:** 2026-08-08
+**Decision changed:** An `(est: N min category)` token carries no weight unless it is the last text in its checklist item; evidence prose after it silently drops the estimate.
+**Trigger phase:** VERIFY
+
+**What happened:** Four migrated proof items each carried `(est: N min proof)` followed by their literal evidence on the same item. `goat-flow plans check --strict` reported `proof counted work (5 min) does not equal the split component (25 min)` plus `3 testing gate item(s) missing an (est: ...) entry`. The tokens looked present in the file and were invisible to the parser, which anchors on `/\(est:\s*(\d+)\s*min(?:ute)?s?\s+([a-z]+)\)\s*$/` — end-of-item only.
+
+The same trap bit again a few edits later, in a form that is harder to see: a milestone had correct end-of-line tokens on every item, but a **prose paragraph after the last checkbox, inside the same `## Proof` section**, was absorbed into that final item. The estimate stopped being at the end of the item text, so exactly one item silently dropped out of the count. A blank line does not end an item. Anything that is not another checkbox belongs outside the section.
+
+**Prevention:** Keep proof and task items short with the estimate token last, and put literal evidence in a separate section that the milestone parser does not read as Proof. Two adjacent traps in the same parser: a heading is matched by prefix, so any H2 beginning `Proof ` (for example `## Proof evidence - 2026-08-08`) is read as a second Proof section and fails with `conflicting proof representations`; and the aliases that *are* read are `Proof`, `Verification Gate`, `Testing Gate`, `Scope`, `Exit Criteria`, `Kill Criteria`, `Stop Conditions`, and `Mid-Implementation Proof`. Name an evidence section something outside that set — `## Claim evidence` works.
+
+## Lesson: Strict Plan Validation Has No Honest Escape For A Missing Historical Estimate
+
+**Created:** 2026-08-08
+**Decision changed:** When a validator demands a field that historical evidence cannot truthfully supply, move the evidence outside the validator's scope; never back-fill the field.
+**Trigger phase:** READ
+
+**What happened:** Migrating a legacy plan set to the goat-flow 1.15.0 contract produced 80 strict errors. Most were truthful re-expressions of data the files already carried — dated statuses to the bare lifecycle vocabulary, a `## Depends On` section to the `**Depends on:**` field, an untagged human acceptance box to `[human]`. One was not: strict mode hard-requires a parseable `**Effort estimate:**` product/proof/other split on every milestone in the directory. `Actual:` has honest non-numeric states (`unavailable:`, `retrospective:`, `incomplete:`); `Effort estimate` has none, and `plans check` accepts only a directory, so there is no per-file exemption. Writing estimates onto already-complete milestones would have invented planning data they never carried.
+
+**Prevention:** `plans check` does not recurse into subdirectories, so a `history/` subdirectory holds completed pre-contract milestones with their bytes preserved while strict validates the executable root. Two consequences worth stating wherever the result is reported: a green `--strict` then means "the executable root satisfies the contract", not "every milestone was validated"; and a live milestone that still has open work belongs in the root, with its already-delivered checklist items moved verbatim into a non-parsed section so the forward estimate covers only what remains.
+
+## Lesson: A Dead Anchor Proves The Anchor Moved, Not That The Behaviour Went Away
+
+**Created:** 2026-08-11
+**Decision changed:** When a learning-loop anchor greps to zero, treat that as "locate the behaviour again", never as "the hazard is resolved". Read the current implementation before resolving, deleting, or downgrading the entry.
+**Trigger phase:** VERIFY
+
+**What happened:** A footgun warned that preflight truncates the dogfood failure list. Grepping its three cited anchors returned zero hits, and the named function had been renamed, so the entry was written up as describing behaviour that no longer existed. It did exist. The truncation had moved out of the per-check body into the shared check runner, where it also flipped direction - from the first 20 lines to the last 20. Reading the current implementation instead of trusting the zero-hit greps turned a "delete this stale entry" conclusion into a repair that made the footgun sharper than the original, because the relocated cap now hides the finding-count line that the old wording assumed was visible.
+
+The same zero-result trap sits one level up in tooling: `goat-flow stats --check` reported a clean bucket throughout, because its anchor validator only recognises `` `file` (search: `anchor`) `` and silently skips compound forms such as ``(search: `a` and `b`)`` or ``(search: `a` in `file`)``. A green freshness gate is evidence that the checked anchors resolve, not that every anchor was checked.
+
+**Evidence:** `scripts/preflight-checks.sh` (search: `tail -20`) holds the relocated cap inside the failure branch of `run_preflight_check`; `scripts/preflight-checks.sh` (search: `dogfood_scan`) is the renamed check body the dead anchor used to name. The gate's matcher is the installed goat-flow CLI's `SEARCH_ANCHOR_REGEX`, under its `dist/cli/facts/shared/` tree; it is dependency code, not durable project evidence, so reproduce the boundary with `goat-flow stats --check` rather than citing that path.
+
+**Prevention:** Before resolving or deleting any learning-loop entry on grep evidence, do two things: search the cited file for the *behaviour* (a nearby keyword, the enclosing function, the symptom string) rather than only the dead symbol, and re-read the region that owns it. Keep anchors in the `` `file` (search: `anchor`) `` shape so the freshness gate can actually see them; a compound anchor reads fine to a human and is invisible to the check.

@@ -1,7 +1,14 @@
+//! TLS and dynamic-SQL detectors turn narrow Rust source shapes into security findings.
+//! Operators reach them through normal project analysis when local calls expose a reviewable
+//! bypass or formatted query, while bounded source evidence keeps the report deterministic.
+
 use super::*;
 
 static SQL_DYNAMIC_QUERY_REGEX: OnceLock<Regex> = OnceLock::new();
-static SQL_DYNAMIC_QUERY_KEYWORD_REGEX: OnceLock<Regex> = OnceLock::new();
+static SQL_DYNAMIC_QUERY_SHAPE_REGEX: OnceLock<Regex> = OnceLock::new();
+static SQL_BLOCK_COMMENT_REGEX: OnceLock<Regex> = OnceLock::new();
+static SQL_LINE_COMMENT_REGEX: OnceLock<Regex> = OnceLock::new();
+static SQL_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
 static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
 
 pub(crate) fn analyse_tls_verification_disabled(
@@ -198,7 +205,7 @@ fn sql_dynamic_query_finding(file: &SourceFile, line: usize, method: &str) -> Fi
         confidence: Confidence::High,
         symbol: Some(method.to_string()),
         remediation: Some(
-            "Use static SQL with bind parameters instead of formatting query text. If the formatted query is non-production (test fixture, migration scratch), add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Review this SQL-shaped formatted value, then prefer static SQL with bind parameters. If the named sink is a reviewed non-SQL wrapper or non-production fixture, rename it or add the host path to `paths.ignore` in `.gruff-rs.yaml`."
                 .to_string(),
         ),
         metadata: json!({ "method": method }),
@@ -254,13 +261,93 @@ fn format_start_in_match(source: &str, match_start: usize, match_end: usize) -> 
         .map(|relative| match_start + relative)
 }
 
+/// English words that mark a sentence rather than a select list or update target. A real column
+/// list is identifiers, commas, functions, stars, and aliases; it does not contain bare articles or
+/// conjunctions. Only the clause between the verb and its partner keyword is inspected, so a
+/// `WHERE` literal containing ordinary prose still leaves a genuine query flaggable.
+const STATEMENT_CLAUSE_PROSE_WORDS: &[&str] = &[
+    "the", "an", "of", "so", "about", "for", "this", "that", "your", "our", "please", "then",
+];
+
+/// Reports whether the clause between `SELECT`/`UPDATE` and its partner keyword reads as prose.
+/// `Select the note from the archive` satisfies the bare keyword shape but is a user-facing string.
+fn statement_clause_is_prose(sql_shape_text: &str) -> bool {
+    static STATEMENT_CLAUSE_REGEX: OnceLock<Regex> = OnceLock::new();
+    let clause_regex = static_regex(
+        &STATEMENT_CLAUSE_REGEX,
+        r"(?is)^\s*(?:SELECT|UPDATE)\b(.*?)\b(?:FROM|SET)\b",
+    );
+    let Some(captures) = clause_regex.captures(sql_shape_text) else {
+        return false;
+    };
+    let Some(clause) = captures.get(1) else {
+        return false;
+    };
+    // Underscores stay inside a word so an identifier such as `the_table` is not read as an article.
+    clause
+        .as_str()
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|word| {
+            STATEMENT_CLAUSE_PROSE_WORDS
+                .iter()
+                .any(|prose_word| word.eq_ignore_ascii_case(prose_word))
+        })
+}
+
+/// Reports whether a format template retains a supported SQL statement shape after placeholders.
 fn template_is_flaggable(template: &str) -> bool {
-    let literal_fragments = format_literal_fragments(template);
+    let sql_shape_text = normalise_sql_shape_text(&format_literal_fragments(template));
+    // A sentence that merely opens with a statement verb is not a query the user is building.
+    if statement_clause_is_prose(&sql_shape_text) {
+        return false;
+    }
     static_regex(
-        &SQL_DYNAMIC_QUERY_KEYWORD_REGEX,
-        r"(?i)\b(?:SELECT|INSERT|UPDATE|DELETE|ALTER|DROP|CREATE|SHOW|FROM|WHERE|TRUNCATE|MERGE|GRANT|REVOKE|REPLACE|UPSERT|VACUUM)\b",
+        &SQL_DYNAMIC_QUERY_SHAPE_REGEX,
+        r"(?ix)^
+        (?:
+            SELECT\b.*\bFROM\b
+          # A FROM-less SELECT is valid in PostgreSQL and SQLite. Placeholders
+          # normalise to spaces, so requiring no literal word after SELECT keeps
+          # an all-interpolated SELECT template visible without matching prose.
+          | SELECT\b [\s,()*.]* $
+          | INSERT\b.*\bINTO\b
+          | UPDATE\b.*\bSET\b
+          | DELETE(?:\s+[A-Z_][A-Z0-9_.$]*(?:\s*,\s*[A-Z_][A-Z0-9_.$]*)*)?\s+FROM\b
+          | WITH\b.*\bAS\s*\(.*\)\s*(?:
+                SELECT\b.*\bFROM\b
+              | INSERT\b.*\bINTO\b
+              | UPDATE\b.*\bSET\b
+              | DELETE(?:\s+[A-Z_][A-Z0-9_.$]*(?:\s*,\s*[A-Z_][A-Z0-9_.$]*)*)?\s+FROM\b
+              | MERGE\s+INTO\b
+              | REPLACE\s+INTO\b
+              | UPSERT\s+INTO\b
+            )
+          | ALTER(?:\s+(?:TABLE|DATABASE|SCHEMA|INDEX|VIEW|TYPE|USER|ROLE|SYSTEM|SEQUENCE|FUNCTION|PROCEDURE)\b|\s*$)
+          | DROP(?:\s+(?:TABLE|DATABASE|SCHEMA|INDEX|(?:MATERIALIZED\s+)?VIEW|TYPE|USER|ROLE|SEQUENCE|FUNCTION|PROCEDURE|TRIGGER|EXTENSION)\b|\s*$)
+          | CREATE(?:\s+(?:(?:OR\s+REPLACE|UNIQUE|TEMP|TEMPORARY)\s+)*(?:TABLE|DATABASE|SCHEMA|INDEX|(?:MATERIALIZED\s+)?VIEW|TYPE|USER|ROLE|SEQUENCE|FUNCTION|PROCEDURE|TRIGGER|EXTENSION)\b|\s*$)
+          | SHOW(?:\s+(?:TABLES?|DATABASES?|SCHEMAS?|COLUMNS?|INDEX(?:ES)?|CREATE|GRANTS?|VARIABLES?|STATUS|CONFIG|SETTINGS?)\b|\s*$)
+          | TRUNCATE(?:\s+TABLE\b|\s*$)
+          | MERGE\s+INTO\b
+          | GRANT\b(?:.*\bON\b.*\bTO\b|\s+[A-Z_][A-Z0-9_$]*\s+TO\b|\s+TO\b)
+          | REVOKE\b(?:.*\bON\b.*\bFROM\b|\s+[A-Z_][A-Z0-9_$]*\s+FROM\b|\s+FROM\b)
+          | REPLACE\s+INTO\b
+          | UPSERT\s+INTO\b
+          | VACUUM(?:\s+(?:FULL|FREEZE|VERBOSE|ANALYZE)\b|\s*$)
+        )",
     )
-    .is_match(&literal_fragments)
+    .is_match(&sql_shape_text)
+}
+
+/// Removes SQL comments and folds whitespace before the bounded statement-shape comparison.
+fn normalise_sql_shape_text(template: &str) -> String {
+    let without_block_comments =
+        static_regex(&SQL_BLOCK_COMMENT_REGEX, r"(?s)/\*.*?\*/").replace_all(template, " ");
+    let without_line_comments = static_regex(&SQL_LINE_COMMENT_REGEX, r"(?m)--[^\r\n]*")
+        .replace_all(&without_block_comments, " ");
+    static_regex(&SQL_WHITESPACE_REGEX, r"\s+")
+        .replace_all(&without_line_comments, " ")
+        .trim()
+        .to_string()
 }
 
 fn format_literal_fragments(template: &str) -> String {
@@ -485,15 +572,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sql_template_keyword_gate_uses_literal_fragments_only() {
+    /// Keeps statement shapes visible after comments while rejecting placeholders and prose.
+    fn sql_template_shape_gate_uses_literal_fragments_only() {
         assert!(template_is_flaggable("SELECT * FROM users WHERE id = {id}"));
         assert!(template_is_flaggable("select * from users where id = {id}"));
         assert!(template_is_flaggable("UPDATE t SET v = {v}"));
+        assert!(template_is_flaggable(
+            "DELETE target FROM {table} AS target WHERE target.id = {id}"
+        ));
+        assert!(template_is_flaggable(
+            "-- tenant table\nSELECT id FROM {table} WHERE id = {id}"
+        ));
+        assert!(template_is_flaggable(
+            "/* tenant table */ WITH rows AS (SELECT id FROM {table}) SELECT id FROM rows"
+        ));
         assert!(template_is_flaggable("TRUNCATE TABLE {table}"));
         assert!(template_is_flaggable(
             "MERGE INTO {table} USING src ON id = {id}"
         ));
         assert!(template_is_flaggable("GRANT ALL ON {table} TO {user}"));
+        // A sentence may open with a statement verb and still reach its partner keyword. Only the
+        // clause between the two is inspected, so an identifier such as `the_id` stays flaggable.
+        assert!(!template_is_flaggable(
+            "Select the note from the archive about {topic}"
+        ));
+        assert!(!template_is_flaggable(
+            "Update the settings so the profile name is set to {name}"
+        ));
+        assert!(template_is_flaggable("SELECT the_id FROM {table}"));
+        assert!(!template_is_flaggable("Show the report from {source}"));
+        assert!(!template_is_flaggable(
+            "From the archive, select the note about {topic}"
+        ));
+        assert!(!template_is_flaggable(
+            "from df | uniq `{column}` | take 500"
+        ));
         assert!(!template_is_flaggable("//item[{idx}]"));
         assert!(!template_is_flaggable("--limit={n}"));
         assert!(!template_is_flaggable("{SELECT}"));

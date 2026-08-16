@@ -1,5 +1,10 @@
+//! Security, size, test-quality, and waste calibration pairs exercise one rule at a time.
+//! Each pair gives operators one source that must fire and one source that must stay quiet,
+//! keeping broad registry calibration independent from findings produced by other rules.
+
 use super::*;
 
+/// Builds one positive and one quiet project for each calibrated rule in these families.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- security -----
@@ -57,8 +62,8 @@ pub fn load(tenant: &str) {
                 baseline_with_lib(
                     root,
                     r#"/// Probe.
-pub fn load() {
-    let _ = sqlx::query("select * from users");
+pub fn load(column: &str) {
+    let _ = backend::query(&format!("from df | uniq `{column}` | take 500"));
 }
 "#,
                 )
@@ -525,10 +530,13 @@ pub fn entry() {
         case(
             "size.file-length",
             Box::new(|root| {
-                let mut body = String::from("/// Probe.\npub fn entry() {}\n");
-                for index in 0..620 {
-                    body.push_str(&format!("// filler line {index}\n"));
+                // Substantive statements, not comment filler: file-length counts non-blank,
+                // non-comment lines only, and the strict fixture must clear the 1000 bar.
+                let mut body = String::from("/// Probe.\npub fn entry() {\n");
+                for index in 0..1005 {
+                    body.push_str(&format!("    let _ = {index};\n"));
                 }
+                body.push_str("}\n");
                 baseline_with_lib(root, &body);
             }),
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),

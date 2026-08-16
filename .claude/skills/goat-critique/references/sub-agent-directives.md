@@ -1,5 +1,5 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.15.1"
 ---
 # Critique Sub-Agent Directives (Reference Pack)
 
@@ -31,17 +31,60 @@ goat-flow-reference-version: "1.11.0"
 Every finding MUST include:
 
 - **Proof attempt:** exact command/read executed in sub-agent's tool budget, or "N/A - purely structural"
-- **Proof class:** `RUNTIME | CONTRACT-GREP | STATIC | NOT-REPRODUCED`
-- **Evidence quality:** OBSERVED / INFERRED / UNVERIFIED
+- **Proof class:** `RUNTIME | CONTRACT-GREP | STATIC | NOT-REPRODUCED` - records *how* the claim was checked: the verification mechanism, or NOT-REPRODUCED when the attempt could not confirm it
+- **Evidence quality:** OBSERVED / INFERRED / UNVERIFIED - records *confidence* in the result. The axes are independent: a STATIC read can still yield OBSERVED, while a RUNTIME attempt that fails to reproduce pairs NOT-REPRODUCED with UNVERIFIED
 - Title, severity (CRITICAL/HIGH/MEDIUM/LOW), evidence (file + semantic anchor or artifact section reference), confidence (HIGH/MEDIUM/LOW)
 - **SKEPTIC:** one line - what could go wrong, worst case (or "N/A - [reason]" if genuinely inapplicable)
 - **ANALYST:** one line - what the evidence says, cost/benefit
 - **STRATEGIST:** one line - fastest path, what to defer, highest-leverage action
 
-The tension between lenses is the point. If all three agree, say so - forced disagreement is noise. Consensus across lenses is itself a valid finding; the mandate is that all three perspectives appear as labeled sub-fields, not that they must disagree.
+For Agents A and B, the tension between lenses is the point. If all three agree, say so - forced disagreement is noise. Consensus across lenses is itself a valid finding; the mandate is that all three perspectives appear as labeled sub-fields, not that they must disagree. For Agent C, the labeled fields keep the schema uniform; `N/A - fresh-eyes scope` is acceptable when the fresh-eyes finding has no useful lens-specific angle.
+
+## Clean-result attestation
+
+Three to seven findings is the normal useful range, not a quota. A sub-agent that finds no supported defect after one documented second pass returns this schema instead of findings:
+
+- **CLEAN RESULT:** no supported findings
+- **Evidence reviewed:** exact artifact sections, files, commands, or `artifact-only` for isolated C
+- **Rubric coverage:** each mandatory dimension and the evidence checked
+- **Second-pass result:** prompt used and what was re-read
+- **Residual uncertainty:** unread or untestable surface, or `none identified` with rationale
+- **SKEPTIC / ANALYST / STRATEGIST:** what each lens checked; C may use `N/A - fresh-eyes scope` where appropriate
+- **Alternatives (Agent B only):** at least one ranked, meaningfully different approach and why the artifact's choice wins - the alternatives mandate is unconditional and a clean result does not waive it; A and C omit this field
+- **Proof class:** `RUNTIME | CONTRACT-GREP | STATIC | NOT-REPRODUCED`
+- **Overall assessment:** STRONG / ADEQUATE / WEAK / FLAWED
+- **Strength:** one concrete strength with an artifact anchor
+
+This attestation satisfies the completeness gate only after the second pass is documented. Never invent a finding to meet the normal target.
 
 ## Lens-finding floor
 
-Each lens must surface at least one distinct finding per sub-agent. If a lens cannot find an issue after analysing the artifact, the sub-agent must re-run that lens once with explicit instruction: "Look harder - what assumption is unproven, what evidence is thin, what shortcut exists?" Only after one documented re-run may a lens report `No findings - convergent with [other agents]`. The convergence claim must reference which other agents covered the same dimension. Convergence with the artifact itself is not valid.
+Agents A and B must analyse every lens. If a lens cannot find an issue after analysing the artifact, the sub-agent must re-run that lens once with explicit instruction: "Look harder - what assumption is unproven, what evidence is thin, what shortcut exists?" Only after one documented re-run may a lens report `No supported finding`, naming the evidence re-read and any convergence with other agents.
 
-**Anti-fabrication clause.** If the second pass also finds nothing genuine, the lens MUST report convergence rather than fabricate findings. Forced fabrication is a worse failure than a missed finding. Do not fabricate findings to meet the floor. Pedantic or non-existent issues surfaced solely to satisfy the floor are explicitly disallowed; any finding the orchestrator detects as fabrication-pattern (e.g. style nitpicks rated HIGH severity, content-free findings like "consider adding more tests") is auto-demoted to LOW confidence in Phase 2.
+Agent C must probe for unstated assumptions, readability gaps, and context-limited risks. If it finds none, re-run once with: "Read only the artifact and rubric. What would be unclear to a fresh maintainer with no project context?" After one documented re-run, C may return the clean-result attestation.
+
+**Anti-fabrication clause.** If the second pass also finds nothing genuine, the lens MUST report `No supported finding` and the agent may return a clean-result attestation. Forced fabrication is a worse failure than a missed finding. Do not fabricate findings to meet the normal target. Pedantic or non-existent issues surfaced solely to fill a quota are explicitly disallowed; any finding the orchestrator detects as fabrication-pattern (e.g. style nitpicks rated HIGH severity, content-free findings like "consider adding more tests") is auto-demoted to LOW confidence in Phase 2.
+
+### BAD vs GOOD: satisfying the lens floor when a lens finds nothing
+
+**BAD - fabrication-pattern (auto-demoted to LOW confidence in Phase 2):**
+
+```markdown
+## Finding: Consider adding more inline comments for readability
+- **Severity:** HIGH | **Confidence:** HIGH
+- **Evidence quality:** UNVERIFIED
+- **SKEPTIC:** the file might be hard to read for someone someday
+```
+
+Why it fails: a style preference with no cited anchor, inflated to HIGH solely to fill the SKEPTIC lens. No worst-case, no evidence, content-free recommendation - exactly the pattern the orchestrator demotes.
+
+**GOOD - honest clean lens (the sanctioned escape valve):**
+
+```markdown
+## SKEPTIC lens (Agent B): No supported finding
+- Re-ran once with the "look harder - what assumption is unproven, what evidence is thin" prompt.
+- Re-read the threat-boundary and rollback sections; both state owners, failure modes, and verification evidence.
+- Residual uncertainty: runtime behaviour was outside this artifact-only critique.
+```
+
+Why it passes: it documents the mandatory re-run, names evidence and residual uncertainty, and declines to fabricate. If every lens is clean, use the complete clean-result attestation above.

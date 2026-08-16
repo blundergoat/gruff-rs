@@ -19,7 +19,7 @@ pub(crate) fn analyse_module_fan_out(
     if !config.is_rule_enabled(rule_id) {
         return;
     }
-    let threshold = config.threshold(rule_id, 8.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     let by_file = group_modules_by_file(context);
     for (file_path, modules) in by_file {
         if is_binary_crate_root(file_path) {
@@ -68,7 +68,7 @@ fn module_fan_out_finding(
         ),
         file_path: file_path.to_string(),
         line: Some(first_line),
-        severity: config.severity(rule_id, Severity::Advisory),
+        severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
         pillar: Pillar::Design,
         confidence: Confidence::High,
         symbol: Some(file_path.to_string()),
@@ -95,7 +95,7 @@ pub(crate) fn analyse_public_api_surface(
     if !config.is_rule_enabled(rule_id) {
         return;
     }
-    let threshold = config.threshold(rule_id, 12.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     let by_module = group_public_items_by_module(context);
     for ((file_path, module_path), items) in by_module {
         if items.len() > threshold {
@@ -150,7 +150,7 @@ fn public_api_surface_finding(
         ),
         file_path: group.file_path,
         line: Some(first_line),
-        severity: config.severity(rule_id, Severity::Advisory),
+        severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
         pillar: Pillar::Design,
         confidence: Confidence::High,
         symbol: Some(module.clone()),
@@ -177,7 +177,7 @@ pub(crate) fn analyse_large_modules(
     if !config.is_rule_enabled(rule_id) {
         return;
     }
-    let threshold = config.threshold(rule_id, 25.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     let by_module = group_indexed_items_by_module(context);
     for ((file_path, module_path), items) in by_module {
         if items.len() > threshold {
@@ -228,7 +228,7 @@ fn large_module_finding(
         ),
         file_path: group.file_path,
         line: Some(first_line),
-        severity: config.severity(rule_id, Severity::Advisory),
+        severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
         pillar: Pillar::Design,
         confidence: Confidence::High,
         symbol: Some(module.clone()),

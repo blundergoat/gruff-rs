@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "network_security_test_context_guards.rs"]
+mod network_security_test_context_guards;
+
 /// Regression guard: `waste.unnecessary-clone-candidate` must skip clones
 /// whose result is immediately consumed by ownership-taking calls
 /// (`unwrap_or_else`, `unwrap_or`, `unwrap_or_default`, `into`, `into_iter`,
@@ -53,6 +56,81 @@ pub fn build(input: &Row, fallback: Option<String>) -> Row {
     );
 }
 
+/// Regression guard: every `sensitive-data.api-key-pattern` alternative is a vendor prefix, so a
+/// match must begin one. The bare `sk-` arm previously had no left boundary and matched inside any
+/// word ending in "sk", so ordinary hyphenated prose such as the GitHub docs URL
+/// `...security-hardening-for-github-actions#understanding-the-risk-of-script-injections` was
+/// reported as a credential. A genuine `sk-` key must still be reported.
+#[test]
+pub(crate) fn api_key_pattern_ignores_words_ending_in_sk() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn documentation_links() -> [&'static str; 3] {
+    [
+        "https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#understanding-the-risk-of-script-injections",
+        "task-management-configuration-defaults",
+        "disk-usage-monitoring-subsystem-notes",
+    ]
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let keys: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.api-key-pattern")
+        .collect();
+    assert!(
+        keys.is_empty(),
+        "hyphenated prose containing \"sk-\" must stay silent; findings={keys:?}"
+    );
+}
+
+/// Regression guard: the boundary added above must not cost a real detection. A vendor-prefixed
+/// key still has to be reported wherever it appears as its own token.
+#[test]
+pub(crate) fn api_key_pattern_still_reports_a_real_vendor_key() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "/// Probe.\npub fn client_token() -> &'static str {\n    \"sk-",
+            "abcdefghij0123456789ABCDEFGH",
+            "\"\n}\n"
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == "sensitive-data.api-key-pattern"),
+        "a vendor-prefixed key must still be reported"
+    );
+}
+
 /// Regression guard: `size.function-length` must skip a function whose body is
 /// a single declarative literal (here, a 70-entry `vec![...]`). Function
 /// length is intended to flag logic, not table-data registries.
@@ -89,8 +167,8 @@ pub(crate) fn function_length_skips_declarative_vec_body() {
 
 /// Regression guard: `waste.unwrap-expect` must skip test code (functions
 /// annotated with `#[test]` and any function inside a `#[cfg(test)]`
-/// module). The dedicated `test-quality.unwrap-in-test` rule covers the
-/// test-side concern.
+/// module). The opt-in `test-quality.unwrap-in-test` rule covers the test-side
+/// style concern when a project enables it.
 #[test]
 pub(crate) fn unwrap_expect_skips_cfg_test_module() {
     let _guard = analysis_lock();
@@ -118,11 +196,15 @@ mod tests {
 }
 "##,
     );
+    write_config(
+        dir.path(),
+        "rules:\n  test-quality.unwrap-in-test:\n    enabled: true\n",
+    );
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -144,7 +226,7 @@ mod tests {
         .collect();
     assert!(
         !in_test.is_empty(),
-        "test-quality.unwrap-in-test must still fire on test-mode unwraps; findings={:?}",
+        "explicitly enabled test-quality.unwrap-in-test must fire on test-mode unwraps; findings={:?}",
         report
             .findings
             .iter()
@@ -243,18 +325,6 @@ pub fn fixture(name: &str) -> String {
         "}\n"
     );
     format!("{trimmed} {body}")
-}
-
-#[test]
-pub(crate) fn rust_masking_preserves_non_ascii_byte_offsets_and_nested_comments() {
-    let source = "éé\nlet sql = format!(\"SELECT {}\", name);\n/* outer /* inner */ still outer */\nlet done = true;\n";
-    let masked_strings = strip_rust_string_literals(source);
-    assert_eq!(masked_strings.len(), source.len());
-    let masked_comments = strip_rust_comments_after_string_mask(&masked_strings);
-    assert_eq!(masked_comments.len(), source.len());
-    assert!(!masked_comments.contains("still outer"));
-    let format_offset = masked_comments.find("format!").expect("format offset");
-    assert_eq!(byte_line_from_starts(&line_starts(source), format_offset), 2);
 }
 "##,
     );

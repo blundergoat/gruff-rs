@@ -1,24 +1,29 @@
+//! Block rules turn each parsed function into size, complexity, documentation,
+//! behavior, performance, and test findings. Users reach this layer after a
+//! Rust source parses successfully and before findings enter the shared report.
+
 use super::*;
 
 pub(crate) fn analyse_blocks(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     blocks: &[FunctionBlock],
     config: &Config,
     families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
     for block in blocks {
-        analyse_block(file, block, config, families, findings);
+        analyse_block(unit, block, config, families, findings);
     }
 }
 
 pub(crate) fn analyse_block(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     block: &FunctionBlock,
     config: &Config,
     families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
+    let file = unit.file;
     let searchable_body = strip_rust_string_literals(&block.body);
     analyse_block_test_rules(file, block, config, families, findings);
     if block.is_test_context() {
@@ -26,7 +31,7 @@ pub(crate) fn analyse_block(
     }
     analyse_block_metric_rules(file, block, config, families, &searchable_body, findings);
     analyse_block_documentation_rules(file, block, config, families, findings);
-    analyse_block_behavior_rules(file, block, families, &searchable_body, findings);
+    analyse_block_behavior_rules(unit, block, families, &searchable_body, findings);
 }
 
 fn analyse_block_test_rules(
@@ -81,23 +86,25 @@ fn analyse_block_documentation_rules(
 }
 
 fn analyse_block_behavior_rules(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     block: &FunctionBlock,
     families: EnabledBuiltinFamilies,
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    let file = unit.file;
     if families.block_error_handling {
         analyse_error_handling_block(file, block, searchable_body, findings);
     }
     if families.block_concurrency {
-        analyse_concurrency_block(file, block, searchable_body, findings);
+        analyse_concurrency_block(unit, block, searchable_body, findings);
     }
     if families.block_security {
         analyse_insecure_rng_for_secrets(file, block, searchable_body, findings);
     }
 }
 
+/// Report declaration/body size and parameter-count findings for one function.
 pub(crate) fn analyse_block_size(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -105,27 +112,29 @@ pub(crate) fn analyse_block_size(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "size.function-length";
-    let threshold = config.threshold(rule_id, 50.0) as usize;
-    if block.line_count > threshold && !block.body_is_declarative_literal {
+    let threshold = config.threshold(rule_id) as usize;
+    // Only executable source above the threshold asks the user to split a function.
+    if block.executable_line_count > threshold && !block.body_is_declarative_literal {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!(
                     "Function `{}` has {} lines, above the threshold of {threshold}.",
-                    block.name, block.line_count
+                    block.name, block.executable_line_count
                 ),
                 file,
                 block,
-                severity: config.severity(rule_id, Severity::Warning),
+                severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::Size,
             },
-            threshold_metadata(block.line_count, threshold, "lines"),
+            threshold_metadata(block.executable_line_count, threshold, "lines"),
         ));
     }
 
     let params = block.param_count;
     let rule_id = "size.parameter-count";
-    let threshold = config.threshold(rule_id, 7.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
+    // Functions over the parameter limit ask the user for a clearer input contract.
     if params > threshold {
         findings.push(block_finding_with_metadata(
             BlockFindingDescriptor {
@@ -133,7 +142,7 @@ pub(crate) fn analyse_block_size(
                 message: format!("Function `{}` declares {params} parameters.", block.name),
                 file,
                 block,
-                severity: config.severity(rule_id, Severity::Warning),
+                severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::Size,
             },
             threshold_metadata(params, threshold, "parameters"),
@@ -180,7 +189,7 @@ pub(crate) fn analyse_cyclomatic_complexity(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "complexity.cyclomatic";
-    let threshold = config.threshold(rule_id, 10.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     if cyclomatic <= threshold {
         return;
     }
@@ -193,7 +202,7 @@ pub(crate) fn analyse_cyclomatic_complexity(
             ),
             file,
             block,
-            severity: config.severity(rule_id, Severity::Warning),
+            severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
             pillar: Pillar::Complexity,
         },
         json!({
@@ -214,7 +223,7 @@ pub(crate) fn analyse_nesting_depth(
     findings: &mut Vec<Finding>,
 ) {
     let rule_id = "complexity.nesting-depth";
-    let threshold = config.threshold(rule_id, 4.0) as usize;
+    let threshold = config.threshold(rule_id) as usize;
     if nesting <= threshold {
         return;
     }
@@ -224,7 +233,7 @@ pub(crate) fn analyse_nesting_depth(
             message: format!("Function `{}` has nesting depth {nesting}.", block.name),
             file,
             block,
-            severity: config.severity(rule_id, Severity::Warning),
+            severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
             pillar: Pillar::Complexity,
         },
         json!({
@@ -251,7 +260,7 @@ pub(crate) fn analyse_cognitive_complexity(
 ) {
     let cognitive = cyclomatic + nesting.saturating_mul(2);
     let rule_id = "complexity.cognitive";
-    let threshold = ctx.config.threshold(rule_id, 15.0) as usize;
+    let threshold = ctx.config.threshold(rule_id) as usize;
     if cognitive <= threshold {
         return;
     }
@@ -264,7 +273,9 @@ pub(crate) fn analyse_cognitive_complexity(
             ),
             file: ctx.file,
             block: ctx.block,
-            severity: ctx.config.severity(rule_id, Severity::Warning),
+            severity: ctx
+                .config
+                .severity(rule_id, rules::builtin_severity(rule_id)),
             pillar: Pillar::Complexity,
         },
         json!({

@@ -7,9 +7,9 @@ last_reviewed: 2026-05-24
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** OBSERVED
 
-Bumping any rule's numeric threshold without updating the corresponding calibration positive case silently breaks `rule_calibration_matrix_covers_every_rule` (search: `rule_calibration_matrix_covers_every_rule` in `src/tests/calibration/mod.rs`). The failure message says "calibration mismatches: under-strict=[<rule-id>]" - pointing at the calibration file, not the threshold change that caused it.
+Bumping any rule's numeric threshold without updating the corresponding calibration positive case silently breaks the matrix harness in `src/tests/calibration/mod.rs` (search: `rule_calibration_matrix_covers_every_rule`). The failure message says "calibration mismatches: under-strict=[<rule-id>]" - pointing at the calibration file, not the threshold change that caused it.
 
-Concrete instance from 2026-05-24: bumping `TEST_LONG_THRESHOLD` (search: `TEST_LONG_THRESHOLD` in `src/rules/mod.rs`) from 80 to 120 silently invalidated:
+Concrete instance from 2026-05-24: bumping the threshold in `src/rules/mod.rs` (search: `TEST_LONG_THRESHOLD`) from 80 to 120 silently invalidated:
 
 - `src/tests/calibration/security_size_test_waste_cases.rs` (search: `"test-quality.long-test"`) - the positive case wrote 90 `let value = value + N;` lines plus header/footer (~100 lines total), which no longer exceeded 120.
 - `src/tests/scenarios/calibration_extras.rs` (search: `calibration_complexity_metrics_size_skip_test_context`) - wrote 90 `if {index} > 0 { ... }` lines (~100 total), same problem.

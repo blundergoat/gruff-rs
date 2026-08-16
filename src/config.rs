@@ -304,13 +304,18 @@ impl Config {
             .unwrap_or(false)
     }
 
-    pub(crate) fn threshold(&self, rule_id: &str, default_value: f64) -> f64 {
+    /// Effective threshold for a built-in rule: the user's override, else the
+    /// catalogue default that `list-rules` and `init` render.
+    pub(crate) fn threshold(&self, rule_id: &str) -> f64 {
         self.rule_settings
             .get(rule_id)
             .and_then(|setting| setting.threshold)
-            .unwrap_or(default_value)
+            .unwrap_or_else(|| rules::builtin_threshold(rule_id))
     }
 
+    /// Effective severity: the user's override, else `default_severity`. Rule sites
+    /// pass [`rules::builtin_severity`]; the post-analysis pass sees custom rules
+    /// too, so it passes the finding's own severity instead.
     pub(crate) fn severity(&self, rule_id: &str, default_severity: Severity) -> Severity {
         self.rule_settings
             .get(rule_id)

@@ -1,3 +1,7 @@
+//! Diff-filter regressions verify line, hunk, and symbol selection over reports.
+//! Users reach these paths through changed-region CLI flags, where function blocks
+//! must keep stable anchors while filtering findings to the requested patch scope.
+
 use super::*;
 
 #[test]
@@ -445,13 +449,20 @@ diff --git a/src/lib.rs b/src/lib.rs\n\
     assert_eq!(docs.net, -1);
 }
 
-fn function_block(name: &str, start_line: usize, line_count: usize) -> FunctionBlock {
-    FunctionBlock {
+/// Build a minimal function block for changed-region identity and scope tests.
+fn function_block(
+    name: &str,
+    start_line: usize,
+    line_count: usize,
+) -> crate::built_in_rules::FunctionBlock {
+    crate::built_in_rules::FunctionBlock {
         name: name.to_string(),
         param_count: 0,
         start_line,
         line_count,
+        executable_line_count: line_count,
         body: String::new(),
+        rustdoc: None,
         is_externally_public: true,
         is_test: false,
         test_context: false,

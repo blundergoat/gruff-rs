@@ -1,13 +1,12 @@
 # Upgrading
 
-`gruff-rs` follows SemVer with one explicit caveat: the `0.3.x` line is
-"mostly stable", which means a compatibility-sensitive surface is locked in
-across `0.3.x` patch releases, but the surrounding edges may evolve.
+`gruff-rs` follows SemVer with one explicit caveat: the `0.5.x` line is
+"mostly stable", which means the surface listed below is locked across `0.5.x`
+releases, but the surrounding edges may evolve.
 
-## What is stable across `0.3.x`
+## What is stable across `0.5.x`
 
-These will not change in a `0.3.x` patch or minor without a major bump to
-`0.4.0`:
+These will not change in a `0.5.x` patch or minor without a bump to `0.6.0`:
 
 - **Rule ids.** `security.process-command`, `dead-code.unused-private-function`,
   `complexity.cognitive`, etc. Baselines key on these.
@@ -30,9 +29,9 @@ These will not change in a `0.3.x` patch or minor without a major bump to
 - **Exit codes.** `0` clean, `1` finding at the `--fail-on` threshold, `2`
   fatal diagnostic (parse error, missing path, etc).
 
-## What may change in `0.3.x` with deprecation
+## What may change in `0.5.x` with deprecation
 
-These can evolve inside `0.3.x` provided users get at least one minor release
+These can evolve inside `0.5.x` provided users get at least one minor release
 of warning before the change lands:
 
 - **New rules.** Default-on additions ship as new ids. Add `rules.ignore`
@@ -51,16 +50,72 @@ of warning before the change lands:
 
 ## What may change without warning
 
-- **Pre-`0.3.x` behaviour.** The `0.1.x` line was the original "mostly stable"
-  tier; `0.2.0` collected its breaking changes (analyse-default flip from
+- **Pre-`0.5.x` behaviour.** Each earlier line had its own "mostly stable" tier.
+  `0.2.0` collected the `0.1.x` breaking changes (analyse-default flip from
   `error` to `advisory`, required config `schemaVersion`, analysis JSON schema
   bump from `gruff.analysis.v1` to `gruff.analysis.v2`, `gruff.summary.v1` to
-  `gruff.summary.v2`). Anything that existed only inside `0.1.x` or `0.2.x` and
-  is not named under "What is stable across `0.3.x`" is not covered.
+  `gruff.summary.v2`); `0.4.0` retired two default rules; `0.5.0` removed the
+  composite Action's `args` input. Anything that existed only inside an earlier
+  line and is not named under "What is stable across `0.5.x`" is not covered.
 - **Internal Rust API.** `gruff-rs` is a binary crate; its library symbols are
   `pub(crate)` and intentionally not part of the public surface. Treat
   `gruff-rs` as a CLI, not a library dependency.
 - **Performance.** Wall-clock and RSS will change as rules are added.
+
+## Upgrade workflow (0.4.x → 0.5.0)
+
+`0.5.0` leaves rule ids, fingerprints, `gruff.analysis.v2`, `gruff-rs.config.v1`,
+SARIF, and exit codes unchanged, so existing baselines and JSON consumers keep
+working. Existing `.gruff-rs.yaml` files load as-is; no `init --force` is needed.
+Two changes need action:
+
+1. **The composite Action no longer accepts `args`.** Replace the free-form
+   string with `argv`, one literal argument per non-empty line, and set an
+   explicit `version:`. A non-empty `args` value exits with a migration error
+   instead of running:
+
+   ```yaml
+   with:
+     version: 0.5.0
+     argv: |
+       analyse
+       .
+       --format
+       sarif
+       --fail-on
+       warning
+   ```
+
+   Pin the action to a full 40-character commit SHA; `latest` is rejected.
+   `working-directory` and `output-file` must resolve inside
+   `GITHUB_WORKSPACE`, including after symlink resolution.
+2. **`size.file-length` is an error at 1000 substantive lines**, replacing a
+   600-line warning. Blank and comment-only lines no longer count, so fewer
+   files trip the rule, but one that does now fails a run gated on
+   `--fail-on error` rather than warning. Override `threshold` or `severity`
+   under `rules:` if the new default does not suit the project.
+3. **Sensitive-data findings carry markers, not previews.** JSON, SARIF, and
+   hook output serialise values such as `[redacted:private-key]`, so anything
+   that parsed secret text out of a report now reads the marker.
+4. **Markdown output escapes finding content.** Rule ids and paths render as
+   code spans and messages escape Markdown and HTML structure, so untrusted
+   values cannot add report blocks.
+
+## Upgrade workflow (0.3.x → 0.4.0)
+
+1. **Drop `modernisation.public-field` and `test-quality.no-assertions` from
+   config.** Both rules were retired, and config validation rejects unknown
+   rule ids, so a `rules.ignore`, `rules.<id>`, or `exclude` entry naming
+   either one fails the run with exit `2` and an error naming the unknown rule
+   id or selector. Their existing findings and baseline entries simply
+   disappear.
+2. **Rule catalogue 87 → 85.** Schema versions, rule ids, and finding
+   identities are otherwise unchanged.
+3. **Expect fewer findings.** Project-level dead-code findings are withheld
+   when a scan does not cover the whole Rust tree, and the dynamic-SQL,
+   high-entropy, path-traversal, and lock-across-await checks were narrowed.
+4. **Non-UTF-8 files are skipped with a diagnostic** instead of failing the
+   scan; named and security-relevant files stay visible.
 
 ## Upgrade workflow (0.2.x → 0.3.0)
 
@@ -112,6 +167,6 @@ without edits. The new surface is opt-in:
 
 ## Reporting compatibility regressions
 
-If a `0.3.x` upgrade silently changes a rule id, fingerprint input, exit code,
+If a `0.5.x` upgrade silently changes a rule id, fingerprint input, exit code,
 or JSON/SARIF field declared stable above, open an issue. Those are the
-load-bearing contracts and breaking them inside `0.3.x` is a bug.
+load-bearing contracts and breaking them inside `0.5.x` is a bug.

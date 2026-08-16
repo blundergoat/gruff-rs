@@ -37,10 +37,9 @@ paths:
     - "**/pnpm-lock.yaml"
 
 allowlists:
-  # Mirror the full DEFAULT_ABBREVIATIONS set from src/config.rs so this
-  # file does not narrow the runtime default. The loader replaces (not
-  # merges) acceptedAbbreviations from yaml; keeping the full list here
-  # makes the accepted set visible at the config surface.
+  # acceptedAbbreviations controls which short names naming.short-variable permits.
+  # This configured list replaces (not merges) built-ins; keep these seeds and
+  # append project vocabulary below.
   acceptedAbbreviations:
     - age
     - app
@@ -76,7 +75,7 @@ rules:
     enabled: true
     threshold: 12
     severity: advisory
-  # Flags GitHub event values interpolated directly into workflow shell steps.
+  # Flags GitHub event values interpolated directly into workflow or composite-action shell steps.
   ci.github-event-shell-interpolation:
     enabled: true
   # Flags functions with high cognitive complexity.
@@ -195,7 +194,8 @@ rules:
   # Flags placeholder identifiers such as foo, bar, baz, and qux.
   naming.placeholder-identifier:
     enabled: true
-  # Flags very short local variable names outside accepted abbreviations.
+  # Flags two-letter `let` bindings and function parameters outside accepted
+  # abbreviations, except conventional typed `cx` context parameters.
   naming.short-variable:
     enabled: true
   # Flags clone calls inside loop bodies as allocation hot spot candidates.
@@ -207,22 +207,22 @@ rules:
   # Flags Regex::new calls inside loop bodies.
   performance.regex-in-loop:
     enabled: true
-  # Flags workflow permissions that grant broad write access.
+  # Flags workflow-level scoped writes and permissions: write-all grants.
   security.github-actions-broad-permissions:
     enabled: true
   # Flags pull_request_target workflows for manual secret and checkout review.
   security.github-actions-pull-request-target:
     enabled: true
-  # Flags workflow shell steps that pipe remote downloads into an interpreter.
+  # Flags GitHub Actions shell steps that pipe remote downloads into an interpreter.
   security.github-actions-remote-shell:
     enabled: true
   # Flags pull request workflows that reference repository secrets.
   security.github-actions-secrets-in-pr:
     enabled: true
-  # Flags third-party workflow actions that are not pinned to a full commit SHA.
+  # Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.
   security.github-actions-unpinned-action:
     enabled: true
-  # Flags listener address literals like `0.0.0.0` or `[::]` outside test infrastructure.
+  # Flags all-interface listener literals in executable Rust, including tests and CI helpers.
   security.hardcoded-bind-all-interfaces:
     enabled: true
   # Flags non-cryptographic rand calls inside secret-like generation functions.
@@ -291,11 +291,11 @@ rules:
   # Flags HTTP(S) URLs that include embedded username and password credentials.
   sensitive-data.url-embedded-credentials:
     enabled: true
-  # Flags files over the configured line-count threshold.
+  # Flags files whose substantive line count exceeds the configured threshold.
   size.file-length:
     enabled: true
-    threshold: 600
-    severity: warning
+    threshold: 1000
+    severity: error
   # Flags functions over the configured line-count threshold.
   size.function-length:
     enabled: true
@@ -326,9 +326,9 @@ rules:
   # Flags assertions that prove a value the code already fixes instead of behavior: literal tautologies (`assert!(true)`, `assert_eq!(1, 1)`) and an immutable literal binding asserted against its own value (`let x = 5; assert_eq!(x, 5)`).
   test-quality.trivial-assertion:
     enabled: true
-  # Flags unwrap calls in tests.
+  # Opt-in style check for unwrap calls in tests.
   test-quality.unwrap-in-test:
-    enabled: true
+    enabled: false
   # Flags clone calls that may be avoidable.
   waste.unnecessary-clone-candidate:
     enabled: false

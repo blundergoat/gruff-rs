@@ -1,6 +1,6 @@
 ---
 category: rule-precision
-last_reviewed: 2026-05-24
+last_reviewed: 2026-08-08
 ---
 
 ## Pattern: Suppress Candidate Findings With Local Defence Evidence
@@ -59,4 +59,4 @@ Reference list for the common PII shapes:
 - When the dogfood scan flags a sample file, the first question is: "Is this hit on a value the relevant standard reserves for documentation?" If yes, extend the exemption list (and link the RFC in code comments). If no, the sample file genuinely has bad data — replace it with a standards-reserved value.
 - Calibration positive cases must use *non-reserved* PII (e.g. a `@gmail.com` address with a fictitious local part), so the rule actually fires. Negative cases must use *reserved* values, so the exemption is exercised on every test run.
 
-**Concrete instance (this repo, 2026-05-24):** `src/built_in_rules/secret_rules.rs` (search: `email_is_obvious_placeholder`) and the SSN/phone filters in `push_pii_ssn_findings` / `push_pii_phone_findings`. The exemption list grew during a single dogfood iteration from "guesses based on memory" to "RFC 6761 + NANP 555-prefix + SSA reserved SSN prefixes" — that change is the durable form. Pairs with [[analyzer]] footgun about text-pattern rules self-firing on their own sentinel values.
+**Concrete instance (this repo, 2026-05-24):** `src/built_in_rules/pii_rules.rs` (search: `email_is_obvious_placeholder`) and the SSN/phone filters in the same file (search: `fn push_pii_ssn_findings`, `fn push_pii_phone_findings`). The exemption list grew during a single dogfood iteration from "guesses based on memory" to "RFC 6761 + NANP 555-prefix + SSA reserved SSN prefixes" — that change is the durable form. Pairs with [[analyzer]] footgun about text-pattern rules self-firing on their own sentinel values.

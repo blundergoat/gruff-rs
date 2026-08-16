@@ -52,6 +52,82 @@ pub(crate) fn calibration_performance_loop_rules_catch_single_line_loops() {
     assert_has_rule(&report, "performance.clone-in-loop");
 }
 
+/// Proves that `dead-code.unused-private-function` reports an unused private function whether or
+/// not it declares generic parameters. The definition regex subtracts a function's own declaration
+/// from its reference count; while it required `fn name(` the declaration of `fn helper<T>(..)`
+/// never matched, so the definition counted as a reference and the function read as used forever.
+/// A called generic must still stay silent, which is what separates this from over-subtraction.
+#[test]
+pub(crate) fn calibration_dead_code_reports_unused_generic_functions() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Probe.
+pub fn library_entry() -> usize {
+    called_generic::<usize>(1)
+}
+
+fn unused_plain(value: usize) -> usize {
+    value
+}
+
+fn unused_generic<T: Copy>(value: T) -> T {
+    value
+}
+
+fn unused_lifetime<'a>(value: &'a str) -> &'a str {
+    value
+}
+
+fn unused_nested_bound<T: Into<String>>(value: T) -> String {
+    value.into()
+}
+
+fn unused_closure_bound<F: Fn()>(callback: F) {
+    callback();
+}
+
+fn called_generic<T: Copy>(value: T) -> T {
+    value
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let dead: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "dead-code.unused-private-function")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    for expected in [
+        "unused_plain",
+        "unused_generic",
+        "unused_lifetime",
+        "unused_nested_bound",
+        // A bound containing parentheses, such as `Fn()`, is still a definition.
+        "unused_closure_bound",
+    ] {
+        assert!(
+            dead.contains(&expected),
+            "`{expected}` must be reported as an unused private function; reported={dead:?}"
+        );
+    }
+    assert!(
+        !dead.contains(&"called_generic"),
+        "a generic function with a real call site must stay silent; reported={dead:?}"
+    );
+}
+
 /// Proves that `dead-code.unused-private-function` skips harness entry points.
 #[test]
 pub(crate) fn calibration_dead_code_skips_test_attr_and_main() {

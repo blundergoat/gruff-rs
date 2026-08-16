@@ -1,13 +1,12 @@
-version: "1.11.0"
+version: "1.15.1"
 
 skills:
   install: all
 
-# Hook toggles for goat-flow-shipped hooks.
-# Togglable goat-flow hook state. Missing entries use registry defaults.
-# Manage with the dashboard Hooks page or `goat-flow hooks <enable|disable|sync>`.
 hooks:
   deny-dangerous:
+    enabled: true
+  post-turn-safety:
     enabled: true
   gruff-code-quality:
     enabled: true

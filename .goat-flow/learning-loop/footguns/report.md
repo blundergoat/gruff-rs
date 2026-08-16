@@ -11,7 +11,7 @@ last_reviewed: 2026-06-05
 
 The trap is structural: each renderer module owns its own formatting, so the natural copy-paste move when adding a new format produces another duplicate. Adding a new `Pillar` variant then requires updating each copy by hand; drift is silent because a missed renderer keeps compiling (just falls through to a default-arm string).
 
-`severity_text` (search: `pub(crate) fn severity_text` in `src/html_report/mod.rs`) is the next likely victim — currently only one consumer, but the same shape. Promote it to `src/report.rs` before a second renderer needs it.
+The helper in `src/html_report/mod.rs` (search: `pub(crate) fn severity_text`) is the next likely victim — currently only one consumer, but the same shape. Promote it to `src/report.rs` before a second renderer needs it.
 
 **How to apply:**
 
@@ -42,7 +42,7 @@ The non-obvious failure mode is that the struct may live in a module that *feels
 
 **Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
 
-When a digest helper (e.g. `summary::top_rule_digests` -> `build_rule_digest`) needs per-rule metadata like `severity`, `confidence`, or `pillar`, the registry default (`RuleDefinition.default_severity`) is the *wrong* source for any field the user can override at config time. The user's override applies to emitted findings via `config.severity(rule_id, default)` (search: `pub(crate) fn severity` in `src/config.rs`), but the digest helper reads from the registry and reports the pre-override value. JSON / text / `topRules[]` ends up showing severity X while the same findings carry severity Y, and counts grouped by severity (e.g. `summary.<severity>` totals) disagree with the per-rule digest.
+When a digest helper (e.g. `summary::top_rule_digests` -> `build_rule_digest`) needs per-rule metadata like `severity`, `confidence`, or `pillar`, the registry default (`RuleDefinition.default_severity`) is the *wrong* source for any field the user can override at config time. The user's override applies to emitted findings via `config.severity(rule_id, default)` in `src/config.rs` (search: `pub(crate) fn severity`), but the digest helper reads from the registry and reports the pre-override value. JSON / text / `topRules[]` ends up showing severity X while the same findings carry severity Y, and counts grouped by severity (e.g. `summary.<severity>` totals) disagree with the per-rule digest.
 
 Concrete instance from 2026-05-27 (PR #3): `build_rule_digest` (search: `fn build_rule_digest`) emitted `RuleDigest.severity = definition.default_severity` for the M03 summary v2 enrichment. A user-configured `rules.size.function-length: { threshold: 10, severity: advisory }` produced findings with `severity: advisory`, but `topRules[].severity` showed `warning` (the registry default for `size.function-length`). codex caught it post-commit on b837080.
 
@@ -61,14 +61,14 @@ Related: [[verification]] — "verify bot claims against current code before fix
 
 **Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
 
-`Config` (search: `pub(crate) struct Config` in `src/config.rs`) stores `rule_settings: HashMap<String, RuleSetting>` and `string_array_options: HashMap<String, Vec<String>>`. Iterating a `HashMap` in Rust produces **non-deterministic** order across runs (even on the same build). Any output that:
+The config type in `src/config.rs` (search: `pub(crate) struct Config`) stores `rule_settings: HashMap<String, RuleSetting>` and `string_array_options: HashMap<String, Vec<String>>`. Iterating a `HashMap` in Rust produces **non-deterministic** order across runs (even on the same build). Any output that:
 - gets compared in snapshot-style tests,
 - is consumed by tools that diff two reports,
 - is asserted on by CI / dogfood,
 
 must NOT emit data straight from a HashMap iteration. The repo's reports are deterministic by contract, so HashMap iteration is a footgun every time it surfaces into reports / JSON / diagnostics.
 
-Concrete instance from 2026-05-27 (PR #3, post-b837080 review): `excluded_security_rule_diagnostics` (search: `fn excluded_security_rule_diagnostics` in `src/analysis.rs`) iterated `config.rule_settings` directly and pushed `RunDiagnostic` entries into `report.diagnostics` in HashMap order. Two runs of the same scan with multiple excluded Security/SensitiveData rules emitted the diagnostics in different orders. Fixed by collecting `(rule_id, pillar)` pairs into a `Vec` and `sort_by_key(rule_id)` before constructing diagnostics.
+Concrete instance from 2026-05-27 (PR #3, post-b837080 review): the diagnostics builder in `src/analysis.rs` (search: `fn excluded_security_rule_diagnostics`) iterated `config.rule_settings` directly and pushed `RunDiagnostic` entries into `report.diagnostics` in HashMap order. Two runs of the same scan with multiple excluded Security/SensitiveData rules emitted the diagnostics in different orders. Fixed by collecting `(rule_id, pillar)` pairs into a `Vec` and `sort_by_key(rule_id)` before constructing diagnostics.
 
 **How to apply:**
 
@@ -83,7 +83,7 @@ Watch list (HashMap fields in `Config` whose iteration ever surfaces): `rule_set
 
 **Status:** active | **Created:** 2026-05-27 | **Evidence:** OBSERVED
 
-`run_analysis_in_project` (search: `pub(crate) fn run_analysis_in_project` in `src/analysis.rs`) is a sequence of mutations on a `Vec<Finding>`. Each step (analyse → baseline → dedupe → exclusions → diff filter) reads the *current* state of the vector. Any step that records derived state (counts, deltas, summaries) on its way past captures a value that may be invalidated by a later step. If steps are reordered without re-checking what each one captures, those captured values drift away from the final report and silently lie to downstream consumers.
+The orchestrator in `src/analysis.rs` (search: `pub(crate) fn run_analysis_in_project`) is a sequence of mutations on a `Vec<Finding>`. Each step (analyse → baseline → dedupe → exclusions → diff filter) reads the *current* state of the vector. Any step that records derived state (counts, deltas, summaries) on its way past captures a value that may be invalidated by a later step. If steps are reordered without re-checking what each one captures, those captured values drift away from the final report and silently lie to downstream consumers.
 
 Concrete instance from 2026-05-27 (PR #3, post-b837080 review): the pipeline was `analyse → resolve_baseline → sort_and_dedupe`. `apply_baseline` computed `perRuleDeltas.introduced` by counting findings not matched by the baseline. Then `sort_and_dedupe_findings` (which exists precisely because raw rule emission can produce duplicate findings by `fingerprint`) collapsed duplicates. Result: `perRuleDeltas.introduced` over-counted by the number of duplicates dropped in the next step. codex caught it post-commit. Fixed by swapping `sort_and_dedupe_findings` ahead of `resolve_baseline`.
 

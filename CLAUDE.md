@@ -1,4 +1,4 @@
-# gruff-rs - goat-flow 1.10.1
+# gruff-rs - goat-flow 1.15.1
 
 Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
 
@@ -37,12 +37,13 @@ Treat this repository root as the selected target workspace. Parent workspaces, 
 
 ## Commit Messages
 
-Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit.md`.
+Concise Conventional Commits when a commit is requested (e.g. `feat: add baseline filtering`, `fix: preserve dashboard cwd`); one logical change per commit, and never commit generated Cargo output, IDE state, analyzer baseline/history files, or local goat-flow session logs. Full guidance: `docs/coding-standards/git-commit-message.md`.
 
 ## Key Resources
 
 - Learning loop: grep `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, and `.goat-flow/learning-loop/decisions/` before changes.
-- Tool playbooks: read `.goat-flow/skill-docs/playbooks/browser-use.md`, `.goat-flow/skill-docs/playbooks/page-capture.md`, or `.goat-flow/skill-docs/skill-quality-testing/README.md` before declaring those tools unavailable.
+- Tool playbooks: read `.goat-flow/skill-docs/playbooks/browser-use.md` or `.goat-flow/skill-docs/playbooks/page-capture.md` before declaring those tools unavailable; `.goat-flow/skill-docs/playbooks/README.md` indexes the rest.
+- Skill authoring: read `.goat-flow/skill-docs/skill-quality-testing/README.md` before creating or hardening a skill.
 - Skill reference (meta): `.goat-flow/skill-docs/skill-preamble.md` and `.goat-flow/skill-docs/skill-conventions.md`.
 - Orientation: use `.goat-flow/code-map.md` and `.goat-flow/glossary.md` before broad repo edits.
 
@@ -52,7 +53,7 @@ Concise Conventional Commits when a commit is requested (e.g. `feat: add baselin
 bash scripts/preflight-checks.sh
 cargo build
 cargo run -- analyse fixtures --format json --fail-on none
-shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .goat-flow/hooks/deny-dangerous.sh .goat-flow/hooks/gruff-code-quality.sh
+shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .goat-flow/hooks/deny-dangerous.sh .goat-flow/hooks/post-turn-safety.sh .goat-flow/hooks/gruff-code-quality.sh
 ```
 
 Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.
@@ -102,7 +103,8 @@ Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to
 | Fixtures | `fixtures/` |
 | Scripts | `scripts/` |
 | Rust manifest | `Cargo.toml`, `Cargo.lock` |
-| Tool playbooks (README index for CLI/MCP availability checks; examples: browser-use, page-capture, skill-quality-testing) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Tool playbooks (README index for CLI/MCP availability checks; examples: browser-use, page-capture, gruff-code-quality) | `.goat-flow/skill-docs/playbooks/` - read BEFORE declaring a tool unavailable |
+| Skill-authoring methodology | `.goat-flow/skill-docs/skill-quality-testing/` |
 | Skill reference (meta) | `.goat-flow/skill-docs/` |
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Orientation | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
@@ -110,5 +112,5 @@ Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to
 | Claude skills/config | `.claude/skills/`, `.claude/settings.json` |
 | Hooks (deny + quality) | `.goat-flow/hooks/` |
 | Peer instruction files | `AGENTS.md` (Codex) |
-| Commit guidance | `docs/coding-standards/git-commit.md` |
+| Commit guidance | `docs/coding-standards/git-commit-message.md` |
 | Workspace notes | `.goat-flow/plans/`, `.goat-flow/logs/sessions/` |

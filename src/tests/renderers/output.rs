@@ -1,4 +1,108 @@
+//! Output renderer contracts for reports assembled directly or through analysis.
+//! These tests let CLI users trust that each format preserves report data while
+//! applying only the escaping required by its own output protocol.
+
 use super::*;
+
+const HOSTILE_RULE_ID: &str = "custom.`rule``|[id]\r\n# heading";
+const HOSTILE_FILE_PATH: &str = "src/`path``|[name](target)<script>&\r\n- item.rs";
+const HOSTILE_MESSAGE: &str =
+    "message | `tick`` [link](target) <script>&\r\n- second\n# heading\n``` fence";
+
+/// Build one finding and delta whose controlled fields exercise Markdown structure.
+/// A CLI user reaches the same renderer after scanning an untrusted source tree.
+fn hostile_renderer_report() -> AnalysisReport {
+    let mut report = sample_report_with(
+        vec![Finding::new(FindingDescriptor {
+            rule_id: HOSTILE_RULE_ID.to_string(),
+            message: HOSTILE_MESSAGE.to_string(),
+            file_path: HOSTILE_FILE_PATH.to_string(),
+            line: Some(9),
+            severity: Severity::Warning,
+            pillar: Pillar::Documentation,
+            confidence: Confidence::High,
+            symbol: None,
+            remediation: None,
+            metadata: json!({}),
+        })],
+        Vec::new(),
+    );
+    report.per_rule_deltas = Some(vec![RuleDelta {
+        rule_id: HOSTILE_RULE_ID.to_string(),
+        introduced: 1,
+        removed: 0,
+        net: 1,
+    }]);
+    report
+}
+
+/// Hostile finding fields stay inside one inert Markdown finding bullet.
+#[test]
+pub(crate) fn markdown_renderer_keeps_hostile_finding_fields_in_one_inert_bullet() {
+    let report = hostile_renderer_report();
+    let markdown = render_report(&report, OutputFormat::Markdown);
+    let repeated_markdown = render_report(&report, OutputFormat::Markdown);
+    let expected_finding = concat!(
+        "\n- ``` custom.`rule``|[id]\\r\\n# heading ``` ",
+        "``` src/`path``|[name](target)<script>&\\r\\n- item.rs ```:9 - ",
+        "message \\| \\`tick\\`\\` \\[link\\]\\(target\\) &lt;script&gt;&amp;",
+        "\\r\\n\\- second\\n\\# heading\\n\\`\\`\\` fence",
+    );
+    let expected_delta = "\nTop 5 regressed: +1 ``` custom.`rule``|[id]\\r\\n# heading ```\n";
+
+    assert!(markdown.contains(expected_delta), "{markdown}");
+    assert!(
+        markdown.contains(expected_finding),
+        "hostile fields must render as one escaped finding:\n{markdown}"
+    );
+    assert_eq!(markdown.matches("\n- ").count(), 1, "{markdown}");
+    assert_eq!(markdown.matches("\n## ").count(), 1, "{markdown}");
+    assert!(markdown.contains("| Pillar | Grade | Score | Findings | Advisory | Warning | Error |"));
+    // Hostile pipes cannot add a row to the fixed header, separator, and eleven pillar rows.
+    assert_eq!(
+        markdown
+            .lines()
+            .filter(|line| line.starts_with("| "))
+            .count(),
+        13,
+        "{markdown}"
+    );
+    // Hostile backticks remain inline code content and never open a fenced block.
+    assert_eq!(
+        markdown
+            .lines()
+            .filter(|line| line.starts_with("```"))
+            .count(),
+        0,
+        "{markdown}"
+    );
+    // A missing separator means the fixed finding layout changed before plain-text review.
+    let rendered_message = markdown
+        .rsplit_once(" - ")
+        .map(|(_, message)| message)
+        .expect("finding message separator");
+    assert!(!rendered_message.contains("<script>"), "{markdown}");
+    assert!(!markdown.contains("\n# heading"), "{markdown}");
+    assert!(!markdown.contains("[link](target)"), "{markdown}");
+    assert!(!markdown.contains('\r'), "{markdown:?}");
+    assert_eq!(markdown, repeated_markdown);
+}
+
+/// Markdown hardening leaves GitHub workflow-command bytes unchanged for the same report.
+#[test]
+pub(crate) fn github_renderer_is_unchanged_for_hostile_markdown_report() {
+    let github = render_report(&hostile_renderer_report(), OutputFormat::Github);
+
+    assert_eq!(
+        github,
+        concat!(
+            "::warning file=src/`path``|[name](target)<script>&%0D%0A- item.rs,",
+            "line=9,title=custom.`rule``|[id]%0D%0A# heading::",
+            "message | `tick`` [link](target) <script>&%0D%0A- second",
+            "%0A# heading%0A``` fence",
+        )
+    );
+}
 
 #[test]
 pub(crate) fn report_renderers_escape_and_preserve_contracts() {

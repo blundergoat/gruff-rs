@@ -1,15 +1,15 @@
 ---
-goat-flow-reference-version: "1.11.0"
+goat-flow-reference-version: "1.15.1"
 ---
 # Skill Playbooks
 
 This directory holds **standalone playbooks for tools and capabilities available to coding agents** in this project. Each playbook is self-contained - no skill composes them in. They are loaded on-demand by skills (or by you) when a tool is named.
 
-For shared meta-references composed into every skill (preamble, conventions), see the parent `skill-docs/` directory.
+For shared meta-references inherited by goat-* skills (preamble on every invocation, conventions on full-depth), see the parent `skill-docs/` directory.
 
 ## How agents should use this directory
 
-1. When the user asks to use a capability ("drive a browser", "screenshot pages", "test a skill"), check this index for a matching playbook.
+1. When the request names a tool or discipline (browser, screenshots, skill testing, changelog, release notes, logging/instrumentation, code comments, or prose and writing style), check this index for a matching playbook. Also check it when the work touches a discipline's surface without naming it: editing `CHANGELOG.md`, release notes, README or `docs/` prose, PR/issue text, or a learning-loop entry body.
 2. Open the playbook. If it has an **Availability Check** section, run the exact `command -v <tool>` or equivalent it specifies before falling back.
 3. Only after the availability check fails AND the playbook's fallback path also fails, declare the capability unavailable.
 
@@ -22,21 +22,21 @@ For shared meta-references composed into every skill (preamble, conventions), se
 | [`browser-use.md`](./browser-use.md) | One-off browser observation: load a URL, screenshot, click, inspect DOM, capture state mid-investigation | `browser-use` CLI, typically at `~/.local/bin/browser-use` |
 | [`page-capture.md`](./page-capture.md) | Batch capture: visit N known pages, screenshot each, emit one MD record per page, for documentation, before/after evidence, or audit snapshots | Playwright (MCP / Node / Python tier), or `browser-use` CLI as a downgrade |
 | [`observability.md`](./observability.md) | Instrumenting code with logs, metrics, span events, or trace context: severity, structured fields, naming, cardinality budget, sensitive-data rules, and the log-vs-metric decision | n/a (instrumentation discipline) |
-| [`code-comments.md`](./code-comments.md) | Writing or editing source code: which inline comments earn their place, the mandatory doc-comment contract on every function/class/file, TODO/FIXME/HACK marker rules, and whether existing comments should be kept, rewritten, or deleted | n/a (commenting discipline) |
+| [`code-comments.md`](./code-comments.md) | Writing or editing source code: user-perspective doc comments, self-documenting names, context comments above branches/loops/null checks, null/empty tag meaning, journey anchors, TODO/FIXME/HACK markers, and concise comment cleanup | n/a (commenting discipline) |
 | [`gruff-code-quality.md`](./gruff-code-quality.md) | Running `gruff-go`, `gruff-rs`, `gruff-ts`, `gruff-php`, or `gruff-py`; triaging findings and verifying analyzer-driven cleanup without low-value comments or suppressions | gruff CLI family |
+| [`hook-policy-testing.md`](./hook-policy-testing.md) | Verifying deny-hook policy, paired blocked/allowed command grammar, source/install parity, and central agent registration after hook changes | `deny-dangerous.sh --self-test` and `--check` |
 | [`changelog.md`](./changelog.md) | Writing or editing `CHANGELOG.md`: Keep a Changelog categories, SemVer alignment, breaking-change markers and migration paths, write-at-commit vs write-at-release cadence, version-surface sync | n/a (changelog discipline) |
 | [`release-notes.md`](./release-notes.md) | Writing a per-release narrative for end users (GitHub release body, blog post, email, in-app banner, social): theme identification, user-impact lens, inverted-pyramid structure, multi-surface consistency. Derives from `changelog.md` | n/a (release-notes discipline) |
+| [`skill-playbook-authoring-sync.md`](./skill-playbook-authoring-sync.md) | Adding or materially editing a built-in playbook while keeping source/install mirrors, discovery, audit registration, and manifest ownership aligned | n/a (playbook-authoring discipline) |
+| [`writing-style.md`](./writing-style.md) | Writing or editing prose a person reads (release notes, changelog entries, review narrative, decision records, learning-loop entry bodies, docs, issue and PR bodies, comments and replies): correctness and meaning preservation, register- and source-aware editing, contextual diagnostics, structure audit, and misapplication guards. Exempts agent-read control text, plan mechanics, tables, and code | n/a (prose-style discipline) |
 
 ## Adding a new playbook
 
-When you add a new tool to the project that future agents need to discover:
-
-1. Drop a `<tool>.md` file in this directory.
-2. Start with a YAML frontmatter block that includes `goat-flow-reference-version`.
-3. Include a grep-findable `## Availability Check` section before any workflow that depends on a tool. For runnable tools/capabilities, include an exact shell-runnable verification command; for non-runnable authoring references, state the load condition and why no CLI check applies.
-4. Include the boundary, workflow, fallback/troubleshooting, and verification gate an agent needs to apply the playbook without inherited context.
-5. Add a row to the table above so the index stays complete.
-6. Check the ADR-023 budget tier before adding content: top-level playbooks in this directory are progressive references and must stay under 3000 body words.
+Before adding or materially editing a built-in playbook, load
+[`skill-playbook-authoring-sync.md`](./skill-playbook-authoring-sync.md). It owns
+the frontmatter, first-H2, bundling, README, audit-registration, manifest, and
+verification contract. Keep top-level progressive references below 3,000 body
+words and add the discovery row above in both README mirrors.
 
 ## Admission checklist
 

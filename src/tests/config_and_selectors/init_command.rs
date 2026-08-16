@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::config::DEFAULT_ABBREVIATIONS;
 use crate::init::{
     read_existing_ignore_patterns, read_existing_minimum_severity, render_default_config,
 };
@@ -36,6 +37,68 @@ pub(crate) fn default_config_round_trips_through_load_config() {
 }
 
 #[test]
+pub(crate) fn generated_config_reproduces_builtin_rule_defaults() {
+    // A generated config that disagrees with the catalogue makes the same file
+    // report differently depending on whether the project ever ran `init`, so this
+    // walks the rendered-then-parsed config rather than reading the catalogue twice.
+    let registry = rules::builtin_registry();
+    let body = render_default_config(&registry, &[], &BTreeMap::new());
+
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), &body);
+    let config = load_config(dir.path(), &default_test_options())
+        .expect("generated default config parses cleanly");
+
+    for definition in registry.definitions() {
+        let Some(threshold) = definition.threshold else {
+            continue;
+        };
+        assert_eq!(
+            config.threshold(definition.id),
+            threshold.default,
+            "generated config threshold drifts from the catalogue for `{}`",
+            definition.id,
+        );
+        assert_eq!(
+            config.severity(definition.id, definition.default_severity),
+            definition.default_severity,
+            "generated config severity drifts from the catalogue for `{}`",
+            definition.id,
+        );
+    }
+}
+
+#[test]
+pub(crate) fn accepted_abbreviations_match_family_contract() {
+    // FAMILY-CONTRACT §8 owns this universal cross-port seed.
+    const FAMILY_ABBREVIATIONS: &[&str] = &[
+        "age", "app", "db", "fs", "id", "io", "key", "log", "max", "min", "now", "raw", "rx", "tx",
+        "ui", "url",
+    ];
+
+    assert_eq!(DEFAULT_ABBREVIATIONS, FAMILY_ABBREVIATIONS);
+
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), &body);
+    let config = load_config(dir.path(), &default_test_options()).expect("generated config loads");
+    let loaded: Vec<&str> = config
+        .accepted_abbreviations
+        .iter()
+        .map(String::as_str)
+        .collect();
+
+    assert_eq!(loaded, FAMILY_ABBREVIATIONS);
+    let expected_comment = concat!(
+        "  # acceptedAbbreviations controls which short names naming.short-variable permits.\n",
+        "  # This configured list replaces (not merges) built-ins; keep these seeds and\n",
+        "  # append project vocabulary below.\n",
+        "  acceptedAbbreviations:\n",
+    );
+    assert!(body.contains(expected_comment), "generated config:\n{body}");
+}
+
+#[test]
 pub(crate) fn default_config_emits_every_built_in_rule() {
     let registry = rules::builtin_registry();
     let body = render_default_config(&registry, &[], &BTreeMap::new());
@@ -50,17 +113,24 @@ pub(crate) fn default_config_emits_every_built_in_rule() {
 }
 
 #[test]
-pub(crate) fn default_config_marks_clone_candidate_opt_in() {
-    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
-    let clone_entry = body
-        .split("  waste.unnecessary-clone-candidate:")
-        .nth(1)
-        .and_then(|rest| rest.split("\n  waste.").next())
-        .expect("clone candidate rule entry exists");
-    assert!(
-        clone_entry.contains("    enabled: false"),
-        "clone-candidate should be opt-in in generated defaults; entry={clone_entry}"
-    );
+/// Generated config keeps style-preference rules visible without enabling them.
+pub(crate) fn generated_config_disables_opt_in_rules() {
+    let generated_config = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+
+    for (rule_id, next_rule_prefix) in [
+        ("test-quality.unwrap-in-test", "\n  test-quality."),
+        ("waste.unnecessary-clone-candidate", "\n  waste."),
+    ] {
+        let rule_entry = generated_config
+            .split(&format!("  {rule_id}:"))
+            .nth(1)
+            .and_then(|remaining_config| remaining_config.split(next_rule_prefix).next())
+            .expect("opt-in rule entry exists");
+        assert!(
+            rule_entry.contains("    enabled: false"),
+            "{rule_id} should be opt-in in generated defaults; entry={rule_entry}"
+        );
+    }
 }
 
 #[test]

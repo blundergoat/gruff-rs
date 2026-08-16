@@ -1,4 +1,37 @@
+//! Function-block metrics turn parsed Rust functions into deterministic rule input.
+//! The builder keeps the user's existing report anchor stable while separating
+//! attached documentation from the declaration-through-body size measurement.
+
 use super::*;
+
+/// One parsed Rust function and the source facts used by block-level rules.
+/// Users reach this internal boundary whenever a scan evaluates documentation,
+/// size, complexity, test, security, or reliability findings for a function.
+#[derive(Clone)]
+pub(crate) struct FunctionBlock {
+    pub(crate) name: String,
+    pub(crate) param_count: usize,
+    pub(crate) start_line: usize,
+    pub(crate) line_count: usize,
+    pub(crate) executable_line_count: usize,
+    pub(crate) body: String,
+    pub(crate) rustdoc: Option<FunctionRustdoc>,
+    pub(crate) is_externally_public: bool,
+    pub(crate) is_test: bool,
+    pub(crate) test_context: bool,
+    pub(crate) is_async: bool,
+    pub(crate) returns_bool: bool,
+    pub(crate) returns_result: bool,
+    pub(crate) ignore_without_reason: bool,
+    pub(crate) body_is_declarative_literal: bool,
+}
+
+impl FunctionBlock {
+    /// Report whether this function belongs to test code and should skip production-only rules.
+    pub(crate) fn is_test_context(&self) -> bool {
+        self.is_test || self.test_context
+    }
+}
 
 pub(crate) fn collect_module_function_blocks(
     item_mod: &syn::ItemMod,
@@ -30,9 +63,11 @@ pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) block: &'a syn::Block,
 }
 
+/// Build one block consumed by documentation, size, complexity, and behavior rules.
 pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> FunctionBlock {
     let function_index = line_from_span(parts.name_start).saturating_sub(1);
-    let start = function_start_index(parts.lines, function_index);
+    let source_context = function_source_context(parts.lines, parts.attrs, function_index);
+    let start = source_context.block_start_index;
     let end = line_from_span(parts.block_end)
         .saturating_sub(1)
         .min(parts.lines.len().saturating_sub(1))
@@ -46,7 +81,9 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         param_count: parts.param_count,
         start_line: start + 1,
         line_count: end.saturating_sub(start) + 1,
+        executable_line_count: end.saturating_sub(function_index) + 1,
         body,
+        rustdoc: source_context.rustdoc,
         is_externally_public: is_externally_public(parts.visibility),
         is_test,
         test_context,
@@ -94,19 +131,6 @@ pub(crate) fn is_declarative_literal_expr(expr: &syn::Expr) -> bool {
         }),
         _ => false,
     }
-}
-
-pub(crate) fn function_start_index(lines: &[&str], index: usize) -> usize {
-    let mut start = index;
-    while start > 0 {
-        let previous = lines[start - 1].trim();
-        if previous.starts_with("#[") || previous.starts_with("///") || previous.is_empty() {
-            start -= 1;
-            continue;
-        }
-        break;
-    }
-    start
 }
 
 pub(crate) fn line_slice(lines: &[&str], start: usize, end: usize) -> String {

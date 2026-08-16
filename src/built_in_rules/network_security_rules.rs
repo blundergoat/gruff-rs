@@ -1,20 +1,22 @@
+//! Network-facing security rules inspect executable Rust for exposed listeners,
+//! tainted requests and deserialization, dangerous XML options, and raw template output.
+//! Operators reach these checks during ordinary project scans, including test and CI source.
+
 use super::*;
 
 pub(crate) static BIND_ALL_INTERFACES_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// `security.hardcoded-bind-all-interfaces` — flags listener address
 /// literals that bind to every network interface, optionally followed
-/// by a port. Skips test infrastructure and doc-comment lines.
+/// by a port, in production and executable test source.
 pub(crate) fn analyse_hardcoded_bind_all_interfaces(
     file: &SourceFile,
     source: &str,
     findings: &mut Vec<Finding>,
 ) {
-    if path_is_test_infrastructure(&file.display_path) {
-        return;
-    }
     let lines: Vec<&str> = source.lines().collect();
     let starts = line_starts(source);
+    // Each all-interface literal becomes one reviewable exposure in the user's report.
     for capture in bind_all_interfaces_regex().captures_iter(source) {
         record_bind_capture(file, &capture, &lines, &starts, findings);
     }
@@ -79,18 +81,19 @@ fn bind_all_interfaces_finding(file: &SourceFile, line: usize, addr: &str) -> Fi
     })
 }
 
+/// Flag caller-derived request URLs even when the executable path belongs to a test or CI helper.
 pub(crate) fn analyse_ssrf_candidate(
     file: &SourceFile,
     blocks: &[FunctionBlock],
     findings: &mut Vec<Finding>,
 ) {
-    if path_is_test_infrastructure(&file.display_path) {
-        return;
-    }
+    // Each function keeps input evidence local so one helper cannot implicate another.
     for block in blocks {
         let mut taint = FunctionTaint::from_block(block);
+        // Each source line can validate an input or carry it into a supported request sink.
         for (line_index, line) in block.body.lines().enumerate() {
             taint.observe_line(line);
+            // A line without a tainted URL sink adds nothing to the user's security report.
             let Some(argument) = ssrf_sink_argument(line, &taint) else {
                 continue;
             };
@@ -241,17 +244,20 @@ fn function_param_names(body: &str) -> Vec<String> {
         .collect()
 }
 
+/// Return a named local assignment that can carry input evidence to a later security sink.
 fn let_binding(line: &str) -> Option<(String, &str)> {
     static LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
         &LET_BINDING_REGEX,
         r"\blet\s+(?:mut\s+)?(?P<name>[a-z_][a-z0-9_]*)\s*(?::[^=]+)?=\s*(?P<rhs>[^;]+)",
     );
+    // Lines without a local assignment cannot carry input into a later sink.
     let captures = regex.captures(line)?;
-    Some((
-        captures.name("name")?.as_str().to_string(),
-        captures.name("rhs")?.as_str(),
-    ))
+    // A matched assignment must expose both sides before it can extend the input trail.
+    let binding = captures.name("name")?.as_str();
+    let right_hand_side = captures.name("rhs")?.as_str();
+    // A discarded result cannot flow into a later sink, so it has no taint identity to retain.
+    (binding != "_").then(|| (binding.to_string(), right_hand_side))
 }
 
 fn rhs_is_input_source(rhs: &str) -> bool {
@@ -320,7 +326,12 @@ fn unsafe_deserialization_argument(line: &str, taint: &FunctionTaint) -> Option<
     static DESERIALIZATION_SINK_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
         &DESERIALIZATION_SINK_REGEX,
-        r"(?:serde_yaml::from_(?:str|reader|slice)|bincode::(?:deserialize|deserialize_from)|rmp_serde::from_(?:slice|read)|serde_pickle::from_(?:slice|reader))\s*\(\s*&?(?P<arg>[a-z_][a-z0-9_]*)",
+        // The optional turbofish keeps `serde_yaml::from_str::<Config>(body)` visible. These sinks
+        // frequently cannot infer their type parameter, so the annotated spelling is the common one
+        // and matching only the bare call left the dominant form of the pattern unreported. The
+        // argument excludes parentheses rather than `>` so a nested generic such as
+        // `::<Vec<String>>` is still consumed whole.
+        r"(?:serde_yaml::from_(?:str|reader|slice)|bincode::(?:deserialize|deserialize_from)|rmp_serde::from_(?:slice|read)|serde_pickle::from_(?:slice|reader))(?:::<[^()]*>)?\s*\(\s*&?(?P<arg>[a-z_][a-z0-9_]*)",
     );
     let argument = regex.captures(line)?.name("arg")?.as_str();
     taint.is_tainted(argument).then(|| argument.to_string())

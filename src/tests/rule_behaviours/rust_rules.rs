@@ -1,3 +1,7 @@
+//! Rust rule behavior tests run the analyzer against complete temporary projects.
+//! The cases keep production hazards, supported syntax shapes, and quiet examples
+//! together so a rule cannot gain apparent precision by silently losing coverage.
+
 use super::*;
 
 #[test]
@@ -269,36 +273,130 @@ async fn async_step() {}
     assert_missing_rule(&negative, "concurrency.unbounded-channel");
 }
 
-#[test]
-pub(crate) fn lock_across_await_distinguishes_extracted_value_from_guard() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r#"/// Holds a lock guard across an await.
-pub async fn direct_guard(lock: &std::sync::Mutex<String>) {
+/// Synthetic async functions covering every retained and rejected acquisition shape.
+const LOCK_ACROSS_AWAIT_SOURCE: &str = r#"pub struct DomainReader;
+impl DomainReader {
+    pub fn read(&self) -> usize { 1 }
+}
+pub struct DomainWriter;
+impl DomainWriter {
+    pub fn write(&self) -> usize { 1 }
+}
+pub async fn mutex_unwrap(lock: &std::sync::Mutex<String>) {
     let guard = lock.lock().unwrap();
     async_step().await;
-    println!("{}", *guard);
+    let _ = guard;
 }
-
-/// Extracts the option payload before the later await.
+pub async fn mutex_expect(lock: &std::sync::Mutex<String>) {
+    let guard = lock.lock().expect("state lock");
+    async_step().await;
+    let _ = guard;
+}
+pub async fn mutex_question(lock: &std::sync::Mutex<String>) -> Result<(), ()> {
+    let guard = lock.lock()?;
+    async_step().await;
+    let _ = guard;
+    Ok(())
+}
+pub async fn async_mutex_await(lock: &tokio::sync::Mutex<String>) {
+    let guard = lock.lock().await;
+    async_step().await;
+    let _ = guard;
+}
+pub async fn parking_lot_lock(lock: &parking_lot::Mutex<String>) {
+    let _guard = lock.lock();
+    async_step().await;
+}
+pub async fn sync_read_unwrap(lock: &std::sync::RwLock<String>) {
+    let guard = lock.read().unwrap();
+    async_step().await;
+    let _ = guard;
+}
+pub async fn sync_write_expect(lock: &std::sync::RwLock<String>) {
+    let guard = lock.write().expect("state lock");
+    async_step().await;
+    let _ = guard;
+}
+pub async fn async_read_await(lock: &tokio::sync::RwLock<String>) {
+    let guard = lock.read().await;
+    async_step().await;
+    let _ = guard;
+}
+pub async fn async_write_await(lock: &tokio::sync::RwLock<String>) {
+    let guard = lock.write().await;
+    async_step().await;
+    let _ = guard;
+}
+pub async fn local_read_constructor() {
+    let lock = std::sync::RwLock::new(String::new());
+    let guard = lock.read().unwrap();
+    async_step().await;
+    let _ = guard;
+}
+pub async fn reads_bytes(reader: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<()> {
+    let read = reader.read(buf)?;
+    async_step().await;
+    let _ = read;
+    Ok(())
+}
+pub async fn writes_bytes(file: &mut std::fs::File, buf: &[u8]) -> std::io::Result<()> {
+    let written = file.write(buf)?;
+    async_step().await;
+    let _ = written;
+    Ok(())
+}
+pub async fn domain_read(reader: &DomainReader) {
+    let value = reader.read();
+    async_step().await;
+    let _ = value;
+}
+pub async fn domain_write(writer: &DomainWriter) {
+    let value = writer.write();
+    async_step().await;
+    let _ = value;
+}
 pub async fn take_value(lock: &tokio::sync::Mutex<Option<String>>) {
     let value = lock.lock().await.take();
     async_step().await;
     drop(value);
 }
-
-/// Drops the guard before the later await.
 pub async fn drop_before_await(lock: &std::sync::Mutex<String>) {
     let guard = lock.lock().unwrap();
     drop(guard);
     async_step().await;
 }
-
+pub async fn scoped_before_await(lock: &std::sync::RwLock<String>) {
+    {
+        let guard = lock.write().unwrap();
+        let _ = guard;
+    }
+    async_step().await;
+}
+pub struct SharedRegistry {
+    state: tokio::sync::RwLock<String>,
+    reader: DomainReader,
+}
+impl SharedRegistry {
+    pub async fn field_write_await(&self) {
+        let guard = self.state.write().await;
+        async_step().await;
+        let _ = guard;
+    }
+    pub async fn field_domain_read(&self) {
+        let value = self.reader.read();
+        async_step().await;
+        let _ = value;
+    }
+}
 async fn async_step() {}
-"#,
-    );
+"#;
+
+#[test]
+/// Keeps supported guard acquisitions while rejecting I/O and domain methods.
+pub(crate) fn lock_across_await_requires_guard_shaped_acquisitions() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), LOCK_ACROSS_AWAIT_SOURCE);
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -309,22 +407,43 @@ async fn async_step() {}
         },
     )
     .expect("analysis succeeds");
-    let lock_symbols: BTreeSet<&str> = report
+    // Compare the full finding set so each retained and rejected syntax shape is contractual.
+    let lock_findings: Vec<&Finding> = report
         .findings
         .iter()
         .filter(|finding| finding.rule_id == "concurrency.lock-across-await")
+        .collect();
+    let lock_symbols: BTreeSet<&str> = lock_findings
+        .iter()
         .filter_map(|finding| finding.symbol.as_deref())
         .collect();
     assert_eq!(
         lock_symbols,
-        BTreeSet::from(["direct_guard"]),
-        "only a bound guard held across await should flag; findings={:?}",
+        BTreeSet::from([
+            "async_mutex_await",
+            "async_read_await",
+            "async_write_await",
+            // A guard taken from a lock-typed struct field is the common async-service shape.
+            "field_write_await",
+            "local_read_constructor",
+            "mutex_expect",
+            "mutex_question",
+            "mutex_unwrap",
+            "parking_lot_lock",
+            "sync_read_unwrap",
+            "sync_write_expect",
+        ]),
+        "only receiver-evidenced lock guards should flag; findings={:?}",
         report
             .findings
             .iter()
             .map(|finding| (&finding.rule_id, finding.symbol.as_deref()))
             .collect::<Vec<_>>()
     );
+    assert!(lock_findings.iter().all(|finding| {
+        matches!(finding.confidence, Confidence::Medium)
+            && finding.message.contains("appears to hold lock guard")
+    }));
 }
 
 #[test]

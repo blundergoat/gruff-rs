@@ -13,7 +13,7 @@ impl SampleAnalyzer {
             }
         }
 
-        let api_key = "AKIA1111111111111111";
+        let api_key = "AKIA1111111111111111"; // goat-flow-allow-secret
         let database = "mysql://demo:password123@example.test/app";
         println!("{} {} {}", api_key, database, d);
         println!("{}", e);

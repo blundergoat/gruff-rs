@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "safety_rationale_guards.rs"]
+mod safety_rationale_guards;
+
 /// Calibration guard: `naming.boolean-prefix` accepts idiomatic Rust
 /// predicate names (subject-predicate form, common predicate verbs) while
 /// keeping passive shapes like `triggered_by` flagged.
@@ -72,10 +75,9 @@ pub fn triggered_by() -> bool { true }
     }
 }
 
-/// Regression guard: `security.unsafe-block` must still find nearby `SAFETY:`
-/// rationale comments after the raw/code-only split. The unsafe-block
-/// rule uses the raw (comment-preserved) line view so it can read the
-/// `SAFETY:` marker.
+/// Regression guard: documented unsafe blocks stay silent across accepted comment shapes.
+/// The unsafe-block rule uses the raw line view so it can read mixed-case and multiline
+/// rationales before deciding whether a security finding is warranted.
 #[test]
 pub(crate) fn unsafe_block_still_sees_safety_rationale_comment() {
     let _guard = analysis_lock();
@@ -85,6 +87,25 @@ pub(crate) fn unsafe_block_still_sees_safety_rationale_comment() {
         r##"/// Probe.
 pub fn explained() {
     // SAFETY: this block constructs a raw pointer but never dereferences it.
+    unsafe {
+        std::ptr::null::<i32>();
+    }
+}
+
+/// Probe.
+pub fn explained_mixed_case() {
+    // Safety: this block constructs a raw pointer but never dereferences it.
+    unsafe {
+        std::ptr::null::<i32>();
+    }
+}
+
+/// Probe.
+pub fn explained_multiline() {
+    // safety:
+    // the pointer remains valid for the duration of this operation,
+    // and no mutable reference aliases the returned value.
+    #[allow(unused_unsafe)]
     unsafe {
         std::ptr::null::<i32>();
     }
@@ -118,6 +139,46 @@ pub fn unexplained() {
             1,
             "expected exactly one unsafe-block finding (the unexplained one); findings={unsafe_findings:?}"
         );
+    let weak_rationales: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.weak-safety-rationale")
+        .collect();
+    assert!(
+        weak_rationales.is_empty(),
+        "continued rationale text must prevent weak-rationale findings; findings={weak_rationales:?}"
+    );
+}
+
+/// Comment examples containing `unsafe` are documentation, not executable unsafe sites.
+#[test]
+pub(crate) fn unsafe_block_ignores_comment_only_examples() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Example: `unsafe { read_pointer() }` needs a caller contract.
+pub fn documented() {}
+
+/*
+unsafe { another_example() }
+*/
+pub fn block_documented() {}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_missing_rule(&report, "security.unsafe-block");
 }
 
 /// Config round-trip guard: the three naming options

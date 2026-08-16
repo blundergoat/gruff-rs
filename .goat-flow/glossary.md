@@ -1,6 +1,6 @@
 # Glossary - gruff-rs
 
-Last reviewed 2026-05-24.
+Last reviewed 2026-07-13.
 
 This glossary defines terms used by `gruff-rs`, its public reports, and local project memory. Keep shared gruff-family terms aligned with the sibling implementations; keep Rust-specific differences explicit rather than making them look identical.
 
@@ -72,7 +72,7 @@ The set of built-in and configured custom rules plus their public metadata. `lis
 
 ### Rule ID
 
-Stable public identifier for one rule, using dotted gruff-family names such as `size.function-length`, `docs.todo-density`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` may emit shared public pillars.
+Stable public identifier for one rule, using dotted gruff-family names such as `size.function-length`, `docs.stale-todo`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` may emit shared public pillars.
 
 ### SARIF
 
@@ -99,6 +99,14 @@ The process that turns input paths into classifiable Rust or text/config files. 
 Default scans are source-only and local-only. `gruff-rs` does not execute target code, run Cargo build scripts, call Git unless unsafe Git diff is explicitly requested, query registries, or read vulnerability feeds.
 
 ## Implementation-Specific Terms
+
+### Candidate Release
+
+A manually dispatched, non-publishing run of `.github/workflows/release.yml`. It exercises source identity, Cargo package, five-platform build, archive, checksum, and final asset-set gates at one commit while all publication jobs remain skipped.
+
+### Composite Action
+
+The `action.yml` integration consumed by GitHub workflow authors. It resolves one exact `gruff-rs` version, installs the matching checksum-verified release asset, and passes line-delimited argv without shell reparsing.
 
 ### Selector
 
@@ -127,6 +135,10 @@ A local-only check that reads `Cargo.toml` and `Cargo.lock` as data. It does not
 ### Fixture
 
 Intentionally noisy analyzer input under `fixtures/` or `tests/fixtures/`. Fixture findings are calibration data, not product debt.
+
+### Release Asset Contract
+
+The shared target, archive, checksum, identity, and manifest rules enforced by `scripts/release-targets.sh` and `scripts/release-contract.sh`. A tag may publish only the complete verified set produced by those contracts.
 
 ## Agent Workflow Terms
 

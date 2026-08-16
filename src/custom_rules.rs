@@ -93,7 +93,7 @@ fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option
     }
 }
 
-fn rust_comment_scope_source(source: &str) -> String {
+pub(crate) fn rust_comment_scope_source(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut output = build_blank_scope_output(bytes);
     let mut index = 0usize;
@@ -114,6 +114,14 @@ fn advance_comment_scope(bytes: &[u8], output: &mut [u8], index: usize) -> usize
     if let Some(raw_end) = crate::parser::raw_string_end(bytes, index) {
         return raw_end;
     }
+    if bytes[index] == b'\'' {
+        // A char literal such as `'"'` must be consumed whole, or its quote would open phantom
+        // string state and swallow every following comment; lifetimes fall through unharmed.
+        if let Some(end) = char_literal_end(bytes, index) {
+            return end;
+        }
+        return index + 1;
+    }
     if bytes[index] == b'"' {
         return skip_quoted_string(bytes, index);
     }
@@ -128,6 +136,29 @@ fn advance_comment_scope(bytes: &[u8], output: &mut [u8], index: usize) -> usize
 
 fn starts_with_pair(bytes: &[u8], index: usize, first: u8, second: u8) -> bool {
     bytes[index] == first && bytes.get(index + 1) == Some(&second)
+}
+
+/// Bounded lookahead for a char literal: a closing `'` within a few same-line bytes. Lifetimes
+/// (`&'a str`, `<'a>`) have no nearby closer on their tick, so they fall through as ordinary code.
+fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let limit = (start + 12).min(bytes.len());
+    let mut index = start + 1;
+    let mut has_content = false;
+    while index < limit {
+        match bytes[index] {
+            b'\n' => return None,
+            b'\\' => {
+                index += 2;
+                has_content = true;
+            }
+            b'\'' => return has_content.then_some(index + 1),
+            _ => {
+                index += 1;
+                has_content = true;
+            }
+        }
+    }
+    None
 }
 
 fn skip_quoted_string(bytes: &[u8], start: usize) -> usize {

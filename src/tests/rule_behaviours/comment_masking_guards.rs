@@ -1,4 +1,11 @@
+//! Comment-boundary regressions keep prose from masquerading as executable Rust.
+//! These behavior tests exercise complete temporary projects so users receive
+//! findings only from code and from the exact rustdoc attached to an item.
+
 use super::*;
+
+#[path = "rustdoc_function_guards.rs"]
+mod rustdoc_function_guards;
 
 #[test]
 pub(crate) fn unreachable_code_ignores_terminator_mentions_in_comments() {

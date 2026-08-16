@@ -1,5 +1,10 @@
+//! Exercises parser masks that keep findings aligned with the original Rust source.
+//!
+//! Contributors run these invariants after literal or comment handling changes so
+//! CLI line numbers and code visibility remain stable across supported source shapes.
+
 use crate::{
-    extract_rust_comments, line_starts, rust_code_reference_source,
+    byte_line_from_starts, extract_rust_comments, line_starts, rust_code_reference_source,
     strip_rust_comments_after_string_mask, strip_rust_string_literals,
 };
 
@@ -135,6 +140,23 @@ pub(crate) fn maskers_preserve_byte_length_and_newline_offsets() {
         let composed = strip_rust_comments_after_string_mask(&stripped);
         assert_byte_aligned("string-then-comment mask", &input, &composed);
     }
+}
+
+/// Keeps finding lines stable when non-ASCII source and nested comments pass
+/// through the combined string and comment masks.
+#[test]
+pub(crate) fn rust_masking_preserves_non_ascii_byte_offsets_and_nested_comments() {
+    let source = "éé\nlet sql = format!(\"SELECT {}\", name);\n/* outer /* inner */ still outer */\nlet done = true;\n";
+    let masked_strings = strip_rust_string_literals(source);
+    assert_eq!(masked_strings.len(), source.len());
+    let masked_comments = strip_rust_comments_after_string_mask(&masked_strings);
+    assert_eq!(masked_comments.len(), source.len());
+    assert!(!masked_comments.contains("still outer"));
+    let format_offset = masked_comments.find("format!").expect("format offset");
+    assert_eq!(
+        byte_line_from_starts(&line_starts(source), format_offset),
+        2
+    );
 }
 
 #[test]

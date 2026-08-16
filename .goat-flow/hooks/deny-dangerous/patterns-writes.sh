@@ -1,30 +1,40 @@
 # patterns-writes.sh
 #
-# Repository and GitHub write policy extracted from writes.sh.
-# Sourced by deny-dangerous.sh; not executable on its own.
+# Protects the developer's repository and GitHub project from agent-authored writes.
+# Use through deny-dangerous.sh when an agent proposes a shell command that may
+# change history, publish work, or mutate remote project state.
+# Read-only status and search evidence remain available to the developer.
 # shellcheck shell=bash disable=SC2034,SC2154,SC2317,SC2319
 
 __goat_git_rest=""
 __goat_git_aliased_push=0
 
+# Decide whether a proposed Git command would publish work to a remote.
+# Use after shared wrapper normalization so the user sees one push policy everywhere.
 is_git_push() {
   __goat_git_strip_globals "$1" || return 1
   [[ "$__goat_git_rest" =~ ^(push|send-pack)([[:space:]]|$) ]] && return 0
+  # A configured Git alias can publish even when the visible subcommand is different.
   if [[ "$__goat_git_aliased_push" -eq 1 ]]; then
     return 0
   fi
   return 1
 }
 
+# Decide whether an existing guarded Git flag can discard work or bypass checks.
+# Use before execution so the developer retains the manual recovery decision.
 is_git_destructive() {
   __goat_git_strip_globals "$1" || return 1
   local rest="$__goat_git_rest"
+  # No-verify bypasses project checks the user expects before history changes.
   if [[ "$rest" =~ (^|[[:space:]])--no-verify([[:space:]]|$) ]]; then
     return 0
   fi
+  # Hard reset can discard the user's index and worktree state.
   if [[ "$rest" =~ ^reset([[:space:]]|$) ]] && [[ "$rest" =~ (^|[[:space:]])--hard([[:space:]]|$) ]]; then
     return 0
   fi
+  # Forced clean can remove untracked work the user has not reviewed.
   if [[ "$rest" =~ ^clean([[:space:]]|$) ]] && \
      { [[ "$rest" =~ (^|[[:space:]])--force([[:space:]]|$) ]] || \
        [[ "$rest" =~ (^|[[:space:]])-[^-[:space:]]*f[^[:space:]]*([[:space:]]|$) ]]; }; then
@@ -33,27 +43,34 @@ is_git_destructive() {
   return 1
 }
 
+# Reveal a direct Git-push candidate after common shell wrappers.
 normalize_git_push_candidate() {
   normalize_command_candidate "$1"
 }
 
+# Reveal the command xargs will run before applying repository policy.
+# Empty output means the proposed command is not a supported xargs payload shape.
 normalize_git_policy_candidate() {
-  local c
-  c=$(normalize_command_candidate "$1")
+  local repository_candidate
+  repository_candidate=$(normalize_command_candidate "$1")
 
-  local xargs_rest=""
-  if xargs_rest=$(strip_xargs_prefix "$c"); then
-    c="$xargs_rest"
+  local xargs_payload=""
+  # Shared option parsing keeps separated argument-file forms from hiding the payload.
+  if xargs_payload=$(strip_xargs_payload_command "$repository_candidate"); then
+    repository_candidate="$xargs_payload"
   fi
 
-  printf '%s' "$c"
+  printf '%s' "$repository_candidate"
 }
 
+# Decide whether a Git command creates history reserved for the developer.
 is_git_commit() {
   __goat_git_strip_globals "$1" || return 1
   [[ "$__goat_git_rest" =~ ^commit([[:space:]]|$) ]]
 }
 
+# Decide whether `gh api` uses a write method or an implicit body-bearing POST.
+# Use so users can still fetch API evidence without silently mutating GitHub.
 is_gh_api_write() {
   local -n __goat_gh_words_ref__="$1"
   local start_index="$2"
@@ -63,6 +80,7 @@ is_gh_api_write() {
   local word=""
   local word_lc=""
 
+  # Inspect every API flag because method and body fields may appear in either order.
   while [[ "$i" -lt "${#__goat_gh_words_ref__[@]}" ]]; do
     word="${__goat_gh_words_ref__[$i]}"
     word_lc="${word,,}"
@@ -105,11 +123,14 @@ is_gh_api_write() {
   esac
 }
 
+# Return the first GitHub CLI command word after global or inherited options.
+# An index at array end means the user supplied options but no command.
 gh_skip_options_index() {
   local -n __goat_gh_skip_words_ref__="$1"
   local i="$2"
   local word=""
 
+  # GitHub accepts many options before and between command levels.
   while [[ "$i" -lt "${#__goat_gh_skip_words_ref__[@]}" ]]; do
     word="${__goat_gh_skip_words_ref__[$i]}"
     case "$word" in
@@ -140,77 +161,36 @@ gh_skip_options_index() {
   printf '%s' "$i"
 }
 
-strip_xargs_prefix() {
-  local c="$1"
-  local -a xargs_words=()
-  split_shell_words_into xargs_words "$c"
-  [[ "${#xargs_words[@]}" -eq 0 ]] && return 1
-
-  local command_word="${xargs_words[0]##*/}"
-  [[ "$command_word" == "xargs" ]] || return 1
-
-  local i=1
-  local word=""
-  while [[ "$i" -lt "${#xargs_words[@]}" ]]; do
-    word="${xargs_words[$i]}"
-    case "$word" in
-      --)
-        i=$((i + 1))
-        break
-        ;;
-      -0|--null|-r|--no-run-if-empty|-t|--verbose|-p|--interactive)
-        i=$((i + 1))
-        continue
-        ;;
-      -I|-i|-L|-l|-n|-P|-s|-E|-e|-d|--replace|--max-lines|--max-args|--max-procs|--max-chars|--eof|--delimiter)
-        i=$((i + 2))
-        continue
-        ;;
-      -I?*|-i?*|-L?*|-l?*|-n?*|-P?*|-s?*|-E?*|-e?*|-d?*|--replace=*|--max-lines=*|--max-args=*|--max-procs=*|--max-chars=*|--eof=*|--delimiter=*)
-        i=$((i + 1))
-        continue
-        ;;
-      -*)
-        i=$((i + 1))
-        continue
-        ;;
-    esac
-    break
-  done
-
-  [[ "$i" -lt "${#xargs_words[@]}" ]] || return 1
-
-  local rest=""
-  while [[ "$i" -lt "${#xargs_words[@]}" ]]; do
-    rest+="${xargs_words[$i]} "
-    i=$((i + 1))
-  done
-  printf '%s' "${rest% }"
-}
-
+# Decide whether a GitHub CLI command mutates shared project state.
+# The only write exceptions remain issue and pull-request conversation comments.
 is_gh_write_operation() {
-  local c
-  c=$(normalize_command_candidate "$1")
+  local github_candidate
+  github_candidate=$(normalize_command_candidate "$1")
 
-  local xargs_rest=""
-  if xargs_rest=$(strip_xargs_prefix "$c"); then
-    c="$xargs_rest"
+  local xargs_payload=""
+  # Shared xargs parsing reveals the GitHub command after every supported option form.
+  if xargs_payload=$(strip_xargs_payload_command "$github_candidate"); then
+    github_candidate="$xargs_payload"
   fi
 
   local -a words=()
-  split_shell_words_into words "$c"
+  split_shell_words_into words "$github_candidate"
+  # Empty text cannot name a GitHub write operation.
   [[ "${#words[@]}" -eq 0 ]] && return 1
 
   local gh_word="${words[0]##*/}"
+  # Only the GitHub CLI owns this command grammar.
   [[ "$gh_word" == "gh" ]] || return 1
 
   local i
   i=$(gh_skip_options_index words 1)
 
   local topic="${words[$i]:-}"
+  # Missing command topics and option-only invocations do not mutate GitHub.
   [[ -z "$topic" || "$topic" == -* ]] && return 1
   topic="${topic,,}"
 
+  # API writes use method and field semantics instead of named subcommands.
   if [[ "$topic" == "api" ]]; then
     is_gh_api_write words $((i + 1))
     return $?
@@ -220,6 +200,10 @@ is_gh_write_operation() {
   subcommand_index=$(gh_skip_options_index words $((i + 1)))
   local subcommand="${words[$subcommand_index]:-}"
   subcommand="${subcommand,,}"
+  local nested_subcommand_index
+  nested_subcommand_index=$(gh_skip_options_index words $((subcommand_index + 1)))
+  local nested_subcommand="${words[$nested_subcommand_index]:-}"
+  nested_subcommand="${nested_subcommand,,}"
   case "$topic:$subcommand" in
     issue:create|issue:close|issue:reopen|issue:edit|issue:delete|issue:lock|issue:unlock|issue:pin|issue:unpin|issue:transfer|issue:develop)
       return 0 ;;
@@ -245,7 +229,7 @@ is_gh_write_operation() {
       return 0 ;;
     auth:login|auth:logout|auth:refresh|auth:setup-git)
       return 0 ;;
-    codespace:create|codespace:delete|codespace:edit)
+    codespace:create|codespace:delete|codespace:edit|codespace:stop)
       return 0 ;;
     extension:install|extension:remove|extension:upgrade)
       return 0 ;;
@@ -255,43 +239,59 @@ is_gh_write_operation() {
       return 0 ;;
   esac
 
+  case "$topic:$subcommand:$nested_subcommand" in
+    repo:deploy-key:add|repo:deploy-key:delete)
+      return 0 ;;
+  esac
+
   return 1
 }
 
+# Check each executable pipeline stage before the developer lets an agent run it.
+# Quoted search text stays evidence; real repository or GitHub write stages are refused.
 check_repository_segment() {
-  local cmd="$1"
-  local depth="${2:-0}"
-  prepare_segment_context "$cmd" "$depth" || return $?
-  cmd="$CMD_TRIMMED"
+  local developer_command="$1"
+  developer_command="$CMD_TRIMMED"
 
-  if is_unredirected_unpiped_read_only "$cmd"; then
+  # A plain read-only command gives the developer evidence without changing project state.
+  if is_unredirected_unpiped_read_only "$developer_command"; then
     return 0
   fi
 
-  local repo_scan="${CMD_TRIMMED//||/__GOAT_OR__}"
-  local -a pipe_parts
-  local pipe_part
-  IFS='|' read -ra pipe_parts <<< "$repo_scan"
-  for pipe_part in "${pipe_parts[@]}"; do
-    local git_candidate
-    git_candidate=$(normalize_git_policy_candidate "$pipe_part")
-    if is_git_push "$git_candidate"; then
+  local -a repository_pipeline_stages=()
+  local repository_pipeline_stage=""
+  split_top_level_pipeline_stages_into repository_pipeline_stages "$developer_command"
+
+  # Every real stage is checked so a safe producer cannot hide a repository write downstream.
+  for repository_pipeline_stage in "${repository_pipeline_stages[@]}"; do
+    local repository_write_candidate=""
+    repository_write_candidate=$(normalize_git_policy_candidate "$repository_pipeline_stage")
+
+    # Remote publication is always left to the developer, regardless of wrappers or pipeline position.
+    if is_git_push "$repository_write_candidate"; then
       block "git push is not allowed. Ask the user to push manually." || return $?
     fi
-    if is_git_commit "$git_candidate"; then
+
+    # History creation is always left to the developer, even when an agent was asked to prepare it.
+    if is_git_commit "$repository_write_candidate"; then
       block "git commit is not allowed. Ask the user to commit manually." || return $?
     fi
-    if is_git_destructive "$git_candidate"; then
-      block "Destructive git operation (--no-verify / reset --hard / clean -f). Remove the flag, stash first, or run manually." || return $?
+
+    # Destructive history or cleanup flags require a manual developer decision and recovery plan.
+    if is_git_destructive "$repository_write_candidate"; then
+      block \
+        "Destructive git operation (--no-verify / reset --hard / clean -f). Remove the flag, stash first, or run manually." ||
+        return $?
     fi
   done
 
-  local gh_scan="${CMD_TRIMMED//||/__GOAT_OR__}"
-  local -a gh_pipe_parts
-  IFS='|' read -ra gh_pipe_parts <<< "$gh_scan"
-  for pipe_part in "${gh_pipe_parts[@]}"; do
-    if is_gh_write_operation "$pipe_part"; then
-      block "GitHub write via gh is not allowed. Draft the content or command and wait for explicit user approval." || return $?
+  # Remote project stages are checked separately so read-only Git evidence does not mask a GitHub mutation.
+  for repository_pipeline_stage in "${repository_pipeline_stages[@]}"; do
+    # A GitHub mutation is drafted for the developer instead of being sent without approval.
+    if is_gh_write_operation "$repository_pipeline_stage"; then
+      block \
+        "GitHub write via gh is not allowed. Draft the content or command and wait for explicit user approval." ||
+        return $?
     fi
   done
 

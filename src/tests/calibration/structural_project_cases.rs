@@ -1,5 +1,10 @@
+//! Structural and project calibration pairs pin one firing and one quiet sample.
+//! Each pair runs with only its target rule enabled, separating rule precision
+//! from unrelated findings produced by the same temporary Rust project.
+
 use super::*;
 
+/// Builds the exact positive/negative matrix for structural and project rules.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- architecture -----
@@ -143,10 +148,29 @@ pub async fn blocks() {
                 baseline_with_lib(
                     root,
                     r#"/// Probe.
-pub async fn holds(lock: &std::sync::Mutex<i32>) {
+pub async fn mutex_unwrap(lock: &std::sync::Mutex<i32>) {
     let guard = lock.lock().unwrap();
     other().await;
-    println!("{}", *guard);
+    let _ = guard;
+}
+
+pub async fn mutex_question(lock: &std::sync::Mutex<i32>) -> Result<(), ()> {
+    let guard = lock.lock()?;
+    other().await;
+    let _ = guard;
+    Ok(())
+}
+
+pub async fn rwlock_expect(lock: &std::sync::RwLock<i32>) {
+    let guard = lock.read().expect("state lock");
+    other().await;
+    let _ = guard;
+}
+
+pub async fn async_rwlock(lock: &tokio::sync::RwLock<i32>) {
+    let guard = lock.write().await;
+    other().await;
+    let _ = guard;
 }
 
 async fn other() {}
@@ -157,10 +181,30 @@ async fn other() {}
                 baseline_with_lib(
                     root,
                     r#"/// Probe.
-pub async fn drops_first(lock: &std::sync::Mutex<i32>) {
-    let guard = lock.lock().unwrap();
-    drop(guard);
+pub struct DomainReader;
+
+impl DomainReader {
+    pub fn read(&self) -> usize { 1 }
+}
+
+pub async fn reads_bytes(reader: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<()> {
+    let read = reader.read(buf)?;
     other().await;
+    let _ = read;
+    Ok(())
+}
+
+pub async fn writes_bytes(file: &mut std::fs::File, buf: &[u8]) -> std::io::Result<()> {
+    let written = file.write(buf)?;
+    other().await;
+    let _ = written;
+    Ok(())
+}
+
+pub async fn domain_read(reader: &DomainReader) {
+    let value = reader.read();
+    other().await;
+    let _ = value;
 }
 
 async fn other() {}
