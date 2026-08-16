@@ -230,8 +230,16 @@ pub(crate) fn analyse_process_commands(
 }
 
 /// Reject a constructor match captured as the suffix of another qualified Rust path.
+/// A leading `::` root qualifier names the same standard-library type, so only an
+/// identifier or generic close before the separator proves a longer containing path.
 fn constructor_has_no_outer_path(line: &str, constructor: regex::Match<'_>) -> bool {
-    !line[..constructor.start()].trim_end().ends_with("::")
+    let Some(before_separator) = line[..constructor.start()].trim_end().strip_suffix("::") else {
+        return true;
+    };
+    !before_separator
+        .chars()
+        .next_back()
+        .is_some_and(|outer| outer.is_alphanumeric() || outer == '_' || outer == '>')
 }
 
 /// Comment-safe source projections used by process constructor and risk matching.

@@ -144,6 +144,14 @@ pub(crate) fn process_command_requires_std_import_provenance() {
             "pub fn run(input: &str) {\n    let _ = Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
         ),
         (
+            "root_qualified.rs",
+            "pub fn run(input: &str) {\n    let _ = ::std::process::Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
+            "outer_path.rs",
+            "pub fn run(input: &str) {\n    let _ = vendor::std::process::Command::new(\"sh\").arg(\"-c\").arg(input);\n}\n",
+        ),
+        (
             "comment_only.rs",
             "/// `std::process::Command::new(\"sh\").arg(input)` is example text.\npub fn documented() {}\n",
         ),
@@ -170,7 +178,7 @@ pub(crate) fn process_command_requires_std_import_provenance() {
         .collect();
     assert_eq!(
         process_findings.len(),
-        6,
+        7,
         "only standard-library process constructors should report; findings={process_findings:?}"
     );
     for expected_file_name in [
@@ -180,6 +188,8 @@ pub(crate) fn process_command_requires_std_import_provenance() {
         "function_std_bare.rs",
         "block_std_module.rs",
         "root_clap_shadowed.rs",
+        // A `::` root qualifier names the same standard-library type.
+        "root_qualified.rs",
     ] {
         assert!(
             process_findings
@@ -389,7 +399,8 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
     );
 }
 
-/// Prove `uses:` reports only a dependency attached directly to a GitHub step.
+/// Prove `uses:` reports a dependency attached directly to a GitHub step or job,
+/// and stays silent for `env:`, `with:`, and lookalike keys that only spell `uses`.
 #[test]
 pub(crate) fn github_actions_uses_requires_step_placement() {
     let _guard = analysis_lock();
@@ -427,8 +438,8 @@ pub(crate) fn github_actions_uses_requires_step_placement() {
 
     assert_eq!(
         unpinned_findings.len(),
-        2,
-        "only direct step dependencies should report; findings={unpinned_findings:?}"
+        3,
+        "only direct step and job dependencies should report; findings={unpinned_findings:?}"
     );
     assert!(unpinned_findings
         .iter()
@@ -436,6 +447,229 @@ pub(crate) fn github_actions_uses_requires_step_placement() {
     assert!(unpinned_findings.iter().any(|finding| {
         finding.file_path == ".github/workflows/placement.yml" && finding.line == Some(13)
     }));
+    // A job calling a reusable workflow depends on third-party code exactly as a step does.
+    assert!(unpinned_findings.iter().any(|finding| {
+        finding.file_path == ".github/workflows/placement.yml" && finding.line == Some(6)
+    }));
+}
+
+/// Prove pull-request gating reads the top-level `on` mapping: a step input named
+/// `pull_request` is not a trigger, and a quoted key or event name still is.
+#[test]
+pub(crate) fn github_actions_events_require_top_level_on_placement() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/step-input.yml",
+        "name: push only\non: push\njobs:\n  build:\n    steps:\n      - uses: acme/tool@1111111111111111111111111111111111111111\n        with:\n          pull_request: false\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/quoted-scalar.yml",
+        "name: quoted trigger\n\"on\": pull_request_target\njobs:\n  build:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/quoted-event.yml",
+        "name: quoted event\non:\n  \"pull_request\":\n    branches: [main]\njobs:\n  build:\n    steps:\n      - run: echo '${{secrets.DEPLOY_TOKEN}}'\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/flow-mapping.yml",
+        "name: flow mapping\non: {push: null, pull_request: null}\njobs:\n  build:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    // Only the two real pull-request workflows expose their secret reference, and the
+    // second proves interior expression whitespace is optional.
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-secrets-in-pr"),
+        3,
+        "quoted and flow-mapping triggers report; a `with:` input named pull_request does not"
+    );
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-pull-request-target"),
+        1,
+        "only the quoted target trigger is a pull_request_target workflow"
+    );
+    let event_findings = github_metadata_findings(&report);
+    assert!(
+        event_findings
+            .iter()
+            .all(|finding| finding.file_path != ".github/workflows/step-input.yml"),
+        "push-only workflow received pull-request findings: {event_findings:?}"
+    );
+}
+
+/// Prove step keys and block headers accept every spelling GitHub honours, so a
+/// quoted key or an explicit indentation indicator cannot hide a step's content.
+#[test]
+pub(crate) fn github_actions_step_keys_accept_quoted_and_indented_block_forms() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/quoted-step.yml",
+        "name: quoted step\non: push\njobs:\n  build:\n    steps:\n      - \"uses\": acme/quoted@main\n      - \"run\": |2\n         curl -fsSL https://installer.example/tool.sh | bash\n      - run: | # install the toolchain\n          curl -fsSL https://installer.example/other.sh | bash\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-unpinned-action"),
+        1,
+        "a quoted `uses` key still names a moving dependency"
+    );
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-remote-shell"),
+        2,
+        "a block header keeps its shell content in scope through an indentation indicator and a trailing comment"
+    );
+}
+
+/// Prove a container image is exempt only when it names an immutable digest.
+#[test]
+pub(crate) fn github_actions_container_images_require_digest_pins() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/images.yml",
+        "name: images\non: push\njobs:\n  build:\n    steps:\n      - uses: docker://alpine:latest\n      - uses: docker://alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n      - uses: ./.github/actions/local\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let image_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.github-actions-unpinned-action")
+        .collect();
+    assert_eq!(
+        image_findings.len(),
+        1,
+        "only the moving tag is unpinned; findings={image_findings:?}"
+    );
+    assert_eq!(image_findings[0].line, Some(6));
+    // Guidance for an image must not tell users to supply a commit SHA.
+    assert!(
+        image_findings[0].message.contains("digest"),
+        "container guidance should name a digest: {:?}",
+        image_findings[0].message
+    );
+}
+
+/// Prove the remote-shell rule requires the downloaded payload to reach the shell,
+/// so running a checked-in script after an unrelated request stays silent.
+#[test]
+pub(crate) fn github_actions_remote_shell_requires_payload_reaching_shell() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/sequential.yml",
+        "name: sequential\non: push\njobs:\n  build:\n    steps:\n      - run: curl -fsS https://example.invalid/health; bash ./scripts/verify.sh\n      - run: curl -fsS https://example.invalid/health || bash ./scripts/fallback.sh\n      - run: curl -fsSL -o /tmp/install.sh https://installer.example/tool.sh; bash /tmp/install.sh\n      - run: curl -fsSL https://installer.example/tool.sh | bash\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let shell_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.github-actions-remote-shell")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        shell_lines,
+        vec![Some(8), Some(9)],
+        "only the downloaded payload and the pipeline reach a shell"
+    );
+}
+
+/// Prove a `permissions:` key inside a step is an action input, not a workflow grant.
+#[test]
+pub(crate) fn github_actions_broad_permissions_ignores_step_inputs() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/step-permissions.yml",
+        "name: step input\non: push\npermissions:\n  contents: read\njobs:\n  build:\n    steps:\n      - uses: acme/tool@1111111111111111111111111111111111111111\n        with:\n          permissions: write-all\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/workflow-permissions.yml",
+        "name: workflow grant\non: push\npermissions: write-all\njobs:\n  build:\n    steps:\n      - run: echo ready\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let permission_findings: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.github-actions-broad-permissions")
+        .collect();
+    assert_eq!(
+        permission_findings.len(),
+        1,
+        "only the workflow-level grant is a permission; findings={permission_findings:?}"
+    );
+    assert_eq!(
+        permission_findings[0].file_path,
+        ".github/workflows/workflow-permissions.yml"
+    );
 }
 
 /// Prove a download-to-shell pipeline still reports when the author splits it

@@ -145,15 +145,41 @@ fn line_indent(line: &str) -> usize {
 
 /// Return a `run:` value from plain or list-item step syntax, or no value for other keys.
 fn workflow_run_value(trimmed: &str) -> Option<&str> {
-    trimmed
-        .strip_prefix("- ")
-        .unwrap_or(trimmed)
-        .strip_prefix("run:")
+    step_property_value(trimmed, "run")
+}
+
+/// Return the value of one step property written in plain or list-item syntax. GitHub accepts
+/// quoted keys (`- "run": ...`), so the key is normalised before it is compared. The remainder is
+/// returned unchanged because block-scalar headers and shell text are inspected as written.
+fn step_property_value<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
+    let property = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+    let (property_key, value) = property.split_once(':')?;
+    (normalize_yaml_key(property_key) == key).then_some(value)
 }
 
 /// Recognise YAML block-scalar markers whose following lines belong to `run`.
+/// A header may carry an explicit indentation digit and a chomping indicator in either
+/// order (`|2`, `>-`, `|2-`, `|-2`), and YAML also allows a trailing comment after it.
+/// All of those keep the following lines in the block.
 fn is_yaml_block_scalar(value: &str) -> bool {
-    matches!(value, "|" | "|-" | "|+" | ">" | ">-" | ">+")
+    // A comment after the header describes the step; it does not end the block.
+    let header = strip_inline_comment(value).trim_end();
+    // Only the literal and folded markers open a block whose later lines are shell text.
+    let Some(indicators) = header.strip_prefix(['|', '>']) else {
+        return false;
+    };
+    let mut seen_indentation = false;
+    let mut seen_chomping = false;
+    for indicator in indicators.chars() {
+        match indicator {
+            // YAML forbids a zero indentation indicator, so digits start at one.
+            '1'..='9' if !seen_indentation => seen_indentation = true,
+            '-' | '+' if !seen_chomping => seen_chomping = true,
+            // Any other trailing text means the value is a command, not a block header.
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Run the GitHub rules applicable to this workflow or explicit action file.
@@ -198,22 +224,27 @@ struct GithubMetadataScanState {
 /// only after a pull-request event makes that context reachable to user code.
 #[derive(Default)]
 struct WorkflowSecuritySummary {
+    triggers: WorkflowTriggerState,
     pull_request_line: Option<usize>,
     pull_request_target_line: Option<usize>,
     secret_lines: Vec<usize>,
 }
 
 impl WorkflowSecuritySummary {
-    /// Observe workflow events and secret references on one normalized line.
-    fn observe_line(&mut self, trimmed: &str, line_number: usize) {
+    /// Observe workflow events and secret references on one line.
+    fn observe_line(&mut self, line: &str, trimmed: &str, line_number: usize) {
         // Target events take precedence because they also satisfy pull-request gating.
-        if workflow_line_contains_event(trimmed, "pull_request_target") {
-            self.pull_request_target_line.get_or_insert(line_number);
-        } else if workflow_line_contains_event(trimmed, "pull_request") {
-            self.pull_request_line.get_or_insert(line_number);
+        match self.triggers.event_on_line(line, trimmed) {
+            Some(WorkflowEvent::PullRequestTarget) => {
+                self.pull_request_target_line.get_or_insert(line_number);
+            }
+            Some(WorkflowEvent::PullRequest) => {
+                self.pull_request_line.get_or_insert(line_number);
+            }
+            None => {}
         }
         // Secret lines are retained until the completed workflow trigger is known.
-        if trimmed.contains("${{ secrets.") {
+        if line_has_secret_expression(trimmed) {
             self.secret_lines.push(line_number);
         }
     }
@@ -238,11 +269,14 @@ fn analyse_github_actions_line(
     if let Some(action) = scan_state.steps.action_dependency(line, metadata_kind) {
         maybe_push_unpinned_action(unit, findings, metadata_kind, line_number, action);
     }
-    // Composite action metadata has no workflow-level permissions contract.
+    // Composite action metadata has no workflow-level permissions contract. A `permissions:`
+    // key inside a step is an action input, not a grant, so step placement disqualifies it.
+    let line_grants_broad_permission = scan_state
+        .workflow_permissions
+        .line_allows_broad_permission(line);
     if metadata_kind == GithubMetadataKind::Workflow
-        && scan_state
-            .workflow_permissions
-            .line_allows_broad_permission(line)
+        && line_grants_broad_permission
+        && !scan_state.steps.is_inside_step_item()
     {
         push_workflow_finding(
             unit,
@@ -263,7 +297,7 @@ fn analyse_github_actions_line(
     if metadata_kind == GithubMetadataKind::Workflow {
         scan_state
             .workflow_summary
-            .observe_line(trimmed, line_number);
+            .observe_line(line, trimmed, line_number);
     }
 }
 
@@ -379,11 +413,7 @@ fn is_unfinished_shell_pipeline(trimmed: &str) -> bool {
 
 /// Return a normalized `uses:` value from plain or list-item property syntax.
 fn github_step_uses_value(trimmed: &str) -> Option<&str> {
-    let value = trimmed
-        .strip_prefix("- ")
-        .unwrap_or(trimmed)
-        .strip_prefix("uses:")?;
-    Some(normalize_yaml_scalar(value))
+    Some(normalize_yaml_scalar(step_property_value(trimmed, "uses")?))
 }
 
 /// One open `steps:` sequence and the indentation of its direct list items.
@@ -420,8 +450,13 @@ impl GithubStepState {
             return None;
         }
         let indent = line_indent(line);
-        let dependency = self.dependency_in_open_steps(indent, trimmed);
-        self.update_mapping_path(indent, trimmed, metadata_kind);
+        let step_dependency = self.dependency_in_open_steps(indent, trimmed);
+        self.close_mapping_scopes(indent);
+        // A job can call a reusable workflow instead of running steps, and that reference
+        // moves exactly like an action reference, so it needs the same pinning review.
+        let dependency =
+            step_dependency.or_else(|| self.reusable_workflow_dependency(trimmed, metadata_kind));
+        self.open_mapping_scope(indent, trimmed, metadata_kind);
         dependency
     }
 
@@ -466,13 +501,8 @@ impl GithubStepState {
             .flatten()
     }
 
-    /// Maintain the mapping ancestors needed to recognise workflow and action `steps:` blocks.
-    fn update_mapping_path(
-        &mut self,
-        indent: usize,
-        trimmed: &str,
-        metadata_kind: GithubMetadataKind,
-    ) {
+    /// Close every mapping whose key ended before this line's indentation.
+    fn close_mapping_scopes(&mut self, indent: usize) {
         // Returning to a peer key closes that key's mapping before the new line is classified.
         while self
             .mapping_scopes
@@ -481,6 +511,33 @@ impl GithubStepState {
         {
             self.mapping_scopes.pop();
         }
+    }
+
+    /// Return a reusable workflow this job calls directly, which pins like an action reference.
+    fn reusable_workflow_dependency<'a>(
+        &self,
+        trimmed: &'a str,
+        metadata_kind: GithubMetadataKind,
+    ) -> Option<&'a str> {
+        // Only a workflow job calls another workflow, and only as its own direct property.
+        if metadata_kind != GithubMetadataKind::Workflow || !self.is_inside_job_mapping() {
+            return None;
+        }
+        github_step_uses_value(trimmed)
+    }
+
+    /// Whether the current YAML path is a direct property of one workflow job.
+    fn is_inside_job_mapping(&self) -> bool {
+        self.mapping_scopes.len() == 2 && self.mapping_scopes[0].key == "jobs"
+    }
+
+    /// Maintain the mapping ancestors needed to recognise workflow and action `steps:` blocks.
+    fn open_mapping_scope(
+        &mut self,
+        indent: usize,
+        trimmed: &str,
+        metadata_kind: GithubMetadataKind,
+    ) {
         let Some((key, value)) = yaml_mapping_entry(trimmed) else {
             return;
         };
@@ -509,9 +566,7 @@ impl GithubStepState {
             GithubMetadataKind::Action => {
                 self.mapping_scopes.len() == 1 && self.mapping_scopes[0].key == "runs"
             }
-            GithubMetadataKind::Workflow => {
-                self.mapping_scopes.len() == 2 && self.mapping_scopes[0].key == "jobs"
-            }
+            GithubMetadataKind::Workflow => self.is_inside_job_mapping(),
         }
     }
 }
@@ -522,8 +577,15 @@ fn yaml_mapping_entry(trimmed: &str) -> Option<(&str, &str)> {
         return None;
     }
     let (key, value) = trimmed.split_once(':')?;
-    let normalized_key = key.trim().trim_matches('"').trim_matches('\'');
+    let normalized_key = normalize_yaml_key(key);
     (!normalized_key.is_empty()).then_some((normalized_key, value))
+}
+
+/// Strip a YAML key's surrounding whitespace and matching quotes so `on`, `"on"`, and `'on'` —
+/// all valid spellings of the same key, and commonly quoted because YAML 1.1 reads bare `on`
+/// as a boolean — normalise to one token.
+fn normalize_yaml_key(key: &str) -> &str {
+    key.trim().trim_matches('"').trim_matches('\'')
 }
 
 /// Strip a trailing YAML inline comment (` #...`). YAML requires whitespace before
@@ -545,8 +607,16 @@ fn maybe_push_unpinned_action(
     line: usize,
     action: &str,
 ) {
-    // Local actions and pinned container images do not depend on a moving repository ref.
-    if action.starts_with("./") || action.starts_with("docker://") {
+    // A local action ships in the repository users already review.
+    if action.starts_with("./") {
+        return;
+    }
+    // A container image is immutable only when it names a digest: a tag such as
+    // `docker://alpine:latest` still executes whatever the registry serves next.
+    if let Some(image) = action.strip_prefix("docker://") {
+        if !is_digest_pinned_image(image) {
+            push_unpinned_image(unit, findings, metadata_kind, line, action);
+        }
         return;
     }
     // A third-party action without any ref is unpinned for either metadata kind.
@@ -564,6 +634,37 @@ fn maybe_push_unpinned_action(
 fn is_full_sha_reference(reference: &str) -> bool {
     // Every character must be hexadecimal after the exact-length check succeeds.
     reference.len() == 40 && reference.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Whether a container reference names an immutable digest rather than a moving tag.
+fn is_digest_pinned_image(image: &str) -> bool {
+    let Some((_, digest)) = image.rsplit_once("@sha256:") else {
+        return false;
+    };
+    // A sha256 digest is exactly 64 hexadecimal characters.
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Report a container image whose tag can change under the workflow that runs it.
+fn push_unpinned_image(
+    unit: &SourceUnit<'_>,
+    findings: &mut Vec<Finding>,
+    metadata_kind: GithubMetadataKind,
+    line: usize,
+    action: &str,
+) {
+    push_shared_github_metadata_finding(
+        unit,
+        findings,
+        metadata_kind,
+        GithubStepFinding {
+            rule_id: "security.github-actions-unpinned-action",
+            workflow_message: "Workflow container image is not pinned to a digest.",
+            action_message: "Composite action container image is not pinned to a digest.",
+            line,
+            metadata: json!({ "action": action, "reference": null }),
+        },
+    );
 }
 
 /// Emit pinning guidance with wording accurate for the supplied metadata kind.
@@ -674,25 +775,237 @@ fn is_known_permission_scope(scope: &str) -> bool {
     )
 }
 
-/// Detect a downloaded payload piped or chained directly into a shell interpreter.
+/// Detect a downloaded payload reaching a shell interpreter. A pipe always delivers the
+/// downloaded bytes. A sequential `;` or `||` delivers them only when the interpreter reads a
+/// path the downloader wrote, so running a checked-in script after an unrelated request stays
+/// silent instead of instructing users to rewrite a safe step.
 fn is_remote_download_piped_to_shell(value: &str) -> bool {
-    static REMOTE_SHELL_REGEX: OnceLock<Regex> = OnceLock::new();
-    static_regex(
-        &REMOTE_SHELL_REGEX,
-        r"(?i)\b(curl|wget)\b[^\n|;]*(\||;)[^\n]*(sh|bash|dash|zsh)\b",
-    )
-    .is_match(value)
+    // The downloader's own segment names the file any later command could execute.
+    let mut download_segment: Option<&str> = None;
+    for (connector, segment) in shell_command_segments(value) {
+        match (
+            connector,
+            download_segment,
+            shell_invocation_arguments(segment),
+        ) {
+            // A pipeline stage hands the payload straight to the interpreter that reads it.
+            (ShellConnector::Pipe, Some(_), Some(_)) => return true,
+            // A sequential command receives the payload only by naming the downloaded path.
+            (ShellConnector::Sequential, Some(download), Some(arguments))
+                if shell_input_is_downloaded_payload(arguments, download) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        if segment_has_remote_download(segment) {
+            download_segment = Some(segment);
+        } else if connector == ShellConnector::Sequential {
+            // An unrelated sequential command ends the previous payload's reach.
+            download_segment = None;
+        }
+    }
+    false
 }
 
-/// Recognise scalar, list, mapping, or list-item syntax for one workflow event.
-fn workflow_line_contains_event(trimmed: &str, event: &str) -> bool {
-    let event_pattern = regex::escape(event);
-    let pattern = format!(
-        r#"(^on:\s*(?:\[[^\]]*\b{event_pattern}\b|["']?{event_pattern}["']?\s*(?:#.*)?$)|^-?\s*{event_pattern}\s*:|^-?\s*{event_pattern}\s*$)"#
-    );
-    Regex::new(&pattern)
-        .map(|compiled| compiled.is_match(trimmed))
-        .unwrap_or(false)
+/// How one shell segment received control from the segment before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellConnector {
+    /// The first segment of the command line.
+    Start,
+    /// `|`, which streams the previous command's output into this one.
+    Pipe,
+    /// `;` or `||`, which run this command without the previous command's output.
+    Sequential,
+}
+
+/// Split one shell command line into segments and the connector that introduced each.
+/// Only `|`, `||`, and `;` are recognised, because those are the connectors this rule reports.
+fn shell_command_segments(value: &str) -> Vec<(ShellConnector, &str)> {
+    let mut segments = Vec::new();
+    let mut connector = ShellConnector::Start;
+    let mut segment_start = 0usize;
+    let mut index = 0usize;
+    let bytes = value.as_bytes();
+    // Connector bytes are ASCII, so a byte scan never splits a multi-byte character.
+    while index < bytes.len() {
+        let found = match bytes[index] {
+            b'|' if bytes.get(index + 1) == Some(&b'|') => (ShellConnector::Sequential, 2),
+            b'|' => (ShellConnector::Pipe, 1),
+            b';' => (ShellConnector::Sequential, 1),
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        segments.push((connector, &value[segment_start..index]));
+        connector = found.0;
+        index += found.1;
+        segment_start = index;
+    }
+    segments.push((connector, &value[segment_start..]));
+    segments
+}
+
+/// Whether a segment fetches remote content that a later command could execute.
+fn segment_has_remote_download(segment: &str) -> bool {
+    static REMOTE_DOWNLOAD_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(&REMOTE_DOWNLOAD_REGEX, r"(?i)\b(?:curl|wget)\b").is_match(segment)
+}
+
+/// Return the arguments after a shell interpreter invoked as this segment's command.
+/// The interpreter must be the command itself: a script path such as `./deploy.sh` ends in
+/// `sh` without being one, and an interpreter named in a message is not an invocation.
+fn shell_invocation_arguments(segment: &str) -> Option<&str> {
+    let command = segment.trim_start();
+    let (first_token, arguments) = split_leading_token(command);
+    // A privilege wrapper keeps the interpreter as the command it runs.
+    let (interpreter, arguments) = match first_token {
+        "sudo" => split_leading_token(arguments.trim_start()),
+        _ => (first_token, arguments),
+    };
+    is_shell_interpreter(interpreter).then_some(arguments)
+}
+
+/// Split the first whitespace-delimited token from the rest of a command.
+fn split_leading_token(command: &str) -> (&str, &str) {
+    match command.find(char::is_whitespace) {
+        Some(end) => command.split_at(end),
+        // A command without whitespace is a single token with no arguments.
+        None => (command, ""),
+    }
+}
+
+/// Recognise a POSIX shell interpreter named directly or through an absolute path.
+fn is_shell_interpreter(token: &str) -> bool {
+    let name = token.rsplit('/').next().unwrap_or(token);
+    matches!(name, "sh" | "bash" | "dash" | "zsh")
+}
+
+/// Whether an interpreter invoked after a download reads that download's payload.
+/// An interpreter given no path reads the stream or terminal it was handed.
+fn shell_input_is_downloaded_payload(arguments: &str, download_segment: &str) -> bool {
+    let Some(script_path) = arguments
+        .split_whitespace()
+        .find(|token| !token.starts_with('-'))
+    else {
+        return true;
+    };
+    download_segment.contains(script_path)
+}
+
+/// Pull-request triggers whose presence changes how workflow secrets are reviewed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkflowEvent {
+    PullRequest,
+    PullRequestTarget,
+}
+
+/// Tracks the top-level `on:` mapping so only a real trigger declaration counts as an event.
+/// A step input, matrix entry, or `with:` value named `pull_request` lives outside that mapping
+/// and must not make an unrelated push-only workflow look like it runs on pull requests.
+#[derive(Default)]
+struct WorkflowTriggerState {
+    in_on_mapping: bool,
+    event_indent: Option<usize>,
+}
+
+impl WorkflowTriggerState {
+    /// Return the pull-request event this line declares under the top-level `on` key.
+    fn event_on_line(&mut self, line: &str, trimmed: &str) -> Option<WorkflowEvent> {
+        // Blank and comment lines keep the surrounding trigger scope intact.
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return None;
+        }
+        let indent = line_indent(line);
+        if indent == 0 {
+            return self.top_level_key_event(trimmed);
+        }
+        if !self.in_on_mapping {
+            return None;
+        }
+        // The first nested entry fixes the depth at which events are named; deeper keys such as
+        // `branches:` and `types:` filter the event above them rather than naming a new one.
+        let event_indent = *self.event_indent.get_or_insert(indent);
+        (indent == event_indent)
+            .then(|| workflow_event_in_entry(trimmed))
+            .flatten()
+    }
+
+    /// Classify a top-level key, which either opens the trigger mapping or closes it.
+    fn top_level_key_event(&mut self, trimmed: &str) -> Option<WorkflowEvent> {
+        self.in_on_mapping = false;
+        self.event_indent = None;
+        let (key, value) = yaml_mapping_entry(trimmed)?;
+        if key != "on" {
+            return None;
+        }
+        let events = normalize_yaml_scalar(value);
+        // An empty value defers the events to the indented lines that follow.
+        if events.is_empty() {
+            self.in_on_mapping = true;
+            return None;
+        }
+        workflow_event_in_scalar(events)
+    }
+}
+
+/// Recognise a pull-request event in an inline `on:` scalar, flow sequence, or flow mapping.
+/// Only a top-level `on:` value reaches this, so matching a flow entry cannot pick up an
+/// unrelated key elsewhere in the workflow that happens to share an event name.
+fn workflow_event_in_scalar(value: &str) -> Option<WorkflowEvent> {
+    let flow_entries = value
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .or_else(|| {
+            value
+                .strip_prefix('{')
+                .and_then(|rest| rest.strip_suffix('}'))
+        });
+    let Some(items) = flow_entries else {
+        return workflow_event_from_name(value);
+    };
+    let mut listed_event = None;
+    for item in items.split(',') {
+        // A flow mapping carries its event as the entry key; a flow sequence has no key.
+        let name = item.split_once(':').map_or(item, |(key, _)| key);
+        match workflow_event_from_name(normalize_yaml_key(name)) {
+            // A target trigger ends the search because it outranks a plain pull request.
+            Some(WorkflowEvent::PullRequestTarget) => {
+                return Some(WorkflowEvent::PullRequestTarget);
+            }
+            Some(event) => listed_event = Some(event),
+            None => {}
+        }
+    }
+    listed_event
+}
+
+/// Recognise a pull-request event named by one entry inside the `on:` mapping.
+fn workflow_event_in_entry(trimmed: &str) -> Option<WorkflowEvent> {
+    // A list item names its event directly; a mapping key carries that event's filters.
+    let entry = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+    let name = match entry.split_once(':') {
+        Some((key, _)) => key,
+        None => entry,
+    };
+    workflow_event_from_name(normalize_yaml_key(name))
+}
+
+/// Map one normalised event name to the trigger this rule reviews.
+fn workflow_event_from_name(name: &str) -> Option<WorkflowEvent> {
+    match name {
+        "pull_request_target" => Some(WorkflowEvent::PullRequestTarget),
+        "pull_request" => Some(WorkflowEvent::PullRequest),
+        _ => None,
+    }
+}
+
+/// Recognise a repository secret expression, including the optional interior
+/// whitespace GitHub accepts, so `${{secrets.X}}` reads the same as `${{ secrets.X }}`.
+fn line_has_secret_expression(trimmed: &str) -> bool {
+    static SECRET_EXPRESSION_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(&SECRET_EXPRESSION_REGEX, r"\$\{\{\s*secrets\.").is_match(trimmed)
 }
 
 /// Emit one workflow-only security finding through the normal report contract.

@@ -8,7 +8,17 @@
 0.5.0 retunes rule families against real Rust idiom and measured corpus noise, replaces secret and PHI previews with markers, moves the action to `argv` with a pinned verified install, and upgrades the agent harness to goat-flow 1.15.1.
 
 - **`security.process-command` requires std provenance.** Third-party `Command` types and comment examples stay quiet; clap drops 1,265 findings to 4.
-- **GitHub `uses:` findings follow step structure.** Unpinned-action checks read only `jobs.<job>.steps` and `runs.steps`, not a nested `with` value.
+- **GitHub `uses:` findings follow step structure.** Unpinned-action checks read `jobs.<job>.steps`, `runs.steps`, and a job's own reusable-workflow `uses:`, not a nested `with` value.
+- **Pull-request gating reads the top-level `on` mapping.** A `with:` input or matrix key named `pull_request` no longer fakes a trigger on a push-only workflow.
+- **Quoted `"on":` keys and quoted event names count as triggers.** YAML 1.1 reads bare `on` as a boolean, so linters quote it and those workflows were invisible.
+- **Remote-shell findings require the payload to reach the shell.** A pipe still reports; `;` and `||` report only when the interpreter reads a path the downloader wrote.
+- **A `permissions:` key inside a step is an action input, not a grant.** `with: permissions: write-all` stays silent while a workflow-level grant and a job's `write-all` still report.
+- **Quoted step keys are read like plain ones.** `- "uses":` and `- "run":` reach the pinning, remote-shell, and event-interpolation checks.
+- **Block headers carrying an indentation indicator open a run block.** `run: |2` and `>2-` keep their shell lines in scope instead of skipping the whole step.
+- **Container images must name a digest.** `docker://alpine:latest` reports as unpinned; a `docker://image@sha256:...` reference stays exempt.
+- **Secret expressions match without interior whitespace.** `${{secrets.TOKEN}}` gates pull-request secret exposure like `${{ secrets.TOKEN }}`.
+- **Lock guards taken from struct fields report.** `self.state.write().await` held across an await reports; I/O and domain `read`/`write` receivers stay silent.
+- **Root-qualified process constructors report.** `::std::process::Command::new` names the standard-library type, while `vendor::std::process::Command` still does not.
 - **Release setup rejects unpublished identities.** The action takes only core `X.Y.Z` versions and stops when actionlint's SHA-256 check fails.
 - **`test-quality.unwrap-in-test` is off by default.** Still Advisory when enabled; baselines lose its findings, 622 in clap and 773 in tokio.
 - **`naming.short-variable` skips narrow Rust idioms.** Loop and closure bindings and `cx: *Context` parameters stay quiet; tokio drops 1,584 to 881.
@@ -25,7 +35,7 @@
 - **Claude permission wording matches current tool semantics.** An `Edit` deny covers every file-writing tool, so `Read` and `Edit` pairs suffice.
 - **Native Windows action paths.** `working-directory` and `output-file` accept a drive root or UNC share; a drive-relative `C:crate` is rejected.
 - **`security.sql-dynamic-query` reads SQL shape, not words.** An all-interpolated `SELECT` with no `FROM` reports; prose and non-SQL DSL stay quiet.
-- **Unused private functions report even when generic.** `fn helper<T>(..)` counted as its own reference; rust-clippy rises from 3,293 to 3,614.
+- **Unused private functions report even when generic.** `fn helper<T>(..)` and `fn helper<F: Fn()>(..)` counted as their own reference; rust-clippy rises from 3,293 to 3,630.
 - **API-key detection skips hyphenated prose.** The `sk-` arm had no left boundary, so `risk-of-script-injections` matched; real keys still report.
 - **Annotated deserialization sinks report.** `security.unsafe-deserialization` matches `serde_yaml::from_str::<Config>(..)` in all four families.
 - **Split download-to-shell pipelines report.** A `curl` and its `bash` on separate block-scalar lines are joined; a trailing `||` ends the join.

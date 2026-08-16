@@ -306,7 +306,7 @@ fn analyse_block_dependent_rust_rules(
         return;
     };
     if families.has_block_rules() {
-        analyse_blocks(unit.file, blocks, config, families, findings);
+        analyse_blocks(unit, blocks, config, families, findings);
     }
     if families.network_block_security {
         analyse_ssrf_candidate(unit.file, blocks, findings);

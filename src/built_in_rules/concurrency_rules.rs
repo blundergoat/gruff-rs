@@ -5,14 +5,15 @@
 use super::*;
 
 pub(crate) fn analyse_concurrency_block(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     block: &FunctionBlock,
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    let file = unit.file;
     if block.is_async {
         analyse_async_blocking_calls(file, block, searchable_body, findings);
-        analyse_lock_across_await(file, block, searchable_body, findings);
+        analyse_lock_across_await(unit, block, searchable_body, findings);
     }
 
     if static_regex(
@@ -89,22 +90,56 @@ pub(crate) fn analyse_async_blocking_calls(
 /// Reports a guard binding that remains lexically live when a later await begins.
 /// Source comments and strings are masked before acquisition evidence is inspected.
 pub(crate) fn analyse_lock_across_await(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     block: &FunctionBlock,
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
     let code_only_body = strip_rust_comments_after_string_mask(searchable_body);
     let lines: Vec<&str> = code_only_body.lines().collect();
+    let sources = LockEvidenceSources {
+        function_source: &code_only_body,
+        file_source: unit.source,
+        masked_file: OnceLock::new(),
+    };
     // An absent match means every acquisition was non-lock-shaped, dropped, or scoped out.
-    if let Some(guard) = find_lock_guard_held_across_await(&lines, &code_only_body) {
-        findings.push(lock_across_await_finding(file, block, &guard));
+    if let Some(guard) = find_lock_guard_held_across_await(&lines, &sources) {
+        findings.push(lock_across_await_finding(unit.file, block, &guard));
+    }
+}
+
+/// Source views that can tie a receiver to a lock type. The function body is checked first;
+/// the whole file supplies the declaration for a guard reached through a struct field, which
+/// is where async services usually keep shared state.
+struct LockEvidenceSources<'a> {
+    function_source: &'a str,
+    file_source: &'a str,
+    masked_file: OnceLock<String>,
+}
+
+impl LockEvidenceSources<'_> {
+    /// Whether the file mentions a lock type at all. Masking only removes text, so a raw
+    /// source without either token cannot produce a masked one that has them; checking here
+    /// keeps every lock-free file out of the masking path entirely.
+    fn file_has_lock_type(&self) -> bool {
+        self.file_source.contains("Mutex") || self.file_source.contains("RwLock")
+    }
+
+    /// Mask strings and comments once, and only when a function-scoped lookup came up empty,
+    /// so an ordinary async function never pays to scan its whole file.
+    fn masked_file(&self) -> &str {
+        self.masked_file.get_or_init(|| {
+            strip_rust_comments_after_string_mask(&strip_rust_string_literals(self.file_source))
+        })
     }
 }
 
 /// Returns the first qualifying guard because the rule emits one function finding.
 /// The full function slice supplies receiver-linked type or constructor evidence.
-fn find_lock_guard_held_across_await(lines: &[&str], function_source: &str) -> Option<String> {
+fn find_lock_guard_held_across_await(
+    lines: &[&str],
+    sources: &LockEvidenceSources<'_>,
+) -> Option<String> {
     let lock_binding = static_regex(
         &LOCK_BINDING_REGEX,
         r"\blet\s+(?:mut\s+)?(?P<guard>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<rhs>[^;]*);",
@@ -127,7 +162,7 @@ fn find_lock_guard_held_across_await(lines: &[&str], function_source: &str) -> O
             continue;
         };
         // I/O calls, domain methods, and value-extraction chains are not guard bindings.
-        if !rhs_is_lock_guard_binding(rhs.as_str(), function_source) {
+        if !rhs_is_lock_guard_binding(rhs.as_str(), sources) {
             continue;
         }
         let later_lines = &lines[line_index + 1..];
@@ -141,7 +176,7 @@ fn find_lock_guard_held_across_await(lines: &[&str], function_source: &str) -> O
 
 /// Classifies a bound RHS as a zero-argument, guard-preserving lock acquisition.
 /// Ambiguous read/write methods additionally need evidence tied to their receiver.
-fn rhs_is_lock_guard_binding(rhs: &str, function_source: &str) -> bool {
+fn rhs_is_lock_guard_binding(rhs: &str, sources: &LockEvidenceSources<'_>) -> bool {
     static LOCK_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
     let lock_call = static_regex(
         &LOCK_CALL_REGEX,
@@ -162,18 +197,26 @@ fn rhs_is_lock_guard_binding(rhs: &str, function_source: &str) -> bool {
             .expect("lock-call regex always captures the method")
             .as_str();
         lock_suffix_is_guard_preserving(&rhs[found.end()..])
-            && acquisition_has_lock_evidence(method, receiver, function_source)
+            && acquisition_has_lock_evidence(method, receiver, sources)
     })
 }
 
 /// Keeps `.lock()` as the explicit lock-named heuristic used by mutex APIs.
 /// Read/write methods need receiver-linked evidence because I/O uses the same names.
-fn acquisition_has_lock_evidence(method: &str, receiver: &str, function_source: &str) -> bool {
+fn acquisition_has_lock_evidence(
+    method: &str,
+    receiver: &str,
+    sources: &LockEvidenceSources<'_>,
+) -> bool {
     // A zero-argument method literally named `lock` is the rule's documented heuristic.
     if method == "lock" {
         return true;
     }
-    receiver_has_local_lock_evidence(function_source, receiver)
+    // A guard bound beside its lock carries its own evidence. A guard taken from `self.state`
+    // is declared as a struct field elsewhere in the file, so that declaration is the evidence.
+    receiver_has_local_lock_evidence(sources.function_source, receiver)
+        || (sources.file_has_lock_type()
+            && receiver_has_local_lock_evidence(sources.masked_file(), receiver))
 }
 
 /// Finds a receiver type containing `Mutex`/`RwLock` or a local lock constructor.

@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-08-12
+last_reviewed: 2026-08-16
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -107,9 +107,11 @@ The non-obvious failure mode is testing multi-secret JSON on one physical line a
 
 M54 calibration first caught this as `ci.github-event-shell-interpolation: positive=MISS negative=silent`. Regression coverage now lives in `src/tests/calibration/security_size_test_waste_cases.rs` (search: `ci.github-event-shell-interpolation`) and `src/tests/scenarios/calibration_extras.rs` (search: `calibration_security_rubric_improvements_have_false_positive_guards`). When adding workflow text rules without a YAML parser, include both `run:` and `- run:` positive/negative fixtures, plus a block scalar case if continuation lines matter.
 
-2026-06-05 extension: event detection has the same YAML-shape trap. `src/built_in_rules/github_metadata_rules.rs` (search: `fn workflow_line_contains_event`) originally matched `on: [pull_request]`, mapping keys (`on:\n  pull_request:`), and list items, but missed scalar events (`on: pull_request` / `on: pull_request_target`). That made `security.github-actions-secrets-in-pr` and `security.github-actions-pull-request-target` silent for a common valid workflow form. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_security_events_accept_scalar_on_values`).
+2026-06-05 extension: event detection has the same YAML-shape trap. `src/built_in_rules/github_metadata_rules.rs` (search: `fn workflow_event_in_scalar`, then the retired line matcher it replaced) originally matched `on: [pull_request]`, mapping keys (`on:\n  pull_request:`), and list items, but missed scalar events (`on: pull_request` / `on: pull_request_target`). That made `security.github-actions-secrets-in-pr` and `security.github-actions-pull-request-target` silent for a common valid workflow form. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_security_events_accept_scalar_on_values`).
 
-**How to apply:** every new GitHub Actions text rule needs fixtures for scalar, mapping, and list event syntax where event gating matters. Prefer a real YAML parser only if the rule needs nesting semantics; otherwise keep the text matcher deterministic but enumerate common YAML surface forms.
+2026-08-16 extension: the trap runs in both directions, and a key's *placement* matters as much as its spelling. Matching an event name anywhere on a line made a `with:` input named `pull_request` gate a push-only workflow as a pull-request workflow, so `security.github-actions-secrets-in-pr` fired on a workflow with no such trigger; the replacement (`src/built_in_rules/github_metadata_rules.rs`, search: `struct WorkflowTriggerState`) tracks the top-level `on` mapping instead. The same edit fixed three spelling misses in the other direction: quoted keys (`"on":`, `- "uses":`, `- "run":`, now normalised by `fn normalize_yaml_key`), block headers carrying an indentation or chomping indicator or a trailing comment (`run: |2`, `>2-`, `run: | # note`, now accepted by `fn is_yaml_block_scalar`), flow mappings (`on: {push: null, pull_request: null}`, handled by `fn workflow_event_in_scalar`), and `${{secrets.X}}` without interior whitespace (`fn line_has_secret_expression`). A block header that fails to parse is the costliest miss of the group: it silences every line of the step, not just the header. Regression coverage: `src/tests/rule_behaviours/release_noise_guards.rs` (search: `github_actions_events_require_top_level_on_placement`, `github_actions_step_keys_accept_quoted_and_indented_block_forms`).
+
+**How to apply:** every new GitHub Actions text rule needs fixtures for scalar, mapping, and list event syntax where event gating matters, plus a quoted-key spelling of any key it matches and a negative fixture placing that same key somewhere it has no meaning (`with:`, `env:`, an action input). Prefer a real YAML parser only if the rule needs nesting semantics; otherwise keep the text matcher deterministic but enumerate common YAML surface forms and assert placement, not just spelling.
 
 ## Footgun: check-ignore Needs Hierarchical Gitignore Context
 

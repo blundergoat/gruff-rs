@@ -84,6 +84,10 @@ fn unused_nested_bound<T: Into<String>>(value: T) -> String {
     value.into()
 }
 
+fn unused_closure_bound<F: Fn()>(callback: F) {
+    callback();
+}
+
 fn called_generic<T: Copy>(value: T) -> T {
     value
 }
@@ -110,6 +114,8 @@ fn called_generic<T: Copy>(value: T) -> T {
         "unused_generic",
         "unused_lifetime",
         "unused_nested_bound",
+        // A bound containing parentheses, such as `Fn()`, is still a definition.
+        "unused_closure_bound",
     ] {
         assert!(
             dead.contains(&expected),

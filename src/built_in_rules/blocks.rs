@@ -5,24 +5,25 @@
 use super::*;
 
 pub(crate) fn analyse_blocks(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     blocks: &[FunctionBlock],
     config: &Config,
     families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
     for block in blocks {
-        analyse_block(file, block, config, families, findings);
+        analyse_block(unit, block, config, families, findings);
     }
 }
 
 pub(crate) fn analyse_block(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     block: &FunctionBlock,
     config: &Config,
     families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
+    let file = unit.file;
     let searchable_body = strip_rust_string_literals(&block.body);
     analyse_block_test_rules(file, block, config, families, findings);
     if block.is_test_context() {
@@ -30,7 +31,7 @@ pub(crate) fn analyse_block(
     }
     analyse_block_metric_rules(file, block, config, families, &searchable_body, findings);
     analyse_block_documentation_rules(file, block, config, families, findings);
-    analyse_block_behavior_rules(file, block, families, &searchable_body, findings);
+    analyse_block_behavior_rules(unit, block, families, &searchable_body, findings);
 }
 
 fn analyse_block_test_rules(
@@ -85,17 +86,18 @@ fn analyse_block_documentation_rules(
 }
 
 fn analyse_block_behavior_rules(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     block: &FunctionBlock,
     families: EnabledBuiltinFamilies,
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
+    let file = unit.file;
     if families.block_error_handling {
         analyse_error_handling_block(file, block, searchable_body, findings);
     }
     if families.block_concurrency {
-        analyse_concurrency_block(file, block, searchable_body, findings);
+        analyse_concurrency_block(unit, block, searchable_body, findings);
     }
     if families.block_security {
         analyse_insecure_rng_for_secrets(file, block, searchable_body, findings);

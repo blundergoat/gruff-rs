@@ -372,6 +372,22 @@ pub async fn scoped_before_await(lock: &std::sync::RwLock<String>) {
     }
     async_step().await;
 }
+pub struct SharedRegistry {
+    state: tokio::sync::RwLock<String>,
+    reader: DomainReader,
+}
+impl SharedRegistry {
+    pub async fn field_write_await(&self) {
+        let guard = self.state.write().await;
+        async_step().await;
+        let _ = guard;
+    }
+    pub async fn field_domain_read(&self) {
+        let value = self.reader.read();
+        async_step().await;
+        let _ = value;
+    }
+}
 async fn async_step() {}
 "#;
 
@@ -407,6 +423,8 @@ pub(crate) fn lock_across_await_requires_guard_shaped_acquisitions() {
             "async_mutex_await",
             "async_read_await",
             "async_write_await",
+            // A guard taken from a lock-typed struct field is the common async-service shape.
+            "field_write_await",
             "local_read_constructor",
             "mutex_expect",
             "mutex_question",
@@ -415,7 +433,7 @@ pub(crate) fn lock_across_await_requires_guard_shaped_acquisitions() {
             "sync_read_unwrap",
             "sync_write_expect",
         ]),
-        "only locally evidenced lock guards should flag; findings={:?}",
+        "only receiver-evidenced lock guards should flag; findings={:?}",
         report
             .findings
             .iter()
