@@ -2,7 +2,6 @@
 
 ## Unreleased
 
-- **`docs/releasing.md` removed.** The release process now lives only in the release workflow and its checked-in contract and workflow tests.
 
 ## v0.5.0 - 2026-08-16
 
