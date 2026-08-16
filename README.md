@@ -451,7 +451,6 @@ bin/gruff-rs analyse . --format json --no-baseline
 - [Output Formats](docs/output-formats.md) - text, JSON, HTML, Markdown, GitHub annotations, hotspot, and SARIF.
 - [CI Integration](docs/ci-integration.md) - GitHub Actions, SARIF upload, baselines, and patch diff scans.
 - [Dashboard](docs/dashboard.md) - local dashboard flags and safety model.
-- [Releasing](docs/releasing.md) - release checks and packaging notes.
 - [Changelog](CHANGELOG.md)
 - [Upgrading](UPGRADING.md)
 - [Action metadata](action.yml)

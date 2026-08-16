@@ -1,88 +1,48 @@
 # Changelog
 
+## Unreleased
+
+- **`docs/releasing.md` removed.** The release process now lives only in the release workflow and its checked-in contract and workflow tests.
+
 ## v0.5.0 - 2026-08-16
 
-0.5.0 is a precision, security, and contract-honesty release. Rule families retune against real Rust idiom and measured corpus noise, and size and security rules judge substantive code. Reports carry markers instead of secret or PHI payloads, the action moves to `argv` with a pinned and verified install, and the agent harness moves to goat-flow 1.15.1 with this repository's local security repairs checked in and gated.
+0.5.0 retunes rule families against real Rust idiom and measured corpus noise, replaces secret and PHI previews with markers, moves the action to `argv` with a pinned verified install, and upgrades the agent harness to goat-flow 1.15.1.
 
-- **`security.process-command` requires standard-library provenance.** Third-party `Command` types, shadowed imports, and comment examples stay quiet.
-  - It resolves file, module, function, and nested-block imports before accepting bare `Command` or `process::Command`.
-  - Clap falls from 1,265 findings to 4, so baselines shrink sharply where another crate owns `Command`.
+- **`security.process-command` requires std provenance.** Third-party `Command` types and comment examples stay quiet; clap drops 1,265 findings to 4.
 - **GitHub `uses:` findings follow step structure.** Unpinned-action checks read only `jobs.<job>.steps` and `runs.steps`, not a nested `with` value.
-- **Release setup rejects identities without published archives.** The action accepts only core `X.Y.Z` versions.
-  - Dependency setup stops before archive handling when actionlint's SHA-256 verification fails.
-- **`test-quality.unwrap-in-test` is off by default.** It stays available at Advisory severity, described in generated configs as a style preference.
-  - Clean-corpus scans found 43 findings in `json`, 622 in clap, and 773 in tokio, sampled as fail-fast setup whose values were later asserted.
-  - Baselines lose these findings unless a project enables the rule.
-- **`naming.short-variable` skips narrow Rust idioms.** Loop and closure bindings, and `cx` parameters typed `*Context`, no longer report.
-  - Findings fall 124 to 113 on `json`, 1,584 to 881 on tokio, and 3,793 to 1,250 on rust-clippy; baselines can drop the retired ones.
-- **Agent harness upgraded to goat-flow 1.15.1.** The four agent surfaces, the shared skill docs, and the managed hooks move to the 1.15.1 templates.
-  - 1.15.1 adds the `goat-flow.hook-result.v1` launcher runtime and the bounded `hooks verify` scenarios.
-  - It absorbed this repo's fail-closed exit-2, Bash 3 header-content, and oversized-file repairs, so those local hotfixes are retired.
-- **The `goat-flow-allow-secret` marker survives the upgrade.** Both scan paths honour it again, after CR stripping so a Windows-edited marker counts.
-  - The marker has no upstream equivalent, so adopting 1.15.1 wholesale would block every turn touching `fixtures/sample.rs`.
-- **The allow marker exempts secrets only.** `is_line_allowlisted` recognises `goat-flow-allow-secret` and nothing else, not `gitleaks:allow`.
-  - `pragma: allowlist secret` and its kin are routine annotations elsewhere in a tree, read as tooling noise rather than a claim about this hook.
-  - The check runs after merge-conflict detection on both paths, so a conflict marker carrying the comment still blocks the turn.
-- **Unreadable changed files block the turn instead of passing as clean.** The scan reports `scan incomplete` and names each path it could not read.
-  - Padding a credential-bearing file past 1 MiB previously ended the turn with exit 0 and no output on both dispatch paths.
-  - An oversized blob that exists only in the index is scanned rather than skipped.
-  - Binary changed paths hold no text hunks and block for the same reason; in 0.4.0 they passed as clean.
+- **Release setup rejects unpublished identities.** The action takes only core `X.Y.Z` versions and stops when actionlint's SHA-256 check fails.
+- **`test-quality.unwrap-in-test` is off by default.** Still Advisory when enabled; baselines lose its findings, 622 in clap and 773 in tokio.
+- **`naming.short-variable` skips narrow Rust idioms.** Loop and closure bindings and `cx: *Context` parameters stay quiet; tokio drops 1,584 to 881.
+- **Agent harness upgraded to goat-flow 1.15.1.** Agent surfaces, skill docs, and managed hooks move to its templates, retiring three local hotfixes.
+- **`goat-flow-allow-secret` survives the upgrade.** Both scan paths honour it again, after CR stripping so a Windows-edited marker still counts.
+- **The allow marker exempts secrets only.** No other form counts, not `gitleaks:allow`, and a conflict marker carrying it still blocks the turn.
+- **Unreadable changed files block the turn instead of passing as clean.** The scan reports `scan incomplete`; oversized and binary paths block too.
 - **Preflight names skipped checks in its success line.** The line quoted as gate evidence carries the skip count, so green cannot mean full coverage.
-- **Permission-rule hygiene and local hook repairs are gated.** `scripts/preflight-checks.sh` fails when a permission pair or a hook repair is lost.
-  - A secret path that loses its paired `Read` and `Edit` denies fails, as does a never-matched rule form under `permissions`.
-  - So does a goat-flow install or sync that reverts one of the six anchored security repairs across four managed hook files.
-  - Each anchor row records what breaks without the fix; the hook files are tracked, so `git checkout <rev> -- .goat-flow/hooks/` restores a revert.
-  - A parallel patch archive is not kept: it duplicated git and went stale against every goat-flow upgrade.
-- **Managed skill-doc repairs are gated too.** Preflight (search: `MANAGED_DOC_DELTAS`) asserts two local repairs to the gruff analyzer playbook.
-  - Its availability probe checks the repo-local `bin/<target>` wrapper first, so the probe no longer reports gruff unavailable inside gruff-rs.
-  - Its threshold guidance sends the reader to `analyse --help` instead of naming a `--min-severity` flag this port does not expose.
+- **Permission rules and hook repairs are gated.** Preflight fails on a lost `Read`/`Edit` deny pair, an inert rule form, or one of six hook repairs.
+- **Managed skill-doc repairs are gated too.** Preflight asserts the analyzer playbook's `bin/<target>` probe and its `analyse --help` guidance.
 - **`.goat-flow/security-policy.md` states this repository's boundaries.** Each entry names the architecture section, ADR, or footgun that decides it.
-  - It records the absent auth layer, the loopback dashboard boundary, and the release supply-chain boundary.
-  - It records the fixture secret class, the no-execute posture and its `--diff-git-unsafe` exception, and the deny hook's heredoc limitation.
 - **Codex denies every non-sample env-file variant.** The workspace profile denies `**/.env*` for direct file tools and reopens only `.env.example`.
-  - That closes suffix gaps such as `.env.backup` that the Bash hook could not cover for direct reads.
 - **Claude denies every non-sample env-file variant too.** Paired `Read(**/.env*)` and `Edit(**/.env*)` denies refuse `.env.qa` and `.env.bak`.
-  - The enumerated upstream entries are kept rather than collapsed, so a `goat-flow install` still finds every rule it expects.
 - **Claude permission wording matches current tool semantics.** An `Edit` deny covers every file-writing tool, so `Read` and `Edit` pairs suffice.
-  - `Write`, `MultiEdit`, `NotebookEdit`, and `Glob` path rules are never matched and would read as protection that does not exist.
-- **Native Windows action paths.** `working-directory` and `output-file` accept a drive root such as `D:\a\repo\repo\crate` or a UNC share.
-  - The action converts them and `GITHUB_WORKSPACE` to one notation before comparing, so containment still fails closed.
-  - A drive-relative value such as `C:crate` is rejected rather than guessed.
-- **FROM-less `SELECT` templates stay visible.** `security.sql-dynamic-query` matches an all-interpolated `SELECT` with no `FROM`, but not prose.
-  - PostgreSQL and SQLite both accept that form.
-- **Unused private functions report whether or not they are generic.** `fn helper<T>(..)` counted as one of its own references and went unreported.
-  - `dead-code.unused-private-function` subtracts a function's own declaration, but the pattern required `fn name(`, so no generic form matched.
-  - Generic dead code was previously reported only by the lower-confidence `-candidate` rule.
-  - Counts rise: clap 16 to 17, diesel 65 to 68, rust-clippy 3,293 to 3,614; tokio and ripgrep are unchanged.
-  - Every sampled new finding was a genuinely uncalled function, one already carrying clap's own `#[allow(unused)]`.
-- **API-key detection no longer fires on hyphenated prose.** The bare `sk-` arm had no left boundary, so `risk-of-script-injections` matched.
-  - Every `sensitive-data.api-key-pattern` alternative is a vendor prefix; a scan of ten Rust projects produced one finding, the false positive.
-  - Vendor-prefixed keys are still reported wherever they appear as their own token.
-- **Annotated deserialization sinks report.** `security.unsafe-deserialization` matched only the bare call, not `serde_yaml::from_str::<Config>(..)`.
-  - All four sink families were affected; nested generics such as `::<Vec<String>>` are consumed whole, and `serde_json` stays out of scope by design.
+- **Native Windows action paths.** `working-directory` and `output-file` accept a drive root or UNC share; a drive-relative `C:crate` is rejected.
+- **`security.sql-dynamic-query` reads SQL shape, not words.** An all-interpolated `SELECT` with no `FROM` reports; prose and non-SQL DSL stay quiet.
+- **Unused private functions report even when generic.** `fn helper<T>(..)` counted as its own reference; rust-clippy rises from 3,293 to 3,614.
+- **API-key detection skips hyphenated prose.** The `sk-` arm had no left boundary, so `risk-of-script-injections` matched; real keys still report.
+- **Annotated deserialization sinks report.** `security.unsafe-deserialization` matches `serde_yaml::from_str::<Config>(..)` in all four families.
 - **Split download-to-shell pipelines report.** A `curl` and its `bash` on separate block-scalar lines are joined; a trailing `||` ends the join.
 - **Stop-hook scan bypass closed on both dispatch paths.** An added line whose own text starts with `++` is no longer skipped as a file header.
-  - A `+++ ` line counts as a header only directly after a `diff --git` section start, so only a real hunk header is skipped.
-  - goat-flow 1.15.1 reopened this on its Bash 4+ diff walk, so a credential there ended the turn with exit 0 while the Bash 3 fallback still blocked.
 - **Release reruns fail closed on an existing draft.** The workflow contract rejects `--clobber`, release deletion, and existence-probe gating.
-  - The policy is deliberate: a rerun does not reconcile, repair, or replace a draft that already exists.
 - **file-length: 1000 substantive lines at error (family ratification).** Blank and comment-only lines are free, replacing the 600-line warning.
 - **Zero-payload sensitive metadata markers.** JSON, SARIF, and hook findings serialize detector-owned markers instead of secret or PHI previews.
 - **Narrower lock-across-await signal.** I/O and domain `.read()`/`.write()` no longer read as guards; zero-arg calls need local lock evidence.
-- **SQL-shaped dynamic-query warnings.** Prose and non-SQL DSL text with isolated SQL words stay quiet; `query`/`execute` coverage remains.
-  - A sentence that opens with a statement verb and later reaches its partner keyword, such as `Select the note from the archive`, reads as prose.
-- **Wrapper normalisation no longer stops at an unknown option.** `watch` and `parallel` skip options they do not recognise, matching `xargs`.
-  - A single unfamiliar flag can no longer hide a destructive, secret, or repository-write payload from the deny hook.
+- **Wrapper normalisation skips unknown options.** `watch` and `parallel` now match `xargs`, so no destructive payload hides from the deny hook.
 - **Action metadata keys are not executable steps.** `run:` is read structurally like `uses:`, so a top-level `run` input is not scanned as shell.
 - **Risk-based network-security test scans.** Executable Rust tests keep bind-all and SSRF findings; scoped mitigations replace blanket suppression.
 - **Block rustdoc and function-length precision.** Doc rules accept outer `/** */` comments; `size.function-length` excludes rustdoc and attributes.
 - **Structured composite-action arguments.** The action accepts newline-delimited `argv`, rejects legacy `args`, and contains paths in the workspace.
 - **Explicit composite-action security coverage.** Supplied `action.yml` files now get event-interpolation, remote-shell, and full-SHA checks.
 - **Inert Markdown finding fields.** Rule IDs and paths use safe code spans and messages escape as text, so untrusted values cannot inject markup.
-- **SAFETY rationales follow Rust comment conventions.** `security.unsafe-block` matches `SAFETY:`, `Safety:`, and `safety:`.
-  - It ignores `unsafe` text inside comments, and punctuated forms such as `SAFETY: same-thread access` no longer trip `docs.weak-safety-rationale`.
-  - A bounded multiline comment prelude is joined without crossing executable code.
-  - Tokio's findings fall from 704 to 493, so affected baselines can remove 211 retired findings.
+- **SAFETY rationales follow Rust conventions.** `security.unsafe-block` matches `SAFETY:`, `Safety:`, and `safety:`; tokio drops 704 to 493.
 - **Exact, verified composite-action install.** The action pins an exact binary version, verifies the SHA-256 sidecar and archive members.
 - **Verified five-platform release candidates.** A non-publishing workflow binds commit and package to Linux, macOS, and Windows archives.
 - **Pinned, least-privilege release execution.** Workflows pin full SHAs and exact tool versions, and grant write only for final publication.
