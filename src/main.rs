@@ -87,13 +87,15 @@ use cli::{
 use command_setup::resolve_fail_on;
 use command_setup::{emit_report_output, resolve_command_setup, resolve_project_root_and_config};
 use config::{
-    compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DiffSelection,
-    ExclusionRule, ListedRule, PathMatcher, RequestedScope, RuleSetting, SelectorSet,
-    SCHEMA_VERSION,
+    compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DeepScanBudget,
+    DeepScanBudgetOverride, DiffSelection, ExclusionRule, ListedRule, PathMatcher, RequestedScope,
+    RuleSetting, SelectorSet, SCHEMA_VERSION,
 };
 #[cfg(test)]
 use config_loader::expand_rule_selector;
-use config_loader::{expand_rule_selector_with_custom, load_config, load_config_for};
+use config_loader::{
+    expand_rule_selector_with_custom, load_config, load_config_for, SensitiveExclusionRule,
+};
 #[cfg(test)]
 pub(crate) use dashboard::dashboard_response;
 use dashboard::run_dashboard;
@@ -107,8 +109,8 @@ use diff::{
 use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
 use gate::{Gate, GateOnMatch, GateScope};
 use ignore_policy::{IgnoreSource, IgnoredPath};
-pub(crate) use render::html_escape;
 use render::render_report_with_scope;
+pub(crate) use render::{html_escape, render_text_suppressions};
 #[cfg(test)]
 pub(crate) use render::{
     render_report, sarif_physical_location_from_parts, sarif_uri, total_suppressed_findings,
@@ -179,15 +181,21 @@ fn run_analyse_command(
     );
     let cli_fail_on = args.fail_on;
     let fail_on_new = args.fail_on_new;
+    let deep_scan_budget = args.deep_scan_budget.clone();
     let base = options_from_analyse(args, FailThreshold::Advisory);
-    let (project_root, options, mut config) =
-        match resolve_command_setup(base, cli_fail_on, "analyse", FailThreshold::Advisory) {
-            Ok(triple) => triple,
-            Err(error) => {
-                eprintln!("gruff-rs: {error}");
-                return ExitCode::from(2);
-            }
-        };
+    let (project_root, options, mut config) = match resolve_command_setup(
+        base,
+        cli_fail_on,
+        "analyse",
+        FailThreshold::Advisory,
+        deep_scan_budget.as_ref(),
+    ) {
+        Ok(triple) => triple,
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            return ExitCode::from(2);
+        }
+    };
     if fail_on_new {
         apply_fail_on_new(&mut config);
     }
@@ -287,15 +295,21 @@ fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOpt
 fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     let cli_fail_on = args.fail_on;
     let output = args.output.clone();
+    let deep_scan_budget = args.deep_scan_budget.clone();
     let base = options_from_report(&args, FailThreshold::None);
-    let (project_root, options, config) =
-        match resolve_command_setup(base, cli_fail_on, "report", FailThreshold::None) {
-            Ok(triple) => triple,
-            Err(error) => {
-                eprintln!("gruff-rs: {error}");
-                return ExitCode::from(2);
-            }
-        };
+    let (project_root, options, config) = match resolve_command_setup(
+        base,
+        cli_fail_on,
+        "report",
+        FailThreshold::None,
+        deep_scan_budget.as_ref(),
+    ) {
+        Ok(triple) => triple,
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            return ExitCode::from(2);
+        }
+    };
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
@@ -483,6 +497,7 @@ fn custom_rule_name(rule_id: &str) -> String {
 }
 
 fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
+    let deep_scan_budget = args.deep_scan_budget.clone();
     let options = AnalysisOptions {
         paths: args.paths,
         config: args.config,
@@ -496,13 +511,14 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
         generate_baseline: None,
         no_baseline: false,
     };
-    let (project_root, config) = match resolve_project_root_and_config(&options) {
-        Ok(pair) => pair,
-        Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            return ExitCode::from(2);
-        }
-    };
+    let (project_root, options, config) =
+        match resolve_project_root_and_config(options, deep_scan_budget.as_ref()) {
+            Ok(triple) => triple,
+            Err(error) => {
+                eprintln!("gruff-rs: {error}");
+                return ExitCode::from(2);
+            }
+        };
 
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {

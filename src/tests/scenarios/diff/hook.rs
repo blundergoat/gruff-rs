@@ -18,9 +18,11 @@ pub(crate) fn hook_capabilities_advertise_gruff_hook_v1() {
     assert_eq!(value["supports"]["stableIdentity"], true);
     assert_eq!(value["supports"]["ignoreReport"], true);
     assert_eq!(value["supports"]["newOnly"], true);
+    assert_eq!(value["supports"]["deepScanBudget"], true);
     assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
     assert_eq!(value["flags"]["diff"], "--diff");
     assert_eq!(value["flags"]["baseline"], "--baseline");
+    assert_eq!(value["flags"]["deepScanBudget"], "--deep-scan-budget");
     assert_eq!(value["flagOrder"], "any");
 }
 

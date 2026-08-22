@@ -185,7 +185,10 @@ fn render_text_findings(output: &mut String, report: &AnalysisReport) {
     }
 }
 
-fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
+// FAMILY-CONTRACT.md section 13a: a surface that applies a suppression must
+// report its count on that same surface. `summary` filters too, so it renders
+// this exact line through this function rather than restating the wording.
+pub(crate) fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
     let suppressed = total_suppressed_findings(&report.suppressions);
     if suppressed == 0 {
         return;
@@ -196,8 +199,8 @@ fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
         .filter(|summary| summary.suppressed > 0)
         .map(|summary| {
             format!(
-                "exclude[{}] {}: {} ({})",
-                summary.index, summary.rule, summary.suppressed, summary.reason
+                "{}[{}] {}: {} ({})",
+                summary.config_key, summary.index, summary.rule, summary.suppressed, summary.reason
             )
         })
         .collect::<Vec<_>>()

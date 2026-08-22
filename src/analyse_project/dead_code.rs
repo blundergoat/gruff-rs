@@ -50,6 +50,7 @@ fn partial_context_rule_diagnostic(rule_id: &str) -> RunDiagnostic {
         ),
         file_path: None,
         line: None,
+        invalidates_run: None,
     }
 }
 

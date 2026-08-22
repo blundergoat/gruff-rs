@@ -262,6 +262,7 @@ pub(crate) fn record_history(
             message: format!("Unable to write history file: {error}"),
             file_path: Some(display_path(project_root, &path)),
             line: None,
+            invalidates_run: None,
         });
     }
 }

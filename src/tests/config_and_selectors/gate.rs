@@ -246,6 +246,7 @@ pub(crate) fn gate_config_error_diagnostic_is_exit_2() {
             message: "needs a baseline".to_string(),
             file_path: None,
             line: None,
+            invalidates_run: None,
         }],
     );
     assert_eq!(

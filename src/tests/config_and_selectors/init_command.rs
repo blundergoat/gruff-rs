@@ -1,3 +1,8 @@
+//! Generated-config and regeneration behavior visible to `gruff-rs init` users.
+//!
+//! Tests keep registry defaults, family seeds, preserved settings, and safe
+//! empty legacy keys consistent through render-and-load round trips.
+
 use super::*;
 
 use crate::config::DEFAULT_ABBREVIATIONS;
@@ -36,11 +41,20 @@ pub(crate) fn default_config_round_trips_through_load_config() {
     }
 }
 
+/// Keep the retired preview key visible only with its one accepted empty value.
+#[test]
+pub(crate) fn default_config_keeps_legacy_secret_previews_empty() {
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+
+    assert!(
+        body.contains("  secretPreviews: []\n"),
+        "generated config must keep the legacy key inert: {body}"
+    );
+}
+
 #[test]
 pub(crate) fn generated_config_reproduces_builtin_rule_defaults() {
-    // A generated config that disagrees with the catalogue makes the same file
-    // report differently depending on whether the project ever ran `init`, so this
-    // walks the rendered-then-parsed config rather than reading the catalogue twice.
+    // Round-trip generated config because users should receive the same findings before and after running `init`.
     let registry = rules::builtin_registry();
     let body = render_default_config(&registry, &[], &BTreeMap::new());
 
@@ -140,6 +154,22 @@ pub(crate) fn default_config_explains_ignores_and_baseline_starting_point() {
     assert!(body.contains("Discovery-time do-not-read patterns"));
     assert!(body.contains("gruff-rs analyse --generate-baseline"));
     assert!(body.contains("top-level `exclude` entries"));
+}
+
+#[test]
+/// Ship the sensitive-suppression section commented out and describe how entries are authored.
+pub(crate) fn default_config_documents_manually_authored_sensitive_exclusions() {
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+
+    assert!(body.contains("# sensitiveExclusions:"));
+    assert!(body.contains("#   - rule: sensitive-data.aws-access-key"));
+    assert!(body.contains("Write entries by hand"));
+    assert!(body.contains("no message- or value-matching key is accepted here"));
+    // A commented example must never arrive as an active suppression in a fresh project.
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join(".gruff-rs.yaml"), &body).expect("generated config write");
+    let config = load_config(dir.path(), &default_test_options()).expect("generated config loads");
+    assert!(config.sensitive_exclusions.is_empty());
 }
 
 #[test]

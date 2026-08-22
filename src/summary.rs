@@ -204,13 +204,33 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     render_scan_card(&mut out, report, duration_ms, |out| {
         rule_delta_blocks::render_text(out, digest.per_rule_deltas.as_deref());
     });
+    render_diagnostics_text(&mut out, report);
     out.push('\n');
     render_pillars_text(&mut out, &digest.pillars);
     out.push('\n');
     render_rules_text(&mut out, &digest.top_rules);
     out.push('\n');
     render_files_text(&mut out, &digest.top_files);
+    // `summary` applies sensitive exclusions, so it publishes the same audit line
+    // `analyse` prints, from the same renderer (FAMILY-CONTRACT.md section 13a).
+    // It is a port-local extension line below the canonical block, which section 1
+    // permits; the `gruff.summary.v2` envelope is untouched.
+    crate::render_text_suppressions(&mut out, report);
     out.trim_end_matches('\n').to_string()
+}
+
+fn render_diagnostics_text(out: &mut String, report: &AnalysisReport) {
+    for diagnostic in &report.diagnostics {
+        let _ = write!(
+            out,
+            "Diagnostic {}: {}",
+            diagnostic.diagnostic_type, diagnostic.message
+        );
+        if let Some(path) = diagnostic.file_path.as_deref() {
+            let _ = write!(out, " ({path})");
+        }
+        out.push('\n');
+    }
 }
 
 // ADR-014 per-rule delta blocks in the compact summary view. Surfaced when
@@ -486,6 +506,7 @@ fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
         "tool": report.tool,
         "run": report.run,
         "summary": report.summary,
+        "diagnostics": report.diagnostics,
         "pillars": digest.pillars,
         "topRules": digest.top_rules,
         "topFiles": digest.top_files,

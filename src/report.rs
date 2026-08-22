@@ -189,10 +189,15 @@ pub(crate) struct RunDiagnostic {
     pub(crate) message: String,
     pub(crate) file_path: Option<String>,
     pub(crate) line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invalidates_run: Option<bool>,
 }
 
 impl RunDiagnostic {
     pub(crate) fn is_failure(&self) -> bool {
+        if self.invalidates_run == Some(false) {
+            return false;
+        }
         matches!(
             self.diagnostic_type.as_str(),
             "missing-path"
@@ -307,8 +312,18 @@ pub(crate) struct SuppressionSummary {
     pub(crate) rule: String,
     pub(crate) paths: Vec<String>,
     pub(crate) message_contains: Option<String>,
+    /// Symbol narrowing from `sensitiveExclusions`; always null for `exclude` rows,
+    /// which have no symbol scope.
+    pub(crate) symbol: Option<String>,
     pub(crate) reason: String,
     pub(crate) suppressed: usize,
+    /// Top-level config key that authored this row, `exclude` or `sensitiveExclusions`.
+    /// `index` is section-local, so this pair is what identifies one row and lets text
+    /// output name a config entry the user can edit. Internal only (`#[serde(skip)]`)
+    /// because the family audit shape in FAMILY-CONTRACT.md section 13a fixes the
+    /// published keys, and four other ports copy that shape.
+    #[serde(skip)]
+    pub(crate) config_key: &'static str,
 }
 
 #[derive(Debug, Clone)]

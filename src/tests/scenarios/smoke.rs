@@ -544,3 +544,128 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
     assert_eq!(grade(60.0), "D");
     assert_eq!(grade(59.9), "F");
 }
+
+#[test]
+pub(crate) fn bounded_rust_source_keeps_text_safety_and_drops_deep_analysis() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = concat!(
+        "pub fn run() {\n",
+        "    let key = \"AKIA1234567890ABCDEF\";\n",
+        "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+        "}\n",
+    );
+    fs::write(dir.path().join("large.rs"), source).expect("Rust fixture write");
+    let options = AnalysisOptions {
+        paths: vec![PathBuf::from("large.rs")],
+        no_config: true,
+        no_baseline: true,
+        ..default_test_options()
+    };
+    let mut config = Config::default();
+    config.deep_scan_budget = DeepScanBudget {
+        enabled: true,
+        max_lines: 1,
+        max_bytes: usize::MAX,
+        override_state: "cli",
+    };
+    config.rule_settings.insert(
+        "size.file-length".to_string(),
+        RuleSetting {
+            threshold: Some(1.0),
+            ..RuleSetting::default()
+        },
+    );
+
+    let report = run_analysis_in_project(dir.path(), &options, &config)
+        .expect("bounded Rust analysis succeeds");
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.diagnostic_type == "bounded-deep-scan")
+        .expect("bounded deep scan is visible");
+
+    assert_eq!(report.paths.analysed_files, 1);
+    assert_eq!(diagnostic.invalidates_run, Some(false));
+    assert!(!diagnostic.is_failure());
+    assert!(diagnostic.message.contains("path=large.rs"));
+    assert!(diagnostic.message.contains("lines=5"));
+    assert!(diagnostic
+        .message
+        .contains(&format!("bytes={}", source.len())));
+    assert!(diagnostic.message.contains("maxLines=1"));
+    assert!(diagnostic
+        .message
+        .contains(&format!("maxBytes={}", usize::MAX)));
+    assert!(diagnostic.message.contains("override=cli"));
+    assert_has_rule(&report, "size.file-length");
+    assert_has_rule(&report, "sensitive-data.aws-access-key");
+    assert_missing_rule(&report, "security.process-command");
+}
+
+#[test]
+pub(crate) fn deep_scan_budget_honours_both_boundaries_disable_and_source_classification() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let rust_source = concat!(
+        "pub fn run() {\n",
+        "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+        "}\n",
+    );
+    fs::write(dir.path().join("boundary.rs"), rust_source).expect("Rust fixture write");
+    fs::write(
+        dir.path().join("oversized.env"),
+        "LEAKED=AKIA1234567890ABCDEF\nSECOND=value\n",
+    )
+    .expect("text fixture write");
+    let rust_options = AnalysisOptions {
+        paths: vec![PathBuf::from("boundary.rs")],
+        no_config: true,
+        no_baseline: true,
+        ..default_test_options()
+    };
+
+    let mut equal = Config::default();
+    equal.deep_scan_budget = DeepScanBudget {
+        enabled: true,
+        max_lines: rust_source.bytes().filter(|byte| *byte == b'\n').count() + 1,
+        max_bytes: rust_source.len(),
+        override_state: "config",
+    };
+    let equal_report = run_analysis_in_project(dir.path(), &rust_options, &equal)
+        .expect("equal bounds remain deep-scanned");
+    assert!(!diagnostic_types(&equal_report).contains(&"bounded-deep-scan"));
+    assert_has_rule(&equal_report, "security.process-command");
+
+    let mut byte_only = equal.clone();
+    byte_only.deep_scan_budget.max_lines = usize::MAX;
+    byte_only.deep_scan_budget.max_bytes = rust_source.len() - 1;
+    let byte_report = run_analysis_in_project(dir.path(), &rust_options, &byte_only)
+        .expect("byte-only overflow degrades");
+    assert!(diagnostic_types(&byte_report).contains(&"bounded-deep-scan"));
+
+    let mut disabled = byte_only.clone();
+    disabled.deep_scan_budget.enabled = false;
+    disabled.deep_scan_budget.override_state = "cli";
+    let disabled_report = run_analysis_in_project(dir.path(), &rust_options, &disabled)
+        .expect("disabled budget restores deep scan");
+    assert!(!diagnostic_types(&disabled_report).contains(&"bounded-deep-scan"));
+    assert_has_rule(&disabled_report, "security.process-command");
+
+    let text_options = AnalysisOptions {
+        paths: vec![PathBuf::from("oversized.env")],
+        ..rust_options
+    };
+    let mut tiny = Config::default();
+    tiny.deep_scan_budget = DeepScanBudget {
+        enabled: true,
+        max_lines: 1,
+        max_bytes: 1,
+        override_state: "cli",
+    };
+    let text_report = run_analysis_in_project(dir.path(), &text_options, &tiny)
+        .expect("oversized non-code text remains fully scanned");
+    assert_eq!(text_report.paths.analysed_files, 1);
+    assert!(!diagnostic_types(&text_report).contains(&"bounded-deep-scan"));
+    assert_has_rule(&text_report, "sensitive-data.aws-access-key");
+}

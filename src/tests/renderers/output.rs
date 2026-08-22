@@ -287,3 +287,57 @@ pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
 
     assert_eq!(decoded["topFiles"].as_array().expect("top files").len(), 12);
 }
+
+#[test]
+pub(crate) fn bounded_deep_scan_note_reaches_every_supported_output_surface() {
+    let diagnostic = RunDiagnostic {
+        diagnostic_type: "bounded-deep-scan".to_string(),
+        message: "path=src/large.rs; lines=20001; bytes=2000001; maxLines=20000; maxBytes=2000000; override=cli. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.".to_string(),
+        file_path: Some("src/large.rs".to_string()),
+        line: Some(1),
+        invalidates_run: Some(false),
+    };
+
+    for format in [
+        OutputFormat::Text,
+        OutputFormat::Json,
+        OutputFormat::Sarif,
+        OutputFormat::Html,
+        OutputFormat::Markdown,
+        OutputFormat::Github,
+        OutputFormat::Hotspot,
+    ] {
+        let output = render_report(
+            &sample_report_with(Vec::new(), vec![diagnostic.clone()]),
+            format,
+        );
+        assert!(output.contains("bounded-deep-scan"), "{format:?}: {output}");
+        assert!(
+            output.replace('\\', "").contains("override=cli"),
+            "{format:?}: {output}"
+        );
+    }
+
+    for format in [SummaryFormat::Text, SummaryFormat::Json] {
+        let output = crate::summary::render(
+            &sample_report_with(Vec::new(), vec![diagnostic.clone()]),
+            10,
+            format,
+            1,
+        );
+        assert!(output.contains("bounded-deep-scan"), "{format:?}: {output}");
+        assert!(output.contains("override=cli"), "{format:?}: {output}");
+    }
+
+    let hook: Value = serde_json::from_str(&crate::hook::render_hook_report(
+        sample_report_with(Vec::new(), vec![diagnostic]),
+        false,
+        false,
+    ))
+    .expect("hook report JSON");
+    assert_eq!(hook["diagnostics"][0]["type"], "bounded-deep-scan");
+    assert_eq!(hook["diagnostics"][0]["invalidatesRun"], false);
+    assert!(hook["diagnostics"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("override=cli")));
+}

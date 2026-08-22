@@ -1,4 +1,5 @@
 //! Registry definitions for idiom, security, size, and test-quality rules.
+//!
 //! The catalogue feeds rule listing and documentation with stable IDs,
 //! descriptions, relationships, options, and false-positive guidance.
 
@@ -502,11 +503,11 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         false_positives: &[
             FalsePositiveShape {
                 shape: "Zero-separator CamelCase or mixed-case identifiers that are high entropy but not secrets.",
-                mitigation: "Prefer a separator-bearing identifier when practical. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
+                mitigation: "Prefer a separator-bearing identifier when practical, then review any remaining finding; secret preview values cannot suppress it.",
             },
             FalsePositiveShape {
                 shape: "Manifest checksum or signature fields whose value shape alone is indistinguishable from secret material.",
-                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
+                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible, then review any remaining finding; secret preview values cannot suppress it.",
             },
         ],
         related: &["sensitive-data.api-key-pattern", "sensitive-data.jwt-token"],

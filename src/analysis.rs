@@ -8,6 +8,7 @@ pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagn
             message: format!("Input path does not exist: {missing_path}"),
             file_path: Some(missing_path.clone()),
             line: None,
+            invalidates_run: None,
         })
         .collect()
 }
@@ -47,6 +48,7 @@ fn excluded_security_rule_diagnostic(rule_id: &str, pillar: Pillar) -> RunDiagno
         ),
         file_path: None,
         line: None,
+        invalidates_run: None,
     }
 }
 
@@ -68,20 +70,31 @@ pub(crate) fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
 }
 
+/// Remove the findings both suppression channels claim and count every configured entry.
+/// The returned summaries carry `exclude` rows first, then `sensitiveExclusions` rows.
 pub(crate) fn apply_report_exclusions(
     findings: Vec<Finding>,
     exclusions: &[ExclusionRule],
+    sensitive_exclusions: &[SensitiveExclusionRule],
 ) -> (
     Vec<Finding>,
     Vec<SuppressionSummary>,
     Vec<SuppressedFinding>,
 ) {
-    if exclusions.is_empty() {
+    if exclusions.is_empty() && sensitive_exclusions.is_empty() {
         return (findings, Vec::new(), Vec::new());
     }
 
     let mut summaries = initial_suppression_summaries(exclusions);
-    let (kept, suppressed) = partition_excluded_findings(findings, exclusions, &mut summaries);
+    let exclude_rows = summaries.len();
+    summaries.extend(initial_sensitive_suppression_summaries(
+        sensitive_exclusions,
+    ));
+    let (kept, mut suppressed) =
+        partition_excluded_findings(findings, exclusions, &mut summaries[..exclude_rows]);
+    let (kept, sensitive_suppressed) =
+        partition_sensitive_findings(kept, sensitive_exclusions, &mut summaries[exclude_rows..]);
+    suppressed.extend(sensitive_suppressed);
     (kept, summaries, suppressed)
 }
 
@@ -94,8 +107,33 @@ fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<Suppressio
             rule: exclusion.selector.clone(),
             paths: exclusion.paths.clone(),
             message_contains: exclusion.message_contains.clone(),
+            // Ordinary exclusions have no symbol scope, so this stays null in every report.
+            symbol: None,
             reason: exclusion.reason.clone(),
             suppressed: 0,
+            config_key: "exclude",
+        })
+        .collect()
+}
+
+/// Publish one audit row per sensitive exclusion, including entries that match nothing.
+/// A zero count is a valid result, so a fixed fixture never breaks the user's build.
+fn initial_sensitive_suppression_summaries(
+    sensitive_exclusions: &[SensitiveExclusionRule],
+) -> Vec<SuppressionSummary> {
+    sensitive_exclusions
+        .iter()
+        .enumerate()
+        .map(|(index, exclusion)| SuppressionSummary {
+            index,
+            rule: exclusion.rule_id.clone(),
+            paths: vec![exclusion.path.clone()],
+            // This section accepts no message matcher, so no row can describe a matched value.
+            message_contains: None,
+            symbol: exclusion.symbol.clone(),
+            reason: exclusion.reason.clone(),
+            suppressed: 0,
+            config_key: "sensitiveExclusions",
         })
         .collect()
 }
@@ -154,6 +192,52 @@ fn exclusion_matches_finding_with_paths(
         .is_none_or(|message| finding.message.contains(message))
 }
 
+/// Remove the sensitive-data findings inside a declared exclusion scope and count each entry.
+/// Findings outside every declared scope pass through untouched.
+fn partition_sensitive_findings(
+    findings: Vec<Finding>,
+    sensitive_exclusions: &[SensitiveExclusionRule],
+    summaries: &mut [SuppressionSummary],
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
+    let mut kept = Vec::with_capacity(findings.len());
+    let mut suppressed = Vec::new();
+    for finding in findings {
+        match sensitive_exclusions
+            .iter()
+            .position(|exclusion| sensitive_exclusion_matches_finding(exclusion, &finding))
+        {
+            Some(index) => {
+                summaries[index].suppressed += 1;
+                suppressed.push(SuppressedFinding {
+                    finding,
+                    suppression: summaries[index].clone(),
+                });
+            }
+            None => kept.push(finding),
+        }
+    }
+    (kept, suppressed)
+}
+
+/// Decide whether one finding falls inside one declared sensitive exclusion scope.
+/// Every comparison is exact: no glob, prefix, message, or value matching participates.
+fn sensitive_exclusion_matches_finding(
+    exclusion: &SensitiveExclusionRule,
+    finding: &Finding,
+) -> bool {
+    if exclusion.rule_id != finding.rule_id {
+        return false;
+    }
+    // The normalised display path is compared so the caller's working directory cannot change the result.
+    if exclusion.path != normalize_report_path(&finding.file_path) {
+        return false;
+    }
+    exclusion
+        .symbol
+        .as_deref()
+        .is_none_or(|symbol| finding.symbol.as_deref() == Some(symbol))
+}
+
 pub(crate) fn run_analysis_in_project(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -197,6 +281,7 @@ pub(crate) fn apply_gate_diagnostic(report: &mut AnalysisReport, gate: Option<&G
             message,
             file_path: None,
             line: None,
+            invalidates_run: None,
         },
         None => gate.diagnostic(report),
     };
@@ -229,7 +314,7 @@ fn collect_report_inputs(
     let (baseline_resolution, all_findings_summary) =
         resolve_baseline(project_root, options, &mut findings)?;
     let (findings, summaries, suppressed_findings) =
-        apply_report_exclusions(findings, &config.exclusions);
+        apply_report_exclusions(findings, &config.exclusions, &config.sensitive_exclusions);
     let (baseline_report, per_rule_deltas) = split_baseline_resolution(baseline_resolution);
     let inputs = ReportInputs {
         discovery,
@@ -424,8 +509,11 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> AnalysisArtifacts {
     let capabilities = AnalysisCapabilities::from_config(config);
-    let (parsed_sources, read_diagnostics) =
-        crate::project::read_and_parse_sources_with_options(files, capabilities.parse_rust);
+    let (parsed_sources, read_diagnostics) = crate::project::read_and_parse_sources_with_options(
+        files,
+        capabilities.parse_rust,
+        &config.deep_scan_budget,
+    );
     diagnostics.extend(read_diagnostics);
     let mut blocks_by_file = BTreeMap::new();
 

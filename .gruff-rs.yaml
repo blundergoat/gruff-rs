@@ -4,7 +4,7 @@
 # Rule ids and metadata can be discovered with `gruff-rs rules`.
 # Per-rule thresholds and severities can be tuned in place; see the
 # README for the full configuration shape (paths, allowlists, rules,
-# custom_rules, exclude).
+# custom_rules, exclude, sensitiveExclusions).
 #
 # For an existing project, run `gruff-rs analyse --generate-baseline`
 # to accept today's findings as the starting point.
@@ -15,6 +15,11 @@ schemaVersion: gruff-rs.config.v1
 # freezes this project's CI behaviour against any future default flip.
 minimumSeverity:
   analyse: advisory
+
+deepScanBudget:
+  enabled: true
+  maxLines: 20000
+  maxBytes: 2000000
 
 paths:
   # Discovery-time do-not-read patterns. Use this for generated
@@ -58,6 +63,17 @@ allowlists:
     - ui
     - url
   secretPreviews: []
+
+# sensitiveExclusions suppresses reviewed sensitive-data findings, and only
+# those. Each entry names one exact sensitive-data rule id, one project-
+# relative path, an optional symbol, and a required reason; every entry
+# reports its own suppressed count in `suppressions[]` and on text output.
+# Write entries by hand: gruff-rs never converts a reported marker or preview
+# into one, and no message- or value-matching key is accepted here.
+# sensitiveExclusions:
+#   - rule: sensitive-data.aws-access-key
+#     path: tests/fixtures/aws-sample.env
+#     reason: Synthetic key used by the loader fixture; not a live credential.
 
 rules:
   # Flags modules with more indexed items than the configured threshold.

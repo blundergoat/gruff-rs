@@ -9,6 +9,9 @@ mod text;
 #[cfg(test)]
 pub(crate) use sarif::{sarif_physical_location_from_parts, sarif_uri};
 
+// Shared with the `summary` text surface, which applies the same suppressions.
+pub(crate) use text::render_text_suppressions;
+
 #[cfg(test)]
 pub(crate) fn render_report(report: &AnalysisReport, format: OutputFormat) -> String {
     render_report_with_scope(report, &RequestedScope::default(), format, None)

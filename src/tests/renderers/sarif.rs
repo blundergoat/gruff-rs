@@ -19,7 +19,7 @@ pub(crate) fn sarif_suppression_results_carry_external_justification() {
         reason: "test-only synthetic command".to_string(),
     }];
     let (findings, suppressions, suppressed_findings) =
-        apply_report_exclusions(vec![finding], &exclusions);
+        apply_report_exclusions(vec![finding], &exclusions, &[]);
     let mut report = sample_report_with(findings, Vec::new());
     report.summary = summarize(&report.findings);
     report.score = score_report(&report.findings, &Config::default());
@@ -164,6 +164,7 @@ pub(crate) fn sarif_maps_diagnostics_to_invocation_notifications() {
             message: "Input path does not exist: missing.rs".to_string(),
             file_path: Some("missing.rs".to_string()),
             line: None,
+            invalidates_run: None,
         }],
     );
     let sarif = sample_sarif(&report);

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::{pillar_label, summary::pillar_digests};
+use std::fmt::Write as _;
 
 const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
@@ -102,6 +103,7 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
         report.summary.error
     ));
     render_pillars_section(&mut output, &pillars);
+    render_diagnostics_section(&mut output, report);
     // The review shows at most fifty findings in deterministic report order.
     for finding in report.findings.iter().take(50) {
         let rule_id = markdown_code_span(&finding.rule_id);
@@ -112,6 +114,24 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
         output.push_str(&format!("\n- {rule_id} {file_path}:{line} - {message}"));
     }
     output
+}
+
+fn render_diagnostics_section(output: &mut String, report: &AnalysisReport) {
+    if report.diagnostics.is_empty() {
+        return;
+    }
+    output.push_str("\n## Diagnostics\n");
+    for diagnostic in &report.diagnostics {
+        let diagnostic_type = markdown_code_span(&diagnostic.diagnostic_type);
+        let message = markdown_plain_text(&diagnostic.message);
+        let _ = write!(output, "\n- {diagnostic_type}");
+        if let Some(path) = diagnostic.file_path.as_deref() {
+            let path = markdown_code_span(path);
+            let _ = write!(output, " {path}:{}", diagnostic.line.unwrap_or(1));
+        }
+        let _ = write!(output, " - {message}");
+    }
+    output.push('\n');
 }
 
 /// Render ranked rule improvements and regressions before the composite score.

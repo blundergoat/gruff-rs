@@ -15,6 +15,9 @@ pub(crate) struct AnalyseArgs {
     pub(crate) config: Option<PathBuf>,
     #[arg(long)]
     pub(crate) no_config: bool,
+    /// Override paired deep Rust-analysis limits, or disable the budget.
+    #[arg(long, value_name = "LINES:BYTES|off")]
+    pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
     #[arg(long, default_value = "text")]
     pub(crate) format: OutputFormat,
     /// Severity gate. Defaults to `advisory`. Falls back to
@@ -81,6 +84,9 @@ pub(crate) struct HookArgs {
     pub(crate) config: Option<PathBuf>,
     #[arg(long)]
     pub(crate) no_config: bool,
+    /// Override paired deep Rust-analysis limits, or disable the budget.
+    #[arg(long, value_name = "LINES:BYTES|off")]
+    pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
     #[arg(long, default_value = "json")]
     pub(crate) format: HookFormat,
     /// Emit gruff.hook.v1 capability metadata and do not scan.
@@ -124,6 +130,9 @@ pub(crate) struct ReportArgs {
     pub(crate) config: Option<PathBuf>,
     #[arg(long)]
     pub(crate) no_config: bool,
+    /// Override paired deep Rust-analysis limits, or disable the budget.
+    #[arg(long, value_name = "LINES:BYTES|off")]
+    pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
     /// Severity gate. Defaults to `none`. Falls back to
     /// `minimumSeverity.report:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
@@ -145,6 +154,9 @@ pub(crate) struct DashboardArgs {
     pub(crate) port: u16,
     #[arg(long, default_value = ".")]
     pub(crate) project_root: PathBuf,
+    /// Default paired deep Rust-analysis limits for dashboard scans, or disable the budget.
+    #[arg(long, value_name = "LINES:BYTES|off")]
+    pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
 }
 
 #[derive(Args)]
@@ -176,6 +188,9 @@ pub(crate) struct SummaryArgs {
     pub(crate) config: Option<PathBuf>,
     #[arg(long)]
     pub(crate) no_config: bool,
+    /// Override paired deep Rust-analysis limits, or disable the budget.
+    #[arg(long, value_name = "LINES:BYTES|off")]
+    pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
     #[arg(long, default_value = "text")]
     pub(crate) format: SummaryFormat,
     /// How many top rules and file offenders to list.

@@ -13,13 +13,14 @@ pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode
     let changed_region_active = args.changed_ranges.is_some();
     let new_only_active = args.baseline.is_some() || args.diff.is_some();
     let options = options_from_hook(&args, true);
-    let (project_root, config) = match resolve_project_root_and_config(&options) {
-        Ok(pair) => pair,
-        Err(error) => {
-            writer.emit_unconditional(&render_config_error(&error));
-            return ExitCode::from(2);
-        }
-    };
+    let (project_root, options, config) =
+        match resolve_project_root_and_config(options, args.deep_scan_budget.as_ref()) {
+            Ok(triple) => triple,
+            Err(error) => {
+                writer.emit_unconditional(&render_config_error(&error));
+                return ExitCode::from(2);
+            }
+        };
 
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(mut report) => {
@@ -91,6 +92,7 @@ fn apply_hook_new_only(
             report,
             args,
             project_root,
+            options,
             config,
             changed_region_active,
             Some(base_identities),
@@ -101,6 +103,7 @@ fn apply_hook_new_only(
         report,
         args,
         project_root,
+        options,
         config,
         changed_region_active,
         None,
@@ -111,6 +114,7 @@ fn apply_hook_changed_region_new_only(
     report: &mut AnalysisReport,
     args: &HookArgs,
     project_root: &Path,
+    options: &AnalysisOptions,
     config: &Config,
     changed_region_active: bool,
     diff_base_identities: Option<BTreeMap<String, usize>>,
@@ -119,7 +123,10 @@ fn apply_hook_changed_region_new_only(
         return Ok(());
     }
 
-    let full_options = options_from_hook(args, false);
+    let full_options = AnalysisOptions {
+        diff: None,
+        ..options.clone()
+    };
     let mut full_report = run_analysis_in_project(project_root, &full_options, config)?;
     if let Some(mode) = &args.diff {
         let base_identities = match &diff_base_identities {
@@ -420,12 +427,14 @@ pub(crate) fn render_capabilities() -> String {
             "metadata": true,
             "stableIdentity": true,
             "ignoreReport": true,
-            "newOnly": true
+            "newOnly": true,
+            "deepScanBudget": true
         },
         "flags": {
             "changedRanges": "--changed-ranges",
             "diff": "--diff",
-            "baseline": "--baseline"
+            "baseline": "--baseline",
+            "deepScanBudget": "--deep-scan-budget"
         },
         "flagOrder": "any"
     }))
@@ -461,17 +470,40 @@ pub(crate) fn render_hook_report(
     let ignored_paths =
         serde_json::to_value(&report.paths.ignored_path_details).unwrap_or_else(|_| json!([]));
     let suppressed_count = report.suppressed_count.unwrap_or(0);
+    let diagnostics = hook_diagnostics(report.diagnostics);
     let findings = hook_findings(report.findings, &registry);
 
     serde_json::to_string_pretty(&json!({
         "contractVersion": HOOK_CONTRACT_VERSION,
         "analyzer": analyzer_json(),
         "findings": findings,
+        "diagnostics": diagnostics,
         "suppressed": { "count": suppressed_count },
         "ignored": { "paths": ignored_paths },
         "config": { "schemaOk": true, "error": null }
     }))
     .expect("hook report serialize")
+}
+
+fn hook_diagnostics(diagnostics: Vec<RunDiagnostic>) -> Vec<Value> {
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            let mut value = json!({
+                "type": diagnostic.diagnostic_type,
+                "message": diagnostic.message,
+                "file": diagnostic.file_path,
+                "line": diagnostic.line,
+            });
+            if let Some(invalidates_run) = diagnostic.invalidates_run {
+                value
+                    .as_object_mut()
+                    .expect("hook diagnostic is an object")
+                    .insert("invalidatesRun".to_string(), json!(invalidates_run));
+            }
+            value
+        })
+        .collect()
 }
 
 pub(crate) fn apply_hook_changed_region_filter(
