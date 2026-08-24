@@ -388,7 +388,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     assert!(!discovered_paths.contains("info-excluded.env"));
     assert!(!discovered_paths.contains("local/secret.env"));
     assert!(!discovered_paths.contains("nested/secret.env"));
-    assert!(!discovered_paths.contains("target/secret.env"));
+    assert!(discovered_paths.contains("target/secret.env"));
     assert!(!discovered_paths.contains("ignored/secret.env"));
 
     let default_scan = run_project_analysis(
@@ -401,7 +401,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         },
     )
     .expect("analysis succeeds");
-    assert!(default_scan
+    assert!(!default_scan
         .paths
         .ignored_paths
         .contains(&"target".to_string()));
@@ -412,6 +412,10 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     assert!(default_scan.findings.iter().any(|finding| {
         finding.rule_id == "sensitive-data.hardcoded-env-value"
             && finding.file_path == ".github/workflows/ci.yml"
+    }));
+    assert!(default_scan.findings.iter().any(|finding| {
+        finding.rule_id == "sensitive-data.hardcoded-env-value"
+            && finding.file_path == "target/secret.env"
     }));
     assert!(!default_scan.findings.iter().any(|finding| {
         finding.rule_id == "sensitive-data.hardcoded-env-value"

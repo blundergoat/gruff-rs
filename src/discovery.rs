@@ -275,7 +275,7 @@ pub(crate) fn classify_ignored_path(
         &display_path(project_root, path),
         config,
         include_ignored,
-        fallback_applies_at(project_root, path),
+        should_apply_fallback_at(project_root, path),
     )
 }
 
@@ -307,7 +307,7 @@ pub(crate) fn default_ignored_component(relative: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn fallback_applies_at(project_root: &Path, path: &Path) -> bool {
+pub(crate) fn should_apply_fallback_at(project_root: &Path, path: &Path) -> bool {
     let absolute = absolutize(project_root, path);
     let Some(parent) = absolute.parent() else {
         return true;
