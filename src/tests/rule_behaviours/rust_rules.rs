@@ -615,3 +615,56 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.conditional-logic");
     assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
 }
+
+#[test]
+pub(crate) fn sensitive_data_rules_do_not_change_with_test_path() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = fs::read_to_string("tests/fixtures/rules/security_sensitive_positive.rs")
+        .expect("sensitive fixture read");
+    let relative_paths = [
+        "src/sensitive.rs",
+        "tests/sensitive.rs",
+        "tests/calibration/sensitive.rs",
+    ];
+
+    for relative_path in relative_paths {
+        let destination = dir.path().join(relative_path);
+        fs::create_dir_all(destination.parent().expect("sensitive fixture parent"))
+            .expect("sensitive fixture directory");
+        fs::write(destination, &source).expect("sensitive fixture write");
+    }
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: relative_paths.into_iter().map(PathBuf::from).collect(),
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("sensitive path analysis succeeds");
+    let sensitive_rule_ids = |relative_path: &str| {
+        report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.file_path == relative_path && finding.rule_id.starts_with("sensitive-data.")
+            })
+            .map(|finding| finding.rule_id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let production_rule_ids = sensitive_rule_ids("src/sensitive.rs");
+
+    assert!(production_rule_ids.contains("sensitive-data.hardcoded-env-value"));
+    assert!(production_rule_ids.contains("sensitive-data.high-entropy-string"));
+    assert_eq!(
+        sensitive_rule_ids("tests/sensitive.rs"),
+        production_rule_ids
+    );
+    assert_eq!(
+        sensitive_rule_ids("tests/calibration/sensitive.rs"),
+        production_rule_ids
+    );
+}

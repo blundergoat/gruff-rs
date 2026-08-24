@@ -59,6 +59,51 @@ pub(crate) fn detail_json_exposes_structured_payload() {
 }
 
 #[test]
+pub(crate) fn flat_catalogue_exports_only_nonempty_false_positive_guidance() {
+    let body = render_rule_list(
+        Path::new("."),
+        &ListRulesArgs {
+            rule_id: None,
+            format: RuleListFormat::Json,
+            selector: None,
+            config: None,
+            no_config: true,
+        },
+    )
+    .expect("flat rule catalogue renders json");
+    let values: Vec<Value> = serde_json::from_str(&body).expect("catalogue JSON parses");
+
+    let unused_private = values
+        .iter()
+        .find(|value| value["id"] == "dead-code.unused-private-function")
+        .expect("reviewed heuristic ships");
+    assert_eq!(
+        unused_private["falsePositiveShapes"]
+            .as_array()
+            .expect("guidance is an array")
+            .len(),
+        1
+    );
+
+    let cyclomatic = values
+        .iter()
+        .find(|value| value["id"] == "complexity.cyclomatic")
+        .expect("unshaped high-confidence rule ships");
+    assert!(cyclomatic.get("falsePositiveShapes").is_none());
+
+    let heuristic_rules: Vec<&Value> = values
+        .iter()
+        .filter(|value| matches!(value["confidence"].as_str(), Some("medium" | "low")))
+        .collect();
+    assert_eq!(heuristic_rules.len(), 30);
+    assert!(heuristic_rules
+        .iter()
+        .all(|value| value["falsePositiveShapes"]
+            .as_array()
+            .is_some_and(|shapes| !shapes.is_empty())));
+}
+
+#[test]
 pub(crate) fn detail_text_skips_optional_sections_for_unenriched_rules() {
     let registry = rules::builtin_registry();
     let detail = render_rule_detail(

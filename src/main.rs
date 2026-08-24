@@ -444,6 +444,7 @@ pub(crate) fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedR
         options: definition.options.to_vec(),
         default_enabled: definition.default_enabled,
         description: definition.description.to_string(),
+        false_positive_shapes: definition.false_positive_shapes.to_vec(),
         custom_scope: None,
         pattern: None,
     }
@@ -462,6 +463,7 @@ pub(crate) fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
         options: Vec::new(),
         default_enabled: true,
         description: rule.message.clone(),
+        false_positive_shapes: Vec::new(),
         custom_scope: Some(rule.scope.as_str().to_string()),
         pattern: Some(rule.pattern.clone()),
     }

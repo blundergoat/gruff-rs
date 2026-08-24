@@ -2,6 +2,10 @@
 
 `gruff-rs` focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, maintainability, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; non-threshold rules may also accept a fixed severity override. Rules do not escalate through warning/error ranges.
 
+## Reviewed Exception Guidance
+
+The native rule catalogue is the single source for reviewed false-positive guidance. `gruff-rs list-rules --no-config --format json` includes `falsePositiveShapes` only when a rule has reviewed shapes, while `gruff-rs list-rules <rule-id> --no-config` renders the same shapes and mitigations for a focused review. Every medium- and low-confidence built-in rule carries at least one shape; this document does not duplicate those per-rule records.
+
 ## Pillars
 
 | Pillar | Current scope |

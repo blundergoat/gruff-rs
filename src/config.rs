@@ -292,6 +292,8 @@ pub(crate) struct ListedRule {
     pub(crate) options: Vec<rules::OptionDefinition>,
     pub(crate) default_enabled: bool,
     pub(crate) description: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) false_positive_shapes: Vec<rules::FalsePositiveShape>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) custom_scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

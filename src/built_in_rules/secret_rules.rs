@@ -79,18 +79,12 @@ pub(crate) static STRUCTURED_CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLoc
 pub(crate) static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run every sensitive-data detector that applies to one discovered user file.
-/// Calibration and test-infrastructure paths stay outside this production signal.
+/// A test or calibration path receives the same scan; only a reviewed sensitive exclusion may filter it later.
 pub(crate) fn analyse_sensitive_data(
     unit: &SourceUnit<'_>,
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    // Calibration and test-harness files contain deliberate examples that should not appear as user project findings.
-    if path_is_calibration_fixture(&unit.file.display_path)
-        || path_is_test_infrastructure(&unit.file.display_path)
-    {
-        return;
-    }
     // Every enabled generic detector contributes its reportable occurrences to the same user result.
     for rule in SENSITIVE_PATTERNS {
         push_regex_pattern_matches(unit, config, rule, findings);
