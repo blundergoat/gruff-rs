@@ -6,11 +6,9 @@ use crate::{
     SCORE_PILLARS,
 };
 use serde::Serialize;
-use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-const SCHEMA_VERSION: &str = "gruff.summary.v2";
 const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
 /// Render a compact summary view from a full analysis report.
@@ -20,10 +18,12 @@ pub(crate) fn render(
     format: SummaryFormat,
     duration_ms: u128,
 ) -> String {
-    let digest = SummaryDigest::build(report, top);
     match format {
-        SummaryFormat::Text => render_text(report, &digest, duration_ms),
-        SummaryFormat::Json => render_json(report, &digest),
+        SummaryFormat::Text => {
+            let digest = SummaryDigest::build(report, top);
+            render_text(report, &digest, duration_ms)
+        }
+        SummaryFormat::Json => crate::machine_contract::render_summary(report),
     }
 }
 
@@ -214,7 +214,7 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     // `summary` applies sensitive exclusions, so it publishes the same audit line
     // `analyse` prints, from the same renderer (FAMILY-CONTRACT.md section 13a).
     // It is a port-local extension line below the canonical block, which section 1
-    // permits; the `gruff.summary.v2` envelope is untouched.
+    // permits; machine JSON is the exact findings-free analysis projection.
     crate::render_text_suppressions(&mut out, report);
     out.trim_end_matches('\n').to_string()
 }
@@ -498,27 +498,4 @@ fn render_files_text(out: &mut String, files: &[FileDigest]) {
             );
         }
     }
-}
-
-fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
-    let mut value = json!({
-        "schemaVersion": SCHEMA_VERSION,
-        "tool": report.tool,
-        "run": report.run,
-        "summary": report.summary,
-        "diagnostics": report.diagnostics,
-        "pillars": digest.pillars,
-        "topRules": digest.top_rules,
-        "topFiles": digest.top_files,
-    });
-    if let Some(deltas) = digest.per_rule_deltas.as_ref() {
-        value
-            .as_object_mut()
-            .expect("summary root is an object")
-            .insert(
-                "perRuleDeltas".to_string(),
-                serde_json::to_value(deltas).expect("rule deltas serialize"),
-            );
-    }
-    serde_json::to_string_pretty(&value).expect("summary serializes")
 }

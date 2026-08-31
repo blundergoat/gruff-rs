@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty() {
-    // The canonical `gruff.summary.v2` pillar exposes 9 fields (cross-port contract).
-    // `penalty` is the raw unclamped value subtracted from 100 before clamping, so a
-    // saturated pillar still surfaces the underlying penalty for worst-pillar ranking.
+    // The Rust projection supplies the four native fields accepted by the shared v3
+    // score-pillar contract. `penalty` is the raw unclamped value subtracted from 100
+    // before clamping, so a saturated pillar still surfaces the underlying penalty.
     let mut findings: Vec<Finding> = (0..200)
         .map(|index| {
             test_finding(
@@ -27,8 +27,10 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
     let decoded: Value =
         serde_json::from_str(&crate::summary::render(&report, 5, SummaryFormat::Json, 1))
             .expect("summary json");
-    assert_eq!(decoded["schemaVersion"], "gruff.summary.v2");
-    let pillars = decoded["pillars"].as_array().expect("pillars array");
+    assert_eq!(decoded["schemaVersion"], "gruff.summary.v3");
+    let pillars = decoded["score"]["pillars"]
+        .as_array()
+        .expect("pillars array");
     let find_pillar = |slug: &'static str| {
         pillars
             .iter()
@@ -43,39 +45,25 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
         .keys()
         .map(String::as_str)
         .collect();
-    let expected: BTreeSet<&str> = [
-        "advisory",
-        "applicable",
-        "error",
-        "findings",
-        "grade",
-        "penalty",
-        "pillar",
-        "score",
-        "warning",
-    ]
-    .into_iter()
-    .collect();
+    let expected: BTreeSet<&str> = ["findings", "penalty", "pillar", "score"]
+        .into_iter()
+        .collect();
     assert_eq!(
         fields, expected,
-        "JSON pillar must expose 9 canonical fields"
+        "JSON pillar must expose the native v3 score fields"
     );
 
     // Documentation: 200 advisory * (1.5 * 1.0) = 300.0 unclamped; score clamps to 0.
     assert_eq!(documentation["score"].as_f64(), Some(0.0));
     assert_eq!(documentation["penalty"].as_f64(), Some(300.0));
-    assert_eq!(documentation["grade"], "F");
-    assert!(documentation["applicable"].is_boolean());
     // Complexity: 1 error * (8.0 * 1.0) = 8.0; score 92.0.
     let complexity = find_pillar("complexity");
     assert_eq!(complexity["penalty"].as_f64(), Some(8.0));
     assert_eq!(complexity["score"].as_f64(), Some(92.0));
-    assert!(complexity["applicable"].is_boolean());
     // Empty pillar still carries `penalty: 0.0` (no negative-zero leak).
     let security = find_pillar("security");
     assert_eq!(security["penalty"].as_f64(), Some(0.0));
     assert_eq!(security["score"].as_f64(), Some(100.0));
-    assert!(security["applicable"].is_boolean());
 }
 
 #[test]
@@ -99,14 +87,15 @@ pub(crate) fn non_score_pillars_are_inapplicable_and_excluded_from_composite() {
     let decoded: Value =
         serde_json::from_str(&crate::summary::render(&report, 5, SummaryFormat::Json, 1))
             .expect("summary json");
-    let waste_pillar = decoded["pillars"]
+    let waste_pillar = decoded["score"]["pillars"]
         .as_array()
         .expect("pillars array")
         .iter()
         .find(|pillar| pillar["pillar"] == "waste")
         .expect("waste pillar present");
-    assert_eq!(waste_pillar["applicable"], false);
+    assert_eq!(waste_pillar["findings"], 1);
     assert_eq!(waste_pillar["penalty"].as_f64(), Some(8.0));
+    assert_eq!(waste_pillar["score"].as_f64(), Some(92.0));
 }
 
 #[test]

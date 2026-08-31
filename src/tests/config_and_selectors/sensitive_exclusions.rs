@@ -148,7 +148,7 @@ sensitiveExclusions:
     assert_eq!(row["index"], 0);
     assert_eq!(row["rule"], AWS_RULE_ID);
     assert_eq!(row["paths"][0], CORPUS_AWS_PATH);
-    assert_eq!(row["symbol"], Value::Null);
+    assert!(row.get("symbol").is_none());
     assert_eq!(
         row["reason"],
         "Synthetic AWS key used by the redaction corpus; not a live credential."

@@ -189,23 +189,21 @@ pub(crate) fn no_baseline_resurfaces_baselined_findings_in_changed_region() {
     );
 }
 
-// The agent hook reads the scoped report as JSON: it trusts gruff's scoping and
-// reads the out-of-region total from the top-level `suppressedCount`. Pin both
-// the serialized field name and the scoping so a refactor cannot silently drop
-// the count or leak an out-of-region finding. A full-tree run must omit the
-// field entirely, keeping the JSON schema unchanged for non-diff consumers.
+// A scoped v3 report publishes the out-of-region total as
+// `summary.suppressedFindings`. Pin both the serialized field and the scoping so
+// a refactor cannot silently drop the count or leak an out-of-region finding. A
+// full-tree run must omit the optional field entirely.
 #[test]
-pub(crate) fn changed_region_json_carries_top_level_suppressed_count_and_scopes_findings() {
+pub(crate) fn changed_region_json_carries_suppressed_finding_count_and_scopes_findings() {
     let _guard = analysis_lock();
     let project = undocumented_functions_project();
 
     let full = run_project_analysis(project.path(), full_file_options())
         .expect("full-file analysis succeeds");
     let full_json = render_report(&full, OutputFormat::Json);
-    assert!(
-        !full_json.contains("suppressedCount"),
-        "full-tree JSON must omit suppressedCount entirely:\n{full_json}"
-    );
+    let full_value: serde_json::Value =
+        serde_json::from_str(&full_json).expect("full-tree JSON parses");
+    assert!(full_value["summary"].get("suppressedFindings").is_none());
 
     let scoped = run_project_analysis(
         project.path(),
@@ -221,15 +219,15 @@ pub(crate) fn changed_region_json_carries_top_level_suppressed_count_and_scopes_
     );
 
     let rendered = render_report(&scoped, OutputFormat::Json);
-    assert!(
-        rendered.contains("\"suppressedCount\""),
-        "scoped JSON must carry the top-level suppressedCount key:\n{rendered}"
-    );
     let value: serde_json::Value = serde_json::from_str(&rendered).expect("scoped JSON parses");
     assert_eq!(
-        value["suppressedCount"].as_u64(),
+        value["summary"]["suppressedFindings"].as_u64(),
         Some(expected_suppressed as u64),
-        "top-level suppressedCount must equal the out-of-region total"
+        "summary.suppressedFindings must equal the out-of-region total"
+    );
+    assert_eq!(
+        value["diff"]["filteredFindings"].as_u64(),
+        Some(expected_suppressed as u64)
     );
     let findings = value["findings"].as_array().expect("findings array");
     assert!(

@@ -213,8 +213,7 @@ impl RunDiagnostic {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub(crate) struct AnalysisReport {
     pub(crate) schema_version: String,
     pub(crate) tool: ToolInfo,
@@ -224,24 +223,29 @@ pub(crate) struct AnalysisReport {
     pub(crate) diagnostics: Vec<RunDiagnostic>,
     pub(crate) suppressions: Vec<SuppressionSummary>,
     pub(crate) findings: Vec<Finding>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) suppressed_count: Option<usize>,
     pub(crate) score: ScoreReport,
     pub(crate) baseline: Option<BaselineReport>,
     /// Per-rule introduced/removed/net counts when a baseline or diff
-    /// comparison context is active. None on full-tree runs so JSON output
-    /// stays byte-identical to pre-ADR-014 consumers (the field is omitted
-    /// entirely via `skip_serializing_if`). Populated by `apply_baseline`
-    /// and `apply_diff_patch_filter`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// comparison context is active. The v3 machine adapter publishes these
+    /// under `extensions.rs.topLevel.perRuleDeltas` and omits the extension on
+    /// full-tree runs. Populated by `apply_baseline` and `apply_diff_patch_filter`.
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
-    #[serde(skip)]
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
     /// Severity summary over the full finding set *before* baseline suppression,
     /// consumed by `gate.scope: all`. Internal only (`#[serde(skip)]`) so the JSON
     /// schema is unchanged; equals `summary` when no baseline dropped findings.
-    #[serde(skip)]
     pub(crate) all_findings_summary: Option<Summary>,
+    pub(crate) machine_context: MachineReportContext,
+}
+
+impl Serialize for AnalysisReport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        crate::machine_contract::serialize_analysis(self, serializer)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -280,7 +284,7 @@ pub(crate) struct Summary {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PathSummary {
     pub(crate) analysed_files: usize,
-    /// Backward-compatible flat list of ignored display paths (`gruff.analysis.v2`).
+    /// Flat ignored display paths paired with canonical v3 path details at serialization.
     pub(crate) ignored_paths: Vec<String>,
     /// Additive per-entry ignore detail: path + why it was ignored. Same data as
     /// `ignoredPaths` plus `source`/`pattern`; new in the changed-code-scope

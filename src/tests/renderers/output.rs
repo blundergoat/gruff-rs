@@ -110,15 +110,24 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
 
     let json_output = render_report(&report, OutputFormat::Json);
     let decoded: Value = serde_json::from_str(&json_output).expect("json report");
-    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v2");
+    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v3");
     assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
     assert_eq!(decoded["findings"][0]["file"], "src/lib.rs");
-    assert_eq!(decoded["findings"][0]["filePath"], "src/lib.rs");
-    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert!(decoded["findings"][0].get("filePath").is_none());
+    assert!(decoded["findings"][0].get("column").is_none());
+    assert!(decoded["findings"][0].get("endLine").is_none());
     assert_eq!(
-        decoded["score"]["topOffenders"][0]["filePath"],
-        "src/lib.rs"
+        decoded["findings"][0]["metadata"]["locationPrecision"],
+        "line-only"
     );
+    assert_eq!(
+        decoded["findings"][0]["extensions"]["rs"]["finding"]["scope"],
+        "symbol"
+    );
+    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert!(decoded["score"]["topOffenders"][0]
+        .get("filePath")
+        .is_none());
 
     let sarif: Value =
         serde_json::from_str(&render_report(&report, OutputFormat::Sarif)).expect("sarif report");
@@ -127,7 +136,7 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "gruff-rs");
     assert_eq!(
         sarif["runs"][0]["properties"]["gruffSchemaVersion"],
-        "gruff.analysis.v2"
+        "gruff.analysis.v3"
     );
     let sarif_rules = sarif["runs"][0]["tool"]["driver"]["rules"]
         .as_array()
@@ -183,6 +192,33 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
         serde_json::from_str(&render_report(&report, OutputFormat::Hotspot)).expect("hotspot json");
     assert_eq!(hotspot["schemaVersion"], "gruff.hotspot.v1");
     assert_eq!(hotspot["files"][0]["filePath"], "src/lib.rs");
+}
+
+#[test]
+pub(crate) fn report_json_emits_optional_locations_only_when_present() {
+    let mut finding = test_finding(
+        "complexity.cyclomatic",
+        "src/lib.rs",
+        7,
+        Severity::Warning,
+        Pillar::Complexity,
+    );
+    finding.column = Some(4);
+    finding.end_line = Some(9);
+    finding.metadata = json!({"native": "preserved"});
+    let report = sample_report_with(vec![finding], Vec::new());
+
+    let decoded: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("json report");
+    let emitted = &decoded["findings"][0];
+
+    assert_eq!(emitted["column"], 4);
+    assert_eq!(emitted["endLine"], 9);
+    assert_eq!(emitted["metadata"]["native"], "preserved");
+    assert_eq!(
+        emitted["metadata"]["locationPrecision"],
+        "scanner-pinpointed"
+    );
 }
 
 #[test]
@@ -268,7 +304,7 @@ pub(crate) fn report_json_keeps_deterministic_finding_order() {
 }
 
 #[test]
-pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
+pub(crate) fn summary_json_is_the_exact_findings_free_analysis_projection() {
     let findings: Vec<Finding> = (0..12)
         .map(|index| {
             test_finding(
@@ -282,10 +318,25 @@ pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
         .collect();
     let report = sample_report_with(findings, Vec::new());
 
-    let json_output = crate::summary::render(&report, 12, SummaryFormat::Json, 1);
-    let decoded: Value = serde_json::from_str(&json_output).expect("summary json");
+    let mut expected: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("analysis json");
+    let expected_object = expected.as_object_mut().expect("analysis object");
+    expected_object.insert(
+        "schemaVersion".to_string(),
+        Value::String("gruff.summary.v3".to_string()),
+    );
+    expected_object.remove("findings");
 
-    assert_eq!(decoded["topFiles"].as_array().expect("top files").len(), 12);
+    let top_one: Value =
+        serde_json::from_str(&crate::summary::render(&report, 1, SummaryFormat::Json, 1))
+            .expect("summary json");
+    let top_twelve: Value =
+        serde_json::from_str(&crate::summary::render(&report, 12, SummaryFormat::Json, 1))
+            .expect("summary json");
+
+    assert_eq!(top_one, expected);
+    assert_eq!(top_twelve, expected);
+    assert!(top_one.get("findings").is_none());
 }
 
 #[test]

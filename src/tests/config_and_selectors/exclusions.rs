@@ -253,7 +253,6 @@ exclude:
         .expect("findings")
         .iter()
         .all(|finding| {
-            finding["ruleId"] != "security.process-command"
-                || finding["filePath"] != "tests/process.rs"
+            finding["ruleId"] != "security.process-command" || finding["file"] != "tests/process.rs"
         }));
 }

@@ -326,6 +326,7 @@ fn collect_report_inputs(
         suppressed_count: None,
         all_findings_summary: Some(all_findings_summary),
         all_findings,
+        machine_diff: machine_diff_context(options, diff_filter),
     };
     Ok(apply_changed_region_to_inputs(
         project_root,
@@ -396,7 +397,26 @@ fn apply_changed_region_to_inputs(
         per_rule_deltas: report.per_rule_deltas,
         suppressed_count: report.suppressed_count,
         all_findings,
+        machine_diff: report.machine_context.diff,
     }
+}
+
+fn machine_diff_context(
+    options: &AnalysisOptions,
+    diff_filter: Option<&ResolvedDiffFilter>,
+) -> Option<MachineDiffContext> {
+    let filter = diff_filter?;
+    let selection = options.diff.as_ref()?;
+    let mode = match selection {
+        DiffSelection::Patch { path, .. } if path == Path::new("-") => "stdin".to_string(),
+        DiffSelection::Patch { .. } => "patch".to_string(),
+        DiffSelection::Git { mode, .. } => mode.clone(),
+        DiffSelection::ExplicitRanges { .. } => "changed-ranges".to_string(),
+    };
+    Some(MachineDiffContext {
+        mode,
+        changed_files: filter.patch.changed_files().into_iter().collect(),
+    })
 }
 
 fn changed_scope_all_summary(
@@ -629,6 +649,25 @@ pub(crate) struct ReportInputs {
     pub(crate) suppressed_count: Option<usize>,
     pub(crate) all_findings_summary: Option<Summary>,
     pub(crate) all_findings: Vec<Finding>,
+    pub(crate) machine_diff: Option<MachineDiffContext>,
+}
+
+fn report_run_info(project_root: &Path, options: &AnalysisOptions) -> RunInfo {
+    RunInfo {
+        project_root: project_root.display().to_string(),
+        format: options.format.as_str().to_string(),
+        fail_on: options.fail_on.as_str().to_string(),
+        generated_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn report_path_summary(discovery: DiscoveryResult) -> PathSummary {
+    PathSummary {
+        analysed_files: discovery.files.len(),
+        ignored_paths: discovery.ignored_paths,
+        ignored_path_details: discovery.ignored_path_details,
+        missing_paths: discovery.missing_paths,
+    }
 }
 
 pub(crate) fn build_report(
@@ -647,28 +686,20 @@ pub(crate) fn build_report(
         suppressed_count,
         all_findings_summary,
         all_findings: _,
+        machine_diff,
     } = inputs;
     let summary = summarize(&findings);
     let score = score_report(&findings, config);
+    let machine_context = machine_contract::report_context(project_root, options, machine_diff);
     AnalysisReport {
-        schema_version: "gruff.analysis.v2".to_string(),
+        schema_version: "gruff.analysis.v3".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),
         },
-        run: RunInfo {
-            project_root: project_root.display().to_string(),
-            format: options.format.as_str().to_string(),
-            fail_on: options.fail_on.as_str().to_string(),
-            generated_at: Utc::now().to_rfc3339(),
-        },
+        run: report_run_info(project_root, options),
         summary,
-        paths: PathSummary {
-            analysed_files: discovery.files.len(),
-            ignored_paths: discovery.ignored_paths,
-            ignored_path_details: discovery.ignored_path_details,
-            missing_paths: discovery.missing_paths,
-        },
+        paths: report_path_summary(discovery),
         diagnostics,
         suppressions: suppressions.summaries,
         findings,
@@ -678,5 +709,6 @@ pub(crate) fn build_report(
         per_rule_deltas,
         suppressed_findings: suppressions.suppressed_findings,
         all_findings_summary,
+        machine_context,
     }
 }

@@ -923,7 +923,7 @@ focused_github_metadata_scan() {
   fi
   # Ignored or missing entries mean the exact-path config bypass did not reach every user file.
   if ! grep -q '"ignoredPaths": \[\]' "$report_file" \
-    || ! grep -q '"ignoredPathDetails": \[\]' "$report_file" \
+    || ! grep -q '"details": \[\]' "$report_file" \
     || ! grep -q '"missingPaths": \[\]' "$report_file"; then
     printf 'GitHub metadata scan reported an ignored or missing exact path\n' >&2
     return 1
@@ -958,13 +958,13 @@ security_selector_listing_smoke() {
   cargo run --quiet -- list-rules --selector Security >"$WORK_DIR/security-rules.txt"
 }
 
-# Prove summary users receive the current schema and ranked rule data.
+# Prove summary users receive the current v3 schema and canonical score data.
 summary_json_smoke() {
   local summary_file="$WORK_DIR/summary.json"
 
   cargo run --quiet -- summary fixtures --format json --top 5 --include-ignored >"$summary_file" || return $?
-  grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*"gruff\.summary\.v2"' "$summary_file" || return $?
-  grep -q '"topRules":' "$summary_file"
+  grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*"gruff\.summary\.v3"' "$summary_file" || return $?
+  grep -q '"topOffenders":' "$summary_file"
 }
 
 # Prove a user-provided patch limits findings to the changed source region.

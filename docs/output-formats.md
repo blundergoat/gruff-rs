@@ -13,13 +13,41 @@ cargo run -- analyse src --format text --fail-on warning
 
 ## JSON
 
-Use `json` for automation. JSON reports use `gruff.analysis.v2`.
+Use `json` for automation. Analysis reports use `gruff.analysis.v3`.
 
 ```sh
 cargo run -- analyse src --format json --fail-on none > gruff-rs.json
 ```
 
-When a baseline or diff-patch context is in scope, the report gains an additive `perRuleDeltas[]` array (`{ruleId, introduced, removed, net}`). Full-tree scans omit the key entirely so existing consumers stay byte-identical.
+The v3 envelope emits project-relative slash paths and one canonical `file` key.
+Optional `column`, `endLine`, and `symbol` keys are omitted when absent. A
+scanner-pinpointed column is paired with
+`metadata.locationPrecision: "scanner-pinpointed"`; line-only findings declare
+`"line-only"` and omit `column`. Rust-only finding scope lives at
+`extensions.rs.finding.scope`.
+
+When a baseline or diff context supplies per-rule comparison data, the report
+publishes `extensions.rs.topLevel.perRuleDeltas` entries shaped as
+`{ruleId, introduced, removed, net}`. Full-tree scans omit that extension.
+
+### Migrating v2 JSON consumers
+
+Version 3 is a hard break with no v2 writer or compatibility flag:
+
+- Accept `gruff.analysis.v3` and `gruff.summary.v3`; `run.generatedAt` is removed
+  so repeated equivalent reports remain deterministic.
+- Read `findings[].file` and `score.topOffenders[].file`; the deprecated
+  `filePath` aliases are removed.
+- Read ignore evidence from `paths.details` beside `paths.ignoredPaths`; the
+  former `paths.ignoredPathDetails` name is removed.
+- Read changed-region suppression counts from `summary.suppressedFindings`; the
+  top-level `suppressedCount` alias is removed.
+- Read Rust comparison data from `extensions.rs.topLevel.perRuleDeltas`; the
+  former top-level extension is removed.
+- Treat absent optional locations and symbols as omitted keys, not `null`.
+- Read the composite as `score.composite.{score,grade}` and offender rows from
+  `score.topOffenders`; the v2 flat composite and independent summary `pillars`,
+  `topRules`, and `topFiles` shapes are retired.
 
 ## HTML
 
@@ -53,7 +81,10 @@ cargo run -- analyse src --format sarif --fail-on none > gruff-rs.sarif
 
 ## Summary
 
-`summary` has its own compact text/JSON contract:
+`summary` text remains the compact human view. `summary --format json` emits the
+exact findings-free projection of analysis JSON for the same inputs: it changes
+`schemaVersion` to `gruff.summary.v3` and removes only the top-level `findings`
+array. Because JSON projection is fixed, `--top` affects text output only.
 
 ```sh
 cargo run -- summary src --format json --top 5

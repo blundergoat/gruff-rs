@@ -41,6 +41,7 @@ mod hook;
 mod html_report;
 mod ignore_policy;
 mod init;
+mod machine_contract;
 mod parser;
 mod project;
 mod render;
@@ -109,6 +110,7 @@ use diff::{
 use discovery::{classify_ignored_path, discover_sources, DiscoveryResult};
 use gate::{Gate, GateOnMatch, GateScope};
 use ignore_policy::{IgnoreSource, IgnoredPath};
+pub(crate) use machine_contract::{MachineDiffContext, MachineReportContext};
 use render::render_report_with_scope;
 pub(crate) use render::{html_escape, render_text_suppressions};
 #[cfg(test)]
@@ -206,6 +208,7 @@ fn run_analyse_command(
             let duration_ms = Some(started.elapsed().as_millis());
             apply_gate_diagnostic(&mut report, config.gate.as_ref());
             let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
+            report.machine_context.exit_code = outcome.numeric_code();
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()
@@ -317,6 +320,7 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
             let duration_ms = Some(started.elapsed().as_millis());
             apply_gate_diagnostic(&mut report, config.gate.as_ref());
             let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
+            report.machine_context.exit_code = outcome.numeric_code();
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             match emit_report_output(writer, output, outcome, &rendered) {
                 Ok(()) => outcome.exit_code(),
@@ -500,11 +504,15 @@ fn custom_rule_name(rule_id: &str) -> String {
 
 fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
     let deep_scan_budget = args.deep_scan_budget.clone();
+    let output_format = match args.format {
+        SummaryFormat::Text => OutputFormat::Text,
+        SummaryFormat::Json => OutputFormat::Json,
+    };
     let options = AnalysisOptions {
         paths: args.paths,
         config: args.config,
         no_config: args.no_config,
-        format: OutputFormat::Text,
+        format: output_format,
         fail_on: FailThreshold::None,
         include_ignored: args.include_ignored,
         diff: None,
@@ -524,11 +532,12 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
 
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(report) => {
+        Ok(mut report) => {
             let duration_ms = started.elapsed().as_millis();
             // `summary` is a read-only reporting command: like `--fail-on` (passed as
             // `None` above), the `gate:` block must not change its exit code.
             let outcome = RunOutcome::classify(&report, FailThreshold::None, None);
+            report.machine_context.exit_code = outcome.numeric_code();
             let rendered = summary::render(&report, args.top, args.format, duration_ms);
             writer.emit(outcome, &rendered);
             outcome.exit_code()

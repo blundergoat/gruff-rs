@@ -163,12 +163,16 @@ impl RunOutcome {
         Self::Success
     }
 
-    pub(crate) fn exit_code(self) -> ExitCode {
+    pub(crate) fn numeric_code(self) -> usize {
         match self {
-            Self::Success => ExitCode::SUCCESS,
-            Self::ThresholdHit => ExitCode::from(1),
-            Self::DiagnosticsFailed => ExitCode::from(2),
+            Self::Success => 0,
+            Self::ThresholdHit => 1,
+            Self::DiagnosticsFailed => 2,
         }
+    }
+
+    pub(crate) fn exit_code(self) -> ExitCode {
+        ExitCode::from(self.numeric_code() as u8)
     }
 
     pub(crate) fn is_failure(self) -> bool {
