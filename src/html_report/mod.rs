@@ -37,7 +37,7 @@ pub(crate) struct ReportView<'a> {
 
 pub(crate) struct PillarRow {
     pub(crate) pillar: Pillar,
-    pub(crate) score: f64,
+    pub(crate) score: Option<f64>,
     pub(crate) grade_letter: String,
     pub(crate) grade_class: char,
     pub(crate) findings: usize,
@@ -72,9 +72,14 @@ impl DistributionBucket {
 impl<'a> ReportView<'a> {
     fn build(report: &'a AnalysisReport, scope: &'a RequestedScope) -> Self {
         let composite = report.score.composite;
-        let grade_letter = grade(composite);
+        // A run that evaluated nothing shows no number in the stamp, so an empty scan cannot read
+        // as perfect; "n/a" is the same absence marker every other gruff-rs surface uses.
+        let grade_letter = composite.map(grade).unwrap_or_else(|| "n/a".to_string());
         let grade_class = grade_class_letter(&grade_letter);
-        let composite_text = format!("{:.2} / 100", composite);
+        let composite_text = match composite {
+            Some(value) => format!("{value:.2} / 100"),
+            None => "not evaluated".to_string(),
+        };
         let summary_line = verdict_summary(&report.findings, &report.summary);
 
         let pillar_rows = build_pillar_rows(report);
@@ -101,11 +106,14 @@ fn build_pillar_rows(report: &AnalysisReport) -> Vec<PillarRow> {
     pillar_digests(report)
         .into_iter()
         .map(|digest| {
-            let class = grade_class_letter(&digest.grade);
+            // A pillar that evaluated nothing has no letter, and 'n' is the class the helper
+            // already returns for anything outside the A-F bands.
+            let letter = digest.grade.unwrap_or_else(|| "n/a".to_string());
+            let class = grade_class_letter(&letter);
             PillarRow {
                 pillar: digest.pillar,
                 score: digest.score,
-                grade_letter: digest.grade,
+                grade_letter: letter,
                 grade_class: class,
                 findings: digest.findings,
                 advisories: digest.advisory,
@@ -120,7 +128,7 @@ fn build_offender_rows(offenders: &[FileScore]) -> Vec<OffenderRow<'_>> {
     offenders
         .iter()
         .map(|file| {
-            let letter = grade(file.score);
+            let letter = file.score.map(grade).unwrap_or_else(|| "n/a".to_string());
             let class = grade_class_letter(&letter);
             OffenderRow {
                 file,

@@ -634,6 +634,7 @@ pub(crate) fn record_history_if_requested(
             history_file,
             &report.findings,
             config,
+            report.score.evaluated_files,
             &mut report.diagnostics,
         );
     }
@@ -689,7 +690,10 @@ pub(crate) fn build_report(
         machine_diff,
     } = inputs;
     let summary = summarize(&findings);
-    let score = score_report(&findings, config);
+    // Only Rust files carry code to score, so the ratified denominator is narrower than
+    // analysed_files, which also counts the text inputs the raw-text rules read.
+    let evaluated_files = discovery.files.iter().filter(|file| file.is_rust).count();
+    let score = score_report(&findings, config, evaluated_files);
     let machine_context = machine_contract::report_context(project_root, options, machine_diff);
     AnalysisReport {
         schema_version: "gruff.analysis.v3".to_string(),

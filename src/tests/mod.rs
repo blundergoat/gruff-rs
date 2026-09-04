@@ -4,6 +4,7 @@ use tempfile::tempdir;
 
 mod calibration;
 mod config_and_selectors;
+mod m06_contract;
 mod parser;
 mod project_tests;
 mod renderers;
@@ -114,7 +115,7 @@ fn sample_report() -> AnalysisReport {
 
 fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -> AnalysisReport {
     let summary = summarize(&findings);
-    let score = score_report(&findings, &Config::default());
+    let score = score_report(&findings, &Config::default(), 10);
     AnalysisReport {
         schema_version: "gruff.analysis.v3".to_string(),
         tool: ToolInfo {

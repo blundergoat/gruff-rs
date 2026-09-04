@@ -494,9 +494,9 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
 
 #[test]
 pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
-    let clean = score_report(&[], &Config::default());
-    assert_eq!(clean.composite, 100.0);
-    assert_eq!(clean.grade, "A");
+    let clean = score_report(&[], &Config::default(), 10);
+    assert_eq!(clean.composite, Some(100.0));
+    assert_eq!(clean.grade.as_deref(), Some("A"));
     assert_eq!(clean.pillars.len(), SCORE_PILLARS.len());
     assert!(clean.pillars.iter().all(|pillar| pillar.findings == 0));
 
@@ -526,8 +526,8 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
             Pillar::Documentation,
         ),
     ];
-    let score = score_report(&findings, &Config::default());
-    assert_eq!(score.grade, "A");
+    let score = score_report(&findings, &Config::default(), 10);
+    assert_eq!(score.grade.as_deref(), Some("A"));
     assert_eq!(score.top_offenders[0].file_path, "src/a.rs");
     let security = score
         .pillars
@@ -539,8 +539,10 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
         .iter()
         .find(|pillar| pillar.pillar == Pillar::DeadCode)
         .expect("dead-code pillar");
-    assert_eq!(security.score, 92.0);
-    assert_eq!(dead_code.score, 98.0);
+    // Over ten evaluated files: security carries one high-confidence error (weight 12.0, density
+    // 1.20) and dead-code one low-confidence warning (weight 2.0, density 0.20).
+    assert_eq!(security.score, Some(53.85));
+    assert_eq!(dead_code.score, Some(66.67));
 
     assert_eq!(grade(90.0), "A");
     assert_eq!(grade(80.0), "B");

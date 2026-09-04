@@ -124,7 +124,9 @@ use report::{
     SuppressionSummary, ToolInfo, SCORE_PILLARS,
 };
 use report_identity::FindingScope;
-pub(crate) use scoring::{grade, render_composite_block, score_report, summarize};
+pub(crate) use scoring::{
+    grade, render_composite_block, score_report, summarize, RuleWeight, ScoreCluster,
+};
 use source::{
     CallNameSummary, DependencySummary, ItemSummary, LockedPackageSummary, LockfileSummary,
     ManifestSummary, ModuleSummary, ParsedSource, ProjectContext, ProjectCoverage,

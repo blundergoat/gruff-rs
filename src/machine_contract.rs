@@ -310,8 +310,12 @@ fn score_value(report: &AnalysisReport) -> Value {
     json!({
         "composite": {
             "grade": report.score.grade,
-            "score": machine_number(report.score.composite),
+            "score": report.score.composite.map(machine_number),
         },
+        "clusters": report.score.clusters,
+        "ruleAttribution": report.score.rule_attribution,
+        "evaluatedFiles": report.score.evaluated_files,
+        "scoredPillars": report.score.scored_pillars,
         "pillars": report.score.pillars.iter().map(pillar_score_value).collect::<Vec<_>>(),
         "topOffenders": report.score.top_offenders.iter().map(|score| {
             top_offender_value(score, root)
@@ -322,9 +326,11 @@ fn score_value(report: &AnalysisReport) -> Value {
 fn pillar_score_value(score: &PillarScore) -> Value {
     json!({
         "pillar": score.pillar,
+        "applicable": score.applicable,
         "findings": score.findings,
         "penalty": machine_number(score.penalty),
-        "score": machine_number(score.score),
+        "score": score.score.map(machine_number),
+        "grade": score.grade,
     })
 }
 
@@ -332,7 +338,8 @@ pub(crate) fn top_offender_value(score: &FileScore, root: &str) -> Value {
     json!({
         "file": machine_path(&score.file_path, root),
         "findings": score.findings,
-        "score": machine_number(score.score),
+        "penalty": machine_number(score.penalty),
+        "score": score.score.map(machine_number),
     })
 }
 

@@ -71,10 +71,12 @@ fn render_output_volume_hint(output: &mut String, report: &AnalysisReport) {
 }
 
 fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms: Option<u128>) {
-    // Cross-port canonical masthead: first line is exactly
-    // `gruff-rs <version> analyse`. The scan-card detail that used to share the
-    // masthead (project root, file count, duration) drops onto following lines.
+    // FAMILY-CONTRACT section 1: the masthead and the two-line composite block are the first three
+    // lines of the view, in that order, and every port-local extension sits below them. The scan card
+    // (project root, file count, duration) used to sit between the masthead and the composite, which
+    // put a reader three lines further from the number they came for than the contract allows.
     let _ = writeln!(output, "gruff-rs {} analyse", report.tool.version);
+    crate::render_composite_block(output, report);
     let _ = writeln!(
         output,
         "Path: {}",
@@ -89,13 +91,8 @@ fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms:
     if let Some(ms) = duration_ms {
         let _ = writeln!(output, "Duration: {}", format_duration(ms));
     }
-    // ADR-014: per-rule delta blocks sit between the header detail and the
-    // composite-score line.
+    // ADR-014: per-rule delta blocks sit below the canonical block with the rest of the scan card.
     render_rule_delta_blocks(output, report);
-
-    // Canonical composite block, shared verbatim with `summary` so the two
-    // surfaces no longer diverge on separator/order/decimals.
-    crate::render_composite_block(output, report);
     render_ignored_guidance(output, report);
 }
 

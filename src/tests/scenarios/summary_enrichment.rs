@@ -237,7 +237,11 @@ pub(crate) fn analyse_text_ranks_rule_deltas_by_absolute_net_then_rule_id() {
 }
 
 #[test]
-pub(crate) fn analyse_text_renders_rule_deltas_before_the_composite_score_line() {
+pub(crate) fn analyse_text_renders_rule_deltas_below_the_canonical_block() {
+    // ADR-014 put the delta block above the composite line. FAMILY-CONTRACT section 1 now fixes the
+    // masthead and the two-line composite block as the first three lines of every text view, and
+    // permits port-local extension lines below them only, so the delta block moves under the block
+    // it used to precede. The contract wins: it is the cross-port surface, ADR-014 is gruff-rs-local.
     let mut report = sample_report_with(Vec::new(), Vec::new());
     report.per_rule_deltas = Some(vec![rule_delta_fixture("docs.missing-public-doc", 0, 4)]);
 
@@ -246,7 +250,7 @@ pub(crate) fn analyse_text_renders_rule_deltas_before_the_composite_score_line()
         .find("Top 5 improved:")
         .expect("improved block present");
     let score_offset = rendered.find("Composite:").expect("composite line present");
-    assert!(improved_offset < score_offset);
+    assert!(score_offset < improved_offset);
 }
 
 #[test]
@@ -346,11 +350,11 @@ pub(crate) fn summary_omits_per_rule_deltas_when_absent() {
 }
 
 #[test]
-pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
-    // PR #3 review: summary text emitted the `Top 5` delta block AFTER
-    // the composite-score line, opposite of ADR-014 (the analyse text and
-    // Markdown reporters both put deltas BEFORE the score line). Pin
-    // the position so the comparison signal stays above the score.
+pub(crate) fn summary_text_renders_rule_deltas_below_the_canonical_block() {
+    // This once pinned the delta block above the composite line, to match ADR-014 and the analyse
+    // text view. FAMILY-CONTRACT section 1 now leads every text view with the masthead and the
+    // two-line composite block, so both views put the delta block below it instead - and they still
+    // agree with each other, which is what the original pin was protecting.
     let mut report = sample_report_with(Vec::new(), Vec::new());
     report.per_rule_deltas = Some(vec![rule_delta_fixture("docs.missing-public-doc", 0, 4)]);
 
@@ -362,7 +366,7 @@ pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
         .find("Composite:")
         .expect("composite line present");
     assert!(
-        improved_offset < score_offset,
-        "summary delta block must render above the Composite line, got:\n{summary_text}",
+        score_offset < improved_offset,
+        "summary delta block must render below the canonical composite block, got:\n{summary_text}",
     );
 }

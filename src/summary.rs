@@ -1,6 +1,7 @@
 use crate::{
     grade, pillar_label,
     rules::{builtin_registry, RuleRegistry},
+    scoring::score_text,
     scoring::top_file_scores_with_limit,
     AnalysisReport, Confidence, Finding, Pillar, PillarScore, RuleDelta, Severity, SummaryFormat,
     SCORE_PILLARS,
@@ -38,8 +39,8 @@ struct SummaryDigest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PillarDigest {
     pub(crate) pillar: Pillar,
-    pub(crate) grade: String,
-    pub(crate) score: f64,
+    pub(crate) grade: Option<String>,
+    pub(crate) score: Option<f64>,
     pub(crate) applicable: bool,
     pub(crate) findings: usize,
     pub(crate) advisory: usize,
@@ -66,8 +67,8 @@ struct RuleDigest {
 struct FileDigest {
     file_path: String,
     findings: usize,
-    score: f64,
-    grade: String,
+    score: Option<f64>,
+    grade: Option<String>,
 }
 
 impl SummaryDigest {
@@ -121,9 +122,9 @@ fn pillar_digest_row(
         .unwrap_or((0, 0, 0));
     PillarDigest {
         pillar: pillar_score.pillar,
-        grade: grade(pillar_score.score),
+        grade: pillar_score.grade.clone(),
         score: pillar_score.score,
-        applicable: SCORE_PILLARS.contains(&pillar_score.pillar),
+        applicable: pillar_score.applicable && SCORE_PILLARS.contains(&pillar_score.pillar),
         findings: pillar_score.findings,
         advisory,
         warning,
@@ -188,13 +189,13 @@ fn first_sentence(description: &'static str) -> &'static str {
 }
 
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
-    top_file_scores_with_limit(&report.findings, top)
+    top_file_scores_with_limit(&report.findings, top, report.score.evaluated_files)
         .iter()
         .map(|file| FileDigest {
             file_path: file.file_path.to_string(),
             findings: file.findings,
             score: file.score,
-            grade: grade(file.score),
+            grade: file.score.map(grade),
         })
         .collect()
 }
@@ -289,10 +290,11 @@ fn render_scan_card(
     duration_ms: u128,
     mid: impl FnOnce(&mut String),
 ) {
-    // Cross-port canonical masthead: first line is exactly
-    // `gruff-rs <version> summary`. The scan-card detail (project root, file
-    // count, duration) drops onto following lines.
+    // FAMILY-CONTRACT section 1: masthead, then the two-line composite block, then everything this
+    // port adds. `summary` and `analyse` lead with the same three lines for the same reason - a
+    // reader moving between the two views should not have to hunt for the grade in a different place.
     let _ = writeln!(out, "{} {} summary", report.tool.name, report.tool.version);
+    crate::render_composite_block(out, report);
     let _ = writeln!(
         out,
         "Path: {}",
@@ -306,9 +308,6 @@ fn render_scan_card(
     );
     let _ = writeln!(out, "Duration: {}", format_duration(duration_ms));
     mid(out);
-    // Canonical composite block, shared verbatim with `analyse` text so the two
-    // surfaces no longer diverge on separator/order/decimals.
-    crate::render_composite_block(out, report);
     render_scan_annotations(out, report);
     render_scan_guidance(out, report);
 }
@@ -426,11 +425,11 @@ fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {
     for pillar in pillars {
         let _ = writeln!(
             out,
-            "  {name:<name_width$} {grade} {score:>6.2} findings={findings:<count_width$}   advisory={advisory:<count_width$}   warning={warning:<count_width$}   error={error}",
+            "  {name:<name_width$} {grade} {score:>6} findings={findings:<count_width$}   advisory={advisory:<count_width$}   warning={warning:<count_width$}   error={error}",
             name = pillar_label(pillar.pillar),
             name_width = name_width,
-            grade = pillar.grade,
-            score = pillar.score,
+            grade = pillar.grade.as_deref().unwrap_or("n/a"),
+            score = score_text(pillar.score),
             findings = pillar.findings,
             count_width = count_width,
             advisory = pillar.advisory,
@@ -493,8 +492,11 @@ fn render_files_text(out: &mut String, files: &[FileDigest]) {
         for file in files {
             let _ = writeln!(
                 out,
-                "  {:<48}  findings={:<4}  score={:>6.2}  grade={}",
-                file.file_path, file.findings, file.score, file.grade,
+                "  {:<48}  findings={:<4}  score={:>6}  grade={}",
+                file.file_path,
+                file.findings,
+                score_text(file.score),
+                file.grade.as_deref().unwrap_or("n/a"),
             );
         }
     }

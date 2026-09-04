@@ -305,7 +305,9 @@ pub(crate) fn apply_changed_region_filter(
     // Under a diff, align the pre-baseline summary with the filtered set so
     // `gate.scope: all` gates over the changed region too (ADR-003 addendum).
     report.all_findings_summary = Some(report.summary);
-    report.score = score_report(&report.findings, config);
+    // Rescoring the changed region keeps the run's own denominator, so the delta measures the
+    // findings the diff selected rather than the difference between two project sizes.
+    report.score = score_report(&report.findings, config, report.score.evaluated_files);
     report.per_rule_deltas = (!deltas.is_empty()).then_some(deltas);
     report.suppressed_count = Some(suppressed_findings);
     push_patch_filter_diagnostic(

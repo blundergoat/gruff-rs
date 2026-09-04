@@ -353,9 +353,9 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     ];
 
     let baseline_config = Config::default();
-    let baseline_score = score_report(&findings, &baseline_config);
+    let baseline_score = score_report(&findings, &baseline_config, 10);
     assert!(
-        baseline_score.composite < 100.0,
+        baseline_score.composite < Some(100.0),
         "advisory findings should depress the score under default config",
     );
 
@@ -367,9 +367,10 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
             ..RuleSetting::default()
         },
     );
-    let excluded_score = score_report(&findings, &exclusion_config);
+    let excluded_score = score_report(&findings, &exclusion_config, 10);
     assert_eq!(
-        excluded_score.composite, 100.0,
+        excluded_score.composite,
+        Some(100.0),
         "exclusion must zero out the rule's penalty contribution",
     );
 
@@ -395,8 +396,8 @@ pub(crate) fn non_excluded_rule_scores_normally() {
         Severity::Advisory,
         Pillar::Naming,
     )];
-    let baseline = score_report(&findings, &Config::default());
-    assert!(baseline.composite < 100.0);
+    let baseline = score_report(&findings, &Config::default(), 10);
+    assert!(baseline.composite < Some(100.0));
 
     let mut other_excluded = Config::default();
     other_excluded.rule_settings.insert(
@@ -406,7 +407,7 @@ pub(crate) fn non_excluded_rule_scores_normally() {
             ..RuleSetting::default()
         },
     );
-    let still_penalised = score_report(&findings, &other_excluded);
+    let still_penalised = score_report(&findings, &other_excluded, 10);
     assert_eq!(
         still_penalised.composite, baseline.composite,
         "excluding one rule does not affect penalty contributions from others",

@@ -3,7 +3,7 @@
 //! use plain-text escaping so an untrusted source tree cannot add structure.
 
 use super::*;
-use crate::{pillar_label, summary::pillar_digests};
+use crate::{pillar_label, scoring::score_text, summary::pillar_digests};
 use std::fmt::Write as _;
 
 const RULE_DELTA_BLOCK_LIMIT: usize = 5;
@@ -94,13 +94,14 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
     );
     output.push_str("# gruff-rs report\n");
     render_rule_delta_blocks(&mut output, report);
+    let composite_text = match (report.score.composite, report.score.grade.as_deref()) {
+        (Some(composite), Some(grade)) => format!("{composite:.1} ({grade})"),
+        // A run that evaluated nothing renders no number, matching the text and machine views.
+        _ => "n/a (nothing evaluated)".to_string(),
+    };
     output.push_str(&format!(
-        "\nScore: **{:.1} ({})**\n\nFindings: {} advisory, {} warning, {} error.\n",
-        report.score.composite,
-        report.score.grade,
-        report.summary.advisory,
-        report.summary.warning,
-        report.summary.error
+        "\nScore: **{}**\n\nFindings: {} advisory, {} warning, {} error.\n",
+        composite_text, report.summary.advisory, report.summary.warning, report.summary.error
     ));
     render_pillars_section(&mut output, &pillars);
     render_diagnostics_section(&mut output, report);
@@ -199,10 +200,10 @@ fn render_pillars_section(output: &mut String, pillars: &[crate::summary::Pillar
     // Pillars retain the shared findings-descending, label-ascending report order.
     for pillar in pillars {
         output.push_str(&format!(
-            "| {} | {} | {:.2} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} |\n",
             pillar_label(pillar.pillar),
-            pillar.grade,
-            pillar.score,
+            pillar.grade.as_deref().unwrap_or("n/a"),
+            score_text(pillar.score),
             pillar.findings,
             pillar.advisory,
             pillar.warning,

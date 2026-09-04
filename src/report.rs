@@ -345,8 +345,23 @@ pub(crate) struct ReportSuppressions {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScoreReport {
-    pub(crate) composite: f64,
-    pub(crate) grade: String,
+    /// Mean of the applicable pillar scores, `None` when nothing applicable was evaluated and
+    /// there is no health to report.
+    pub(crate) composite: Option<f64>,
+    /// Letter grade derived from `composite`, `None` whenever `composite` is.
+    pub(crate) grade: Option<String>,
+    /// Ratified scoring denominator: Rust files that survived discovery. Published so a reader can
+    /// reproduce the composite without guessing which of the file counts it used.
+    pub(crate) evaluated_files: usize,
+    /// Every pillar this run could reach, so the composite's denominator is visible rather than
+    /// inferred from the rows that happened to carry findings.
+    pub(crate) scored_pillars: Vec<Pillar>,
+    /// Correlated concepts that billed one shared weight, so a reader can see which findings the
+    /// grade counted once rather than inferring it from a total lower than the sum of its parts.
+    pub(crate) clusters: Vec<ScoreCluster>,
+    /// How much weight each native rule removed from the score. The native rule id is the ratified
+    /// attribution key; a concept identifier may group reporting but never attribution.
+    pub(crate) rule_attribution: Vec<RuleWeight>,
     pub(crate) pillars: Vec<PillarScore>,
     pub(crate) top_offenders: Vec<FileScore>,
 }
@@ -354,7 +369,11 @@ pub(crate) struct ScoreReport {
 #[derive(Debug, Serialize)]
 pub(crate) struct PillarScore {
     pub(crate) pillar: Pillar,
-    pub(crate) score: f64,
+    /// Whether any rule in this port can reach the pillar, separating "reachable and clean", which
+    /// scores 100, from a pillar with no opinion at all.
+    pub(crate) applicable: bool,
+    pub(crate) score: Option<f64>,
+    pub(crate) grade: Option<String>,
     pub(crate) penalty: f64,
     pub(crate) findings: usize,
 }
@@ -362,7 +381,9 @@ pub(crate) struct PillarScore {
 #[derive(Debug)]
 pub(crate) struct FileScore {
     pub(crate) file_path: String,
-    pub(crate) score: f64,
+    pub(crate) score: Option<f64>,
+    /// Summed ratified weight for this file, published beside its score so the curve is reproducible.
+    pub(crate) penalty: f64,
     pub(crate) findings: usize,
 }
 
