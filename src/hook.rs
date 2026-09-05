@@ -73,6 +73,8 @@ fn options_from_hook(args: &HookArgs, include_changed_ranges: bool) -> AnalysisO
         history_file: None,
         baseline: args.baseline.clone(),
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: args.baseline.is_none(),
     }
 }
@@ -193,6 +195,8 @@ pub(crate) fn diff_base_stable_identities(
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: true,
     };
     let base_report = run_analysis_in_project(base_tree.path(), &base_options, config)?;

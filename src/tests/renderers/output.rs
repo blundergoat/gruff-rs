@@ -168,9 +168,14 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
         sarif_result["locations"][0]["physicalLocation"]["region"]["startLine"],
         7
     );
+    // Code scanning groups alerts by the ratified durable identity, the same name baseline matching reads.
+    let named = finding_identities(&report.findings[..1], &declaration_position_by_line)
+        .expect("the finding can be named")
+        .remove(0)
+        .expect("an ordinary finding has an identity");
     assert_eq!(
         sarif_result["partialFingerprints"]["gruffFingerprint"].as_str(),
-        Some(report.findings[0].fingerprint.as_str())
+        Some(named.identity.as_str())
     );
 
     let text = render_report(&report, OutputFormat::Text);
@@ -242,6 +247,10 @@ pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
         new_count: 2,
         unchanged_count: 1,
         absent_count: 3,
+        collision_count: 0,
+        not_eligible_count: 0,
+        sensitive_counted: 0,
+        entries: 0,
         generated: false,
     });
     let baseline_summary = crate::summary::render(&report, 10, SummaryFormat::Text, 1);

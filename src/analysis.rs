@@ -298,24 +298,23 @@ fn collect_report_inputs(
     diff_filter: Option<&ResolvedDiffFilter>,
 ) -> Result<ReportInputs, String> {
     let analysed_paths = analysed_display_paths(&discovery.files);
-    let AnalysisArtifacts {
-        mut findings,
-        function_blocks_by_file,
-    } = analyse_discovered_sources_with_artifacts(
+    let (mut findings, all_findings, function_blocks_by_file) = analysed_findings(
         project_root,
-        &discovery.files,
         config,
+        &discovery,
         coverage,
         has_symbol_scope_diff(diff_filter),
         &mut diagnostics,
     );
-    sort_and_dedupe_findings(&mut findings);
-    let all_findings = findings.clone();
-    let (baseline_resolution, all_findings_summary) =
-        resolve_baseline(project_root, options, &mut findings)?;
+    let (baseline_report, per_rule_deltas, all_findings_summary) = resolve_run_baseline(
+        project_root,
+        options,
+        &mut findings,
+        &function_blocks_by_file,
+        &mut diagnostics,
+    )?;
     let (findings, summaries, suppressed_findings) =
         apply_report_exclusions(findings, &config.exclusions, &config.sensitive_exclusions);
-    let (baseline_report, per_rule_deltas) = split_baseline_resolution(baseline_resolution);
     let inputs = ReportInputs {
         discovery,
         diagnostics,
@@ -337,6 +336,56 @@ fn collect_report_inputs(
         &analysed_paths,
         &function_blocks_by_file,
     ))
+}
+
+/// Run the rules over the discovered sources and hand back the findings, a pre-baseline copy, and the parsed functions.
+///
+/// The pre-baseline copy is what a gate scoped to everything counts, so it is taken before suppression drops the
+/// debt the user already accepted; the parsed functions are what name a finding by the declaration it sits on.
+#[allow(clippy::type_complexity)]
+fn analysed_findings(
+    project_root: &Path,
+    config: &Config,
+    discovery: &DiscoveryResult,
+    coverage: ProjectCoverage,
+    has_symbol_scope: bool,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> (
+    Vec<Finding>,
+    Vec<Finding>,
+    BTreeMap<String, Vec<FunctionBlock>>,
+) {
+    let AnalysisArtifacts {
+        mut findings,
+        function_blocks_by_file,
+    } = analyse_discovered_sources_with_artifacts(
+        project_root,
+        &discovery.files,
+        config,
+        coverage,
+        has_symbol_scope,
+        diagnostics,
+    );
+    sort_and_dedupe_findings(&mut findings);
+    // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads
+    // the same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
+    name_findings(&mut findings, &function_blocks_by_file);
+    let all_findings = findings.clone();
+    (findings, all_findings, function_blocks_by_file)
+}
+
+/// Attach each ordinary finding's durable identity, which SARIF publishes as its code-scanning fingerprint.
+///
+/// A sensitive finding is left unnamed, because it has no durable identity at all; a finding this run cannot name
+/// keeps `None` and is published without a fingerprint rather than with a guessed one.
+fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>) {
+    let declaration_position = declaration_position_from_blocks(blocks_by_file);
+    let Ok(identities) = finding_identities(findings, &declaration_position) else {
+        return;
+    };
+    for (finding, named) in findings.iter_mut().zip(identities) {
+        finding.baseline_identity = named.map(|identity| identity.identity);
+    }
 }
 
 fn has_symbol_scope_diff(diff_filter: Option<&ResolvedDiffFilter>) -> bool {
@@ -432,14 +481,72 @@ fn changed_scope_all_summary(
     )
 }
 
+/// What meeting the baseline produced: the report section, per-rule movement, and the pre-baseline summary.
+///
+/// The summary is taken before suppression drops the unchanged findings, so a gate scoped to everything can
+/// still count the debt the user has already accepted.
+type RunBaseline = (Option<BaselineReport>, Option<Vec<RuleDelta>>, Summary);
+
+/// Meet the baseline for this run and turn every collision it found into a diagnostic the user reads.
+///
+/// Findings are named by the declaration they sit on, so two findings inside one function share an identity while
+/// a second function of the same name takes its own, which is what keeps one review from covering both.
+fn resolve_run_baseline(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    findings: &mut Vec<Finding>,
+    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Result<RunBaseline, String> {
+    let declaration_position = declaration_position_from_blocks(function_blocks_by_file);
+    let (resolution, all_findings_summary) =
+        resolve_baseline(project_root, options, findings, &declaration_position)?;
+    let (report, deltas, collisions) = split_baseline_resolution(resolution);
+    diagnostics.extend(collision_diagnostics(&collisions));
+    Ok((report, deltas, all_findings_summary))
+}
+
 fn split_baseline_resolution(
     resolution: Option<BaselineResolution>,
-) -> (Option<BaselineReport>, Option<Vec<RuleDelta>>) {
-    let Some(BaselineResolution { report, deltas }) = resolution else {
-        return (None, None);
+) -> (
+    Option<BaselineReport>,
+    Option<Vec<RuleDelta>>,
+    Vec<BaselineCollision>,
+) {
+    let Some(BaselineResolution {
+        report,
+        deltas,
+        collisions,
+    }) = resolution
+    else {
+        return (None, None, Vec::new());
     };
     let deltas = (!report.generated && !deltas.is_empty()).then_some(deltas);
-    (Some(report), deltas)
+    (Some(report), deltas, collisions)
+}
+
+/// Name every identity that covered two declarations, so a user sees which ones could not be told apart.
+///
+/// Neither finding is suppressed and the run is not invalidated: hiding either would let one review cover a
+/// finding nobody read, which is exactly what the declaration ordinal exists to prevent.
+fn collision_diagnostics(collisions: &[BaselineCollision]) -> Vec<RunDiagnostic> {
+    collisions
+        .iter()
+        .map(|collision| RunDiagnostic {
+            diagnostic_type: "baseline-collision".to_string(),
+            message: format!(
+                "collision: identity {} covers {} declarations of {} for rule {} in {}; none is suppressed",
+                collision.identity,
+                collision.subjects.len(),
+                collision.subjects.join(", "),
+                collision.rule_id,
+                collision.path,
+            ),
+            file_path: Some(collision.path.clone()),
+            line: None,
+            invalidates_run: Some(false),
+        })
+        .collect()
 }
 
 pub(crate) fn analysed_display_paths(files: &[SourceFile]) -> BTreeSet<String> {

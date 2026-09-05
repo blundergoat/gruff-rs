@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -27,6 +28,8 @@ use syn::{FnArg, ImplItem, Item, ReturnType, Type, Visibility};
 mod analyse_project;
 mod analysis;
 mod baseline;
+mod baseline_file;
+mod baseline_identity;
 mod changed_region;
 mod check_ignore;
 mod cli;
@@ -71,8 +74,18 @@ pub(crate) use analysis::project_coverage_for_test;
 pub(crate) use analysis::{apply_gate_diagnostic, run_analysis_in_project};
 #[cfg(test)]
 pub(crate) use baseline::write_baseline;
+#[cfg(test)]
+pub(crate) use baseline::{apply_baseline, migrate_baseline};
 pub(crate) use baseline::{
-    record_history, resolve_baseline, rule_deltas_from_counts, BaselineResolution,
+    record_history, resolve_baseline, rule_deltas_from_counts, BaselineCollision,
+    BaselineResolution,
+};
+use baseline_file::{BaselineData, BaselineEntry, SensitiveCounts, SensitiveSummary};
+#[cfg(test)]
+pub(crate) use baseline_identity::{compute_identity_for, normalise_measured_values};
+pub(crate) use baseline_identity::{
+    declaration_position_by_line, declaration_position_from_blocks, finding_identities,
+    FindingIdentity, TOOL_LANGUAGE,
 };
 use changed_region::{
     apply_diff_file_selection, patch_intersects_finding_with_scope, resolve_diff_filter,
@@ -118,10 +131,10 @@ pub(crate) use render::{
     render_report, sarif_physical_location_from_parts, sarif_uri, total_suppressed_findings,
 };
 use report::{
-    pillar_label, AnalysisReport, BaselineData, BaselineEntry, BaselineReport, Confidence,
-    FileScore, Finding, FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions,
-    RuleDelta, RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding,
-    SuppressionSummary, ToolInfo, SCORE_PILLARS,
+    pillar_label, AnalysisReport, BaselineReport, Confidence, FileScore, Finding,
+    FindingDescriptor, PathSummary, Pillar, PillarScore, ReportSuppressions, RuleDelta,
+    RunDiagnostic, RunInfo, ScoreReport, Severity, Summary, SuppressedFinding, SuppressionSummary,
+    ToolInfo, SCORE_PILLARS,
 };
 use report_identity::FindingScope;
 pub(crate) use scoring::{
@@ -273,6 +286,8 @@ fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOp
         history_file: args.history_file,
         baseline: args.baseline,
         generate_baseline: args.generate_baseline,
+        migrate_baseline: args.migrate_baseline,
+        force_baseline_overwrite: args.force,
         no_baseline: args.no_baseline,
     }
 }
@@ -293,6 +308,8 @@ fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOpt
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: args.no_baseline,
     }
 }
@@ -422,6 +439,8 @@ fn list_rules_config(project_root: &Path, args: &ListRulesArgs) -> Result<Config
             history_file: None,
             baseline: None,
             generate_baseline: None,
+            migrate_baseline: None,
+            force_baseline_overwrite: false,
             no_baseline: true,
         },
     )
@@ -521,6 +540,8 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: false,
     };
     let (project_root, options, config) =

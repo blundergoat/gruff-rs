@@ -84,6 +84,10 @@ pub(crate) struct Finding {
     pub(crate) metadata: Value,
     pub(crate) scope: FindingScope,
     pub(crate) fingerprint: String,
+    /// The ratified durable identity this run computed, which SARIF publishes as the code-scanning
+    /// fingerprint. `None` for a sensitive finding, which has no durable name, and for a finding built
+    /// outside the analysis pipeline. Never serialized: the envelope publishes it through SARIF only.
+    pub(crate) baseline_identity: Option<String>,
     /// Line-insensitive identity intended for external diff tooling.
     /// Computed from `rule_id`, `file_path`, and a stable subject based on
     /// scope/symbol. Independent of `fingerprint`, which
@@ -178,6 +182,8 @@ impl Finding {
             scope,
             fingerprint,
             stable_identity,
+            // The run names the finding once the parsed declarations are known, which is after construction.
+            baseline_identity: None,
         }
     }
 }
@@ -300,12 +306,20 @@ pub(crate) struct BaselineReport {
     pub(crate) source: String,
     /// Retained for backward compatibility; equals `unchanged_count` (ADR-002 addendum).
     pub(crate) suppressed: usize,
-    /// Current findings not matched by any baseline entry.
+    /// Current findings absent from the baseline, or beyond the count it reviewed.
     pub(crate) new_count: usize,
-    /// Current findings matched by a baseline entry (dropped from the default list).
+    /// Current findings within the reviewed count, hidden from the failing set.
     pub(crate) unchanged_count: usize,
-    /// Baseline entries that match no current finding (resolved since baselining).
+    /// Reviewed occurrences no longer present, which is debt the user has since fixed.
     pub(crate) absent_count: usize,
+    /// Findings whose identity could not separate two declarations; reported, never hidden.
+    pub(crate) collision_count: usize,
+    /// Sensitive findings, which no reviewed row may ever hide.
+    pub(crate) not_eligible_count: usize,
+    /// Sensitive findings a generated baseline counted rather than stored; 0 on an apply run.
+    pub(crate) sensitive_counted: usize,
+    /// Rows the baseline holds, so a reader can see the size of the reviewed set.
+    pub(crate) entries: usize,
     pub(crate) generated: bool,
 }
 
@@ -399,22 +413,4 @@ impl Serialize for FileScore {
         state.serialize_field("findings", &self.findings)?;
         state.end()
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BaselineData {
-    pub(crate) schema_version: Option<String>,
-    pub(crate) entries: Vec<BaselineEntry>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BaselineEntry {
-    pub(crate) fingerprint: String,
-    pub(crate) rule_id: String,
-    pub(crate) file_path: String,
-    pub(crate) line: Option<usize>,
-    pub(crate) symbol: Option<String>,
-    pub(crate) message: String,
 }

@@ -134,12 +134,14 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "79a7540d1b61cf02",
         ),
         (
+            // Line 24 is the `#[test]` attribute, the item's own first line. Before M07's anchor repair this
+            // pinned line 23, the blank separator belonging to the function above it.
             "test-quality.sleep-in-test",
             Severity::Advisory,
             "fixtures/sample.rs",
-            Some(23),
+            Some(24),
             Some("test_sleeps_without_assertion"),
-            "8e9591ae5cdf9beb",
+            "3da3d9f1b4bfed50",
         ),
     ];
 
@@ -156,6 +158,65 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "missing expected fixture finding `{rule_id}` at {path}:{line:?}"
         );
     }
+}
+
+#[test]
+pub(crate) fn block_findings_anchor_on_the_item_not_the_blank_line_above_it() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let rust_file = dir.path().join("anchors.rs");
+
+    // Two items separated by a blank line, the layout every Rust file uses. Before M07's repair the prefix
+    // walk crossed that separator and reported the blank line, which belongs to the function above.
+    let source = r#"pub fn first() -> usize {
+    1
+}
+
+/// Doc line for second.
+pub fn second(alpha: usize, beta: usize) -> usize {
+    alpha + beta
+}
+
+#[test]
+fn third() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+"#;
+    fs::write(&rust_file, source).expect("fixture write");
+
+    let report = analyse_project_paths(dir.path(), vec![PathBuf::from(".")]);
+    let lines: Vec<&str> = source.lines().collect();
+
+    assert!(
+        !report.findings.is_empty(),
+        "the anchor fixture produced no findings, so it could not prove where one lands"
+    );
+
+    // The claim is about the source text at the reported line, not about which rules happened to fire.
+    for finding in &report.findings {
+        let Some(line) = finding.line else {
+            continue;
+        };
+        let text = lines.get(line - 1).copied().unwrap_or_default();
+        assert!(
+            !text.trim().is_empty(),
+            "`{}` anchors on blank line {line}; block anchors must land on the item's own first line",
+            finding.rule_id
+        );
+    }
+
+    // `second` carries a doc comment, so its block starts at the doc line, never at the blank line above it.
+    let second = report
+        .findings
+        .iter()
+        .find(|finding| finding.symbol.as_deref() == Some("second"))
+        .expect("a finding on `second`");
+
+    assert_eq!(
+        second.line,
+        Some(5),
+        "`second` must anchor on its doc line, not the blank line 4 above it"
+    );
 }
 
 #[test]

@@ -33,11 +33,11 @@ pub(crate) fn function_source_context(
     }
 }
 
-/// Preserve the report anchor while walking attached line docs, attributes, and spacing once.
+/// Anchor the block on the item's own first line while walking attached line docs, attributes, and spacing once.
 fn function_block_start_index(lines: &[&str], function_index: usize) -> usize {
     let mut start = function_index;
 
-    // Attached prefix lines remain part of the block so existing finding identities stay stable.
+    // Attached prefix lines remain part of the block so a doc comment separated by spacing is still read.
     while start > 0 {
         let previous = lines[start - 1].trim();
 
@@ -46,6 +46,13 @@ fn function_block_start_index(lines: &[&str], function_index: usize) -> usize {
             break;
         }
         start -= 1;
+    }
+
+    // The walk above crosses the blank separator between two items, so it can stop on whitespace that
+    // belongs to the function above this one. Reporting that line gives the user a finding pointing at
+    // an empty line in someone else's function, which is neither triageable nor suppressible by line.
+    while start < function_index && lines[start].trim().is_empty() {
+        start += 1;
     }
     start
 }

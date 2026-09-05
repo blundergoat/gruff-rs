@@ -38,6 +38,8 @@ fn analyse_project_paths(project_root: &Path, paths: Vec<PathBuf>) -> AnalysisRe
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: true,
     };
     let config = load_config(project_root, &options).expect("test config loads");
@@ -211,6 +213,8 @@ fn default_test_options() -> AnalysisOptions {
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: true,
     }
 }

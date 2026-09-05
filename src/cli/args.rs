@@ -60,6 +60,12 @@ pub(crate) struct AnalyseArgs {
     /// Write current findings to a baseline file, defaulting to gruff-baseline.json.
     #[arg(long, num_args = 0..=1, default_missing_value = DEFAULT_BASELINE)]
     pub(crate) generate_baseline: Option<PathBuf>,
+    /// 0.5 baseline whose reviewed findings are carried into --generate-baseline; the original is left untouched.
+    #[arg(long, value_name = "PATH", requires = "generate_baseline")]
+    pub(crate) migrate_baseline: Option<PathBuf>,
+    /// Overwrite a 0.5 baseline at the default path; without it a generate that would destroy the retreat path is refused.
+    #[arg(long)]
+    pub(crate) force: bool,
     /// Do not apply the default gruff-baseline.json file even when it exists.
     #[arg(long)]
     pub(crate) no_baseline: bool,

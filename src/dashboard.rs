@@ -221,6 +221,8 @@ fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: false,
     }
 }

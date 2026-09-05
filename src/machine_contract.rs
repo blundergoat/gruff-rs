@@ -383,10 +383,12 @@ fn add_optional_sections(payload: &mut Value, report: &AnalysisReport) {
 }
 
 fn baseline_value(baseline: &BaselineReport, report: &AnalysisReport) -> Value {
+    // newFindings is the gated count a user must still act on: new, plus collisions and secrets nothing may hide.
     let mut payload = json!({
         "applied": !baseline.generated,
+        "entries": baseline.entries,
         "generated": baseline.generated,
-        "newFindings": baseline.new_count,
+        "newFindings": baseline.new_count + baseline.collision_count + baseline.not_eligible_count,
         "resolvedFindings": baseline.absent_count,
         "source": baseline.source,
         "suppressedFindings": baseline.suppressed,

@@ -36,6 +36,10 @@ pub(crate) struct AnalysisOptions {
     pub(crate) history_file: Option<PathBuf>,
     pub(crate) baseline: Option<PathBuf>,
     pub(crate) generate_baseline: Option<PathBuf>,
+    /// 0.5 baseline whose reviews are carried into `generate_baseline`, leaving the original untouched.
+    pub(crate) migrate_baseline: Option<PathBuf>,
+    /// Overwrite a 0.5 baseline at the shared default path instead of refusing, which is what --force means.
+    pub(crate) force_baseline_overwrite: bool,
     pub(crate) no_baseline: bool,
 }
 
