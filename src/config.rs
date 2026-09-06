@@ -41,6 +41,10 @@ pub(crate) struct AnalysisOptions {
     /// Overwrite a 0.5 baseline at the shared default path instead of refusing, which is what --force means.
     pub(crate) force_baseline_overwrite: bool,
     pub(crate) no_baseline: bool,
+    /// What runs: the rules and pillars the user narrowed execution to, so the score moves with them.
+    pub(crate) execution: ExecutionSelectors,
+    /// What the report shows: severity floor, rules, and pillars. Never changes execution, the score, or a baseline.
+    pub(crate) display: DisplaySelectors,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +107,9 @@ pub(crate) struct Config {
     pub(crate) custom_rules: Vec<CustomRule>,
     pub(crate) rule_settings: HashMap<String, RuleSetting>,
     pub(crate) minimum_severity: BTreeMap<String, FailThreshold>,
+    /// Lowest severity the report shows, from the scalar `minimumSeverity` key; `None` shows every severity.
+    /// It never changes an exit code, a score, or a baseline: `failOn` is what gates a build.
+    pub(crate) display_floor: Option<Severity>,
     pub(crate) gate: Option<Gate>,
     pub(crate) deep_scan_budget: DeepScanBudget,
 }
@@ -346,6 +353,7 @@ impl Config {
             custom_rules: Vec::new(),
             rule_settings: HashMap::new(),
             minimum_severity: BTreeMap::new(),
+            display_floor: None,
             // No gate means findings are governed by the selected severity threshold rather than count caps.
             gate: None,
             deep_scan_budget: DeepScanBudget::default(),

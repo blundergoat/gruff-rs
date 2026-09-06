@@ -44,9 +44,9 @@ pub(crate) fn secret_preview_mitigations_do_not_offer_retired_suppression() {
     }
 }
 
-/// Accept the retained camelCase key only when the user leaves its list empty.
+/// An empty list reads as configured redaction just as a populated one does, so presence is what is refused.
 #[test]
-pub(crate) fn config_secret_previews_accepts_empty_legacy_list() {
+pub(crate) fn config_secret_previews_is_refused_even_when_empty() {
     let dir = tempdir().expect("tempdir");
     write_config(
         dir.path(),
@@ -56,9 +56,9 @@ allowlists:
 "#,
     );
 
-    let config = load_config(dir.path(), &default_test_options())
-        .expect("empty legacy secret preview list loads");
-    assert_eq!(config.schema_version, SCHEMA_VERSION);
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("the removed preview key is refused even when empty");
+    assert_eq!(error, LEGACY_SECRET_PREVIEWS_ERROR);
 }
 
 /// Reject the undocumented snake_case spelling so config typos fail closed.
@@ -112,7 +112,7 @@ pub(crate) fn config_secret_previews_rejects_every_value_except_empty_list() {
     }
 }
 
-/// Keep all sensitive findings when the legacy preview key is missing or empty.
+/// Keep all sensitive findings whether or not a configuration is present, since nothing configures a marker.
 #[test]
 pub(crate) fn config_secret_previews_missing_and_empty_preserve_sensitive_findings() {
     let _guard = analysis_lock();
@@ -142,7 +142,7 @@ pub(crate) fn config_secret_previews_missing_and_empty_preserve_sensitive_findin
     )
     .expect("analysis without legacy key succeeds");
 
-    write_config(dir.path(), "allowlists:\n  secretPreviews: []\n");
+    write_config(dir.path(), "allowlists:\n  acceptedAbbreviations: []\n");
     let empty_list_report = run_project_analysis(
         dir.path(),
         AnalysisOptions {

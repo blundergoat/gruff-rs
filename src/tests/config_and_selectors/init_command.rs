@@ -41,14 +41,14 @@ pub(crate) fn default_config_round_trips_through_load_config() {
     }
 }
 
-/// Keep the retired preview key visible only with its one accepted empty value.
+/// Section 5 removed the key, so a generated file offering it would fail to load on the port that wrote it.
 #[test]
-pub(crate) fn default_config_keeps_legacy_secret_previews_empty() {
+pub(crate) fn default_config_omits_the_removed_secret_previews_key() {
     let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
 
     assert!(
-        body.contains("  secretPreviews: []\n"),
-        "generated config must keep the legacy key inert: {body}"
+        !body.contains("secretPreviews"),
+        "generated config still offers the removed key: {body}"
     );
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn init_preserves_existing_minimum_severity_on_regenerate() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join(".gruff-rs.yaml");
     let existing = r#"schemaVersion: gruff-rs.config.v1
-minimumSeverity:
+failOn:
   analyse: error
   report: warning
 paths:
@@ -262,7 +262,7 @@ pub(crate) fn read_existing_minimum_severity_returns_empty_for_missing_or_malfor
     let bogus_value = dir.path().join("bogus_value.yaml");
     fs::write(
         &bogus_value,
-        "minimumSeverity:\n  analyse: never\n  report: advisory\n",
+        "failOn:\n  analyse: never\n  report: advisory\n",
     )
     .expect("write bogus_value");
     let preserved = read_existing_minimum_severity(&bogus_value);

@@ -275,6 +275,12 @@ pub(crate) fn apply_baseline(
     let deltas = rule_deltas(findings, &statuses, &resolved);
     let collisions_by_identity = collided_identities(&groups);
 
+    // A consumer that cannot see why a finding survived cannot tell a genuinely new problem from one the identity
+    // could not separate, so the status travels with the finding rather than only in a count.
+    for (finding, status) in findings.iter_mut().zip(statuses.iter()) {
+        finding.baseline_status = Some(status.as_str().to_string());
+    }
+
     let mut index = 0;
     findings.retain(|_| {
         let hidden = statuses[index] == BaselineStatus::Unchanged;
@@ -494,6 +500,18 @@ enum BaselineStatus {
     Unchanged,
     Collision,
     NotEligible,
+}
+
+impl BaselineStatus {
+    /// Name this status as the ratified vocabulary spells it, for the payload a consumer reads.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Unchanged => "unchanged",
+            Self::Collision => "collision",
+            Self::NotEligible => "notEligible",
+        }
+    }
 }
 
 /// Every occurrence of one identity in this run, plus what it takes to judge them together.

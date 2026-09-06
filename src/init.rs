@@ -251,10 +251,10 @@ fn append_schema_version_section(out: &mut String) {
 /// Append command exit thresholds, preserving values the user already selected.
 /// Missing values remain commented examples so they do not override binary defaults.
 fn append_minimum_severity_section(out: &mut String, preserved: &BTreeMap<String, FailThreshold>) {
-    out.push_str("# minimumSeverity controls per-subcommand fail thresholds.\n");
+    out.push_str("# failOn controls per-subcommand fail thresholds.\n");
     out.push_str("# Uncomment and edit to override the binary defaults. Valid values:\n");
     out.push_str("# none, advisory, warning, error. CLI --fail-on flag overrides this block.\n");
-    out.push_str("minimumSeverity:\n");
+    out.push_str("failOn:\n");
     append_minimum_severity_entry(out, "analyse", preserved.get("analyse"), "advisory");
     append_minimum_severity_entry(out, "report", preserved.get("report"), "none");
     out.push('\n');
@@ -322,7 +322,6 @@ fn append_allowlists_section(out: &mut String) {
     for abbreviation in DEFAULT_ABBREVIATIONS {
         out.push_str(&format!("    - {abbreviation}\n"));
     }
-    out.push_str("  secretPreviews: []\n");
     out.push('\n');
 }
 
@@ -439,7 +438,7 @@ pub(crate) fn read_existing_minimum_severity(path: &Path) -> BTreeMap<String, Fa
         return BTreeMap::new();
     };
     value
-        .get("minimumSeverity")
+        .get("failOn")
         .and_then(|v| v.as_mapping())
         .map(|mapping| mapping.iter().filter_map(parse_preserved_entry).collect())
         .unwrap_or_default()

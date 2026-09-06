@@ -256,3 +256,100 @@ pub(crate) fn unknown_rule_suggestion_pool_includes_custom_ids() {
         "suggestion pool must include configured custom ids: {error}",
     );
 }
+
+/*
+ * Pins the argument-order clause FAMILY-CONTRACT.md section 7 ratifies on 2026-09-06.
+ *
+ * Every operand-accepting command must parse to the same request whether its flags are written before or after the
+ * path. The defect the clause exists to prevent is real and was shipped: gruff-go silently discarded flags placed
+ * after a path, so `analyse . --fail-on=error` ran at the default threshold and a CI gate nobody had disabled
+ * stopped gating.
+ *
+ * Reach for this test when adding a command that takes paths, or when changing how clap is wired.
+ */
+
+/// Every operand-accepting command, as the flags whose placement is under test plus the operand they surround.
+const ORDER_CASES: &[(&str, &[&str], &str)] = &[
+    (
+        "analyse",
+        &["--no-config", "--fail-on", "none", "--format", "json"],
+        "src/lib.rs",
+    ),
+    (
+        "summary",
+        &["--no-config", "--format", "json"],
+        "src/lib.rs",
+    ),
+    ("report", &["--no-config", "--format", "json"], "src/lib.rs"),
+    ("hook", &["--no-config", "--format", "json"], "src/lib.rs"),
+    (
+        "check-ignore",
+        &["--no-config", "--format", "json"],
+        "src/lib.rs",
+    ),
+];
+
+#[test]
+pub(crate) fn every_operand_command_accepts_flags_after_the_path() {
+    for (command, flags, operand) in ORDER_CASES {
+        let mut before = vec!["gruff-rs", command];
+        before.extend_from_slice(flags);
+        before.push(operand);
+
+        let mut after = vec!["gruff-rs", command, operand];
+        after.extend_from_slice(flags);
+
+        let parsed_before = Cli::try_parse_from(before)
+            .ok()
+            .map(|cli| format!("{:?}", cli.command));
+        let parsed_after = Cli::try_parse_from(after)
+            .ok()
+            .map(|cli| format!("{:?}", cli.command));
+
+        assert!(
+            parsed_before.is_some(),
+            "{command} did not parse with its flags before the path"
+        );
+        assert!(
+            parsed_after.is_some(),
+            "{command} did not parse with its flags after the path"
+        );
+
+        // The parsed request is what the run is built from, so equal requests mean equal output and equal exits.
+        assert_eq!(
+            parsed_before, parsed_after,
+            "{command} parses differently when its flags follow the path"
+        );
+    }
+}
+
+#[test]
+pub(crate) fn a_double_dash_ends_flag_parsing() {
+    let parsed = Cli::try_parse_from([
+        "gruff-rs",
+        "analyse",
+        "--no-config",
+        "--fail-on",
+        "none",
+        "--",
+        "-weird.rs",
+    ])
+    .expect("terminator parse");
+
+    // Without the terminator `-weird.rs` would read as an unknown flag, and the file would be unreachable.
+    assert!(
+        format!("{:?}", parsed.command).contains("-weird.rs"),
+        "the terminated operand was not kept as a path"
+    );
+}
+
+#[test]
+pub(crate) fn a_flag_shaped_token_is_never_an_operand() {
+    let refused = Cli::try_parse_from(["gruff-rs", "analyse", ".", "--not-a-registered-flag"]);
+
+    // A flag-shaped token that is not registered is an error wherever it appears, never a path.
+    assert!(
+        refused.is_err(),
+        "an unregistered flag after the path was accepted as an operand"
+    );
+}

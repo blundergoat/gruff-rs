@@ -10,12 +10,48 @@ pub(crate) enum Severity {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, ValueEnum, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Confidence {
     Low,
     Medium,
     High,
+}
+
+impl Severity {
+    /// Rank this severity so a display floor or an exit gate can compare against it.
+    pub(crate) fn rank(self) -> usize {
+        match self {
+            Self::Advisory => 0,
+            Self::Warning => 1,
+            Self::Error => 2,
+        }
+    }
+}
+
+impl std::str::FromStr for Severity {
+    type Err = String;
+
+    /// Read one of the three ratified severities, refusing anything else rather than guessing a floor.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "advisory" => Ok(Self::Advisory),
+            "warning" => Ok(Self::Warning),
+            "error" => Ok(Self::Error),
+            other => Err(format!("unknown severity `{other}`")),
+        }
+    }
+}
+
+impl Confidence {
+    /// Name this confidence as the family contract spells it, for the hook payload a consumer parses.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq, Ord, PartialOrd)]
@@ -94,6 +130,11 @@ pub(crate) struct Finding {
     /// remains line-sensitive so the baseline matcher in
     /// `src/baseline.rs` keeps its existing semantics.
     pub(crate) stable_identity: String,
+    /// The subject the ratified identity hashed, carrying the declaration ordinal a consumer needs to recompute it.
+    /// `None` for a sensitive finding, which is never named, and for a finding built outside the analysis pipeline.
+    pub(crate) baseline_subject: Option<String>,
+    /// What an applied baseline made of this finding, and `None` when no baseline was applied.
+    pub(crate) baseline_status: Option<String>,
 }
 
 impl Serialize for Finding {
@@ -152,15 +193,7 @@ impl Finding {
             metadata,
         } = descriptor;
         let scope = infer_finding_scope(&rule_id, symbol.as_deref(), line);
-        let mut hasher = Sha256::new();
-        hasher.update(rule_id.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(file_path.as_bytes());
-        hasher.update(b"\0");
-        hasher.update(line.unwrap_or_default().to_string().as_bytes());
-        hasher.update(b"\0");
-        hasher.update(symbol.clone().unwrap_or_default().as_bytes());
-        let fingerprint = format!("{:x}", hasher.finalize())[..16].to_string();
+        let fingerprint = line_sensitive_fingerprint(&rule_id, &file_path, line, symbol.as_deref());
         let stable_identity =
             compute_stable_identity(&rule_id, &file_path, scope, symbol.as_deref(), &message);
 
@@ -182,10 +215,34 @@ impl Finding {
             scope,
             fingerprint,
             stable_identity,
-            // The run names the finding once the parsed declarations are known, which is after construction.
+            // The run names a finding once the parsed declarations are known, which is after construction.
             baseline_identity: None,
+            baseline_subject: None,
+            // No baseline has been applied yet; whichever one runs stamps this when it classifies the finding.
+            baseline_status: None,
         }
     }
+}
+
+/// The finding's line-sensitive fingerprint, which is what the baseline matcher in `src/baseline.rs` keys on.
+///
+/// Moving a finding to a different line changes this by design; the ratified `stable_identity` is the one that
+/// survives a move.
+fn line_sensitive_fingerprint(
+    rule_id: &str,
+    file_path: &str,
+    line: Option<usize>,
+    symbol: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(rule_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(file_path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(line.unwrap_or_default().to_string().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(symbol.unwrap_or_default().as_bytes());
+    format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

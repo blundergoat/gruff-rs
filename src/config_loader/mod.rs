@@ -26,7 +26,7 @@ pub(crate) use selectors::{
 pub(crate) use sensitive_exclusions::{apply_sensitive_exclusions_section, SensitiveExclusionRule};
 
 pub(crate) const LEGACY_SECRET_PREVIEWS_ERROR: &str =
-    "Config key \"allowlists.secretPreviews\" only accepts an empty list; remove all configured entries because secret previews no longer suppress findings.";
+    "Config key \"allowlists.secretPreviews\" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration.";
 
 /// Load the resolved config used by one analysis command.
 /// An absent config path falls back to project discovery, while `--no-config` keeps safe defaults.
@@ -84,7 +84,8 @@ type ConfigSectionHandler = fn(&Value, &mut Config) -> Result<(), String>;
 /// This order keeps every user-facing validation error deterministic.
 const CONFIG_SECTIONS: &[(&str, ConfigSectionHandler)] = &[
     ("schemaVersion", apply_schema_version_section),
-    ("minimumSeverity", apply_minimum_severity_section),
+    ("minimumSeverity", apply_display_floor_section),
+    ("failOn", apply_minimum_severity_section),
     ("deepScanBudget", apply_deep_scan_budget_section),
     ("paths", apply_paths_section),
     ("allowlists", apply_allowlists_section),
@@ -296,12 +297,37 @@ pub(crate) fn apply_minimum_severity_section(
     }
     let mapping = value
         .as_object()
-        .ok_or_else(|| "config key `minimumSeverity` must be an object".to_string())?;
+        .ok_or_else(|| "config key `failOn` must be an object".to_string())?;
     // Each supported command receives its independently configured user threshold.
     for (command, threshold_value) in mapping {
         let threshold = parse_minimum_severity_entry(command, threshold_value)?;
         config.minimum_severity.insert(command.clone(), threshold);
     }
+    Ok(())
+}
+
+/// Apply the display floor from a scalar `minimumSeverity`, refusing the per-command map that used to gate.
+///
+/// The map form is the whole reason this exists: it is valid YAML that used to gate a build, and reading it as a
+/// display floor would change what a committed configuration does without changing what it says.
+fn apply_display_floor_section(value: &Value, config: &mut Config) -> Result<(), String> {
+    // YAML null leaves the report showing everything it found.
+    if value.is_null() {
+        return Ok(());
+    }
+    if value.is_object() {
+        return Err(
+            "config key `minimumSeverity` is the display floor in 0.6.0 and takes one severity, not a per-command \
+             map; move the per-command exit gate to `failOn`, which is the key that gates the exit code."
+                .to_string(),
+        );
+    }
+    let label = value.as_str().ok_or_else(|| {
+        "config key `minimumSeverity` must be one severity: advisory, warning or error.".to_string()
+    })?;
+    config.display_floor = Some(label.parse().map_err(|_| {
+        format!("config key `minimumSeverity` value `{label}` is not a severity: want advisory, warning or error.")
+    })?);
     Ok(())
 }
 
@@ -315,17 +341,17 @@ fn parse_minimum_severity_entry(
     // Commands without a severity gate cannot honor this setting in the UI or exit status.
     if !GATING_COMMANDS.contains(&command) {
         return Err(format!(
-            "unknown command `{command}` in `minimumSeverity`: gruff-rs's `{command}` does not gate exit code. Valid keys: analyse, report."
+            "unknown command `{command}` in `failOn`: gruff-rs's `{command}` does not gate exit code. Valid keys: analyse, report."
         ));
     }
     let threshold_str = threshold_value.as_str().ok_or_else(|| {
         format!(
-            "config key `minimumSeverity.{command}` must be a string (one of advisory, warning, error, none)"
+            "config key `failOn.{command}` must be a string (one of advisory, warning, error, none)"
         )
     })?;
     threshold_str
         .parse()
-        .map_err(|error| format!("config key `minimumSeverity.{command}`: {error}"))
+        .map_err(|error| format!("config key `failOn.{command}`: {error}"))
 }
 
 /// Apply user path ignores and compile them for discovery and `check-ignore` explanations.
@@ -365,21 +391,11 @@ pub(crate) fn apply_allowlists_section(
                 .map(|value| value.to_ascii_lowercase())
                 .collect();
     }
-    // Users may retain the retired key as [], but any other value stops the command before analysis.
-    if let Some(legacy_secret_previews_value) = allowlists.get("secretPreviews") {
-        validate_legacy_secret_previews(legacy_secret_previews_value)?;
+    // Presence is the test, not content: an empty list reads as configured redaction just as a populated one does.
+    if allowlists.contains_key("secretPreviews") {
+        return Err(LEGACY_SECRET_PREVIEWS_ERROR.to_string());
     }
     Ok(())
-}
-
-/// Accept only the empty legacy preview list retained in generated user config.
-/// Every non-empty or differently shaped value returns one value-independent diagnostic.
-fn validate_legacy_secret_previews(legacy_secret_previews_value: &Value) -> Result<(), String> {
-    // Only an exact empty array means the retired setting has no effect on the user's findings.
-    match legacy_secret_previews_value.as_array() {
-        Some(configured_preview_entries) if configured_preview_entries.is_empty() => Ok(()),
-        _ => Err(LEGACY_SECRET_PREVIEWS_ERROR.to_string()),
-    }
 }
 
 /// Apply selectors, custom settings, and per-rule overrides from the user's `rules` object.

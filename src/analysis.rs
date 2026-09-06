@@ -384,7 +384,13 @@ fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec
         return;
     };
     for (finding, named) in findings.iter_mut().zip(identities) {
-        finding.baseline_identity = named.map(|identity| identity.identity);
+        // The subject travels beside the identity so a consumer can recompute the identity from the payload alone.
+        let (identity, subject) = match named {
+            Some(named) => (Some(named.identity), Some(named.subject)),
+            None => (None, None),
+        };
+        finding.baseline_identity = identity;
+        finding.baseline_subject = subject;
     }
 }
 

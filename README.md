@@ -101,12 +101,14 @@ cargo install --path . --locked --root ./.cargo-tools
 | `analyse [paths...]` | Run the analyzer and print findings. |
 | `summary [paths...]` | Print compact score, pillar, rule, and file summaries. |
 | `report [paths...]` | Render an HTML or JSON report to stdout or `--output`. |
-| `hook [paths...]` | Emit `gruff.hook.v1` JSON for coding-agent hooks. |
+| `hook [paths...]` | Emit `gruff.hook.v2` JSON for coding-agent hooks. |
 | `check-ignore <paths...>` | Report whether gruff would ignore each path and why, without running analysis. |
 | `init` | Generate a starter `.gruff-rs.yaml`. |
+| `migrate-config` | Rewrite a 0.5 config for the current schema, writing the result to a different file. |
 | `list-rules` | Print rule metadata as text or JSON, optionally filtered by selector. |
 | `dashboard` | Serve the local browser dashboard. |
 | `completion [shell]` | Print a shell completion script. |
+| `help` | Print help for gruff-rs or for one command. |
 
 ## Output Formats
 

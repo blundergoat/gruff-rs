@@ -5,24 +5,35 @@
 use super::*;
 
 #[test]
-pub(crate) fn hook_capabilities_advertise_gruff_hook_v1() {
+pub(crate) fn hook_capabilities_advertise_gruff_hook_v2() {
     let value: Value =
         serde_json::from_str(&crate::hook::render_capabilities()).expect("capabilities json");
 
-    assert_eq!(value["contractVersion"], "gruff.hook.v1");
+    assert_eq!(value["contractVersion"], "gruff.hook.v2");
     assert_eq!(value["analyzer"]["name"], "gruff-rs");
-    assert_eq!(value["supports"]["changedRanges"], true);
-    assert_eq!(value["supports"]["baseline"], true);
-    assert_eq!(value["supports"]["scopeField"], true);
-    assert_eq!(value["supports"]["metadata"], true);
-    assert_eq!(value["supports"]["stableIdentity"], true);
-    assert_eq!(value["supports"]["ignoreReport"], true);
-    assert_eq!(value["supports"]["newOnly"], true);
-    assert_eq!(value["supports"]["deepScanBudget"], true);
-    assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
-    assert_eq!(value["flags"]["diff"], "--diff");
+    // v2's twelve advertisements, each of which must be true of this port rather than merely present.
+    for capability in [
+        "baseline",
+        "baselineV3",
+        "changedRanges",
+        "confidenceGate",
+        "deepScanBudget",
+        "diagnostics",
+        "diff",
+        "ignoreReport",
+        "metadata",
+        "newOnly",
+        "scopeField",
+        "stableIdentity",
+    ] {
+        assert_eq!(value["supports"][capability], true, "{capability}");
+    }
     assert_eq!(value["flags"]["baseline"], "--baseline");
+    assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
     assert_eq!(value["flags"]["deepScanBudget"], "--deep-scan-budget");
+    assert_eq!(value["flags"]["diff"], "--diff");
+    assert_eq!(value["flags"]["failOnDiagnostics"], "--fail-on-diagnostics");
+    assert_eq!(value["flags"]["minConfidence"], "--min-confidence");
     assert_eq!(value["flagOrder"], "any");
 }
 

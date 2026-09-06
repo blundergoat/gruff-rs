@@ -45,6 +45,7 @@ mod html_report;
 mod ignore_policy;
 mod init;
 mod machine_contract;
+mod migrate_config;
 mod parser;
 mod project;
 mod render;
@@ -53,6 +54,7 @@ mod report_identity;
 mod rules;
 mod rules_detail;
 mod scoring;
+mod selectors;
 mod source;
 mod summary;
 
@@ -140,6 +142,7 @@ use report_identity::FindingScope;
 pub(crate) use scoring::{
     grade, render_composite_block, score_report, summarize, RuleWeight, ScoreCluster,
 };
+use selectors::{DisplaySelectors, ExecutionSelectors};
 use source::{
     CallNameSummary, DependencySummary, ItemSummary, LockedPackageSummary, LockfileSummary,
     ManifestSummary, ModuleSummary, ParsedSource, ProjectContext, ProjectCoverage,
@@ -158,7 +161,7 @@ fn main() -> ExitCode {
     let project_root = std::env::current_dir().ok();
     let root = project_root.as_deref();
     match cli.command {
-        Commands::Analyse(args) => run_analyse_command(args, writer, root, no_interaction),
+        Commands::Analyse(args) => run_analyse_command(*args, writer, root, no_interaction),
         Commands::Hook(args) => hook::run_hook_command(args, writer),
         Commands::Report(args) => {
             init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
@@ -181,6 +184,7 @@ fn main() -> ExitCode {
         Commands::CheckIgnore(args) => run_check_ignore(args, global.verbose > 0, writer),
         Commands::Completion(args) => run_completion(args, writer),
         Commands::Init(args) => init::run_init(args, writer),
+        Commands::MigrateConfig(args) => migrate_config::run_migrate_config(args, &writer),
     }
 }
 
@@ -200,7 +204,7 @@ fn run_analyse_command(
     let fail_on_new = args.fail_on_new;
     let deep_scan_budget = args.deep_scan_budget.clone();
     let base = options_from_analyse(args, FailThreshold::Advisory);
-    let (project_root, options, mut config) = match resolve_command_setup(
+    let (project_root, options, config) = match resolve_command_setup(
         base,
         cli_fail_on,
         "analyse",
@@ -213,26 +217,75 @@ fn run_analyse_command(
             return ExitCode::from(2);
         }
     };
-    if fail_on_new {
-        apply_fail_on_new(&mut config);
-    }
+    // The execution selectors choose which rules run, so they narrow the config before anything is scanned.
+    let config = analyse_run_config(config, &options, fail_on_new);
     let scope = RequestedScope::from_options(&options);
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(mut report) => {
-            let duration_ms = Some(started.elapsed().as_millis());
-            apply_gate_diagnostic(&mut report, config.gate.as_ref());
-            let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
-            report.machine_context.exit_code = outcome.numeric_code();
-            let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
-            writer.emit(outcome, &rendered);
-            outcome.exit_code()
-        }
+        Ok(mut report) => emit_analyse_report(
+            &mut report,
+            &options,
+            &config,
+            &scope,
+            Some(started.elapsed().as_millis()),
+            &writer,
+        ),
         Err(error) => {
             eprintln!("gruff-rs: {error}");
             ExitCode::from(2)
         }
     }
+}
+
+/// Score the run, decide its exit code, then narrow what the report shows and render it.
+///
+/// The order matters: the score and the exit code are decided by what actually ran, and only then does the
+/// presentation filter hide anything, which is what keeps a hidden finding counted.
+fn emit_analyse_report(
+    report: &mut AnalysisReport,
+    options: &AnalysisOptions,
+    config: &Config,
+    scope: &RequestedScope,
+    duration_ms: Option<u128>,
+    writer: &OutputWriter,
+) -> ExitCode {
+    apply_gate_diagnostic(report, config.gate.as_ref());
+    let outcome = RunOutcome::classify(report, options.fail_on, config.gate.as_ref());
+    report.machine_context.exit_code = outcome.numeric_code();
+    apply_display_selectors(report, &options.display, config.display_floor);
+    let rendered = render_report_with_scope(report, scope, options.format, duration_ms);
+    writer.emit(outcome, &rendered);
+    outcome.exit_code()
+}
+
+/// Narrow the config to what this run executes, folding in `--fail-on-new` before the selectors.
+fn analyse_run_config(mut config: Config, options: &AnalysisOptions, fail_on_new: bool) -> Config {
+    if fail_on_new {
+        apply_fail_on_new(&mut config);
+    }
+    config.with_execution_selectors(&options.execution)
+}
+
+/// Hide from the report every finding the user's presentation selectors exclude.
+///
+/// The score, the counts and the exit code are already decided by the time this runs, which is what makes these
+/// filters presentation: a hidden finding still counted.
+fn apply_display_selectors(
+    report: &mut AnalysisReport,
+    selectors: &DisplaySelectors,
+    configured_floor: Option<Severity>,
+) {
+    // The flag wins over the project's configured floor, because typing it is the user overriding their own default.
+    let effective = DisplaySelectors {
+        min_severity: selectors.min_severity.or(configured_floor),
+        ..selectors.clone()
+    };
+
+    if !effective.is_requested() {
+        return;
+    }
+
+    report.findings.retain(|finding| effective.allows(finding));
 }
 
 /// Fold the `--fail-on-new` flag into the gate as `scope: new` with a default
@@ -251,6 +304,8 @@ pub(crate) fn apply_fail_on_new(config: &mut Config) {
 }
 
 fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOptions {
+    let execution = execution_selectors_from(&args);
+    let display = display_selectors_from(&args);
     let diff = match (args.changed_ranges, args.since, args.diff_patch, args.diff) {
         (Some(ranges), None, None, None) => Some(DiffSelection::ExplicitRanges {
             ranges,
@@ -289,6 +344,29 @@ fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOp
         migrate_baseline: args.migrate_baseline,
         force_baseline_overwrite: args.force,
         no_baseline: args.no_baseline,
+        execution,
+        display,
+    }
+}
+
+/// Collect the four flags that decide which rules run, so the score moves with them.
+fn execution_selectors_from(args: &AnalyseArgs) -> ExecutionSelectors {
+    ExecutionSelectors {
+        include_rules: args.include_rule.clone(),
+        exclude_rules: args.exclude_rule.clone(),
+        include_pillars: args.include_pillar.clone(),
+        exclude_pillars: args.exclude_pillar.clone(),
+    }
+}
+
+/// Collect the five flags that decide what the report shows, none of which changes execution or the score.
+fn display_selectors_from(args: &AnalyseArgs) -> DisplaySelectors {
+    DisplaySelectors {
+        min_severity: args.min_severity,
+        show_rules: args.show_rule.clone(),
+        hide_rules: args.hide_rule.clone(),
+        show_pillars: args.show_pillar.clone(),
+        hide_pillars: args.hide_pillar.clone(),
     }
 }
 
@@ -311,6 +389,8 @@ fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOpt
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: args.no_baseline,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     }
 }
 
@@ -442,6 +522,8 @@ fn list_rules_config(project_root: &Path, args: &ListRulesArgs) -> Result<Config
             migrate_baseline: None,
             force_baseline_overwrite: false,
             no_baseline: true,
+            execution: ExecutionSelectors::default(),
+            display: DisplaySelectors::default(),
         },
     )
 }
@@ -543,6 +625,8 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: false,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     };
     let (project_root, options, config) =
         match resolve_project_root_and_config(options, deep_scan_budget.as_ref()) {

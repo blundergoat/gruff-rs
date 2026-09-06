@@ -5,7 +5,7 @@ const SUBCOMMAND_HELP_TEMPLATE: &str = "\
 \x1b[1m\x1b[33mUsage:\x1b[0m\n  {usage}\n\n\
 {all-args}{after-help}";
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct AnalyseArgs {
     /// Files or directories to scan. Defaults to the current directory.
@@ -73,6 +73,39 @@ pub(crate) struct AnalyseArgs {
     /// modes (`--diff-patch`, `--changed-ranges`) never need it.
     #[arg(long, hide = true)]
     pub(crate) diff_git_unsafe: bool,
+    /// Display only findings at or above this severity. Never changes the exit code, the score, or a baseline.
+    #[arg(long, value_name = "SEVERITY")]
+    pub(crate) min_severity: Option<Severity>,
+    /// Lowest confidence that reaches the exit gate, independent of severity. Never filters the report.
+    #[arg(long, default_value = "low")]
+    pub(crate) min_confidence: Confidence,
+    /// Run only the named rules. Changes what executes, so the score moves with it.
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    pub(crate) include_rule: Vec<String>,
+    /// Do not run the named rules.
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    pub(crate) exclude_rule: Vec<String>,
+    /// Run only rules in the named pillars.
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    pub(crate) include_pillar: Vec<String>,
+    /// Do not run rules in the named pillars.
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    pub(crate) exclude_pillar: Vec<String>,
+    /// Show only the named rules in the report. Never changes execution or the score.
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    pub(crate) show_rule: Vec<String>,
+    /// Hide the named rules from the report.
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    pub(crate) hide_rule: Vec<String>,
+    /// Show only the named pillars in the report.
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    pub(crate) show_pillar: Vec<String>,
+    /// Hide the named pillars from the report.
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    pub(crate) hide_pillar: Vec<String>,
+    /// Parsed and accepted for cross-port compatibility; gruff-rs enforces no scan deadline on analyse.
+    #[arg(long, value_name = "DURATION")]
+    pub(crate) scan_timeout: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -80,7 +113,7 @@ pub(crate) enum HookFormat {
     Json,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct HookArgs {
     /// Files or directories to scan. Defaults to the current directory.
@@ -95,9 +128,21 @@ pub(crate) struct HookArgs {
     pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
     #[arg(long, default_value = "json")]
     pub(crate) format: HookFormat,
-    /// Emit gruff.hook.v1 capability metadata and do not scan.
+    /// Emit gruff.hook.v2 capability metadata and do not scan.
     #[arg(long)]
     pub(crate) capabilities: bool,
+    /// Lowest severity that exits 1. The hook default of none keeps findings advisory.
+    #[arg(long, default_value = "none")]
+    pub(crate) fail_on: FailThreshold,
+    /// Lowest confidence that reaches the exit gate, independent of severity.
+    #[arg(long, default_value = "low")]
+    pub(crate) min_confidence: Confidence,
+    /// Exit 1 when any published finding is new against the applied baseline.
+    #[arg(long)]
+    pub(crate) fail_on_new: bool,
+    /// Exit 1 when the run reports any diagnostic, however minor.
+    #[arg(long)]
+    pub(crate) fail_on_diagnostics: bool,
     /// Explicit changed line ranges such as 3-3,8-10.
     #[arg(long, value_name = "RANGES")]
     pub(crate) changed_ranges: Option<String>,
@@ -122,7 +167,7 @@ pub(crate) struct HookArgs {
     pub(crate) diff_git_unsafe: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct ReportArgs {
     /// Files or directories to scan. Defaults to the current directory.
@@ -151,7 +196,7 @@ pub(crate) struct ReportArgs {
     pub(crate) no_baseline: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct DashboardArgs {
     #[arg(long, default_value = "127.0.0.1")]
@@ -165,7 +210,7 @@ pub(crate) struct DashboardArgs {
     pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct ListRulesArgs {
     /// Render a single rule's detail card (description, options, escape
@@ -184,7 +229,7 @@ pub(crate) struct ListRulesArgs {
     pub(crate) no_config: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct SummaryArgs {
     /// Files or directories to scan. Defaults to the current directory.
@@ -213,7 +258,7 @@ pub(crate) enum CheckIgnoreFormat {
     Json,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct CheckIgnoreArgs {
     /// Paths to test against gruff's ignore policy. No analysis is run.
@@ -227,7 +272,7 @@ pub(crate) struct CheckIgnoreArgs {
     pub(crate) no_config: bool,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
 pub(crate) struct CompletionArgs {
     /// Shell to emit completions for.
@@ -235,8 +280,21 @@ pub(crate) struct CompletionArgs {
     pub(crate) shell: Shell,
 }
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Debug)]
 #[command(help_template = SUBCOMMAND_HELP_TEMPLATE)]
+pub(crate) struct MigrateConfigArgs {
+    /// The 0.5 config to read. It is never modified.
+    #[arg(long)]
+    pub(crate) config: PathBuf,
+    /// Where to write the migrated config. Required unless --dry-run.
+    #[arg(long)]
+    pub(crate) output: Option<PathBuf>,
+    /// Print what would change and write nothing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Args, Debug)]
 pub(crate) struct InitArgs {
     /// Where to write the generated config. Defaults to .gruff-rs.yaml in the current directory.
     #[arg(long, default_value = ".gruff-rs.yaml")]

@@ -617,7 +617,7 @@ pub(crate) fn explicit_scan_target_makes_project_context_caller_cwd_invariant() 
         };
         let cli_fail_on = args.fail_on;
         let deep_scan_budget = args.deep_scan_budget.clone();
-        let base = options_from_analyse(args, FailThreshold::Advisory);
+        let base = options_from_analyse(*args, FailThreshold::Advisory);
         let (root, options, config) = resolve_command_setup(
             base,
             cli_fail_on,

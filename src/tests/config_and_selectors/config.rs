@@ -406,12 +406,9 @@ pub(crate) fn config_accepts_schema_version_and_records_it() {
 #[test]
 pub(crate) fn minimum_severity_accepts_valid_keys_and_values() {
     let dir = tempdir().expect("tempdir");
-    write_config(
-        dir.path(),
-        "minimumSeverity:\n  analyse: warning\n  report: none\n",
-    );
-    let config = load_config(dir.path(), &default_test_options())
-        .expect("valid minimumSeverity block accepted");
+    write_config(dir.path(), "failOn:\n  analyse: warning\n  report: none\n");
+    let config =
+        load_config(dir.path(), &default_test_options()).expect("valid failOn block accepted");
     assert_eq!(
         config.minimum_severity.get("analyse"),
         Some(&FailThreshold::Warning)
@@ -425,11 +422,11 @@ pub(crate) fn minimum_severity_accepts_valid_keys_and_values() {
 #[test]
 pub(crate) fn minimum_severity_rejects_non_gating_subcommands() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity:\n  summary: advisory\n");
+    write_config(dir.path(), "failOn:\n  summary: advisory\n");
     let error = load_config(dir.path(), &default_test_options())
         .expect_err("non-gating subcommand rejected");
     assert!(
-        error.contains("unknown command `summary` in `minimumSeverity`"),
+        error.contains("unknown command `summary` in `failOn`"),
         "{error}"
     );
     assert!(error.contains("Valid keys: analyse, report"), "{error}");
@@ -438,29 +435,52 @@ pub(crate) fn minimum_severity_rejects_non_gating_subcommands() {
 #[test]
 pub(crate) fn minimum_severity_rejects_unknown_threshold_values() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity:\n  analyse: never\n");
+    write_config(dir.path(), "failOn:\n  analyse: never\n");
     let error = load_config(dir.path(), &default_test_options())
         .expect_err("never is not a valid threshold");
-    assert!(error.contains("minimumSeverity.analyse"), "{error}");
+    assert!(error.contains("failOn.analyse"), "{error}");
     assert!(error.contains("advisory, warning, error, none"), "{error}");
 }
 
 #[test]
 pub(crate) fn minimum_severity_empty_block_is_accepted() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity: {}\n");
-    let config =
-        load_config(dir.path(), &default_test_options()).expect("empty minimumSeverity accepted");
+    write_config(dir.path(), "failOn: {}\n");
+    let config = load_config(dir.path(), &default_test_options()).expect("empty failOn accepted");
     assert!(config.minimum_severity.is_empty());
 }
 
 #[test]
 pub(crate) fn minimum_severity_rejects_non_mapping_shape() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity: advisory\n");
-    let error = load_config(dir.path(), &default_test_options())
-        .expect_err("scalar minimumSeverity rejected");
+    write_config(dir.path(), "failOn: advisory\n");
+    let error =
+        load_config(dir.path(), &default_test_options()).expect_err("scalar failOn rejected");
     assert!(error.contains("must be an object"), "{error}");
+}
+
+#[test]
+/// The pre-0.6.0 map form is refused rather than reinterpreted: reading it as a display floor would change what a
+/// committed configuration does without changing what it says.
+pub(crate) fn minimum_severity_refuses_the_pre_060_gate_map() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity:\n  analyse: error\n");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("per-command minimumSeverity rejected");
+    assert!(
+        error.contains("move the per-command exit gate to `failOn`"),
+        "{error}"
+    );
+}
+
+#[test]
+/// A scalar minimumSeverity is the display floor the family ratified, and it never gates.
+pub(crate) fn minimum_severity_reads_the_scalar_display_floor() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity: warning\n");
+    let config = load_config(dir.path(), &default_test_options()).expect("display floor accepted");
+    assert_eq!(config.display_floor, Some(Severity::Warning));
+    assert!(config.minimum_severity.is_empty());
 }
 
 #[test]

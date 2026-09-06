@@ -224,6 +224,8 @@ fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: false,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     }
 }
 

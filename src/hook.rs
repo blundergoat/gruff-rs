@@ -2,7 +2,10 @@ use super::*;
 use crate::changed_region::{git_args_with_paths, git_output, git_output_bytes_with_stdin};
 use crate::cli::HookArgs;
 
-pub(crate) const HOOK_CONTRACT_VERSION: &str = "gruff.hook.v1";
+pub(crate) const HOOK_CONTRACT_VERSION: &str = "gruff.hook.v2";
+
+/// The one baseline schema this hook accepts; anything else is refused rather than read under the wrong rules.
+pub(crate) const HOOK_BASELINE_SCHEMA_VERSION: &str = "gruff.baseline.v3";
 
 pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode {
     if args.capabilities {
@@ -17,40 +20,176 @@ pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode
         match resolve_project_root_and_config(options, args.deep_scan_budget.as_ref()) {
             Ok(triple) => triple,
             Err(error) => {
-                writer.emit_unconditional(&render_config_error(&error));
+                writer.emit_unconditional(&render_run_failure(&error));
+                eprintln!("gruff-rs: {error}");
                 return ExitCode::from(2);
             }
         };
 
     match run_analysis_in_project(&project_root, &options, &config) {
-        Ok(mut report) => {
-            if let Err(error) = apply_hook_new_only(
-                &mut report,
-                &args,
-                &project_root,
-                &options,
-                &config,
-                changed_region_active,
-            ) {
-                writer.emit_unconditional(&render_config_error(&error));
-                return ExitCode::from(2);
-            }
-            let has_fatal_diagnostic = report.diagnostics.iter().any(RunDiagnostic::is_failure);
-            writer.emit_unconditional(&render_hook_report(
-                report,
+        Ok(mut report) => emit_hook_report(
+            &mut report,
+            &HookRun {
+                args: &args,
+                project_root: &project_root,
+                options: &options,
+                config: &config,
                 changed_region_active,
                 new_only_active,
-            ));
-            if has_fatal_diagnostic {
-                ExitCode::from(2)
-            } else {
-                ExitCode::SUCCESS
-            }
-        }
+            },
+            &writer,
+        ),
         Err(error) => {
-            writer.emit_unconditional(&render_config_error(&error));
+            writer.emit_unconditional(&render_run_failure(&error));
+            eprintln!("gruff-rs: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Apply the new-only base, publish the payload, and tell the calling agent what it means.
+///
+/// The gate reads the payload rather than the raw scan, so what blocks an edit is exactly what the agent was shown.
+fn emit_hook_report(
+    report: &mut AnalysisReport,
+    run: &HookRun<'_>,
+    writer: &OutputWriter,
+) -> ExitCode {
+    let args = run.args;
+    if let Err(error) = apply_hook_new_only(
+        report,
+        args,
+        run.project_root,
+        run.options,
+        run.config,
+        run.changed_region_active,
+    ) {
+        // A baseline this port cannot read would otherwise suppress findings under rules nobody ratified.
+        writer.emit_unconditional(&render_fatal("baseline", &error));
+        eprintln!("gruff-rs: {error}");
+        return ExitCode::from(2);
+    }
+
+    let has_fatal_diagnostic = report.diagnostics.iter().any(RunDiagnostic::is_failure);
+    let context = HookRunContext {
+        mode: hook_run_mode(args),
+        paths: args
+            .paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        baseline_path: args
+            .baseline
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+    };
+    let payload = render_hook_report_for(
+        report,
+        run.changed_region_active,
+        run.new_only_active,
+        &context,
+    );
+    writer.emit_unconditional(&payload);
+
+    if has_fatal_diagnostic {
+        return ExitCode::from(2);
+    }
+    ExitCode::from(hook_exit_code(&payload, args))
+}
+
+/// Render the payload for a run that could not happen, naming which kind of failure it was.
+///
+/// A baseline this port cannot read is not a configuration problem, and saying so would send the user to the wrong
+/// file. Everything else is reported as a configuration failure, which is what it has always been.
+fn render_run_failure(error: &str) -> String {
+    if error.contains("baseline") {
+        return render_fatal("baseline", error);
+    }
+    render_config_error(error)
+}
+
+/// Name which region selector chose the work, so a consumer can tell a targeted run from a whole-tree one.
+fn hook_run_mode(args: &HookArgs) -> String {
+    // Explicit ranges are the narrowest selector and win when both are given.
+    if args.changed_ranges.is_some() {
+        return "changed-ranges".to_string();
+    }
+    if args.diff.is_some() {
+        return "diff".to_string();
+    }
+    "full".to_string()
+}
+
+/// Decide what the hook tells the calling agent, from the findings it actually published.
+///
+/// The gate reads the payload rather than the raw scan, so what blocks an edit is exactly what the agent was shown:
+/// a finding the changed-region filter or the baseline removed is not in the payload and does not block.
+fn hook_exit_code(payload: &str, args: &HookArgs) -> u8 {
+    let Ok(parsed) = serde_json::from_str::<Value>(payload) else {
+        return 0;
+    };
+
+    // A consumer may ask for any caveat to stop the edit, which is the only way a warning becomes blocking.
+    if args.fail_on_diagnostics
+        && parsed["diagnostics"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty())
+    {
+        return 1;
+    }
+
+    let Some(rows) = parsed["findings"].as_array() else {
+        return 0;
+    };
+
+    for row in rows {
+        // The baseline dimension is independent of both floors: an unreviewed finding blocks whatever its severity.
+        if args.fail_on_new && row["baselineStatus"].as_str() == Some("new") {
+            return 1;
+        }
+        if is_hook_gate_reached(row, args) {
+            return 1;
+        }
+    }
+
+    0
+}
+
+/// Report whether one published finding clears both independent floors the caller set.
+fn is_hook_gate_reached(row: &Value, args: &HookArgs) -> bool {
+    // A `none` threshold names no floor at all, so no severity reaches it and only --fail-on-new can block.
+    let Some(severity_floor) = fail_threshold_rank(args.fail_on) else {
+        return false;
+    };
+    let severity = severity_rank_of(row["severity"].as_str().unwrap_or(""));
+    let confidence = confidence_rank_of(row["confidence"].as_str().unwrap_or(""));
+
+    severity >= severity_floor && confidence >= confidence_rank_of(args.min_confidence.as_str())
+}
+
+fn fail_threshold_rank(threshold: FailThreshold) -> Option<usize> {
+    match threshold {
+        FailThreshold::None => None,
+        FailThreshold::Advisory => Some(0),
+        FailThreshold::Warning => Some(1),
+        FailThreshold::Error => Some(2),
+    }
+}
+
+fn severity_rank_of(label: &str) -> usize {
+    match label {
+        "warning" => 1,
+        "error" => 2,
+        _ => 0,
+    }
+}
+
+/// Rank one confidence label; anything unrecognised ranks highest, so an unrated finding cannot slip under a gate.
+fn confidence_rank_of(label: &str) -> usize {
+    match label {
+        "low" => 0,
+        "medium" => 1,
+        _ => 2,
     }
 }
 
@@ -76,6 +215,8 @@ fn options_from_hook(args: &HookArgs, include_changed_ranges: bool) -> AnalysisO
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: args.baseline.is_none(),
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     }
 }
 
@@ -198,6 +339,8 @@ pub(crate) fn diff_base_stable_identities(
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     };
     let base_report = run_analysis_in_project(base_tree.path(), &base_options, config)?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -424,21 +567,26 @@ pub(crate) fn render_capabilities() -> String {
         "contractVersion": HOOK_CONTRACT_VERSION,
         "analyzer": analyzer_json(),
         "supports": {
-            "changedRanges": true,
-            "diff": true,
             "baseline": true,
-            "scopeField": true,
-            "metadata": true,
-            "stableIdentity": true,
+            "baselineV3": true,
+            "changedRanges": true,
+            "confidenceGate": true,
+            "deepScanBudget": true,
+            "diagnostics": true,
+            "diff": true,
             "ignoreReport": true,
+            "metadata": true,
             "newOnly": true,
-            "deepScanBudget": true
+            "scopeField": true,
+            "stableIdentity": true
         },
         "flags": {
-            "changedRanges": "--changed-ranges",
-            "diff": "--diff",
             "baseline": "--baseline",
-            "deepScanBudget": "--deep-scan-budget"
+            "changedRanges": "--changed-ranges",
+            "deepScanBudget": "--deep-scan-budget",
+            "diff": "--diff",
+            "failOnDiagnostics": "--fail-on-diagnostics",
+            "minConfidence": "--min-confidence"
         },
         "flagOrder": "any"
     }))
@@ -446,47 +594,173 @@ pub(crate) fn render_capabilities() -> String {
 }
 
 pub(crate) fn render_config_error(error: &str) -> String {
-    serde_json::to_string_pretty(&json!({
-        "contractVersion": HOOK_CONTRACT_VERSION,
-        "analyzer": analyzer_json(),
-        "findings": [],
-        "suppressed": { "count": 0 },
-        "ignored": { "paths": [] },
-        "config": {
-            "schemaOk": false,
-            "error": {
-                "message": error,
-                "remediation": "Fix the gruff-rs configuration and rerun the hook."
-            }
-        }
-    }))
-    .expect("hook config error serialize")
+    let mut payload = fatal_payload("config", error);
+    payload
+        .as_object_mut()
+        .expect("hook payload is an object")
+        .insert(
+            "config".to_string(),
+            json!({
+                "schemaOk": false,
+                "error": {
+                    "message": error,
+                    "remediation": "Fix the gruff-rs configuration and rerun the hook."
+                }
+            }),
+        );
+    serde_json::to_string_pretty(&payload).expect("hook config error serialize")
 }
 
+/// Render the empty payload that accompanies a run which could not happen.
+///
+/// Every field the contract requires is present and empty, so a consumer parses one shape whether the run succeeded
+/// or not and reads the reason from the fatal diagnostic rather than scraping stderr.
+pub(crate) fn render_fatal(diagnostic_type: &str, message: &str) -> String {
+    serde_json::to_string_pretty(&fatal_payload(diagnostic_type, message))
+        .expect("hook fatal payload serialize")
+}
+
+fn fatal_payload(diagnostic_type: &str, message: &str) -> Value {
+    json!({
+        "contractVersion": HOOK_CONTRACT_VERSION,
+        "analyzer": analyzer_json(),
+        "run": run_payload("full", "file", &[], 0, None),
+        "findings": [],
+        "diagnostics": [{
+            "type": diagnostic_type,
+            "severity": "fatal",
+            "message": message,
+            "file": Value::Null,
+            "line": Value::Null
+        }],
+        "suppressed": { "count": 0 },
+        "suppressions": [],
+        "ignored": { "paths": [] },
+        "config": { "schemaOk": true, "error": Value::Null }
+    })
+}
+
+/// Build the audit block a consumer reads before trusting a verdict: what ran, over what, and against which baseline.
+///
+/// Without it a clean payload is ambiguous, because a run that analysed nothing and a run that found nothing look
+/// identical on the wire.
+fn run_payload(
+    mode: &str,
+    scope: &str,
+    paths: &[String],
+    analysed_files: usize,
+    baseline_path: Option<&str>,
+) -> Value {
+    json!({
+        "mode": mode,
+        "scope": scope,
+        "paths": paths,
+        "analysedFiles": analysed_files,
+        "baseline": {
+            "applied": baseline_path.is_some(),
+            "schemaVersion": baseline_path.map(|_| HOOK_BASELINE_SCHEMA_VERSION),
+            "path": baseline_path
+        }
+    })
+}
+
+/// Render a hook payload with no run context, which is what a unit test that only inspects findings needs.
+#[cfg(test)]
 pub(crate) fn render_hook_report(
     mut report: AnalysisReport,
     changed_region_active: bool,
     new_only_active: bool,
 ) -> String {
-    apply_hook_changed_region_filter(&mut report, changed_region_active, new_only_active);
+    render_hook_report_for(
+        &mut report,
+        changed_region_active,
+        new_only_active,
+        &HookRunContext::default(),
+    )
+}
+
+/// Everything one hook run was asked to do, so publishing it is one decision rather than eight arguments.
+pub(crate) struct HookRun<'a> {
+    pub(crate) args: &'a HookArgs,
+    pub(crate) project_root: &'a Path,
+    pub(crate) options: &'a AnalysisOptions,
+    pub(crate) config: &'a Config,
+    pub(crate) changed_region_active: bool,
+    pub(crate) new_only_active: bool,
+}
+
+/// What one hook run did, so the payload's audit block reports it rather than assuming it.
+#[derive(Default)]
+pub(crate) struct HookRunContext {
+    /// Which region selector chose the work: changed-ranges, diff, since, or full.
+    pub(crate) mode: String,
+    /// The operands as the caller gave them.
+    pub(crate) paths: Vec<String>,
+    /// Project-relative baseline that classified the run, or None when none applied.
+    pub(crate) baseline_path: Option<String>,
+}
+
+pub(crate) fn render_hook_report_for(
+    report: &mut AnalysisReport,
+    changed_region_active: bool,
+    new_only_active: bool,
+    context: &HookRunContext,
+) -> String {
+    apply_hook_changed_region_filter(report, changed_region_active, new_only_active);
 
     let registry = rules::builtin_registry();
     let ignored_paths =
         serde_json::to_value(&report.paths.ignored_path_details).unwrap_or_else(|_| json!([]));
     let suppressed_count = report.suppressed_count.unwrap_or(0);
-    let diagnostics = hook_diagnostics(report.diagnostics);
-    let findings = hook_findings(report.findings, &registry);
+    let diagnostics = hook_diagnostics(std::mem::take(&mut report.diagnostics));
+    let suppressions = hook_suppressions(&report.suppressions);
+    let analysed_files = report.paths.analysed_files;
+    let mode = if context.mode.is_empty() {
+        "full".to_string()
+    } else {
+        context.mode.clone()
+    };
+    let scope = if mode == "full" { "file" } else { "symbol" };
+    let findings = hook_findings(std::mem::take(&mut report.findings), &registry);
 
     serde_json::to_string_pretty(&json!({
         "contractVersion": HOOK_CONTRACT_VERSION,
         "analyzer": analyzer_json(),
+        "run": run_payload(
+            &mode,
+            scope,
+            &context.paths,
+            analysed_files,
+            context.baseline_path.as_deref(),
+        ),
         "findings": findings,
         "diagnostics": diagnostics,
         "suppressed": { "count": suppressed_count },
+        "suppressions": suppressions,
         "ignored": { "paths": ignored_paths },
         "config": { "schemaOk": true, "error": null }
     }))
     .expect("hook report serialize")
+}
+
+/// Project the run's sensitive-exclusion audit into the section 13a rows the hook publishes.
+///
+/// A surface that applies an exclusion must report its count on that same surface: a hook may decline to filter, but
+/// it may never filter in silence, because a consumer who cannot see the exclusion reads a clean payload as a clean file.
+fn hook_suppressions(suppressions: &[SuppressionSummary]) -> Vec<Value> {
+    suppressions
+        .iter()
+        .map(|summary| {
+            json!({
+                "rule": summary.rule,
+                // Section 13a gives each entry exactly one path; the native audit carries it in the family's list shape.
+                "path": summary.paths.first().cloned().unwrap_or_default(),
+                "symbol": summary.symbol,
+                "reason": summary.reason,
+                "suppressed": summary.suppressed
+            })
+        })
+        .collect()
 }
 
 fn hook_diagnostics(diagnostics: Vec<RunDiagnostic>) -> Vec<Value> {
@@ -495,6 +769,9 @@ fn hook_diagnostics(diagnostics: Vec<RunDiagnostic>) -> Vec<Value> {
         .map(|diagnostic| {
             let mut value = json!({
                 "type": diagnostic.diagnostic_type,
+                // v1 left a consumer to infer severity from the type, so a budget note and a run that could not
+                // happen looked alike.
+                "severity": if diagnostic.invalidates_run == Some(false) { "warning" } else { "fatal" },
                 "message": diagnostic.message,
                 "file": diagnostic.file_path,
                 "line": diagnostic.line,
@@ -550,21 +827,37 @@ fn hook_findings(mut findings: Vec<Finding>, registry: &rules::RuleRegistry) -> 
 }
 
 fn hook_finding(finding: Finding, registry: &rules::RuleRegistry) -> Value {
+    let remediation = remediation_for(&finding, registry);
     json!({
         "ruleId": finding.rule_id,
         "pillar": pillar_label(finding.pillar),
         "severity": severity_label(finding.severity),
+        "confidence": finding.confidence.as_str(),
         "scope": finding.scope.as_str(),
         "file": finding.file_path,
         "line": finding.line,
-        "endLine": finding.end_line,
+        // A consumer locating a finding cannot treat an absent span end as a single line by guessing.
+        "endLine": finding.end_line.or(finding.line),
         "symbol": finding.symbol,
+        "symbolOrdinal": symbol_ordinal_of(finding.baseline_subject.as_deref()),
         "message": finding.message,
-        "remediation": remediation_for(&finding, registry),
+        "remediation": remediation,
+        "baselineStatus": finding.baseline_status,
         "metadata": finding.metadata,
-        "stableIdentity": finding.stable_identity,
+        // The ratified family identity; a sensitive finding carries null, because the family never names one.
+        "stableIdentity": finding.baseline_identity,
         "fingerprint": finding.fingerprint
     })
+}
+
+/// Read the declaration ordinal the ratified identity hashed, so a consumer can recompute the identity itself.
+///
+/// A finding naming no symbol reports 0, which is what the identity contract says a symbol-less subject carries.
+fn symbol_ordinal_of(subject: Option<&str>) -> usize {
+    subject
+        .and_then(|value| value.rsplit_once('#'))
+        .and_then(|(_, tail)| tail.parse::<usize>().ok())
+        .unwrap_or(0)
 }
 
 fn remediation_for(finding: &Finding, registry: &rules::RuleRegistry) -> String {

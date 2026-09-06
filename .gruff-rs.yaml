@@ -13,7 +13,7 @@ schemaVersion: gruff-rs.config.v1
 
 # Pinned to match the current binary default (advisory). The explicit pin
 # freezes this project's CI behaviour against any future default flip.
-minimumSeverity:
+failOn:
   analyse: advisory
 
 deepScanBudget:
@@ -62,7 +62,6 @@ allowlists:
     - tx
     - ui
     - url
-  secretPreviews: []
 
 # sensitiveExclusions suppresses reviewed sensitive-data findings, and only
 # those. Each entry names one exact sensitive-data rule id, one project-

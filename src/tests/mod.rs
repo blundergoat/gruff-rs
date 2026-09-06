@@ -41,6 +41,8 @@ fn analyse_project_paths(project_root: &Path, paths: Vec<PathBuf>) -> AnalysisRe
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     };
     let config = load_config(project_root, &options).expect("test config loads");
     run_analysis_in_project(project_root, &options, &config).expect("analysis succeeds")
@@ -216,6 +218,8 @@ fn default_test_options() -> AnalysisOptions {
         migrate_baseline: None,
         force_baseline_overwrite: false,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     }
 }
 
@@ -240,6 +244,8 @@ fn project_context_for_test(project_root: &Path) -> ProjectContext {
         paths: vec![PathBuf::from(".")],
         no_config: true,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
         ..default_test_options()
     };
     let discovery = discover_sources(project_root, &options, &Config::default());
