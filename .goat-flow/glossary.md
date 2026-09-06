@@ -52,7 +52,7 @@ A stable 16-character hash derived from finding identity fields. Baselines and d
 
 ### Gruff Config
 
-Project configuration that tunes discovery, allowlists, rule selection, per-rule thresholds/severity, report suppressions, and custom rules. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, `allowlists.secretPreviews`, and per-rule configuration.
+Project configuration that tunes discovery, allowlists, rule selection, per-rule thresholds/severity, report suppressions, and custom rules. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, and per-rule configuration.
 
 ### Hotspot Output
 

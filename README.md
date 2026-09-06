@@ -249,7 +249,6 @@ allowlists:
     - tx
     - ui
     - url
-  secretPreviews: []
 
 rules:
   select: []

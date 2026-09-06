@@ -69,8 +69,7 @@ paths:
 
 ## Allowlists
 
-`allowlists` accepts `acceptedAbbreviations` and `secretPreviews`, both string
-arrays:
+`allowlists` accepts `acceptedAbbreviations`, a string array:
 
 ```yaml
 allowlists:
@@ -85,9 +84,11 @@ entries are lowercased at load time, so keep the seeds you still want and append
 project vocabulary below them. Run `gruff-rs init --force` to regenerate a config
 carrying the current defaults.
 
-`secretPreviews` preserves the suppression behaviour of previously reviewed
-entries. It does not reveal secret material: sensitive-data findings serialize
-zero-payload markers either way. See [Rules](rules.md).
+The 0.5 key `secretPreviews` is removed: FAMILY-CONTRACT.md section 5 makes
+every sensitive-data marker unconditional and zero-payload, so the key
+authorised nothing. A configuration carrying it, even as an empty list, is
+refused with that explanation; `gruff-rs migrate-config` deletes it. See
+[Rules](rules.md) for the marker grammar.
 
 ## Rule Selection
 
