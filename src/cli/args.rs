@@ -21,7 +21,7 @@ pub(crate) struct AnalyseArgs {
     #[arg(long, default_value = "text")]
     pub(crate) format: OutputFormat,
     /// Severity gate. Defaults to `advisory`. Falls back to
-    /// `minimumSeverity.analyse:` in `.gruff-rs.yaml` when omitted.
+    /// `failOn.analyse:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,
     /// Fail only on findings new since the baseline: alias for gate `scope: new`
@@ -185,7 +185,7 @@ pub(crate) struct ReportArgs {
     #[arg(long, value_name = "LINES:BYTES|off")]
     pub(crate) deep_scan_budget: Option<DeepScanBudgetOverride>,
     /// Severity gate. Defaults to `none`. Falls back to
-    /// `minimumSeverity.report:` in `.gruff-rs.yaml` when omitted.
+    /// `failOn.report:` in `.gruff-rs.yaml` when omitted.
     #[arg(long)]
     pub(crate) fail_on: Option<FailThreshold>,
     /// Include paths ignored by Git ignore files or built-in default dirs; config `paths.ignore` and VCS internals remain blocked.

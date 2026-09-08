@@ -6,9 +6,7 @@
 use super::*;
 
 use crate::config::DEFAULT_ABBREVIATIONS;
-use crate::init::{
-    read_existing_ignore_patterns, read_existing_minimum_severity, render_default_config,
-};
+use crate::init::{read_existing_fail_on, read_existing_ignore_patterns, render_default_config};
 use std::collections::BTreeMap;
 
 #[test]
@@ -209,7 +207,7 @@ rules: {}
 }
 
 #[test]
-pub(crate) fn init_preserves_existing_minimum_severity_on_regenerate() {
+pub(crate) fn init_preserves_existing_fail_on_thresholds_on_regenerate() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join(".gruff-rs.yaml");
     let existing = r#"schemaVersion: gruff-rs.config.v1
@@ -222,7 +220,7 @@ paths:
 "#;
     fs::write(&config_path, existing).expect("write existing config");
 
-    let preserved = read_existing_minimum_severity(&config_path);
+    let preserved = read_existing_fail_on(&config_path);
     assert_eq!(
         preserved.get("analyse"),
         Some(&FailThreshold::Error),
@@ -250,14 +248,14 @@ paths:
 }
 
 #[test]
-pub(crate) fn read_existing_minimum_severity_returns_empty_for_missing_or_malformed() {
+pub(crate) fn read_existing_fail_on_returns_empty_for_missing_or_malformed() {
     let dir = tempdir().expect("tempdir");
     let missing = dir.path().join("nope.yaml");
-    assert!(read_existing_minimum_severity(&missing).is_empty());
+    assert!(read_existing_fail_on(&missing).is_empty());
 
     let no_block = dir.path().join("no_block.yaml");
     fs::write(&no_block, "schemaVersion: gruff-rs.config.v1\npaths: {}\n").expect("write no_block");
-    assert!(read_existing_minimum_severity(&no_block).is_empty());
+    assert!(read_existing_fail_on(&no_block).is_empty());
 
     let bogus_value = dir.path().join("bogus_value.yaml");
     fs::write(
@@ -265,7 +263,7 @@ pub(crate) fn read_existing_minimum_severity_returns_empty_for_missing_or_malfor
         "failOn:\n  analyse: never\n  report: advisory\n",
     )
     .expect("write bogus_value");
-    let preserved = read_existing_minimum_severity(&bogus_value);
+    let preserved = read_existing_fail_on(&bogus_value);
     assert_eq!(
         preserved.get("analyse"),
         None,

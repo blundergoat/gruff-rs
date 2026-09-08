@@ -47,7 +47,7 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
 pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
     let output = &args.output;
     let preserved_ignores = read_existing_ignore_patterns(output);
-    let preserved_min_severity = read_existing_minimum_severity(output);
+    let preserved_min_severity = read_existing_fail_on(output);
     let preserved_deep_scan_budget = read_existing_deep_scan_budget(output);
     let body = render_default_config_with_budget(
         &builtin_registry(),
@@ -162,7 +162,7 @@ fn should_write_default_config(project_root: &Path) -> bool {
 fn write_default_config_at(target: &Path) {
     let mut stderr = std::io::stderr();
     let preserved_ignores = read_existing_ignore_patterns(target);
-    let preserved_min_severity = read_existing_minimum_severity(target);
+    let preserved_min_severity = read_existing_fail_on(target);
     let preserved_deep_scan_budget = read_existing_deep_scan_budget(target);
     match fs::write(
         target,
@@ -432,9 +432,9 @@ pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
 
 /// Read valid command thresholds that should survive `gruff-rs init --force` regeneration.
 /// Missing or invalid entries are skipped so the user can repair a partly broken config.
-pub(crate) fn read_existing_minimum_severity(path: &Path) -> BTreeMap<String, FailThreshold> {
+pub(crate) fn read_existing_fail_on(path: &Path) -> BTreeMap<String, FailThreshold> {
     // No readable YAML means there are no safe threshold overrides to preserve.
-    let Some(value) = read_existing_yaml(path, "minimumSeverity preservation") else {
+    let Some(value) = read_existing_yaml(path, "failOn preservation") else {
         return BTreeMap::new();
     };
     value

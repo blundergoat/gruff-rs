@@ -63,7 +63,7 @@ Runs the local gruff-rs preflight suite:
   - pinned action.yml and GitHub Actions workflow validators
   - exact-path GitHub workflow and composite-action security scan without project config
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
-  - gruff-rs dogfood scan (analyse the whole project, gated by minimumSeverity.analyse in .gruff-rs.yaml)
+  - gruff-rs dogfood scan (analyse the whole project, gated by failOn.analyse in .gruff-rs.yaml)
   - documentation drift guards for release examples, built-in rules, schemas, and CLI commands
 
 Options:

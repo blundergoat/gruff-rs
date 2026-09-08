@@ -217,13 +217,15 @@ without edits. The new surface is opt-in:
 1. **Regenerate `.gruff-rs.yaml`.** The config schema now requires
    `schemaVersion: gruff-rs.config.v1`. Back up your existing file, then run
    `gruff-rs init --force`. Your `paths.ignore` entries, `rules.<id>.enabled`
-   overrides, and `failOn:` block (if present) are preserved; the
+   overrides, and `minimumSeverity:` block (if present) are preserved; the
    header gets the new schemaVersion line.
 2. **Re-read CI exit-code expectations.** `analyse --fail-on` now defaults to
    `advisory` (was `error` in `0.1.x`). Pipelines that previously relied on the
    binary default to allow advisory and warning findings will now fail. Either
-   pass `--fail-on error` on the CLI or set `failOn.analyse: error`
-   in `.gruff-rs.yaml`.
+   pass `--fail-on error` on the CLI or set `minimumSeverity.analyse: error`
+   in `.gruff-rs.yaml`. `0.6.0` renames that per-command block to `failOn:`
+   and refuses the old map at load time; see break 9 in
+   [What changes in `0.6.0`](#what-changes-in-060).
 3. **Re-baseline if you keep one.** `gruff-baseline.json` still uses
    `gruff.baseline.v1` (unchanged) so existing baselines still match. But the
    analyse output schema is now `gruff.analysis.v2`; consumers that validate
