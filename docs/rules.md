@@ -18,7 +18,7 @@ The native rule catalogue is the single source for reviewed false-positive guida
 | Documentation | Public Rust API documentation, root README presence, package metadata presence, stale TODO markers without an owner/issue/reason, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, externally public `Result`-returning functions missing an error contract, public panic-capable functions missing a panic contract, public `unsafe fn` items missing a `# Safety` section, and public functions whose rustdoc fails to describe parameters or return values. Function checks accept attached outer `///` and `/** */` rustdoc; inner or ordinary comments do not count. `# Errors`, `# Panics`, and `# Returns` headings are accepted, but concise contract prose is enough when it conveys the same behaviour. |
 | Modernisation | Four `manual-*` idiom rules covering `len() == 0` (use `is_empty`), `iter().any(|x| x == y)` (use `contains`), `if s.starts_with(p) { &s[p.len()..] }` (use `strip_prefix`), and `match opt { Some(v) => v, None => Default::default() }` (use `unwrap_or_default`); and `question-mark-candidate` covering manual `match`/`if let Err` Result-propagation shapes that should use `?`. |
 | Security | Process command uses with concrete risk signals, dynamic SQL query arguments, explicit TLS verification bypasses, weak cryptographic primitive review signals, non-cryptographic RNG use inside secret-like generation functions, unsafe blocks without a nearby `SAFETY:` rationale, filesystem path construction from non-literal input (candidate), SSRF/template/deserialization/XXE candidates, hardcoded `0.0.0.0`/`[::]` listener binds in executable Rust including tests, local-only dependency posture checks for git/path sources, unpinned git revisions, wildcard requirements, and duplicate lockfile versions, plus GitHub Actions workflow and explicit composite-action metadata checks described below. |
-| Sensitive data | Common API keys, AWS keys, JWT-looking tokens, database URLs with passwords, HTTP(S) URLs with embedded credentials, private-key blocks, GCP service-account keys, PHI-like identifiers, environment-style secret assignments, and high-entropy string literals. The high-entropy rule skips package integrity prefixes, base64 alphabet tables, separator-bearing word slugs, and model/provider identifiers, but still reports zero-separator mixed-case identifiers and unknown digest/signature fields; no configuration suppresses them. The common API-key pattern includes provider-prefixed tokens such as GitHub, GitLab, npm, Slack, Stripe, SendGrid, Hugging Face, Linear, Discord webhooks, Google, Anthropic-style, and common cloud connection strings. A separate `pii-test-fixture` rule flags realistic emails, SSN-shaped strings, and US phone numbers in committed fixture or sample files (skips obvious placeholders such as `@example.com`, 555-prefix phones, 000-prefix SSNs). |
+| Sensitive data | Common API keys, AWS keys, JWT-looking tokens, database URLs with passwords, HTTP(S) URLs with embedded credentials, private-key blocks, GCP service-account keys, PHI-like identifiers, environment-style secret assignments, and high-entropy string literals. The high-entropy rule skips package integrity prefixes, base64 alphabet tables, separator-bearing word slugs, and model/provider identifiers, but still reports zero-separator mixed-case identifiers and unknown digest/signature fields; only a `sensitiveExclusions` entry suppresses them. The common API-key pattern includes provider-prefixed tokens such as GitHub, GitLab, npm, Slack, Stripe, SendGrid, Hugging Face, Linear, Discord webhooks, Google, Anthropic-style, and common cloud connection strings. A separate `pii-test-fixture` rule flags realistic emails, SSN-shaped strings, and US phone numbers in committed fixture or sample files (skips obvious placeholders such as `@example.com`, 555-prefix phones, 000-prefix SSNs). |
 | Test quality | Sleeps, loops, conditionals, unwrap/expect that hides setup or fixture failures, ignored tests without reasons, long post-assertion test bodies, trivial assertions, and `#[should_panic]` attributes without an `expected = "..."` clause. |
 | Design | Project-level module fan-out, large-module, and public API surface checks. |
 
@@ -81,7 +81,7 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
 | `architecture.large-module` | 25 items | Detekt LargeClass 600 lines (different unit) | Gruff measures public-or-visible item count per module, not raw lines; not directly comparable. |
 | `architecture.module-fan-out` | 8 | none | Gruff-specific; PMD CouplingBetweenObjects exists but its threshold is not documented in the neighbor studies. |
 | `architecture.public-api-surface` | 12 items | none | Gruff-specific external-public count; PMD TooManyMethods is the nearest peer concept. |
-| `dependency.duplicate-locked-version` | 1 | none | Cargo-specific; no peer analyzer ships this check. |
+| `dependency.duplicate-locked-version` | 2 | none | Cargo-specific; no peer analyzer ships this check. |
 | `docs.stale-todo` | unthresholded | none (peers use binary presence) | Gruff flags each TODO/FIXME/HACK/XXX comment that lacks an owner, issue reference, or reason. |
 | `size.file-length` | 1000 (substantive) | family ratification 2026-08-05 | Counts non-blank, non-comment lines at error severity, unified across the gruff family; Detekt LargeClass is 600 raw, PMD 1500 NCSS, RuboCop 250. |
 | `size.function-length` | 50 | Detekt LongMethod 60, PMD NcssCount 60 | Counts declaration/body lines without attached rustdoc or attributes; slightly stricter than Detekt/PMD and far looser than RuboCop's 10-line Ruby default. |
@@ -115,13 +115,6 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
   JSON. Peer unlocks: Detekt, PMD, Semgrep, and golangci-lint; ADR-006 keeps
   these as renderers over `gruff.analysis.v3`. SARIF is the first implemented
   CI renderer.
-- User-defined rules. Peer unlocks: SwiftLint regex rules, Semgrep pattern
-  rules, and PMD XPath rules; ADR-010 limits the first gruff custom-rule surface
-  to config-only regex rules with reserved `custom.*` ids.
-- Diff/new-code-only reporting. Peer unlocks: Semgrep baseline-by-ref and
-  golangci-lint line-level new-code filters; ADR-009 requires patch-input
-  filtering before direct Git/ref modes.
-- Count baselines, report-level exclusions, and source suppressions. Peer
-  unlocks: SwiftLint count-like baselines, Detekt source suppressions, RuboCop
-  TODO config, and golangci-lint exclusions; ADR-009 keeps exact baselines first
-  and discovery ignores separate from report suppressions.
+- Source suppressions. Peer unlocks: Detekt source suppressions and RuboCop
+  TODO config; ADR-009 keeps discovery ignores separate from report
+  suppressions.

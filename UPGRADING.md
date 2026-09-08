@@ -74,6 +74,8 @@ at a time, so a project using more than one of them moves once. This port's reco
 
 Each entry above is the one this port's own `CHANGELOG.md` records; nothing here is a plan.
 
+10. **the agent-hook contract moves from `gruff.hook.v1` to `gruff.hook.v2`** — The payload's `contractVersion` changes and the envelope gains two required keys, `run` and `suppressions`. `run` carries the audit data a consumer needs to trust the verdict — mode, scope, the operands as given, `analysedFiles`, and the applied baseline — and `suppressions` carries one row per configured sensitive exclusion the run applied, `[]` when none are configured. The exits are ratified as three and no others: `0` when nothing reached the gate, `1` when something did under an explicit consumer request (`--fail-on`, `--fail-on-new`, or `--fail-on-diagnostics`), and `2` when the run could not happen. Update any consumer that validates the payload's key set; one that reads only the keys it needs is unaffected. The contract is `gruff-spec/contracts/core/hook.v2.json`, ratified 2026-09-06.
+
 ## What may change in `0.5.x` with deprecation
 
 These can evolve inside `0.5.x` provided users get at least one minor release
@@ -136,7 +138,7 @@ baseline file the migration preserved.
 `0.5.0` leaves rule ids, fingerprints, `gruff.analysis.v2`, `gruff-rs.config.v1`,
 SARIF, and exit codes unchanged, so existing baselines and JSON consumers keep
 working. Existing `.gruff-rs.yaml` files load as-is; no `init --force` is needed.
-Two changes need action:
+Four changes need action:
 
 1. **The composite Action no longer accepts `args`.** Replace the free-form
    string with `argv`, one literal argument per non-empty line, and set an
