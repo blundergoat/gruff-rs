@@ -22,7 +22,8 @@ regenerate). The supported top-level sections are:
 - `custom_rules`
 - `exclude`
 - `sensitiveExclusions` — the only way to suppress a sensitive-data finding.
-- `minimumSeverity` — per-subcommand `--fail-on` defaults for `analyse` and `report`.
+- `failOn` — per-subcommand `--fail-on` defaults for `analyse` and `report`.
+- `minimumSeverity` — one severity; the display floor for reported findings.
 - `deepScanBudget` — paired line and byte bounds for deep Rust-source analysis.
 - `gate` — count-based quality gate (per-severity and total caps).
 
@@ -172,21 +173,22 @@ An entry that matches no finding is not an error. It reports `suppressed: 0`, so
 fixing the underlying problem never breaks a build.
 
 Every entry publishes one row in the report's `suppressions` array
-(`{index, rule, paths, symbol, reason, suppressed}`) and contributes to the
+(`{index, rule, paths, reason, suppressed}` plus `symbol` when present) and contributes to the
 `Suppressed findings: N via …` line on the `analyse` and `summary` text output,
 where its row is labelled `sensitiveExclusions[<index>]`. Both commands apply the
-exclusion, so both publish the count; `summary --format json` filters without
-publishing one until the `gruff.summary.v2` envelope gains a suppression surface. Suppressed findings are excluded from scoring and
+exclusion, so both publish the count; `summary --format json` carries the same
+`suppressions` array, because the `gruff.summary.v3` envelope is the analysis
+envelope with only `findings` removed. Suppressed findings are excluded from scoring and
 exit codes but are never silently invisible, and no reported field carries matched
 value material.
 
 ## Severity Defaults
 
-`minimumSeverity` sets the default `--fail-on` threshold per subcommand so CI
+`failOn` sets the default `--fail-on` threshold per subcommand so CI
 invocations can omit the flag:
 
 ```yaml
-minimumSeverity:
+failOn:
   analyse: advisory
   report: none
 ```
@@ -195,6 +197,12 @@ Only `analyse` and `report` are accepted, because they are the two commands whos
 exit code gates; any other key is a config error that names the valid ones.
 Values are `none`, `advisory`, `warning`, or `error`, where `none` turns gating
 off. An explicit `--fail-on` on the command line always wins.
+
+`minimumSeverity` is a different key and never gates. It takes one severity —
+`advisory`, `warning`, or `error` — and is the display floor, hiding findings
+below it from the reported list while the counts, the score, and the exit code
+stay unchanged. The 0.5 per-command `minimumSeverity:` map is refused with an
+error naming `failOn`; `gruff-rs migrate-config` performs the rename.
 
 ## Quality Gate
 
@@ -220,7 +228,7 @@ baseline. A malformed gate is a config error (exit `2`) naming the offending pat
 ## Compatibility
 
 The shared cross-language config expectations are documented in the
-workspace-level `CONTRACT.md` (at the gruff workspace root, sibling to this
+workspace-level `FAMILY-CONTRACT.md` (at the gruff workspace root, sibling to this
 crate). Rust intentionally keeps YAML-only config loading and Rust-specific
 `custom_rules` / `exclude` sections. `sensitiveExclusions` is the opposite: it is
 a cross-port contracted surface, and its shape, rejections, and audit row are

@@ -113,7 +113,7 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
   safe/unsafe metadata before any gruff fix mode.
 - Additional dedicated CI renderers such as Checkstyle XML and Code Climate
   JSON. Peer unlocks: Detekt, PMD, Semgrep, and golangci-lint; ADR-006 keeps
-  these as renderers over `gruff.analysis.v2`. SARIF is the first implemented
+  these as renderers over `gruff.analysis.v3`. SARIF is the first implemented
   CI renderer.
 - User-defined rules. Peer unlocks: SwiftLint regex rules, Semgrep pattern
   rules, and PMD XPath rules; ADR-010 limits the first gruff custom-rule surface

@@ -8,7 +8,7 @@ different consumers.
 Use `text` for local terminal scans:
 
 ```sh
-cargo run -- analyse src --format text --fail-on warning
+./.cargo-tools/bin/gruff-rs analyse src --format text --fail-on warning
 ```
 
 ## JSON
@@ -16,7 +16,7 @@ cargo run -- analyse src --format text --fail-on warning
 Use `json` for automation. Analysis reports use `gruff.analysis.v3`.
 
 ```sh
-cargo run -- analyse src --format json --fail-on none > gruff-rs.json
+./.cargo-tools/bin/gruff-rs analyse src --format json --fail-on none > gruff-rs.json
 ```
 
 The v3 envelope emits project-relative slash paths and one canonical `file` key.
@@ -76,7 +76,7 @@ Use `hotspot` for compact score and offender analysis.
 Use `sarif` for GitHub code scanning or other SARIF consumers:
 
 ```sh
-cargo run -- analyse src --format sarif --fail-on none > gruff-rs.sarif
+./.cargo-tools/bin/gruff-rs analyse src --format sarif --fail-on none > gruff-rs.sarif
 ```
 
 ## Summary
@@ -87,7 +87,7 @@ exact findings-free projection of analysis JSON for the same inputs: it changes
 array. Because JSON projection is fixed, `--top` affects text output only.
 
 ```sh
-cargo run -- summary src --format json --top 5
+./.cargo-tools/bin/gruff-rs summary src --format json --top 5
 ```
 
 ## Exit Codes

@@ -16,7 +16,8 @@ These will not change in a `0.5.x` patch or minor without a bump to `0.6.0`:
 - **JSON schema version.** `schemaVersion: "gruff.analysis.v2"` and the
   documented top-level fields (`tool`, `run`, `paths`, `summary`, `score`,
   `findings`, `diagnostics`, `suppressions`, `baseline`, optional
-  `perRuleDeltas` when a baseline / diff context is active).
+  `perRuleDeltas` when a baseline / diff context is active). `0.6.0` moves this
+  to `gruff.analysis.v3`; see [What changes in `0.6.0`](#what-changes-in-060).
 - **Config schema version.** `schemaVersion: "gruff-rs.config.v1"` is
   required on every `.gruff-rs.yaml`. Configs without it are rejected at
   load time; run `gruff-rs init --force` to regenerate.
@@ -25,9 +26,53 @@ These will not change in a `0.5.x` patch or minor without a bump to `0.6.0`:
   key.
 - **Config root keys.** `paths.ignore`, `allowlists`, `rules.select`,
   `rules.ignore`, `rules.<id>`, `custom_rules`, `exclude`, `minimumSeverity`,
-  `gate`. Unknown keys continue to fail closed.
+  `gate`. Unknown keys continue to fail closed. `0.6.0` renames the per-command
+  exit gate to `failOn` and rereads `minimumSeverity` as a scalar display floor;
+  see [What changes in `0.6.0`](#what-changes-in-060).
 - **Exit codes.** `0` clean, `1` finding at the `--fail-on` threshold, `2`
   fatal diagnostic (parse error, missing path, etc).
+
+## What changes in `0.6.0`
+
+`0.6.0` is a coordinated family release: the same break lands in all five ports rather than one
+at a time, so a project using more than one of them moves once. This port's recorded breaks are:
+
+1. **baselines move to the family `gruff.baseline.v3` file, and every finding identity changes
+   once** — A baseline row now stores one line-free identity and a count: sha256 over the tool
+   language, native rule id, project-relative path, and a subject that is the symbol plus its
+   declaration ordinal, or, when no symbol is named, the message with its measured values
+   normalised. A `gruff.baseline.v1` file fails closed and names the migration command.
+2. **sensitive-data findings can no longer be baselined** — A generated baseline counts them by
+   rule under `sensitive.counts` and stores no row, path, or message for them, and a hand-written
+   row cannot hide one.
+3. **SARIF `partialFingerprints.gruffFingerprint` is the ratified identity, and a secret carries
+   none** — Every existing alert closes and reopens once at this break, and each one then survives
+   an ordinary edit. A sensitive finding publishes no `partialFingerprints` at all.
+4. **every score changes — the family adopts one normalized scoring formula** — A pillar is now
+   `floor + (100 - floor) / (1 + density / densityScale)`. Scores no longer track project size.
+   The error weight rises from 8 to 12 and the advisory weight falls from 1.5 to 1; grade
+   boundaries stay at A>=90, B>=80, C>=70, D>=60.
+5. **the composite can be null, and so can a pillar or file grade** — `score.composite.{score,grade}`
+   are `null` when the run evaluated nothing at all; every human view renders
+   `Composite: n/a (nothing evaluated)`.
+6. **`score.pillars[]` lists every rule-backed pillar and carries an `applicable` flag** — A
+   reachable pillar that reported nothing is now visibly distinct from a pillar no rule can reach.
+7. **machine JSON uses the family v3 contract** — `analyse` and `report` JSON emit
+   `gruff.analysis.v3`; `summary --format json` emits `gruff.summary.v3`. Finding and
+   score-offender `filePath` aliases and the top-level `suppressedCount` alias are removed; ignored
+   paths move from `paths.ignoredPathDetails` to `paths.details`; Rust-only finding scope and
+   per-rule deltas live under `extensions.rs`. Fingerprint and stable-identity inputs are unchanged.
+8. **default scans use the family fallback policy** — Non-VCS fallbacks defer to any governing
+   `.gitignore`, match at any depth, committed control metadata stays scannable, and explicit
+   supported files bypass Git and fallback exclusions. Rust retains `target`; VCS internals remain
+   blocked even with `--include-ignored`.
+9. **the per-command exit gate moves from `minimumSeverity:` to `failOn:`** — A `0.5` config
+   carrying the per-command `minimumSeverity:` map is refused at load time with exit `2` and an
+   error naming `failOn`, so every config that pinned a CI threshold fails until it is renamed.
+   `minimumSeverity` still loads, but only as a scalar display floor that hides findings below
+   one severity and changes no count, score, or exit code; `gruff-rs migrate-config` renames it.
+
+Each entry above is the one this port's own `CHANGELOG.md` records; nothing here is a plan.
 
 ## What may change in `0.5.x` with deprecation
 
@@ -42,8 +87,9 @@ of warning before the change lands:
 - **New SARIF properties** under `result.properties` or `rule.properties`.
   Additions only; existing keys keep their meaning.
 - **`findings[].filePath`.** Superseded by the canonical `findings[].file`
-  alias added in `0.3.0`; `filePath` is still emitted for the transition and
-  will be removed in a later release. Migrate JSON consumers to `file`.
+  alias added in `0.3.0`. It was emitted through `0.5.x` for the transition and
+  is **removed in `0.6.0`**, along with `score.topOffenders[].filePath`. Migrate
+  JSON consumers to `file`.
 - **Text/Markdown/HTML output formatting.** Cosmetic improvements may land
   without a deprecation window because they are not machine-consumed.
 - **Dashboard UI.** The local dashboard is explicitly best-effort.
@@ -61,6 +107,29 @@ of warning before the change lands:
   `pub(crate)` and intentionally not part of the public surface. Treat
   `gruff-rs` as a CLI, not a library dependency.
 - **Performance.** Wall-clock and RSS will change as rules are added.
+
+## Upgrade workflow (0.5.x → 0.6.0)
+
+1. Read [What changes in `0.6.0`](#what-changes-in-060) and decide which breaks touch your project.
+2. Install the new line:
+
+   ```bash
+   cargo install gruff-rs --locked --version 0.6.0 --root ./.cargo-tools
+   ```
+
+3. Carry a baseline forward rather than regenerating it, so previously reviewed findings stay
+   reviewed. Run `gruff-rs analyse --migrate-baseline <old path> --generate-baseline <new path>`,
+   the command the tool prints when it refuses a `0.5` baseline; the original file is preserved.
+4. Re-run `./.cargo-tools/bin/gruff-rs summary .` and compare the finding count and grade with the
+   one you had. Both are expected to move: every score changes at this release, the fallback policy
+   changes which files are scanned at all, and a secret a `0.5` baseline suppressed is reported
+   again. Read a difference against the breaks above before treating it as a regression.
+5. Update JSON consumers to `gruff.analysis.v3`: read `findings[].file`, `paths.details`,
+   `summary.suppressedFindings`, and `extensions.rs.topLevel.perRuleDeltas`.
+
+**Retreat path.** Pin the previous line —
+`cargo install gruff-rs --locked --version 0.5.0 --root ./.cargo-tools` — and keep the `0.5`
+baseline file the migration preserved.
 
 ## Upgrade workflow (0.4.x → 0.5.0)
 
@@ -146,12 +215,12 @@ without edits. The new surface is opt-in:
 1. **Regenerate `.gruff-rs.yaml`.** The config schema now requires
    `schemaVersion: gruff-rs.config.v1`. Back up your existing file, then run
    `gruff-rs init --force`. Your `paths.ignore` entries, `rules.<id>.enabled`
-   overrides, and `minimumSeverity:` block (if present) are preserved; the
+   overrides, and `failOn:` block (if present) are preserved; the
    header gets the new schemaVersion line.
 2. **Re-read CI exit-code expectations.** `analyse --fail-on` now defaults to
    `advisory` (was `error` in `0.1.x`). Pipelines that previously relied on the
    binary default to allow advisory and warning findings will now fail. Either
-   pass `--fail-on error` on the CLI or set `minimumSeverity.analyse: error`
+   pass `--fail-on error` on the CLI or set `failOn.analyse: error`
    in `.gruff-rs.yaml`.
 3. **Re-baseline if you keep one.** `gruff-baseline.json` still uses
    `gruff.baseline.v1` (unchanged) so existing baselines still match. But the
