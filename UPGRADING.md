@@ -76,6 +76,14 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 
 10. **the agent-hook contract moves from `gruff.hook.v1` to `gruff.hook.v2`** — The payload's `contractVersion` changes and the envelope gains two required keys, `run` and `suppressions`. `run` carries the audit data a consumer needs to trust the verdict — mode, scope, the operands as given, `analysedFiles`, and the applied baseline — and `suppressions` carries one row per configured sensitive exclusion the run applied, `[]` when none are configured. The exits are ratified as three and no others: `0` when nothing reached the gate, `1` when something did under an explicit consumer request (`--fail-on`, `--fail-on-new`, or `--fail-on-diagnostics`), and `2` when the run could not happen. Update any consumer that validates the payload's key set; one that reads only the keys it needs is unaffected. The contract is `gruff-spec/contracts/core/hook.v2.json`, ratified 2026-09-06.
 
+11. **`list-rules --format json` is an object carrying the rules under `rules`, and thresholds are
+    a named knob map** — The catalogue was a bare array and is now `{"rules": [...]}`, the shape the
+    other four ports publish. A rule's scalar `threshold` moves to `thresholds`, as
+    `{"maxLines": 1000}` where gruff-go already names the knob and `{"threshold": 25}` where no port
+    does, and a rule with no threshold publishes neither key. Read `.rules[]` instead of `.[]`, and
+    a knob value instead of `.threshold`; `list-rules --selector`, `list-rules <id> --format json`,
+    SARIF rule properties and `.gruff-rs.yaml` keys are unchanged.
+
 ## What may change in `0.5.x` with deprecation
 
 These can evolve inside `0.5.x` provided users get at least one minor release

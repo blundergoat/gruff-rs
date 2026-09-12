@@ -1,7 +1,7 @@
 use super::*;
 use crate::rules_detail::render_rule_detail;
 use crate::{rules, RuleListFormat};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[test]
 pub(crate) fn detail_text_renders_all_sections_for_an_enriched_rule() {
@@ -71,7 +71,10 @@ pub(crate) fn flat_catalogue_exports_only_nonempty_false_positive_guidance() {
         },
     )
     .expect("flat rule catalogue renders json");
-    let values: Vec<Value> = serde_json::from_str(&body).expect("catalogue JSON parses");
+    let listing: Value = serde_json::from_str(&body).expect("catalogue JSON parses");
+    let values = listing["rules"]
+        .as_array()
+        .expect("the catalogue is an object carrying its rules under `rules`");
 
     let unused_private = values
         .iter()
@@ -101,6 +104,49 @@ pub(crate) fn flat_catalogue_exports_only_nonempty_false_positive_guidance() {
         .all(|value| value["falsePositiveShapes"]
             .as_array()
             .is_some_and(|shapes| !shapes.is_empty())));
+}
+
+#[test]
+pub(crate) fn flat_catalogue_publishes_thresholds_as_named_knob_maps() {
+    let body = render_rule_list(
+        Path::new("."),
+        &ListRulesArgs {
+            rule_id: None,
+            format: RuleListFormat::Json,
+            selector: None,
+            config: None,
+            no_config: true,
+        },
+    )
+    .expect("flat rule catalogue renders json");
+    let listing: Value = serde_json::from_str(&body).expect("catalogue JSON parses");
+    let rules = listing["rules"].as_array().expect("rules array");
+    let by_id = |id: &str| {
+        rules
+            .iter()
+            .find(|rule| rule["id"] == id)
+            .unwrap_or_else(|| panic!("{id} ships"))
+    };
+
+    // A rule whose id has a gruff-go knob name borrows it.
+    assert_eq!(
+        by_id("complexity.cognitive")["thresholds"],
+        json!({"maxComplexity": 15})
+    );
+    assert_eq!(
+        by_id("size.file-length")["thresholds"],
+        json!({"maxLines": 1000})
+    );
+    // A rule with no knob name anywhere in the family publishes the one-key map.
+    assert_eq!(
+        by_id("architecture.large-module")["thresholds"],
+        json!({"threshold": 25})
+    );
+    // A rule with no threshold omits the key, and no rule publishes the retired scalar.
+    assert!(by_id("security.unsafe-block").get("thresholds").is_none());
+    assert!(rules.iter().all(|rule| rule.get("threshold").is_none()));
+    // An integral default prints as an integer, never as `15.0`.
+    assert!(body.contains("\"maxComplexity\": 15\n"));
 }
 
 #[test]

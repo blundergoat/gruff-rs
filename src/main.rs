@@ -487,11 +487,50 @@ fn render_selector_output(
     })
 }
 
+/// The catalogue envelope every port publishes: an object carrying the rules under `rules`.
+#[derive(Serialize)]
+struct RuleListing<'a> {
+    rules: &'a [ListedRule],
+}
+
 fn format_listed_rules(rules: &[ListedRule], format: RuleListFormat) -> String {
     match format {
-        RuleListFormat::Json => serde_json::to_string_pretty(rules).expect("rules serialize"),
+        RuleListFormat::Json => {
+            serde_json::to_string_pretty(&RuleListing { rules }).expect("rules serialize")
+        }
         RuleListFormat::Text => render_listed_rules_text(rules),
     }
+}
+
+/// Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The
+/// family listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule
+/// whose id has no knob name anywhere in the family publishes the one-key map `{"threshold": N}`
+/// so no new permanent public identifier is invented.
+const LISTING_THRESHOLD_KNOB_NAMES: &[(&str, &str)] = &[
+    ("complexity.cognitive", "maxComplexity"),
+    ("complexity.cyclomatic", "maxComplexity"),
+    ("complexity.nesting-depth", "maxDepth"),
+    ("size.file-length", "maxLines"),
+    ("size.function-length", "maxLines"),
+    ("size.parameter-count", "maxParameters"),
+];
+
+/// Project a built-in rule's default threshold into the family listing map. An integral default
+/// prints as an integer (`25`, not `25.0`) so a typed consumer reads one number shape across ports.
+fn listing_thresholds(definition: &rules::RuleDefinition) -> Option<Map<String, Value>> {
+    let threshold = definition.threshold?;
+    let knob = LISTING_THRESHOLD_KNOB_NAMES
+        .iter()
+        .find(|(rule_id, _)| *rule_id == definition.id)
+        .map_or("threshold", |(_, knob)| knob);
+    let value = if threshold.default.fract() == 0.0 {
+        json!(threshold.default as i64)
+    } else {
+        json!(threshold.default)
+    };
+    let mut thresholds = Map::new();
+    thresholds.insert(knob.to_string(), value);
+    Some(thresholds)
 }
 
 fn render_listed_rules_text(rules: &[ListedRule]) -> String {
@@ -547,7 +586,7 @@ pub(crate) fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedR
         kind: rule_kind_name(definition.kind).to_string(),
         default_severity: definition.default_severity,
         confidence: definition.confidence,
-        threshold: definition.threshold.map(|threshold| threshold.default),
+        thresholds: listing_thresholds(definition),
         options: definition.options.to_vec(),
         default_enabled: definition.default_enabled,
         description: definition.description.to_string(),
@@ -566,7 +605,7 @@ pub(crate) fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
         kind: "custom".to_string(),
         default_severity: rule.severity,
         confidence: rule.confidence,
-        threshold: None,
+        thresholds: None,
         options: Vec::new(),
         default_enabled: true,
         description: rule.message.clone(),

@@ -1204,11 +1204,12 @@ release_docs_drift_check() {
   done
   # Invalid or incomplete catalogue JSON cannot establish the built-in rule truth.
   if ! jq -e '
-    type == "array"
-    and length > 0
-    and all(.[]; (.id | type == "string") and (.pillar | type == "string"))
+    type == "object"
+    and (.rules | type == "array")
+    and (.rules | length > 0)
+    and all(.rules[]; (.id | type == "string") and (.pillar | type == "string"))
   ' "$catalogue_file" >/dev/null 2>&1; then
-    printf "docs drift: %s: catalogue JSON actual='invalid' expected='non-empty list-rules array'\n" \
+    printf "docs drift: %s: catalogue JSON actual='invalid' expected='non-empty rules array under rules'\n" \
       "$catalogue_file" >&2
     return 1
   fi
@@ -1243,14 +1244,14 @@ release_docs_drift_check() {
   assert_docs_value "$readme_doc" 'active release line' \
     "$release_line" "$expected_release_line" || drift_found=1
 
-  expected_rule_count=$(jq -r 'length' "$catalogue_file")
+  expected_rule_count=$(jq -r '.rules | length' "$catalogue_file")
   documented_rule_count=$(printf '%s\n' "$rule_catalogue_block" \
     | sed -n 's/^The catalogue contains \([0-9][0-9]*\) rules:$/\1/p')
   assert_docs_value "$readme_doc" 'built-in rule count' \
     "$documented_rule_count" "$expected_rule_count" || drift_found=1
 
   expected_pillars=$(jq -r '
-    sort_by(.pillar)
+    .rules | sort_by(.pillar)
     | group_by(.pillar)[]
     | "\(.[0].pillar)\t\(length)"
   ' "$catalogue_file")
@@ -1265,7 +1266,7 @@ release_docs_drift_check() {
     drift_found=1
   fi
 
-  registered_rule_ids=$(jq -r '.[].id' "$catalogue_file" | sort -u)
+  registered_rule_ids=$(jq -r '.rules[].id' "$catalogue_file" | sort -u)
   # Only explicitly marked examples are registry-owned; normal dotted prose stays reviewer-owned.
   while IFS= read -r rule_id; do
     # Empty extraction means this iteration has no candidate rule for the user-facing block.
@@ -1308,6 +1309,25 @@ release_docs_drift_check() {
     return 1
   fi
 
+  # Decision namespace (M09 task 16): every ADR the documentation cites must exist in this
+  # port's decisions directory, so a reader is never sent to a record another port carries.
+  local decision decision_document
+  local -a decision_documents=("$readme_doc" "$rules_doc")
+  while IFS= read -r decision_document; do
+    decision_documents+=("$decision_document")
+  done < <({ ls "$docs_root"/UPGRADING.md "$docs_root"/docs/*.md 2>/dev/null || true; } | sort -u)
+  while IFS= read -r decision; do
+    if [[ -z "$decision" ]]; then
+      continue
+    fi
+    if ! compgen -G "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision-*.md" >/dev/null; then
+      printf "docs drift: decision-namespace: %s cited but actual='absent' expected='.goat-flow/learning-loop/decisions/%s-*.md'\n" \
+        "$decision" \
+        "$decision" >&2
+      return 1
+    fi
+  done < <({ cat "${decision_documents[@]}" 2>/dev/null | grep -oE 'ADR-[0-9]{3}' || true; } | sort -u)
+
   # Any collected mismatch keeps preflight red after all actionable values are printed.
   if ((drift_found != 0)); then
     return 1
@@ -1327,8 +1347,8 @@ write_valid_docs_drift_fixture() {
   local rule_count
   local example_rule
 
-  rule_count=$(jq -r 'length' "$catalogue_file")
-  example_rule=$(jq -r '.[0].id' "$catalogue_file")
+  rule_count=$(jq -r '.rules | length' "$catalogue_file")
+  example_rule=$(jq -r '.rules[0].id' "$catalogue_file")
   mkdir -p "$fixture_root/docs"
 
   {
@@ -1356,7 +1376,7 @@ write_valid_docs_drift_fixture() {
     while IFS=$'\t' read -r pillar count; do
       printf "| \`%s\` | %s |\n" "$pillar" "$count"
     done < <(jq -r '
-      sort_by(.pillar)
+      .rules | sort_by(.pillar)
       | group_by(.pillar)[]
       | "\(.[0].pillar)\t\(length)"
     ' "$catalogue_file")
@@ -1484,8 +1504,8 @@ docs_drift_fixture_harness() {
   local custom_rule_count
 
   package_version=$(package_version_for_docs) || return $?
-  rule_count=$(jq -r 'length' "$catalogue_file")
-  example_rule=$(jq -r '.[0].id' "$catalogue_file")
+  rule_count=$(jq -r '.rules | length' "$catalogue_file")
+  example_rule=$(jq -r '.rules[0].id' "$catalogue_file")
   write_valid_docs_drift_fixture "$valid_root" "$catalogue_file" "$package_version"
 
   # The valid synthetic docs include an unmarked phantom phrase that must stay reviewer-owned.
@@ -1535,6 +1555,13 @@ docs_drift_fixture_harness() {
   expect_docs_drift_failure phantom-marked-rule 'marked rule ID' \
     "$phantom_rule_root" "$catalogue_file" "$package_version" || return $?
 
+  # A decision this port does not carry cannot be cited (M09 task 16, decision-namespace).
+  local stale_decision_root="$harness_root/stale-decision"
+  copy_docs_drift_fixture "$valid_root" "$stale_decision_root"
+  printf '\nSee ADR-999 for the rationale.\n' >>"$stale_decision_root/README.md"
+  expect_docs_drift_failure stale-decision 'decision-namespace' \
+    "$stale_decision_root" "$catalogue_file" "$package_version" || return $?
+
   cat >"$custom_config" <<'YAML'
 schemaVersion: gruff-rs.config.v1
 custom_rules:
@@ -1547,7 +1574,7 @@ custom_rules:
 YAML
   cargo run --quiet -- list-rules --format json --config "$custom_config" >"$custom_catalogue" \
     || return $?
-  custom_rule_count=$(jq -r 'length' "$custom_catalogue")
+  custom_rule_count=$(jq -r '.rules | length' "$custom_catalogue")
   # A valid project custom rule must not alter the no-config built-in count used by docs.
   if ((custom_rule_count != rule_count + 1)); then
     printf 'docs drift fixture: custom catalogue count actual=%s expected=%s\n' \

@@ -298,8 +298,9 @@ pub(crate) struct ListedRule {
     pub(crate) kind: String,
     pub(crate) default_severity: Severity,
     pub(crate) confidence: Confidence,
+    /// Family listing shape: a named knob map such as `{"maxLines": 1000}`, absent for a rule with none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) threshold: Option<f64>,
+    pub(crate) thresholds: Option<Map<String, Value>>,
     pub(crate) options: Vec<rules::OptionDefinition>,
     pub(crate) default_enabled: bool,
     pub(crate) description: String,
