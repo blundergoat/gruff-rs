@@ -1310,7 +1310,9 @@ release_docs_drift_check() {
   fi
 
   # Decision namespace (M09 task 16): every ADR the documentation cites must exist in this
-  # port's decisions directory, so a reader is never sent to a record another port carries.
+  # port's decisions directory, so a reader is never sent to a record another port carries. A
+  # citation that carries a slug must name that exact record, so a number borrowed from another
+  # port or from the family cannot pass against an unrelated local record with the same number.
   local decision decision_document
   local -a decision_documents=("$readme_doc" "$rules_doc")
   while IFS= read -r decision_document; do
@@ -1320,13 +1322,20 @@ release_docs_drift_check() {
     if [[ -z "$decision" ]]; then
       continue
     fi
-    if ! compgen -G "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision-*.md" >/dev/null; then
+    if [[ "$decision" == ADR-[0-9][0-9][0-9]-* ]]; then
+      if [[ ! -f "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision.md" ]]; then
+        printf "docs drift: decision-namespace: %s cited but actual='absent' expected='.goat-flow/learning-loop/decisions/%s.md'\n" \
+          "$decision" \
+          "$decision" >&2
+        return 1
+      fi
+    elif ! compgen -G "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision-*.md" >/dev/null; then
       printf "docs drift: decision-namespace: %s cited but actual='absent' expected='.goat-flow/learning-loop/decisions/%s-*.md'\n" \
         "$decision" \
         "$decision" >&2
       return 1
     fi
-  done < <({ cat "${decision_documents[@]}" 2>/dev/null | grep -oE 'ADR-[0-9]{3}' || true; } | sort -u)
+  done < <({ cat "${decision_documents[@]}" 2>/dev/null | grep -oE 'ADR-[0-9]{3}(-[a-z0-9]+)*' || true; } | sort -u)
 
   # Any collected mismatch keeps preflight red after all actionable values are printed.
   if ((drift_found != 0)); then
@@ -1561,6 +1570,16 @@ docs_drift_fixture_harness() {
   printf '\nSee ADR-999 for the rationale.\n' >>"$stale_decision_root/README.md"
   expect_docs_drift_failure stale-decision 'decision-namespace' \
     "$stale_decision_root" "$catalogue_file" "$package_version" || return $?
+
+  # A real decision number with another record's slug must not pass on the number alone.
+  local borrowed_slug_root="$harness_root/borrowed-decision-slug"
+  local first_decision
+  first_decision=$(find "$REPO_ROOT/.goat-flow/learning-loop/decisions" -maxdepth 1 -name 'ADR-[0-9][0-9][0-9]-*.md' | sort | head -n 1)
+  first_decision=$(basename "$first_decision")
+  copy_docs_drift_fixture "$valid_root" "$borrowed_slug_root"
+  printf '\nSee %s-not-this-record for the rationale.\n' "${first_decision:0:7}" >>"$borrowed_slug_root/README.md"
+  expect_docs_drift_failure borrowed-decision-slug 'decision-namespace' \
+    "$borrowed_slug_root" "$catalogue_file" "$package_version" || return $?
 
   cat >"$custom_config" <<'YAML'
 schemaVersion: gruff-rs.config.v1
