@@ -1,4 +1,5 @@
 //! Registry definitions for idiom, security, size, and test-quality rules.
+//!
 //! The catalogue feeds rule listing and documentation with stable IDs,
 //! descriptions, relationships, options, and false-positive guidance.
 
@@ -24,6 +25,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags `iter().any(|x| *x == y)` patterns that should use `.contains(&y)`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A custom iterator or collection exposes comparison semantics for `.iter().any(...)` that are unavailable or meaningfully different through `.contains(...)`.",
+                mitigation: "Keep the explicit predicate when its semantics are load-bearing and add an exact reviewed exclusion; otherwise use `.contains(&value)`.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "modernisation.manual-strip-prefix",
@@ -34,6 +42,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags `if s.starts_with(p) { &s[p.len()..] }` shapes that should use `strip_prefix`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A domain type implements `starts_with`, indexing, and `len` with non-string semantics that the syntax-only matcher cannot resolve.",
+                mitigation: "Prefer `strip_prefix` for strings; for a domain-specific operation, use a named helper or exclude the exact reviewed path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "modernisation.manual-unwrap-or-default",
@@ -44,6 +59,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags `match opt { Some(v) => v, None => Default::default() }` shapes that should use `unwrap_or_default()`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The expanded match is intentionally retained as a documented extension point even though both current arms are equivalent to `unwrap_or_default()`.",
+                mitigation: "Use `unwrap_or_default()` unless the extension point is concrete and reviewed; then document it and exclude only that path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "modernisation.question-mark-candidate",
@@ -54,6 +76,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags manual `match`/`if let Err` Result-propagation shapes that should use `?`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Expanded error propagation is kept for generated teaching code, instrumentation breakpoints, or a forthcoming branch even though the current arms return the same error.",
+                mitigation: "Use `?` for ordinary propagation; otherwise document the concrete need and exclude only the reviewed source path.",
+            },
+        ],
+        related: &[],
     ),
 ];
 
@@ -189,6 +218,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags workflow-level scoped writes and permissions: write-all grants.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A narrowly trusted release workflow deliberately needs repository write access, but the text rule cannot evaluate environment protection or human approval controls.",
+                mitigation: "Move writes to the smallest job-scoped permission set; if broader access remains necessary, document the trust boundary and exclude only that workflow.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.github-actions-pull-request-target",
@@ -199,6 +235,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags pull_request_target workflows for manual secret and checkout review.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A `pull_request_target` workflow processes only trusted metadata and never checks out or executes pull-request-controlled content.",
+                mitigation: "Keep the trusted-data boundary explicit and permissions minimal; then add a documented exclusion limited to the reviewed workflow if needed.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.github-actions-remote-shell",
@@ -219,6 +262,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags pull request workflows that reference repository secrets.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The referenced secret is protected by an environment approval or unreachable job condition that the line-oriented workflow scan cannot prove.",
+                mitigation: "Avoid exposing repository secrets to pull-request jobs; otherwise make the approval and condition boundary explicit and exclude only the reviewed workflow.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.github-actions-unpinned-action",
@@ -229,6 +279,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "An internally controlled action or reusable workflow intentionally follows a governed mutable tag that the source-only rule cannot distinguish from an untrusted third party.",
+                mitigation: "Pin the immutable commit SHA whenever possible; otherwise document ownership and update controls in an exact workflow exclusion.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "performance.clone-in-loop",
@@ -239,6 +296,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags clone calls inside loop bodies as allocation hot spot candidates.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Each iteration must transfer a distinct owned value to an API or collection, so borrowing or hoisting the clone would change ownership or lifetime semantics.",
+                mitigation: "Prefer borrowing or moving when possible; if ownership genuinely requires the clone, document the constraint and exclude only that reviewed path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "performance.format-in-loop",
@@ -249,6 +313,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags format! calls inside loop bodies as allocation hot spot candidates.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The loop intentionally produces a distinct dynamic string per element for collection, serialization, or an external owned-string API.",
+                mitigation: "Reuse a buffer or stream with `write!` when practical; otherwise document the per-item ownership need and exclude only that path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "performance.regex-in-loop",
@@ -289,6 +360,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags non-cryptographic rand calls inside secret-like generation functions.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A deterministic test, benchmark, or non-security identifier generator uses `rand` inside a function whose name contains token, key, nonce, salt, or password vocabulary.",
+                mitigation: "Rename non-secret generators to state their purpose or use `OsRng` for real secret material; isolate deterministic fixtures with an exact path exclusion.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.sql-dynamic-query",
@@ -340,6 +418,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags explicit weak cryptographic primitive imports or constructors for review.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "MD5, SHA-1, RC4, or DES is required for a legacy wire format, checksum, or interoperability contract rather than a security decision.",
+                mitigation: "Use a modern primitive for security-sensitive work; when compatibility is mandatory, document the non-security boundary and exclude only that implementation path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.path-traversal-candidate",
@@ -502,11 +587,11 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         false_positives: &[
             FalsePositiveShape {
                 shape: "Zero-separator CamelCase or mixed-case identifiers that are high entropy but not secrets.",
-                mitigation: "Prefer a separator-bearing identifier when practical. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
+                mitigation: "Prefer a separator-bearing identifier when practical, then review any remaining finding; secret preview values cannot suppress it.",
             },
             FalsePositiveShape {
                 shape: "Manifest checksum or signature fields whose value shape alone is indistinguishable from secret material.",
-                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
+                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible, then review any remaining finding; secret preview values cannot suppress it.",
             },
         ],
         related: &["sensitive-data.api-key-pattern", "sensitive-data.jwt-token"],

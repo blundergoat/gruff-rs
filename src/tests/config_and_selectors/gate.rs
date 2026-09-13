@@ -168,6 +168,10 @@ fn test_baseline_report(generated: bool) -> BaselineReport {
         new_count: 0,
         unchanged_count: 0,
         absent_count: 0,
+        collision_count: 0,
+        not_eligible_count: 0,
+        sensitive_counted: 0,
+        entries: 0,
         generated,
     }
 }
@@ -246,6 +250,7 @@ pub(crate) fn gate_config_error_diagnostic_is_exit_2() {
             message: "needs a baseline".to_string(),
             file_path: None,
             line: None,
+            invalidates_run: None,
         }],
     );
     assert_eq!(

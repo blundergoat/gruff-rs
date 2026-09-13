@@ -110,15 +110,24 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
 
     let json_output = render_report(&report, OutputFormat::Json);
     let decoded: Value = serde_json::from_str(&json_output).expect("json report");
-    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v2");
+    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v3");
     assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
     assert_eq!(decoded["findings"][0]["file"], "src/lib.rs");
-    assert_eq!(decoded["findings"][0]["filePath"], "src/lib.rs");
-    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert!(decoded["findings"][0].get("filePath").is_none());
+    assert!(decoded["findings"][0].get("column").is_none());
+    assert!(decoded["findings"][0].get("endLine").is_none());
     assert_eq!(
-        decoded["score"]["topOffenders"][0]["filePath"],
-        "src/lib.rs"
+        decoded["findings"][0]["metadata"]["locationPrecision"],
+        "line-only"
     );
+    assert_eq!(
+        decoded["findings"][0]["extensions"]["rs"]["finding"]["scope"],
+        "symbol"
+    );
+    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert!(decoded["score"]["topOffenders"][0]
+        .get("filePath")
+        .is_none());
 
     let sarif: Value =
         serde_json::from_str(&render_report(&report, OutputFormat::Sarif)).expect("sarif report");
@@ -127,7 +136,7 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "gruff-rs");
     assert_eq!(
         sarif["runs"][0]["properties"]["gruffSchemaVersion"],
-        "gruff.analysis.v2"
+        "gruff.analysis.v3"
     );
     let sarif_rules = sarif["runs"][0]["tool"]["driver"]["rules"]
         .as_array()
@@ -159,9 +168,14 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
         sarif_result["locations"][0]["physicalLocation"]["region"]["startLine"],
         7
     );
+    // Code scanning groups alerts by the ratified durable identity, the same name baseline matching reads.
+    let named = finding_identities(&report.findings[..1], &declaration_position_by_line)
+        .expect("the finding can be named")
+        .remove(0)
+        .expect("an ordinary finding has an identity");
     assert_eq!(
         sarif_result["partialFingerprints"]["gruffFingerprint"].as_str(),
-        Some(report.findings[0].fingerprint.as_str())
+        Some(named.identity.as_str())
     );
 
     let text = render_report(&report, OutputFormat::Text);
@@ -186,6 +200,33 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
 }
 
 #[test]
+pub(crate) fn report_json_emits_optional_locations_only_when_present() {
+    let mut finding = test_finding(
+        "complexity.cyclomatic",
+        "src/lib.rs",
+        7,
+        Severity::Warning,
+        Pillar::Complexity,
+    );
+    finding.column = Some(4);
+    finding.end_line = Some(9);
+    finding.metadata = json!({"native": "preserved"});
+    let report = sample_report_with(vec![finding], Vec::new());
+
+    let decoded: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("json report");
+    let emitted = &decoded["findings"][0];
+
+    assert_eq!(emitted["column"], 4);
+    assert_eq!(emitted["endLine"], 9);
+    assert_eq!(emitted["metadata"]["native"], "preserved");
+    assert_eq!(
+        emitted["metadata"]["locationPrecision"],
+        "scanner-pinpointed"
+    );
+}
+
+#[test]
 pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
     let mut report = sample_report();
     report.paths.ignored_paths = vec!["target".to_string(), "node_modules".to_string()];
@@ -206,6 +247,10 @@ pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
         new_count: 2,
         unchanged_count: 1,
         absent_count: 3,
+        collision_count: 0,
+        not_eligible_count: 0,
+        sensitive_counted: 0,
+        entries: 0,
         generated: false,
     });
     let baseline_summary = crate::summary::render(&report, 10, SummaryFormat::Text, 1);
@@ -268,7 +313,7 @@ pub(crate) fn report_json_keeps_deterministic_finding_order() {
 }
 
 #[test]
-pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
+pub(crate) fn summary_json_is_the_exact_findings_free_analysis_projection() {
     let findings: Vec<Finding> = (0..12)
         .map(|index| {
             test_finding(
@@ -282,8 +327,77 @@ pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
         .collect();
     let report = sample_report_with(findings, Vec::new());
 
-    let json_output = crate::summary::render(&report, 12, SummaryFormat::Json, 1);
-    let decoded: Value = serde_json::from_str(&json_output).expect("summary json");
+    let mut expected: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("analysis json");
+    let expected_object = expected.as_object_mut().expect("analysis object");
+    expected_object.insert(
+        "schemaVersion".to_string(),
+        Value::String("gruff.summary.v3".to_string()),
+    );
+    expected_object.remove("findings");
 
-    assert_eq!(decoded["topFiles"].as_array().expect("top files").len(), 12);
+    let top_one: Value =
+        serde_json::from_str(&crate::summary::render(&report, 1, SummaryFormat::Json, 1))
+            .expect("summary json");
+    let top_twelve: Value =
+        serde_json::from_str(&crate::summary::render(&report, 12, SummaryFormat::Json, 1))
+            .expect("summary json");
+
+    assert_eq!(top_one, expected);
+    assert_eq!(top_twelve, expected);
+    assert!(top_one.get("findings").is_none());
+}
+
+#[test]
+pub(crate) fn bounded_deep_scan_note_reaches_every_supported_output_surface() {
+    let diagnostic = RunDiagnostic {
+        diagnostic_type: "bounded-deep-scan".to_string(),
+        message: "path=src/large.rs; lines=20001; bytes=2000001; maxLines=20000; maxBytes=2000000; override=cli. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.".to_string(),
+        file_path: Some("src/large.rs".to_string()),
+        line: Some(1),
+        invalidates_run: Some(false),
+    };
+
+    for format in [
+        OutputFormat::Text,
+        OutputFormat::Json,
+        OutputFormat::Sarif,
+        OutputFormat::Html,
+        OutputFormat::Markdown,
+        OutputFormat::Github,
+        OutputFormat::Hotspot,
+    ] {
+        let output = render_report(
+            &sample_report_with(Vec::new(), vec![diagnostic.clone()]),
+            format,
+        );
+        assert!(output.contains("bounded-deep-scan"), "{format:?}: {output}");
+        assert!(
+            output.replace('\\', "").contains("override=cli"),
+            "{format:?}: {output}"
+        );
+    }
+
+    for format in [SummaryFormat::Text, SummaryFormat::Json] {
+        let output = crate::summary::render(
+            &sample_report_with(Vec::new(), vec![diagnostic.clone()]),
+            10,
+            format,
+            1,
+        );
+        assert!(output.contains("bounded-deep-scan"), "{format:?}: {output}");
+        assert!(output.contains("override=cli"), "{format:?}: {output}");
+    }
+
+    let hook: Value = serde_json::from_str(&crate::hook::render_hook_report(
+        sample_report_with(Vec::new(), vec![diagnostic]),
+        false,
+        false,
+    ))
+    .expect("hook report JSON");
+    assert_eq!(hook["diagnostics"][0]["type"], "bounded-deep-scan");
+    assert_eq!(hook["diagnostics"][0]["invalidatesRun"], false);
+    assert!(hook["diagnostics"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("override=cli")));
 }

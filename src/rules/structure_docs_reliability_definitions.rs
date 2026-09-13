@@ -90,6 +90,13 @@ pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
         Confidence::Low,
         None,
         "Flags private functions with no same-file call sites.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Private functions reached only through macro expansion, generated code, or symbol-name construction that same-file lexical counting cannot see.",
+                mitigation: "Prefer an explicit call or registration that leaves a source reference; otherwise add the generated or integration host path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "dead-code.unused-private-item-candidate",
@@ -191,6 +198,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags public Rust API items without attached outer `///` or `/** */` rustdoc.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Public items generated for a bridge or macro contract whose user-facing documentation lives on the generating interface rather than the emitted declaration.",
+                mitigation: "Attach a concise outer rustdoc comment to the emitted item when possible; otherwise exclude only the generated host path with a documented reason.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.missing-readme",
@@ -221,6 +235,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags comments whose payload looks like a disabled Rust statement or item.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Pseudocode or explanatory prose that begins with a Rust keyword and ends with statement-like punctuation.",
+                mitigation: "Rewrite the comment as intent-focused prose instead of code-shaped text, or exclude the exact reviewed path when executable-looking notation is required.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.weak-safety-rationale",
@@ -231,6 +252,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags unsafe blocks whose nearby SAFETY: rationale is too short or vague.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A short project-conventional SAFETY note relies on an invariant documented on a nearby type or constructor that the local word-count heuristic cannot connect.",
+                mitigation: "Restate the load-bearing invariant beside the unsafe block so the rationale stands alone for review.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.missing-errors-section",
@@ -271,6 +299,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags public functions whose rustdoc lacks per-parameter documentation.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Rustdoc explains several parameters collectively with domain terms but does not repeat each identifier as a complete word.",
+                mitigation: "Mention each parameter name in prose or an `# Arguments` section while keeping the explanation focused on meaning and constraints.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.missing-return-doc",
@@ -281,6 +316,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags public functions returning a value whose rustdoc lacks a Returns description.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The summary implies the returned value through domain language without using a recognised Returns heading or return-value verb.",
+                mitigation: "State what the function returns in prose or an explicit `# Returns` section, including meaningful empty or boundary cases.",
+            },
+        ],
+        related: &[],
     ),
 ];
 
@@ -294,6 +336,13 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags narrow blocking call patterns inside async functions.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A blocking API appears lexically inside an async function but is executed within a dedicated `spawn_blocking` closure or equivalent isolation wrapper.",
+                mitigation: "Extract the blocking operation into a synchronous helper invoked by the isolation wrapper so the execution boundary is explicit to both readers and the rule.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "concurrency.lock-across-await",
@@ -321,6 +370,13 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags unbounded channel constructors in production code.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A deliberately unbounded channel has a small, externally bounded producer set or is required by a framework API the syntax-only rule cannot model.",
+                mitigation: "Prefer a bounded channel; otherwise document the producer, lifetime, and backpressure argument and exclude only the reviewed host path.",
+            },
+        ],
+        related: &[],
     ),
 ];
 

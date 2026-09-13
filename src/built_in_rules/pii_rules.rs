@@ -49,7 +49,6 @@ fn push_pii_email_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &m
             unit,
             byte_line_from_starts(starts, capture.start()),
             "email",
-            address,
         ));
     }
 }
@@ -65,7 +64,6 @@ fn push_pii_ssn_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut
             unit,
             byte_line_from_starts(starts, capture.start()),
             "ssn",
-            value,
         ));
     }
 }
@@ -81,7 +79,6 @@ fn push_pii_phone_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &m
             unit,
             byte_line_from_starts(starts, capture.start()),
             "phone",
-            value,
         ));
     }
 }
@@ -111,12 +108,16 @@ fn email_is_obvious_placeholder(address: &str) -> bool {
         || domain.ends_with(".example")
 }
 
-fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str, value: &str) -> Finding {
+fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str) -> Finding {
+    // The detector-owned category is the only classification a report may carry: the matched
+    // characters and their count are forbidden by FAMILY-CONTRACT section 5. Masking the message
+    // collapses two occurrences of one kind in one file onto one stableIdentity, which the hook
+    // already resolves by counting identical identities.
+    let display_marker = SensitiveDisplayMarker::ProtectedIdentifier(kind).render();
     Finding::new(FindingDescriptor {
         rule_id: "sensitive-data.pii-test-fixture".to_string(),
         message: format!(
-            "Realistic {kind} value `{}` found in a fixture/sample file; replace with synthetic placeholder.",
-            redact(value)
+            "Realistic {kind} value `{display_marker}` found in a fixture/sample file; replace with synthetic placeholder."
         ),
         file_path: unit.file.display_path.clone(),
         line: Some(line),
@@ -128,7 +129,7 @@ fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str, value: &str) -> F
             "Use placeholder domains (`@example.com`), 555-prefix phone numbers, or 000-prefix SSNs in committed sample data."
                 .to_string(),
         ),
-        metadata: json!({ "kind": kind }),
+        metadata: json!({ "kind": kind, "preview": display_marker }),
     })
 }
 

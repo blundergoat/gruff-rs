@@ -14,19 +14,25 @@ pub(crate) use manifest::read_manifest_summary;
 pub(crate) fn read_and_parse_sources(
     files: &[SourceFile],
 ) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
-    read_and_parse_sources_with_options(files, true)
+    read_and_parse_sources_with_options(files, true, &DeepScanBudget::default())
 }
 
 pub(crate) fn read_and_parse_sources_with_options(
     files: &[SourceFile],
     parse_rust: bool,
+    deep_scan_budget: &DeepScanBudget,
 ) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
     let mut parsed_sources = Vec::with_capacity(files.len());
     let mut diagnostics = Vec::new();
 
     for source_file in files {
         match read_source_text(source_file) {
-            Ok(source) => parsed_sources.push(parse_source_file(source_file, source, parse_rust)),
+            Ok(source) => parsed_sources.push(parse_source_file(
+                source_file,
+                source,
+                parse_rust,
+                deep_scan_budget,
+            )),
             Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
@@ -45,6 +51,7 @@ fn read_source_text(source_file: &SourceFile) -> Result<String, RunDiagnostic> {
             message: "Skipped supported text file because it is not valid UTF-8.".to_string(),
             file_path: Some(source_file.display_path.clone()),
             line: Some(1),
+            invalidates_run: None,
         }),
         Err(_) => Err(read_error_diagnostic(
             source_file,
@@ -65,6 +72,7 @@ fn read_error_diagnostic(source_file: &SourceFile, message: String) -> RunDiagno
         message,
         file_path: Some(source_file.display_path.clone()),
         line: Some(1),
+        invalidates_run: None,
     }
 }
 
@@ -72,41 +80,102 @@ pub(crate) fn parse_source_file(
     file: &SourceFile,
     source: String,
     parse_rust: bool,
+    deep_scan_budget: &DeepScanBudget,
 ) -> ParsedSource {
     let file_owned = file.clone();
-    if !parse_rust || !file_owned.is_rust {
-        return ParsedSource {
-            file: file_owned,
-            source,
-            rust_ast: None,
-            diagnostics: Vec::new(),
-            line_starts: OnceLock::new(),
-        };
+    if !file_owned.is_rust {
+        return parsed_source(file_owned, source, None, false, Vec::new());
     }
 
-    match syn::parse_file(&source) {
-        Ok(ast) => ParsedSource {
-            file: file_owned,
+    let line_count = physical_line_count(&source);
+    let byte_count = source.len();
+    if deep_scan_budget.enabled
+        && (line_count > deep_scan_budget.max_lines || byte_count > deep_scan_budget.max_bytes)
+    {
+        let display_path = file_owned.display_path.clone();
+        return parsed_source(
+            file_owned,
             source,
-            rust_ast: Some(ast),
-            diagnostics: Vec::new(),
-            line_starts: OnceLock::new(),
-        },
+            None,
+            true,
+            vec![bounded_deep_scan_diagnostic(
+                display_path,
+                line_count,
+                byte_count,
+                deep_scan_budget,
+            )],
+        );
+    }
+
+    if !parse_rust {
+        return parsed_source(file_owned, source, None, false, Vec::new());
+    }
+
+    parse_rust_source(file_owned, source)
+}
+
+fn parse_rust_source(file: SourceFile, source: String) -> ParsedSource {
+    match syn::parse_file(&source) {
+        Ok(ast) => parsed_source(file, source, Some(ast), false, Vec::new()),
         Err(error) => {
-            let display_path = file_owned.display_path.clone();
-            ParsedSource {
-                file: file_owned,
+            let display_path = file.display_path.clone();
+            parsed_source(
+                file,
                 source,
-                rust_ast: None,
-                diagnostics: vec![RunDiagnostic {
+                None,
+                false,
+                vec![RunDiagnostic {
                     diagnostic_type: "parse-error".to_string(),
                     message: format!("Rust parser error: {error}"),
                     file_path: Some(display_path),
                     line: Some(line_from_span(error.span().start())),
+                    invalidates_run: None,
                 }],
-                line_starts: OnceLock::new(),
-            }
+            )
         }
+    }
+}
+
+fn parsed_source(
+    file: SourceFile,
+    source: String,
+    rust_ast: Option<syn::File>,
+    bounded_deep_scan: bool,
+    diagnostics: Vec<RunDiagnostic>,
+) -> ParsedSource {
+    ParsedSource {
+        file,
+        source,
+        rust_ast,
+        bounded_deep_scan,
+        diagnostics,
+        line_starts: OnceLock::new(),
+    }
+}
+
+fn physical_line_count(source: &str) -> usize {
+    if source.is_empty() {
+        0
+    } else {
+        source.bytes().filter(|byte| *byte == b'\n').count() + 1
+    }
+}
+
+fn bounded_deep_scan_diagnostic(
+    display_path: String,
+    line_count: usize,
+    byte_count: usize,
+    budget: &DeepScanBudget,
+) -> RunDiagnostic {
+    RunDiagnostic {
+        diagnostic_type: "bounded-deep-scan".to_string(),
+        message: format!(
+            "path={display_path}; lines={line_count}; bytes={byte_count}; maxLines={}; maxBytes={}; override={}. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.",
+            budget.max_lines, budget.max_bytes, budget.override_state
+        ),
+        file_path: Some(display_path),
+        line: Some(1),
+        invalidates_run: Some(false),
     }
 }
 

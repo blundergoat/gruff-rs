@@ -1,6 +1,6 @@
 ---
 category: architecture
-last_reviewed: 2026-05-27
+last_reviewed: 2026-08-22
 ---
 
 ## Pattern: Per-Enum Display Helpers Live Next To The Enum, Not Per-Renderer
@@ -56,6 +56,18 @@ When NOT to apply: pure analysis modules that have no CLI-edge concerns (e.g. `s
 The pattern composes with adding new CLI commands: a new gating command (a) adds itself to the `GATING_COMMANDS` accept-list in `src/config_loader/mod.rs`, (b) consumes the edge helper in `main.rs`, and (c) calls `resolve_fail_on` with its own command name + binary default.
 
 Related: `.goat-flow/decisions/ADR-013-per-command-minimum-severity.md` is the decision record for the M08a/M08b split that introduced this pattern.
+
+## Pattern: Resolve project context from explicit scan targets
+
+**Created:** 2026-08-22
+
+**Evidence:** ACTUAL_MEASURED
+
+**Context:** A caller working directory is needed to resolve relative operands, but its manifests and source files are not evidence about the target project. Treating caller contents as project context changed findings, composite scores, and diagnostics for the same explicit Rust target.
+
+**Approach:** `src/command_setup.rs` (search: `project_root_from_targets`) first absolutizes every explicit operand against the caller directory, then derives the common target ancestor and searches only that ancestry for `Cargo.toml` or `.gruff-rs.yaml`. Rebase the operands against the chosen project root before loading config. Do not remove `partial-context-rule-suppressed`: that diagnostic remains correct when the explicit target itself supplies incomplete project context.
+
+**Verification:** `src/tests/scenarios/stable_identity.rs` (search: `stray_cwd`) scans one target from an empty caller directory and from a caller containing an unrelated manifest and Rust file. It requires identical project root, paths, findings, score, and diagnostics in both runs, and separately requires the genuine `partial-context-rule-suppressed` diagnostic.
 
 ## Pattern: Inline Submodule To Keep `architecture.large-module` Off Cohesive Helper Groups
 

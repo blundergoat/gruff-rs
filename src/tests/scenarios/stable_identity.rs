@@ -4,9 +4,9 @@
 
 use super::*;
 
-/// Outcome B preserves fixture-PII messages, fingerprints, and stable identities byte-for-byte.
+/// Fixture-PII messages carry only the ratified zero-payload marker, and their identities stay deterministic.
 #[test]
-pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
+pub(crate) fn fixture_pii_message_and_identity_carry_no_matched_value() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
@@ -30,21 +30,21 @@ pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
     let expected = [
         (
             "email",
-            "Realistic email value `alic....com (redacted, 21 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "Realistic email value `[redacted:email]` found in a fixture/sample file; replace with synthetic placeholder.",
             "70348abd6bb12274",
-            "9144b3113699deeb",
+            "1e0d8c9dc9bffd24",
         ),
         (
             "ssn",
-            "Realistic ssn value `123-...6789 (redacted, 11 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "Realistic ssn value `[redacted:ssn]` found in a fixture/sample file; replace with synthetic placeholder.",
             "55bf45dde170be2d",
-            "f4a38a9c11617562",
+            "ed8f1d6d8d8b5d61",
         ),
         (
             "phone",
-            "Realistic phone value `212-...5309 (redacted, 12 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "Realistic phone value `[redacted:phone]` found in a fixture/sample file; replace with synthetic placeholder.",
             "919d252a926d85b6",
-            "3a7eeefbb3712de5",
+            "6476a7454a38f17c",
         ),
     ];
 
@@ -60,6 +60,24 @@ pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
         assert_eq!(finding.message, message, "{kind}");
         assert_eq!(finding.fingerprint, fingerprint, "{kind}");
         assert_eq!(finding.stable_identity, stable_identity, "{kind}");
+        assert!(
+            !finding.message.contains("(redacted,"),
+            "FAMILY-CONTRACT section 5 forbids a length-bearing preview in {kind}"
+        );
+    }
+    let serialized = serde_json::to_string(&report.findings).expect("findings serialize");
+    for fragment in [
+        "alice.smith",
+        "gmail.com",
+        "123-45",
+        "6789",
+        "212-867",
+        "5309",
+    ] {
+        assert!(
+            !serialized.contains(fragment),
+            "fixture-PII output leaked the matched fragment {fragment}"
+        );
     }
 }
 
@@ -335,9 +353,9 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     ];
 
     let baseline_config = Config::default();
-    let baseline_score = score_report(&findings, &baseline_config);
+    let baseline_score = score_report(&findings, &baseline_config, 10);
     assert!(
-        baseline_score.composite < 100.0,
+        baseline_score.composite < Some(100.0),
         "advisory findings should depress the score under default config",
     );
 
@@ -349,9 +367,10 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
             ..RuleSetting::default()
         },
     );
-    let excluded_score = score_report(&findings, &exclusion_config);
+    let excluded_score = score_report(&findings, &exclusion_config, 10);
     assert_eq!(
-        excluded_score.composite, 100.0,
+        excluded_score.composite,
+        Some(100.0),
         "exclusion must zero out the rule's penalty contribution",
     );
 
@@ -377,8 +396,8 @@ pub(crate) fn non_excluded_rule_scores_normally() {
         Severity::Advisory,
         Pillar::Naming,
     )];
-    let baseline = score_report(&findings, &Config::default());
-    assert!(baseline.composite < 100.0);
+    let baseline = score_report(&findings, &Config::default(), 10);
+    assert!(baseline.composite < Some(100.0));
 
     let mut other_excluded = Config::default();
     other_excluded.rule_settings.insert(
@@ -388,7 +407,7 @@ pub(crate) fn non_excluded_rule_scores_normally() {
             ..RuleSetting::default()
         },
     );
-    let still_penalised = score_report(&findings, &other_excluded);
+    let still_penalised = score_report(&findings, &other_excluded, 10);
     assert_eq!(
         still_penalised.composite, baseline.composite,
         "excluding one rule does not affect penalty contributions from others",
@@ -542,4 +561,104 @@ custom_rules:
             && error.contains("only supports `enabled`"),
         "error names the rule + the loader restriction: {error}",
     );
+}
+
+#[test]
+pub(crate) fn explicit_scan_target_makes_project_context_caller_cwd_invariant() {
+    let _guard = analysis_lock();
+    let sandbox = tempfile::tempdir().expect("sandbox");
+    let project = sandbox.path().join("project");
+    let empty_cwd = sandbox.path().join("empty-cwd");
+    let stray_cwd = sandbox.path().join("stray-cwd");
+    fs::create_dir_all(project.join("src")).expect("project source directory");
+    fs::create_dir_all(&empty_cwd).expect("empty caller directory");
+    fs::create_dir_all(&stray_cwd).expect("stray caller directory");
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"cwd-proof\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("project manifest");
+    fs::write(project.join("README.md"), "# CWD proof\n").expect("project readme");
+    fs::write(
+        project.join("src/lib.rs"),
+        "mod sibling;\nfn private_candidate() {}\n",
+    )
+    .expect("selected source");
+    fs::write(project.join("src/sibling.rs"), "pub fn used() {}\n").expect("unselected sibling");
+    fs::write(
+        stray_cwd.join("Cargo.toml"),
+        "[package]\nname = \"stray\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("stray manifest");
+    fs::write(stray_cwd.join("stray.rs"), "fn caller_only() {}\n").expect("stray Rust source");
+
+    let original_cwd = std::env::current_dir().expect("original cwd");
+    let _restore = RestoreCurrentDir(original_cwd);
+    let target = project
+        .join("src/lib.rs")
+        .canonicalize()
+        .expect("selected source canonical path");
+    let scan = |caller: &Path| {
+        std::env::set_current_dir(caller).expect("set caller cwd");
+        let cli = Cli::try_parse_from([
+            "gruff-rs",
+            "analyse",
+            "--no-config",
+            "--no-baseline",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            target.to_str().expect("UTF-8 fixture path"),
+        ])
+        .expect("CLI target parses");
+        let Commands::Analyse(args) = cli.command else {
+            panic!("expected analyse command");
+        };
+        let cli_fail_on = args.fail_on;
+        let deep_scan_budget = args.deep_scan_budget.clone();
+        let base = options_from_analyse(*args, FailThreshold::Advisory);
+        let (root, options, config) = resolve_command_setup(
+            base,
+            cli_fail_on,
+            "analyse",
+            FailThreshold::Advisory,
+            deep_scan_budget.as_ref(),
+        )
+        .expect("command setup resolves");
+        let report = run_analysis_in_project(&root, &options, &config).expect("analysis succeeds");
+        (root, options, report)
+    };
+
+    let (empty_root, empty_options, empty_report) = scan(&empty_cwd);
+    let (stray_root, stray_options, stray_report) = scan(&stray_cwd);
+    let expected_root = project.canonicalize().expect("project canonical root");
+
+    assert_eq!(empty_root, expected_root);
+    assert_eq!(stray_root, expected_root);
+    assert_eq!(empty_options.paths, vec![PathBuf::from("src/lib.rs")]);
+    assert_eq!(stray_options.paths, empty_options.paths);
+    assert_eq!(empty_report.run.project_root, stray_report.run.project_root);
+    assert_eq!(
+        serde_json::to_value(&empty_report.paths).expect("paths serialize"),
+        serde_json::to_value(&stray_report.paths).expect("paths serialize")
+    );
+    assert_eq!(empty_report.diagnostics, stray_report.diagnostics);
+    assert_eq!(
+        serde_json::to_value(&empty_report.findings).expect("findings serialize"),
+        serde_json::to_value(&stray_report.findings).expect("findings serialize")
+    );
+    assert_eq!(
+        serde_json::to_value(&empty_report.score).expect("score serializes"),
+        serde_json::to_value(&stray_report.score).expect("score serializes")
+    );
+    assert!(diagnostic_types(&empty_report).contains(&"partial-context-rule-suppressed"));
+}
+
+struct RestoreCurrentDir(PathBuf);
+
+impl Drop for RestoreCurrentDir {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
 }

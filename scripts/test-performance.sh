@@ -11,7 +11,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 readonly PERF_DIR="${REPO_ROOT}/target/perf"
-readonly DEFAULT_BASELINE="${PERF_DIR}/baseline.json"
+PLATFORM_SLUG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+readonly PLATFORM_SLUG
+readonly DEFAULT_BASELINE="${REPO_ROOT}/scripts/performance-baselines/${PLATFORM_SLUG}.json"
 readonly LAST_RUN="${PERF_DIR}/last-run.json"
 readonly SCRATCH_BASELINE="${PERF_DIR}/scratch-baseline.json"
 readonly SCRATCH_HISTORY="${PERF_DIR}/scratch-history.json"
@@ -61,6 +63,54 @@ require_tool() {
     command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"
 }
 
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+        return
+    fi
+    die "missing required tool: sha256sum or shasum"
+}
+
+sha256_stream() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+        return
+    fi
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+        return
+    fi
+    die "missing required tool: sha256sum or shasum"
+}
+
+runtime_source_identity() {
+    local manifest digest count
+    manifest="$({
+        find "${REPO_ROOT}/src" \( -type f -o -type l \) -print0
+        printf '%s\0' "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/Cargo.lock"
+    } | LC_ALL=C sort -z | while IFS= read -r -d '' source_path; do
+        local relative bytes_digest
+        relative="${source_path#"${REPO_ROOT}/"}"
+        if [[ -L "${source_path}" ]]; then
+            bytes_digest="$(readlink "${source_path}" | tr -d '\n' | sha256_stream)"
+        else
+            bytes_digest="$(sha256_file "${source_path}")"
+        fi
+        jq -nc --arg path "${relative}" --arg sha256 "${bytes_digest}" '{path: $path, sha256: $sha256}'
+    done | jq -s '.')"
+    digest="$(printf '%s\n' "${manifest}" | sha256_stream)"
+    count="$(jq 'length' <<< "${manifest}")"
+    jq -nc \
+        --argjson includedPaths '["src", "Cargo.toml", "Cargo.lock"]' \
+        --argjson fileCount "${count}" \
+        --arg digest "${digest}" \
+        '{includedPaths: $includedPaths, fileCount: $fileCount, digest: $digest}'
+}
+
 usage() {
     cat <<'USAGE'
 scripts/test-performance.sh - gruff-rs performance harness
@@ -74,7 +124,7 @@ Modes:
                         Refuses to overwrite on a dirty git tree unless --force is set.
   --check               Run all scenarios, compare against the baseline, exit non-zero
                         if any scenario exceeds the time or RSS budget.
-  --baseline PATH       Override baseline path (default: target/perf/baseline.json).
+  --baseline PATH       Override baseline path (default: scripts/performance-baselines/<host>.json).
   --force               Allow --update-baseline on a dirty tree.
   --help                Print this help and exit.
 
@@ -175,13 +225,16 @@ fi
 
 log "Building release binary..."
 build_start="$(now_seconds)"
-(cd "${REPO_ROOT}" && cargo build --release --quiet) || die "cargo build --release failed"
+(cd "${REPO_ROOT}" && cargo build --release --locked --quiet) || die "cargo build --release --locked failed"
 build_end="$(now_seconds)"
 BUILD_SECONDS="$(awk -v s="${build_start}" -v e="${build_end}" 'BEGIN { printf "%.3f", e - s }')"
 [[ -x "${BIN}" ]] || die "binary not found at ${BIN}"
 
 VERSION="$("${BIN}" --version 2>/dev/null | awk '{print $2}')"
 [[ -n "${VERSION}" ]] || VERSION="unknown"
+HARNESS_SHA256="$(sha256_file "${REPO_ROOT}/scripts/test-performance.sh")"
+ARTIFACT_SHA256="$(sha256_file "${BIN}")"
+RUNTIME_SOURCE_JSON="$(runtime_source_identity)"
 
 # ---------------------------------------------------------------------------
 # Scenarios
@@ -414,6 +467,10 @@ RESULT_JSON="$(jq -n \
     --arg uname "${UNAME_STR}" \
     --arg cpu "${CPU_MODEL}" \
     --arg host_tag "${HOST_TAG}" \
+    --arg platform "${PLATFORM_SLUG}" \
+    --arg harness_sha256 "${HARNESS_SHA256}" \
+    --arg artifact_sha256 "${ARTIFACT_SHA256}" \
+    --argjson runtime_source "${RUNTIME_SOURCE_JSON}" \
     --argjson build_seconds "${BUILD_SECONDS}" \
     --argjson iters "${ITERS}" \
     --argjson scenarios "${SCENARIOS_JSON}" \
@@ -421,8 +478,13 @@ RESULT_JSON="$(jq -n \
     '{
         tool: { name: "gruff-rs", version: $version },
         git: { commit: $commit, dirty: $dirty },
-        machine: { uname: $uname, cpu: $cpu, host_tag: $host_tag },
-        build: { profile: "release", build_seconds: $build_seconds },
+        machine: { platform: $platform, uname: $uname, cpu: $cpu, host_tag: $host_tag },
+        source: {
+            runtimeSource: $runtime_source,
+            artifact: { kind: "fresh-binary", sha256: $artifact_sha256 },
+            harnessSha256: $harness_sha256
+        },
+        build: { profile: "release", locked: true, build_seconds: $build_seconds },
         iters: $iters,
         discarded_warmup: 1,
         generated_at: $generated_at,
@@ -468,6 +530,7 @@ if [[ "${MODE}" == "update" ]]; then
         log "       commit/stash your changes, or re-run with --force."
         exit "${EXIT_BASELINE_PROBLEM}"
     fi
+    mkdir -p "$(dirname "${BASELINE_PATH}")"
     cp "${LAST_RUN}" "${BASELINE_PATH}"
     log "Baseline updated: ${BASELINE_PATH}"
 fi

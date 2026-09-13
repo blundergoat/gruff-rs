@@ -1,16 +1,15 @@
 use crate::{
     grade, pillar_label,
     rules::{builtin_registry, RuleRegistry},
+    scoring::score_text,
     scoring::top_file_scores_with_limit,
     AnalysisReport, Confidence, Finding, Pillar, PillarScore, RuleDelta, Severity, SummaryFormat,
     SCORE_PILLARS,
 };
 use serde::Serialize;
-use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-const SCHEMA_VERSION: &str = "gruff.summary.v2";
 const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
 /// Render a compact summary view from a full analysis report.
@@ -20,10 +19,12 @@ pub(crate) fn render(
     format: SummaryFormat,
     duration_ms: u128,
 ) -> String {
-    let digest = SummaryDigest::build(report, top);
     match format {
-        SummaryFormat::Text => render_text(report, &digest, duration_ms),
-        SummaryFormat::Json => render_json(report, &digest),
+        SummaryFormat::Text => {
+            let digest = SummaryDigest::build(report, top);
+            render_text(report, &digest, duration_ms)
+        }
+        SummaryFormat::Json => crate::machine_contract::render_summary(report),
     }
 }
 
@@ -38,8 +39,8 @@ struct SummaryDigest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PillarDigest {
     pub(crate) pillar: Pillar,
-    pub(crate) grade: String,
-    pub(crate) score: f64,
+    pub(crate) grade: Option<String>,
+    pub(crate) score: Option<f64>,
     pub(crate) applicable: bool,
     pub(crate) findings: usize,
     pub(crate) advisory: usize,
@@ -66,8 +67,8 @@ struct RuleDigest {
 struct FileDigest {
     file_path: String,
     findings: usize,
-    score: f64,
-    grade: String,
+    score: Option<f64>,
+    grade: Option<String>,
 }
 
 impl SummaryDigest {
@@ -121,9 +122,9 @@ fn pillar_digest_row(
         .unwrap_or((0, 0, 0));
     PillarDigest {
         pillar: pillar_score.pillar,
-        grade: grade(pillar_score.score),
+        grade: pillar_score.grade.clone(),
         score: pillar_score.score,
-        applicable: SCORE_PILLARS.contains(&pillar_score.pillar),
+        applicable: pillar_score.applicable && SCORE_PILLARS.contains(&pillar_score.pillar),
         findings: pillar_score.findings,
         advisory,
         warning,
@@ -188,13 +189,13 @@ fn first_sentence(description: &'static str) -> &'static str {
 }
 
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
-    top_file_scores_with_limit(&report.findings, top)
+    top_file_scores_with_limit(&report.findings, top, report.score.evaluated_files)
         .iter()
         .map(|file| FileDigest {
             file_path: file.file_path.to_string(),
             findings: file.findings,
             score: file.score,
-            grade: grade(file.score),
+            grade: file.score.map(grade),
         })
         .collect()
 }
@@ -204,13 +205,33 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     render_scan_card(&mut out, report, duration_ms, |out| {
         rule_delta_blocks::render_text(out, digest.per_rule_deltas.as_deref());
     });
+    render_diagnostics_text(&mut out, report);
     out.push('\n');
     render_pillars_text(&mut out, &digest.pillars);
     out.push('\n');
     render_rules_text(&mut out, &digest.top_rules);
     out.push('\n');
     render_files_text(&mut out, &digest.top_files);
+    // `summary` applies sensitive exclusions, so it publishes the same audit line
+    // `analyse` prints, from the same renderer (FAMILY-CONTRACT.md section 13a).
+    // It is a port-local extension line below the canonical block, which section 1
+    // permits; machine JSON is the exact findings-free analysis projection.
+    crate::render_text_suppressions(&mut out, report);
     out.trim_end_matches('\n').to_string()
+}
+
+fn render_diagnostics_text(out: &mut String, report: &AnalysisReport) {
+    for diagnostic in &report.diagnostics {
+        let _ = write!(
+            out,
+            "Diagnostic {}: {}",
+            diagnostic.diagnostic_type, diagnostic.message
+        );
+        if let Some(path) = diagnostic.file_path.as_deref() {
+            let _ = write!(out, " ({path})");
+        }
+        out.push('\n');
+    }
 }
 
 // ADR-014 per-rule delta blocks in the compact summary view. Surfaced when
@@ -269,10 +290,11 @@ fn render_scan_card(
     duration_ms: u128,
     mid: impl FnOnce(&mut String),
 ) {
-    // Cross-port canonical masthead: first line is exactly
-    // `gruff-rs <version> summary`. The scan-card detail (project root, file
-    // count, duration) drops onto following lines.
+    // FAMILY-CONTRACT section 1: masthead, then the two-line composite block, then everything this
+    // port adds. `summary` and `analyse` lead with the same three lines for the same reason - a
+    // reader moving between the two views should not have to hunt for the grade in a different place.
     let _ = writeln!(out, "{} {} summary", report.tool.name, report.tool.version);
+    crate::render_composite_block(out, report);
     let _ = writeln!(
         out,
         "Path: {}",
@@ -286,9 +308,6 @@ fn render_scan_card(
     );
     let _ = writeln!(out, "Duration: {}", format_duration(duration_ms));
     mid(out);
-    // Canonical composite block, shared verbatim with `analyse` text so the two
-    // surfaces no longer diverge on separator/order/decimals.
-    crate::render_composite_block(out, report);
     render_scan_annotations(out, report);
     render_scan_guidance(out, report);
 }
@@ -406,11 +425,11 @@ fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {
     for pillar in pillars {
         let _ = writeln!(
             out,
-            "  {name:<name_width$} {grade} {score:>6.2} findings={findings:<count_width$}   advisory={advisory:<count_width$}   warning={warning:<count_width$}   error={error}",
+            "  {name:<name_width$} {grade} {score:>6} findings={findings:<count_width$}   advisory={advisory:<count_width$}   warning={warning:<count_width$}   error={error}",
             name = pillar_label(pillar.pillar),
             name_width = name_width,
-            grade = pillar.grade,
-            score = pillar.score,
+            grade = pillar.grade.as_deref().unwrap_or("n/a"),
+            score = score_text(pillar.score),
             findings = pillar.findings,
             count_width = count_width,
             advisory = pillar.advisory,
@@ -473,31 +492,12 @@ fn render_files_text(out: &mut String, files: &[FileDigest]) {
         for file in files {
             let _ = writeln!(
                 out,
-                "  {:<48}  findings={:<4}  score={:>6.2}  grade={}",
-                file.file_path, file.findings, file.score, file.grade,
+                "  {:<48}  findings={:<4}  score={:>6}  grade={}",
+                file.file_path,
+                file.findings,
+                score_text(file.score),
+                file.grade.as_deref().unwrap_or("n/a"),
             );
         }
     }
-}
-
-fn render_json(report: &AnalysisReport, digest: &SummaryDigest) -> String {
-    let mut value = json!({
-        "schemaVersion": SCHEMA_VERSION,
-        "tool": report.tool,
-        "run": report.run,
-        "summary": report.summary,
-        "pillars": digest.pillars,
-        "topRules": digest.top_rules,
-        "topFiles": digest.top_files,
-    });
-    if let Some(deltas) = digest.per_rule_deltas.as_ref() {
-        value
-            .as_object_mut()
-            .expect("summary root is an object")
-            .insert(
-                "perRuleDeltas".to_string(),
-                serde_json::to_value(deltas).expect("rule deltas serialize"),
-            );
-    }
-    serde_json::to_string_pretty(&value).expect("summary serializes")
 }

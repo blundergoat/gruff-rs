@@ -4,7 +4,7 @@
 # Rule ids and metadata can be discovered with `gruff-rs rules`.
 # Per-rule thresholds and severities can be tuned in place; see the
 # README for the full configuration shape (paths, allowlists, rules,
-# custom_rules, exclude).
+# custom_rules, exclude, sensitiveExclusions).
 #
 # For an existing project, run `gruff-rs analyse --generate-baseline`
 # to accept today's findings as the starting point.
@@ -13,8 +13,13 @@ schemaVersion: gruff-rs.config.v1
 
 # Pinned to match the current binary default (advisory). The explicit pin
 # freezes this project's CI behaviour against any future default flip.
-minimumSeverity:
+failOn:
   analyse: advisory
+
+deepScanBudget:
+  enabled: true
+  maxLines: 20000
+  maxBytes: 2000000
 
 paths:
   # Discovery-time do-not-read patterns. Use this for generated
@@ -57,7 +62,107 @@ allowlists:
     - tx
     - ui
     - url
-  secretPreviews: []
+
+# sensitiveExclusions suppresses reviewed sensitive-data findings, and only
+# those. Each entry names one exact sensitive-data rule id, one project-
+# relative path, an optional symbol, and a required reason; every entry
+# reports its own suppressed count in `suppressions[]` and on text output.
+# Write entries by hand: gruff-rs never converts a reported marker or preview
+# into one, and no message- or value-matching key is accepted here.
+# sensitiveExclusions:
+#   - rule: sensitive-data.aws-access-key
+#     path: tests/fixtures/aws-sample.env
+#     reason: Synthetic key used by the loader fixture; not a live credential.
+
+# The reviewed entries below belong to this repository's own dogfood scan only.
+# `gruff-rs init` does not generate them, so no downstream project inherits them.
+# Every scope names one sensitive-data rule and one Rust test file whose literal
+# is synthetic calibration, renderer, or scenario material that the test needs in
+# source; none is a live credential or real patient data. The detector stays
+# unchanged and these paths stay out of `paths.ignore`, so a new secret in any of
+# these files still reports under every other sensitive-data rule.
+sensitiveExclusions:
+  - rule: sensitive-data.api-key-pattern
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.api-key-pattern calibration pair in `cases()`; a synthetic literal written into a temporary project to prove the rule fires, not a live credential."
+  - rule: sensitive-data.aws-access-key
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.aws-access-key calibration pair in `cases()`; a synthetic literal written into a temporary project to prove the rule fires, not a live credential."
+  - rule: sensitive-data.database-url-password
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.database-url-password calibration pair in `cases()`; a synthetic connection string that proves the rule fires, not a live credential."
+  - rule: sensitive-data.gcp-service-account-key
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.gcp-service-account-key calibration pair in `cases()`; a synthetic service-account body that proves the rule fires, not a live credential."
+  - rule: sensitive-data.hardcoded-env-value
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.hardcoded-env-value calibration pair in `cases()`; a synthetic KEY=value literal that proves the rule fires, not a live credential."
+  - rule: sensitive-data.jwt-token
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.jwt-token calibration pair in `cases()`; a synthetic token literal that proves the rule fires, not a live credential."
+  - rule: sensitive-data.phi-pattern
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.phi-pattern calibration pair in `cases()`; a synthetic health identifier that proves the rule fires, not real patient data."
+  - rule: sensitive-data.url-embedded-credentials
+    path: src/tests/calibration/security_size_test_waste_cases.rs
+    reason: "Positive half of the sensitive-data.url-embedded-credentials calibration pair in `cases()`; a synthetic URL carrying placeholder credentials, not a live credential."
+  - rule: sensitive-data.aws-access-key
+    path: src/tests/config_and_selectors/sensitive_exclusions.rs
+    reason: "Synthetic AWS sentinel written by `write_redaction_corpus`, kept byte-identical to the family redaction corpus so this suite can exercise the sensitiveExclusions contract; not a live credential."
+  - rule: sensitive-data.api-key-pattern
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "`FIXTURE_API_KEY` feeds `identity_independent_sensitive_report`; the renderer redaction contract needs the literal in source and it is not a live credential."
+  - rule: sensitive-data.aws-access-key
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "`FIXTURE_AWS_KEY` feeds `identity_independent_sensitive_report`; the renderer redaction contract needs the literal in source and it is not a live credential."
+  - rule: sensitive-data.database-url-password
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "`FIXTURE_DATABASE_URL` feeds `identity_independent_sensitive_report`; a synthetic connection string, not a live credential."
+  - rule: sensitive-data.gcp-service-account-key
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "Synthetic service-account bodies in `identity_independent_sensitive_report`, `sensitive_data_renderers_do_not_leak_new_secret_values`, and `reordered_service_account_key_is_still_reported`; none is a live credential."
+  - rule: sensitive-data.hardcoded-env-value
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "`FIXTURE_ENV_SECRET` rendered as a KEY=value literal in `identity_independent_sensitive_report`; a synthetic placeholder, not a live credential."
+  - rule: sensitive-data.high-entropy-string
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "Synthetic entropy sentinels `FIXTURE_PRIVATE_KEY_BODY` and `FIXTURE_ENTROPY_SECRET`, plus the literal the leak assertion compares against; renderer tests need them in source and none is a live credential."
+  - rule: sensitive-data.jwt-token
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "`FIXTURE_JWT` feeds `identity_independent_sensitive_report`; a synthetic token literal, not a live credential."
+  - rule: sensitive-data.phi-pattern
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "Synthetic MRN literals in `identity_independent_sensitive_report` and `sensitive_data_renderers_do_not_leak_new_secret_values`; placeholder identifiers, not real patient data."
+  - rule: sensitive-data.private-key
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "Synthetic PEM marker in `reordered_service_account_key_is_still_reported`, which proves an unmatched service-account key is still reported; not a live key."
+  - rule: sensitive-data.url-embedded-credentials
+    path: src/tests/renderers/sensitive_data.rs
+    reason: "`FIXTURE_HTTP_URL` feeds `identity_independent_sensitive_report`; a synthetic URL carrying placeholder credentials, not a live credential."
+  - rule: sensitive-data.api-key-pattern
+    path: src/tests/rule_behaviours/false_positive_guards.rs
+    reason: "Synthetic token-shaped literal in `high_entropy_string_keeps_real_secret_shapes`; the guard needs one real secret shape to prove the integrity-hash skip is scoped, and the value is not a live credential."
+  - rule: sensitive-data.high-entropy-string
+    path: src/tests/rule_behaviours/false_positive_guards.rs
+    reason: "Synthetic secret-shaped literals in the `high_entropy_string_*` guards, which prove the rule still fires beside integrity hashes, base64 alphabets, and model identifiers; none is a live credential."
+  - rule: sensitive-data.api-key-pattern
+    path: src/tests/scenarios/calibration_extras.rs
+    reason: "Synthetic vendor-token placeholders in `calibration_api_key_pattern_detects_common_formats`; each proves one provider format is recognised and none is a live credential."
+  - rule: sensitive-data.database-url-password
+    path: src/tests/scenarios/calibration_extras.rs
+    reason: "Synthetic postgres connection strings in the hardcoded-env-value and security calibration probes; placeholder credentials, not live database passwords."
+  - rule: sensitive-data.high-entropy-string
+    path: src/tests/scenarios/calibration_extras.rs
+    reason: "Synthetic DATABASE_PASSWORD placeholders in `calibration_hardcoded_env_value_skips_test_fixture_strings` that also trip the entropy heuristic; not live credentials."
+  - rule: sensitive-data.url-embedded-credentials
+    path: src/tests/scenarios/calibration_extras.rs
+    reason: "Synthetic URL carrying placeholder credentials in the security calibration probe; not a live credential."
+  - rule: sensitive-data.aws-access-key
+    path: src/tests/scenarios/diff/hook.rs
+    reason: "Synthetic AWS sentinel written by `write_secret_oversized_rust_file` and `write_aws_key_file` into temporary hook-diff projects; it drives duplicate-identity counting and is not a live credential."
+  - rule: sensitive-data.aws-access-key
+    path: src/tests/scenarios/smoke.rs
+    reason: "Synthetic AWS sentinel in the bounded-source and deep-scan-budget smoke fixtures; it proves text safety survives the budget boundary and is not a live credential."
 
 rules:
   # Flags modules with more indexed items than the configured threshold.

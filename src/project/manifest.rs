@@ -32,6 +32,7 @@ pub(crate) fn read_manifest_raw(
                 message: format!("Unable to read Cargo.toml: {error}"),
                 file_path: Some("Cargo.toml".to_string()),
                 line: Some(1),
+                invalidates_run: None,
             });
             return None;
         }
@@ -52,6 +53,7 @@ pub(crate) fn parse_manifest_value(
                         .to_string(),
                 file_path: Some("Cargo.toml".to_string()),
                 line: Some(1),
+                invalidates_run: None,
             });
             return None;
         }

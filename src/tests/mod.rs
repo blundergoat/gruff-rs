@@ -4,6 +4,7 @@ use tempfile::tempdir;
 
 mod calibration;
 mod config_and_selectors;
+mod m06_contract;
 mod parser;
 mod project_tests;
 mod renderers;
@@ -37,7 +38,11 @@ fn analyse_project_paths(project_root: &Path, paths: Vec<PathBuf>) -> AnalysisRe
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     };
     let config = load_config(project_root, &options).expect("test config loads");
     run_analysis_in_project(project_root, &options, &config).expect("analysis succeeds")
@@ -114,9 +119,9 @@ fn sample_report() -> AnalysisReport {
 
 fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -> AnalysisReport {
     let summary = summarize(&findings);
-    let score = score_report(&findings, &Config::default());
+    let score = score_report(&findings, &Config::default(), 10);
     AnalysisReport {
-        schema_version: "gruff.analysis.v2".to_string(),
+        schema_version: "gruff.analysis.v3".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),
@@ -143,6 +148,7 @@ fn sample_report_with(findings: Vec<Finding>, diagnostics: Vec<RunDiagnostic>) -
         per_rule_deltas: None,
         suppressed_findings: Vec::new(),
         all_findings_summary: None,
+        machine_context: MachineReportContext::default(),
     }
 }
 
@@ -209,7 +215,11 @@ fn default_test_options() -> AnalysisOptions {
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     }
 }
 
@@ -234,6 +244,8 @@ fn project_context_for_test(project_root: &Path) -> ProjectContext {
         paths: vec![PathBuf::from(".")],
         no_config: true,
         no_baseline: true,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
         ..default_test_options()
     };
     let discovery = discover_sources(project_root, &options, &Config::default());

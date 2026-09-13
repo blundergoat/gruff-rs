@@ -18,6 +18,7 @@ pub(crate) struct SourceUnit<'a> {
     pub(crate) file: &'a SourceFile,
     pub(crate) source: &'a str,
     pub(crate) rust_ast: Option<&'a syn::File>,
+    pub(crate) bounded_deep_scan: bool,
     line_starts: &'a OnceLock<Vec<usize>>,
 }
 
@@ -25,6 +26,7 @@ pub(crate) struct ParsedSource {
     pub(crate) file: SourceFile,
     pub(crate) source: String,
     pub(crate) rust_ast: Option<syn::File>,
+    pub(crate) bounded_deep_scan: bool,
     pub(crate) diagnostics: Vec<RunDiagnostic>,
     pub(crate) line_starts: OnceLock<Vec<usize>>,
 }
@@ -35,6 +37,7 @@ impl ParsedSource {
             file: &self.file,
             source: &self.source,
             rust_ast: self.rust_ast.as_ref(),
+            bounded_deep_scan: self.bounded_deep_scan,
             line_starts: &self.line_starts,
         }
     }

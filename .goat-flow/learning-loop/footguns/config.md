@@ -1,6 +1,6 @@
 ---
 category: config
-last_reviewed: 2026-05-26
+last_reviewed: 2026-08-22
 ---
 
 ## Footgun: Stripping `paths.ignore` Defaults From `.gruff-rs.yaml`
@@ -82,3 +82,26 @@ Regression coverage:
 - `src/tests/config_and_selectors/config.rs` (search: `fn config_rejects_missing_schema_version`) asserts the load-time error wording.
 - `src/tests/config_and_selectors/config.rs` (search: `fn config_rejects_wrong_schema_version`) asserts an unknown version value is rejected with the same useful-error shape.
 - `src/tests/config_and_selectors/config.rs` (search: `fn config_accepts_schema_version_and_records_it`) confirms the round-trip through `Config.schema_version`.
+
+## Footgun: A Second Suppression Channel Reindexes The Shared `suppressions[]` Counter
+
+**Status:** active | **Created:** 2026-08-22 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Before adding any new configuration-driven suppression channel, decide what `suppressions[].index` means and fix the recount before writing the matcher.
+**Trigger phase:** ACT
+
+`report.suppressions[]` was built for exactly one channel. `src/analysis.rs` (search: `fn initial_suppression_summaries`) set each row's `index` to its position in `config.exclusions`, which was also its position in the published array, and `src/diff.rs` (search: `pub(crate) fn recount_suppressions`) relied on that coincidence by recounting through the row's own `index`. The 0.6.0 `sensitiveExclusions` section (FAMILY-CONTRACT.md section 13a) is a second channel publishing into the same array, and the coincidence breaks the moment both sections carry entries: `exclude[0]` and `sensitiveExclusions[0]` are two different rows with the same `index`.
+
+Two readings of `index` are both defensible and they pull opposite ways. Array-position indexes keep the positional recount working but make an audit row uncorrelatable with the config entry a validation diagnostic names, because a diagnostic can only name `sensitiveExclusions[0]`. Section-local indexes correlate, and they match the family reference row `{"index": 0, ...}`, but they make `index` alone ambiguous. The shipped choice is section-local, with `src/report.rs` (search: `pub(crate) config_key: &'static str`) carrying the owning config key as a `#[serde(skip)]` field so the pair identifies a row. `recount_suppressions` now matches on that pair, and `src/render/text.rs` (search: `summary.config_key`) labels each row `exclude[N]` or `sensitiveExclusions[N]` instead of a hardcoded `exclude[` prefix.
+
+**Portability question this raises for the family (M03 review candidate).** rs is the only port that already had a reason-bearing `exclude[]`, so it is the only port where `suppressions[].index` carries pre-0.6.0 meaning. go, php, py and ts build the array from nothing and will naturally emit section-local indexes with no second channel to disambiguate against - which means four ports can satisfy the published shape without ever meeting the ambiguity, and the family then has one port whose `index` needs a companion field to be unique and four whose does not. Either `index` is contracted as section-local and the family adds a serialized owner key when a second channel appears, or the contract states that `suppressions[]` may carry only one channel per port. That question is open. This port answered it locally and did not change the published key set, because four other ports copy the rs row verbatim.
+
+Two item budgets also constrain where the new code can live, and both fire as advisory findings in the dogfood scan (`scripts/preflight-checks.sh` search: `dogfood_scan`):
+
+- `src/config.rs` and `src/report.rs` each sat at exactly 25 public items, the `architecture.large-module` threshold. Adding the resolved config type to `src/config.rs`, and an enum plus its `impl` to `src/report.rs`, pushed both over. The resolved type therefore lives with its parser in `src/config_loader/sensitive_exclusions.rs` (search: `pub(crate) struct SensitiveExclusionRule`), following how `Gate` lives in `src/gate.rs` rather than in `config.rs`, and the enum became a plain `&'static str` field.
+- `src/tests/config_and_selectors/mod.rs` sat at 8 child modules, the `architecture.module-fan-out` threshold. The new test module is mounted under its semantic owner instead of as a ninth sibling: `src/tests/config_and_selectors/exclusions.rs` (search: `#[path = "sensitive_exclusions.rs"]`), the same nesting fix already recorded for the `built_in_rules` wrappers.
+
+A third trap is specific to writing these tests: a rule id used only inside an inline format argument is invisible to `dead-code.unused-private-item-candidate`, because `src/parser/mod.rs` (search: `fn strip_rust_string_literals`) masks string literals before reference scanning. A constant referenced only as `format!("{JWT_RULE_ID} ...")` reports as an unused private item. Reference such a constant outside a format string, or inline the literal.
+
+Regression coverage:
+- `src/tests/config_and_selectors/sensitive_exclusions.rs` (search: `fn ordinary_exclusions_and_sensitive_exclusions_coexist`) asserts both channels publish rows, each with its own section-local index and config key, and that text output labels both.
+- `src/tests/config_and_selectors/sensitive_exclusions.rs` (search: `fn assert_removed_scopes`) differences a no-config baseline run against the configured run, so an unintended sibling suppression fails the case rather than silently hiding a finding.

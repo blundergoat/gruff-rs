@@ -92,7 +92,7 @@ pub(crate) fn analyse_json_never_includes_hint() {
 }
 
 #[test]
-pub(crate) fn summary_top_rules_carries_severity_confidence_description() {
+pub(crate) fn summary_text_top_rules_carries_severity_confidence_description() {
     let dir = tempdir().expect("tempdir");
     let path = project_with_many_findings(dir.path(), 5);
 
@@ -105,40 +105,30 @@ pub(crate) fn summary_top_rules_carries_severity_confidence_description() {
     };
     let config = Config::default();
     let report = run_analysis_in_project(dir.path(), &options, &config).expect("analysis succeeds");
-    let rendered = crate::summary::render(&report, 10, SummaryFormat::Json, 0);
-    let value: Value = serde_json::from_str(&rendered).expect("summary JSON parses");
+    let rendered = crate::summary::render(&report, 10, SummaryFormat::Text, 0);
+    let entry = rendered
+        .lines()
+        .find(|line| line.contains("docs.missing-public-doc"))
+        .expect("built-in rule present in Top rules text");
+    let fields: Vec<&str> = entry.split_whitespace().collect();
 
-    let top_rules = value
-        .get("topRules")
-        .and_then(|v| v.as_array())
-        .expect("topRules array present");
-    assert!(!top_rules.is_empty());
-
-    let entry = &top_rules[0];
-    assert!(entry.get("ruleId").is_some());
-    assert!(entry.get("count").is_some());
+    assert_eq!(fields[1], "docs.missing-public-doc");
+    assert!(matches!(fields[2], "advisory" | "warning" | "error"));
+    assert!(matches!(fields[3], "low" | "medium" | "high"));
     assert!(
-        entry.get("severity").is_some(),
-        "topRules entry should expose severity for built-in rules",
-    );
-    assert!(
-        entry.get("confidence").is_some(),
-        "topRules entry should expose confidence for built-in rules",
-    );
-    assert!(
-        entry.get("description").is_some(),
-        "topRules entry should expose description for built-in rules",
+        fields.len() > 4,
+        "description present in top-rule row: {entry}"
     );
 }
 
 #[test]
-pub(crate) fn summary_top_rules_severity_reflects_configured_override() {
+pub(crate) fn summary_text_top_rules_severity_reflects_configured_override() {
     // PR #3 review: top-rules severity must come from the actual
     // findings, not the registry's default severity. ADR-011 only
     // permits `severity` paired with `threshold`, so the override
     // scenario applies to thresholded rules — pick `size.function-length`
     // because the fixture triggers it deterministically. The override
-    // should propagate to topRules.severity in the summary digest.
+    // should propagate to the Top rules severity column in the text digest.
     let dir = tempdir().expect("tempdir");
     let source = (0..30)
         .map(|i| format!("    let value_{i} = {i};\n"))
@@ -169,20 +159,19 @@ pub(crate) fn summary_top_rules_severity_reflects_configured_override() {
             .any(|finding| finding.rule_id == "size.function-length"),
         "fixture must trigger size.function-length so the override is exercised",
     );
-    let rendered = crate::summary::render(&report, 10, SummaryFormat::Json, 0);
-    let value: Value = serde_json::from_str(&rendered).expect("summary JSON parses");
-    let top_rules = value["topRules"].as_array().expect("topRules array");
-    let entry = top_rules
-        .iter()
-        .find(|entry| entry["ruleId"] == "size.function-length")
-        .expect("size.function-length present in topRules");
-    let entry_severity = entry["severity"].as_str().unwrap_or("");
+    let rendered = crate::summary::render(&report, 10, SummaryFormat::Text, 0);
+    let entry = rendered
+        .lines()
+        .find(|line| line.contains("size.function-length"))
+        .expect("size.function-length present in Top rules text");
+    let fields: Vec<&str> = entry.split_whitespace().collect();
+    let entry_severity = fields.get(2).copied().unwrap_or("");
     // size.function-length defaults to `warning` in the registry; the
-    // configured override is `advisory`. topRules.severity must follow
+    // configured override is `advisory`. The Top rules severity must follow
     // the finding-level severity (advisory), not the registry default.
     assert_eq!(
         entry_severity, "advisory",
-        "topRules.severity must reflect the configured override, not registry default: {entry}",
+        "Top rules severity must reflect the configured override, not registry default: {entry}",
     );
     assert!(
         report
@@ -248,7 +237,11 @@ pub(crate) fn analyse_text_ranks_rule_deltas_by_absolute_net_then_rule_id() {
 }
 
 #[test]
-pub(crate) fn analyse_text_renders_rule_deltas_before_the_composite_score_line() {
+pub(crate) fn analyse_text_renders_rule_deltas_below_the_canonical_block() {
+    // ADR-014 put the delta block above the composite line. FAMILY-CONTRACT section 1 now fixes the
+    // masthead and the two-line composite block as the first three lines of every text view, and
+    // permits port-local extension lines below them only, so the delta block moves under the block
+    // it used to precede. The contract wins: it is the cross-port surface, ADR-014 is gruff-rs-local.
     let mut report = sample_report_with(Vec::new(), Vec::new());
     report.per_rule_deltas = Some(vec![rule_delta_fixture("docs.missing-public-doc", 0, 4)]);
 
@@ -257,7 +250,7 @@ pub(crate) fn analyse_text_renders_rule_deltas_before_the_composite_score_line()
         .find("Top 5 improved:")
         .expect("improved block present");
     let score_offset = rendered.find("Composite:").expect("composite line present");
-    assert!(improved_offset < score_offset);
+    assert!(score_offset < improved_offset);
 }
 
 #[test]
@@ -300,7 +293,9 @@ pub(crate) fn analyse_json_omits_per_rule_deltas_unless_populated() {
     let json_full_tree = render_report(&report, OutputFormat::Json);
     let parsed_full_tree: Value =
         serde_json::from_str(&json_full_tree).expect("full-tree json parses");
-    assert!(parsed_full_tree.get("perRuleDeltas").is_none());
+    assert!(parsed_full_tree
+        .pointer("/extensions/rs/topLevel/perRuleDeltas")
+        .is_none());
 
     let mut report = sample_report_with(Vec::new(), Vec::new());
     report.per_rule_deltas = Some(vec![rule_delta_fixture("a.rule", 1, 0)]);
@@ -308,7 +303,7 @@ pub(crate) fn analyse_json_omits_per_rule_deltas_unless_populated() {
     let parsed_with_deltas: Value =
         serde_json::from_str(&json_with_deltas).expect("baseline json parses");
     let deltas = parsed_with_deltas
-        .get("perRuleDeltas")
+        .pointer("/extensions/rs/topLevel/perRuleDeltas")
         .and_then(Value::as_array)
         .expect("perRuleDeltas array present");
     assert_eq!(deltas.len(), 1);
@@ -333,7 +328,7 @@ pub(crate) fn summary_surfaces_per_rule_deltas_in_text_and_json() {
     let summary_json = crate::summary::render(&report, 10, SummaryFormat::Json, 0);
     let parsed: Value = serde_json::from_str(&summary_json).expect("summary json parses");
     let deltas = parsed
-        .get("perRuleDeltas")
+        .pointer("/extensions/rs/topLevel/perRuleDeltas")
         .and_then(Value::as_array)
         .expect("perRuleDeltas array present in summary json");
     assert_eq!(deltas.len(), 2);
@@ -349,15 +344,17 @@ pub(crate) fn summary_omits_per_rule_deltas_when_absent() {
 
     let summary_json = crate::summary::render(&report, 10, SummaryFormat::Json, 0);
     let parsed: Value = serde_json::from_str(&summary_json).expect("summary json parses");
-    assert!(parsed.get("perRuleDeltas").is_none());
+    assert!(parsed
+        .pointer("/extensions/rs/topLevel/perRuleDeltas")
+        .is_none());
 }
 
 #[test]
-pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
-    // PR #3 review: summary text emitted the `Top 5` delta block AFTER
-    // the composite-score line, opposite of ADR-014 (the analyse text and
-    // Markdown reporters both put deltas BEFORE the score line). Pin
-    // the position so the comparison signal stays above the score.
+pub(crate) fn summary_text_renders_rule_deltas_below_the_canonical_block() {
+    // This once pinned the delta block above the composite line, to match ADR-014 and the analyse
+    // text view. FAMILY-CONTRACT section 1 now leads every text view with the masthead and the
+    // two-line composite block, so both views put the delta block below it instead - and they still
+    // agree with each other, which is what the original pin was protecting.
     let mut report = sample_report_with(Vec::new(), Vec::new());
     report.per_rule_deltas = Some(vec![rule_delta_fixture("docs.missing-public-doc", 0, 4)]);
 
@@ -369,7 +366,7 @@ pub(crate) fn summary_text_renders_rule_deltas_above_the_score_line() {
         .find("Composite:")
         .expect("composite line present");
     assert!(
-        improved_offset < score_offset,
-        "summary delta block must render above the Composite line, got:\n{summary_text}",
+        score_offset < improved_offset,
+        "summary delta block must render below the canonical composite block, got:\n{summary_text}",
     );
 }
