@@ -408,6 +408,17 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags unsafe blocks without a nearby SAFETY rationale.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A rationale introduced by a marker other than `SAFETY:`, a bare `SAFETY` line, or a `# Safety` line, such as `// SAFETY This is safe because the slice is never empty` or `// Safety - the slice is never empty`.",
+                mitigation: "Open the rationale with `SAFETY:`.",
+            },
+            FalsePositiveShape {
+                shape: "A rationale separated from its block by a blank line, or written above a sibling match arm, call argument or struct field; the scan carries no comment past either.",
+                mitigation: "Put the `SAFETY:` comment directly above the `unsafe` block it explains.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.weak-crypto",
@@ -580,7 +591,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "High entropy string",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::Medium,
         None,
         "Flags long string literals that look like generated secrets while skipping known structured non-secret values.",
@@ -781,5 +792,12 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags `#[should_panic]` attributes without an `expected = \"...\"` clause.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A `#[should_panic]` test inside a `#[cfg(not(test))]` module, which never runs; only the test fn's own attributes are read, so the module's condition is not seen.",
+                mitigation: "Add `expected = \"...\"`, or put `#[cfg(not(test))]` on the fn itself.",
+            },
+        ],
+        related: &[],
     ),
 ];

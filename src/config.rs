@@ -138,6 +138,8 @@ pub(crate) struct RuleSetting {
     /// `Some(true)` keeps findings visible but removes their composite-score penalty.
     /// Missing and false values keep the normal scoring behavior defined by ADR-014.
     pub(crate) exclude_from_score: Option<bool>,
+    /// Named detector parameters from `rules.<id>.thresholds`, validated against the knobs the rule declares.
+    pub(crate) detector_parameters: HashMap<String, f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

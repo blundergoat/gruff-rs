@@ -40,6 +40,8 @@ pub(crate) fn analyse_dead_item_fn(
         DeadFunctionCandidate {
             visibility: &item_fn.vis,
             attrs: &item_fn.attrs,
+            sig: &item_fn.sig,
+            block: &item_fn.block,
             name: item_fn.sig.ident.to_string(),
             span: item_fn.sig.ident.span(),
             test_context,
@@ -80,6 +82,8 @@ pub(crate) fn analyse_dead_impl_method(
         DeadFunctionCandidate {
             visibility: &method.vis,
             attrs: &method.attrs,
+            sig: &method.sig,
+            block: &method.block,
             name: method.sig.ident.to_string(),
             span: method.sig.ident.span(),
             test_context,
@@ -107,6 +111,8 @@ pub(crate) fn analyse_dead_mod(
 pub(crate) struct DeadFunctionCandidate<'a> {
     visibility: &'a Visibility,
     attrs: &'a [syn::Attribute],
+    sig: &'a syn::Signature,
+    block: &'a syn::Block,
     name: String,
     span: proc_macro2::Span,
     test_context: bool,
@@ -121,15 +127,16 @@ pub(crate) fn analyse_dead_function(
     let DeadFunctionCandidate {
         visibility,
         attrs,
+        sig,
+        block,
         name,
         span,
         test_context,
     } = candidate;
     if is_public(visibility)
         || name == "main"
-        || has_test_attr(attrs)
-        || has_cfg_test_attr(attrs)
         || test_context
+        || is_reached_outside_file_references(attrs, sig, block)
         || is_parent_module_file(source)
     {
         return;
@@ -151,6 +158,19 @@ pub(crate) fn analyse_dead_function(
             metadata: json!({}),
         }));
     }
+}
+
+/// Report whether a private fn is reached by something a same-file reference count cannot see: a test
+/// harness, an export attribute, or [`is_reached_without_rust_reference`].
+fn is_reached_outside_file_references(
+    attrs: &[syn::Attribute],
+    sig: &syn::Signature,
+    block: &syn::Block,
+) -> bool {
+    has_test_attr(attrs)
+        || has_cfg_test_attr(attrs)
+        || has_export_attr(attrs)
+        || is_reached_without_rust_reference(attrs, sig, block)
 }
 
 // Rust submodules can call private items in their parent module, so a

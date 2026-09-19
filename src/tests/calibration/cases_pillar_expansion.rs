@@ -156,6 +156,22 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
+        // The `= "msg"` shorthand pins the message as `expected = "msg"` does.
+        case(
+            "test-quality.should-panic-without-expected",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic]\n    fn panics() { panic!(\"boom\"); }\n}\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic = \"boom\"]\n    fn panics() { panic!(\"boom\"); }\n}\n",
+                )
+            }),
+        ),
         // ----- modernisation: question-mark -----
         case(
             "modernisation.question-mark-candidate",

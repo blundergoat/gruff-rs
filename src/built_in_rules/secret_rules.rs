@@ -93,7 +93,7 @@ pub(crate) fn analyse_sensitive_data(
     analyse_phi_patterns(unit, findings);
     analyse_gcp_service_account_keys(unit, findings);
     analyse_env_like_secrets(unit, findings);
-    analyse_high_entropy_strings(unit, findings);
+    analyse_high_entropy_strings(unit, config, findings);
 }
 
 /// Emit generic pattern findings after detector-owned placeholder checks.
@@ -476,23 +476,46 @@ fn has_secret_value_shape(value: &str) -> bool {
     has_letter && has_digit_or_symbol
 }
 
+/// Rule id shared by the detector, its catalogue parameters and its findings.
+const HIGH_ENTROPY_RULE_ID: &str = "sensitive-data.high-entropy-string";
+
 /// Report generated-looking string literals that survive detector-owned inert-shape checks.
 /// Project analysis reaches this after the structured sensitive-data detectors.
-pub(crate) fn analyse_high_entropy_strings(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
+pub(crate) fn analyse_high_entropy_strings(
+    unit: &SourceUnit<'_>,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    // The pattern takes every quoted run and the configured `minLength` is applied below, so a lowered
+    // floor reaches shorter literals and no configured value can exceed the engine's repetition limit.
     let regex = static_regex(
         &HIGH_ENTROPY_STRING_REGEX,
-        r#""([A-Za-z0-9+/=_-]{32,})"|'([A-Za-z0-9+/=_-]{32,})'"#,
+        r#""([A-Za-z0-9+/=_-]+)"|'([A-Za-z0-9+/=_-]+)'"#,
     );
+    let min_length = config.detector_parameter(HIGH_ENTROPY_RULE_ID, "minLength") as usize;
+    let min_entropy = config.detector_parameter(HIGH_ENTROPY_RULE_ID, "entropy");
 
-    // Each quoted candidate is classified before any finding metadata is built.
-    for captures in regex.captures_iter(unit.source) {
+    // Each quoted candidate is classified before any finding metadata is built. A candidate shorter than the
+    // floor gives its closing quote back, so that quote can open the next candidate: in `"ab"<secret>"cd"`
+    // the short `ab` must not consume the quote that opens the secret.
+    let mut search_start = 0;
+    while let Some(captures) = regex.captures_at(unit.source, search_start) {
+        let Some(candidate) = captures.get(0) else {
+            break;
+        };
         // A regex alternative without a captured value cannot support entropy analysis.
         let Some(secret) = captures.get(1).or_else(|| captures.get(2)) else {
+            search_start = candidate.end();
             continue;
         };
         let value = secret.as_str();
+        search_start = if value.len() < min_length {
+            candidate.end() - 1
+        } else {
+            candidate.end()
+        };
         // Inert shapes remain silent so users can focus on credible generated-secret candidates.
-        if !high_entropy_secret_should_report(value) {
+        if !high_entropy_secret_should_report(value, min_length, min_entropy) {
             continue;
         }
         findings.push(high_entropy_finding(unit, &secret));
@@ -501,9 +524,9 @@ pub(crate) fn analyse_high_entropy_strings(unit: &SourceUnit<'_>, findings: &mut
 
 /// Return whether a high-entropy value should produce a finding.
 /// Detector-owned inert shapes stay silent without consulting user preview text.
-fn high_entropy_secret_should_report(value: &str) -> bool {
+fn high_entropy_secret_should_report(value: &str, min_length: usize, min_entropy: f64) -> bool {
     // Values below the entropy bar or with known inert shapes are not secret findings.
-    if !is_high_entropy(value)
+    if !is_high_entropy(value, min_length, min_entropy)
         || is_integrity_hash(value)
         || is_structured_high_entropy_non_secret(value)
     {
@@ -516,11 +539,11 @@ fn high_entropy_secret_should_report(value: &str) -> bool {
 /// The matched text is used for detection alone and never reaches a serialized field.
 fn high_entropy_finding(unit: &SourceUnit<'_>, secret: &regex::Match<'_>) -> Finding {
     Finding::new(FindingDescriptor {
-        rule_id: "sensitive-data.high-entropy-string".to_string(),
+        rule_id: HIGH_ENTROPY_RULE_ID.to_string(),
         message: "High-entropy string literal detected.".to_string(),
         file_path: unit.file.display_path.clone(),
         line: Some(byte_line_from_starts(unit.line_starts(), secret.start())),
-        severity: Severity::Error,
+        severity: rules::builtin_severity(HIGH_ENTROPY_RULE_ID),
         pillar: Pillar::SensitiveData,
         confidence: Confidence::Medium,
         // Entropy matches are string locations rather than parsed symbols in the user's report.

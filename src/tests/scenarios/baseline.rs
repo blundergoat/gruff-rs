@@ -96,6 +96,34 @@ pub(crate) fn a_generated_baseline_stores_one_line_free_row_per_identity() {
     assert_eq!(document["sensitive"]["eligible"], false);
 }
 
+/// A raw identifier names the same item as its plain form, so `r#match` is baselined as `match`: generation no
+/// longer aborts on its `#`, the two spellings rank as one name in the file, and a raw path segment is read the
+/// same way.
+#[test]
+pub(crate) fn a_raw_identifier_is_baselined_under_its_plain_name() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    let findings = [
+        baseline_test_finding("naming.short", "src/lib.rs", 12, Some("r#match")),
+        baseline_test_finding("naming.short", "src/lib.rs", 40, Some("match")),
+        baseline_test_finding("naming.short", "src/lib.rs", 60, Some("Parser::r#type")),
+    ];
+
+    write_baseline(&baseline_path, &findings)
+        .expect("a raw identifier no longer aborts the baseline");
+    let document: Value =
+        serde_json::from_str(&fs::read_to_string(&baseline_path).expect("baseline read"))
+            .expect("baseline json");
+    let mut subjects: Vec<&str> = document["occurrences"]
+        .as_array()
+        .expect("occurrence rows")
+        .iter()
+        .filter_map(|row| row["subject"].as_str())
+        .collect();
+    subjects.sort_unstable();
+    assert_eq!(subjects, vec!["Parser::type#1", "match#1", "match#2"]);
+}
+
 #[test]
 pub(crate) fn a_line_shifted_finding_stays_hidden_and_a_new_sibling_does_not() {
     let dir = tempdir().expect("tempdir");

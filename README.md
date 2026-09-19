@@ -258,6 +258,10 @@ rules:
     severity: warning
   security.process-command:
     severity: error
+  sensitive-data.high-entropy-string:
+    thresholds:
+      minLength: 40
+      entropy: 4.5
 
 exclude:
   - rule: security.process-command
@@ -270,6 +274,13 @@ exclude:
 `acceptedAbbreviations` list replaces the built-ins, keep the seeded entries
 and append project vocabulary instead of replacing the list with only the new
 tokens.
+
+A thresholded rule takes one `threshold` paired with a `severity`. A detector with independent knobs takes a
+`thresholds` map of named parameters instead, and only `sensitive-data.high-entropy-string` has one: `minLength`, a
+whole number from 1 to 65535 (default 32), and `entropy`, a number of zero or more in bits per character (default
+4.2). Each value is checked when the config loads, and a `thresholds` map on any other rule is refused.
+`list-rules --format json` names every rule's bar under `thresholds` (for example `{"maxComplexity": 15}`); that
+listing describes the bar, so set a single-bar rule through its `threshold` key, not by copying the map.
 
 Selectors can target exact rule IDs, dotted prefixes such as `security.*`, or public pillars such as `Security`.
 

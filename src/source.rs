@@ -154,6 +154,8 @@ pub(crate) struct ItemSummary {
     pub(crate) cfg_gated: bool,
     pub(crate) test_context: bool,
     pub(crate) trait_impl: bool,
+    /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
+    /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
     pub(crate) allow_dead_code: bool,
 }
@@ -166,6 +168,8 @@ pub(crate) struct ProjectItemContext {
     pub(crate) test_context: bool,
     pub(crate) container: Option<String>,
     pub(crate) trait_impl: bool,
+    /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
+    /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
     pub(crate) allow_dead_code: bool,
 }

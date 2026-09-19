@@ -85,7 +85,7 @@ pub(crate) fn flat_catalogue_exports_only_nonempty_false_positive_guidance() {
             .as_array()
             .expect("guidance is an array")
             .len(),
-        1
+        3
     );
 
     let cyclomatic = values

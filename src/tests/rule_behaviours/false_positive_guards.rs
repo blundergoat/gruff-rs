@@ -624,6 +624,38 @@ pub fn entry() {
     );
 }
 
+/// A quoted run shorter than `minLength` must not swallow the quote that opens the next literal, so a secret
+/// written straight after a short quoted word is still read.
+#[test]
+pub(crate) fn high_entropy_string_reads_a_secret_after_a_short_quoted_run() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let secret = ["Az9qL2sT", "8vX3pR6n", "Y0aB4cD7", "eG1hJ5kM", "9pQ2rS"].concat();
+    fs::create_dir_all(dir.path().join("scripts")).expect("scripts dir");
+    fs::write(
+        dir.path().join("scripts/run.sh"),
+        format!("TOKEN=\"ab\"{secret}\"cd\"\n"),
+    )
+    .expect("script write");
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(entropy_lines, vec![Some(1)]);
+}
+
 #[test]
 pub(crate) fn high_entropy_string_skips_structured_non_secret_values() {
     let _guard = analysis_lock();
@@ -661,5 +693,144 @@ pub fn entry() {
         entropy_findings.len(),
         1,
         "only the conservative zero-separator boundary should still trigger; findings={entropy_findings:?}"
+    );
+}
+
+/// Both dead-code rules treat a fn reached without a countable Rust call as reachable: a bench or test
+/// harness entry, including one applied through `cfg_attr`, a serde target (also through `cfg_attr`), an
+/// exported `extern "C"` fn and an empty-body `where` assertion over concrete types. A `cfg_attr(test, ...)`
+/// condition, a `cfg(not(test))` item, an unexported `extern "C"` fn, a generic `where` helper, a serde path
+/// into another crate (`Option::is_none`), a serde attribute inside a comment and a plainly unused helper still
+/// fire.
+#[test]
+pub(crate) fn dead_code_rules_read_harness_serde_ffi_and_assertion_reachability() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"//! Probe crate.
+
+/// Probe.
+pub fn entry() {}
+
+#[bench]
+fn bench_parse() {}
+
+#[divan::bench]
+fn divan_case() {}
+
+#[cfg_attr(feature = "tokio", tokio::test)]
+async fn applied_test() {}
+
+/// Probe.
+pub struct Settings {
+    #[serde(deserialize_with = "parse_level")]
+    level: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<u8>,
+    #[cfg_attr(feature = "serde", serde(default = "default_port"))]
+    port: u16,
+}
+
+fn default_port() -> u16 {
+    80
+}
+
+fn is_none() -> bool {
+    false
+}
+
+// #[serde(serialize_with = "commented_serializer")]
+fn commented_serializer() -> u8 {
+    8
+}
+
+fn parse_level() -> u8 {
+    1
+}
+
+#[no_mangle]
+extern "C" fn exported_callback() {}
+
+#[unsafe(no_mangle)]
+extern "C" fn exported_2024() {}
+
+extern "C" fn unexported_callback() {}
+
+fn assert_send()
+where
+    Settings: Send,
+{
+}
+
+fn assert_generic<T>()
+where
+    T: Send,
+{
+}
+
+#[cfg(not(test))]
+fn production_only() {}
+
+#[cfg_attr(test, allow(dead_code))]
+fn lint_quieted_in_tests() {}
+
+fn read_write() {}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("dead-code analysis succeeds");
+    let flagged = |rule: &str| {
+        let mut names: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == rule)
+            .filter_map(|finding| finding.symbol.clone())
+            .map(|symbol| symbol.rsplit("::").next().unwrap_or(&symbol).to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        flagged("dead-code.unused-private-function"),
+        vec![
+            "assert_generic",
+            "commented_serializer",
+            "is_none",
+            "lint_quieted_in_tests",
+            "production_only",
+            "read_write",
+            "unexported_callback",
+        ]
+    );
+    let reachable = [
+        "bench_parse",
+        "divan_case",
+        "applied_test",
+        "parse_level",
+        "default_port",
+        "exported_callback",
+        "exported_2024",
+        "assert_send",
+    ];
+    let candidates = flagged("dead-code.unused-private-item-candidate");
+    assert!(
+        reachable
+            .iter()
+            .all(|name| !candidates.iter().any(|flagged| flagged == name)),
+        "{candidates:?}"
+    );
+    assert!(
+        candidates.iter().any(|flagged| flagged == "read_write"),
+        "{candidates:?}"
     );
 }

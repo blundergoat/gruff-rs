@@ -136,6 +136,92 @@ mod tests {
     assert_missing_rule(&negative, "error-handling.public-unwrap");
 }
 
+/// `unimplemented-placeholder` reports a placeholder a production fn would run: a helper under `tests/`, a
+/// macro named in a comment, and one quoted into a `quote!` stream stay silent, while `todo!()` in `src/`
+/// still fires and names only the macro it found.
+#[test]
+pub(crate) fn unimplemented_placeholder_reads_production_code_only() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join("tests/support")).expect("tests dir");
+    fs::write(
+        dir.path().join("tests/support/helpers.rs"),
+        "/// Probe.\npub fn helper() -> i32 {\n    todo!()\n}\n",
+    )
+    .expect("helper write");
+    fs::write(
+        dir.path().join("src/prose.rs"),
+        "/// Probe.\npub fn prose() -> i32 {\n    // Replace the todo!() stub once the parser lands.\n    1\n}\n",
+    )
+    .expect("prose write");
+    fs::write(
+        dir.path().join("src/generated.rs"),
+        "/// Probe.\npub fn generated() -> TokenStream {\n    quote! { fn stub() { unimplemented!() } }\n}\n",
+    )
+    .expect("generated write");
+    fs::write(
+        dir.path().join("src/live.rs"),
+        // The masking ends at the stream's closing brace, so a placeholder after it still counts.
+        "/// Probe.\npub fn live() -> i32 {\n    let _stream = quote! { fn stub() {} };\n    todo!()\n}\n",
+    )
+    .expect("live write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("placeholder analysis succeeds");
+    let placeholders: Vec<(&str, &Value)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "error-handling.unimplemented-placeholder")
+        .map(|finding| (finding.file_path.as_str(), &finding.metadata["macros"]))
+        .collect();
+    assert_eq!(placeholders, vec![("src/live.rs", &json!(["todo!"]))]);
+}
+
+/// `public-unwrap` asks a public fn to map a failure into its API contract. A `pub fn` in an integration-test
+/// support module has no such contract, so it stays silent there while a public `src/` fn still fires.
+#[test]
+pub(crate) fn public_unwrap_skips_test_infrastructure_paths() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        "/// Probe.\npub fn entry(input: &str) -> usize {\n    input.parse::<usize>().unwrap()\n}\n",
+    );
+    fs::create_dir_all(dir.path().join("tests/support")).expect("tests dir");
+    fs::write(
+        dir.path().join("tests/support/command.rs"),
+        "/// Probe.\npub fn run(input: &str) -> usize {\n    input.parse::<usize>().unwrap()\n}\n",
+    )
+    .expect("support write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("public-unwrap analysis succeeds");
+    let paths: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "error-handling.public-unwrap")
+        .map(|finding| finding.file_path.as_str())
+        .collect();
+    assert_eq!(paths, vec!["src/lib.rs"]);
+}
+
 #[test]
 pub(crate) fn concurrency_rules_flag_narrow_async_and_channel_patterns() {
     let _guard = analysis_lock();

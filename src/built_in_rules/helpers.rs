@@ -251,10 +251,11 @@ impl SensitiveDisplayMarker<'_> {
 }
 
 /// Decide whether a value has enough length, character variety, and entropy to warrant a secret finding.
-/// This is a candidate check; detector-owned inert shapes are filtered later.
-pub(crate) fn is_high_entropy(value: &str) -> bool {
+/// This is a candidate check; detector-owned inert shapes are filtered later. Both bars come from the
+/// rule's configured detector parameters, so a value's fate never depends on a number repeated here.
+pub(crate) fn is_high_entropy(value: &str, min_length: usize, min_entropy: f64) -> bool {
     // Short values do not meet the detector's minimum evidence bar for a user finding.
-    if value.chars().count() < 32 {
+    if value.chars().count() < min_length {
         return false;
     }
     let has_upper = value
@@ -264,7 +265,7 @@ pub(crate) fn is_high_entropy(value: &str) -> bool {
         .chars()
         .any(|character| character.is_ascii_lowercase());
     let has_digit = value.chars().any(|character| character.is_ascii_digit());
-    has_upper && has_lower && has_digit && shannon_entropy(value) >= 4.2
+    has_upper && has_lower && has_digit && shannon_entropy(value) >= min_entropy
 }
 
 /// Measure Shannon entropy so generated-looking values can be separated from ordinary user text.
@@ -452,6 +453,15 @@ pub(crate) fn path_is_calibration_fixture(display_path: &str) -> bool {
 
 /// Recognise Rust test infrastructure where panic and unwrap patterns are expected scaffolding.
 /// Fixture inputs remain analysable because users rely on them to prove sensitive-data rules fire.
+/// The code before a trailing `//` comment, found outside string literals, so `let a = read(p); // slow path :(`
+/// ends in `;` and `} // end match` is a closing brace.
+pub(crate) fn without_trailing_comment(text: &str) -> &str {
+    let masked = crate::strip_rust_string_literals(text);
+    masked
+        .find("//")
+        .map_or(text, |position| text[..position].trim_end())
+}
+
 pub(crate) fn path_is_test_infrastructure(display_path: &str) -> bool {
     let normalized = display_path.replace('\\', "/");
     // Fixture files are user-like scan inputs, not test harness code to silence.
@@ -533,7 +543,7 @@ mod high_entropy_tests {
 
     #[test]
     fn high_entropy_predicates_keep_jwt_segment_flaggable() {
-        assert!(is_high_entropy(JWT_PAYLOAD_SEGMENT));
+        assert!(is_high_entropy(JWT_PAYLOAD_SEGMENT, 32, 4.2));
         assert!(!is_structured_high_entropy_non_secret(JWT_PAYLOAD_SEGMENT));
     }
 

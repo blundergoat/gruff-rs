@@ -69,6 +69,72 @@ pub(crate) fn config_rejects_threshold_maps_and_unknown_options() {
     assert!(error.contains("unknown option `bogus`"), "{error}");
 }
 
+/// The high-entropy detector reads two named knobs under `thresholds`, each validated at load time and
+/// refused rather than clamped, while ADR-011's single `threshold` still governs every rubric.
+#[test]
+pub(crate) fn high_entropy_thresholds_are_named_and_validated_at_load_time() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+    let rule = "sensitive-data.high-entropy-string";
+    let rule_config = |body: &str| format!(r#"{{ "rules": {{ "{rule}": {body} }} }}"#);
+
+    write_config(
+        dir.path(),
+        &rule_config(r#"{ "thresholds": { "minLength": 65535, "entropy": 3.5 } }"#),
+    );
+    let config = load_config(dir.path(), &options).expect("both knobs accepted at the cap");
+    assert_eq!(config.detector_parameter(rule, "minLength"), 65535.0);
+    assert_eq!(config.detector_parameter(rule, "entropy"), 3.5);
+
+    for (thresholds, expected) in [
+        (
+            r#"{ "minLength": 0 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "minLength": 65536 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "minLength": 12.5 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "minLength": -1 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "entropy": -0.5 }"#,
+            "must be a finite number of zero or more",
+        ),
+        (
+            r#"{ "entropy": "high" }"#,
+            "must be a finite number of zero or more",
+        ),
+        (r#"{ "bogus": 1 }"#, "unknown key `bogus`"),
+    ] {
+        write_config(
+            dir.path(),
+            &rule_config(&format!(r#"{{ "thresholds": {thresholds} }}"#)),
+        );
+        let error = load_config(dir.path(), &options).expect_err(thresholds);
+        assert!(error.contains(expected), "{thresholds}: {error}");
+    }
+
+    // A standalone severity override keeps working, and the single `threshold` key stays refused.
+    write_config(dir.path(), &rule_config(r#"{ "severity": "error" }"#));
+    assert!(load_config(dir.path(), &options).is_ok());
+    write_config(
+        dir.path(),
+        &rule_config(r#"{ "threshold": 20, "severity": "warning" }"#),
+    );
+    let error = load_config(dir.path(), &options).expect_err("single threshold refused");
+    assert!(
+        error.contains("only supported for rules with one numeric threshold"),
+        "{error}"
+    );
+}
+
 #[test]
 pub(crate) fn rust_yaml_config_is_the_only_default_config_name() {
     let _guard = analysis_lock();

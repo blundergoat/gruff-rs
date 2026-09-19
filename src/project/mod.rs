@@ -5,7 +5,7 @@ mod lockfile;
 mod manifest;
 
 pub(crate) use items::{
-    collect_project_rust_index, inferred_file_module_path, ProjectIndexBuilders,
+    collect_project_rust_index, has_export_attr, inferred_file_module_path, ProjectIndexBuilders,
 };
 pub(crate) use lockfile::read_lockfile_summary;
 pub(crate) use manifest::read_manifest_summary;
@@ -380,6 +380,55 @@ pub(crate) fn cfg_meta_is_test_only(meta: &syn::Meta) -> bool {
 
 pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| last_segment_matches(attr, "test"))
+}
+
+/// Report whether a fn is reached without a Rust reference the dead-code rules can count: a test or bench
+/// entry point (`#[bench]`, `#[divan::bench]`, `#[maybe_tokio_test]`, or one applied through `cfg_attr`), or
+/// an empty-body fn with no generics and no inputs whose `where` clause is a compile-time assertion over
+/// concrete types, such as `fn assert_send() where Client: Send {}`. A foreign ABI alone reaches nothing;
+/// `#[no_mangle]` and `#[export_name]` are read by `has_export_attr`.
+/// Only the two dead-code rules read this; `has_test_attr` keeps its narrower meaning for its other consumers.
+pub(crate) fn is_reached_without_rust_reference(
+    attrs: &[syn::Attribute],
+    sig: &syn::Signature,
+    block: &syn::Block,
+) -> bool {
+    let is_type_assertion = block.stmts.is_empty()
+        && sig.generics.params.is_empty()
+        && sig.inputs.is_empty()
+        && sig
+            .generics
+            .where_clause
+            .as_ref()
+            .is_some_and(|clause| !clause.predicates.is_empty());
+    is_type_assertion || attrs.iter().any(is_harness_entry_attr)
+}
+
+/// Report whether an attribute marks a test or bench harness entry point. `cfg_attr` counts only through the
+/// attributes it applies, never through its condition, so `#[cfg_attr(test, allow(dead_code))]` stays
+/// production code.
+fn is_harness_entry_attr(attr: &syn::Attribute) -> bool {
+    if attr.path().is_ident("cfg_attr") {
+        let Ok(arguments) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        ) else {
+            return false;
+        };
+        return arguments
+            .iter()
+            .skip(1)
+            .any(|applied| path_is_harness_entry(applied.path()));
+    }
+    path_is_harness_entry(attr.path())
+}
+
+/// Report whether an attribute path's last segment names a harness entry: `test`, `bench`, or a macro ending
+/// in `_test` or `_bench`.
+fn path_is_harness_entry(path: &syn::Path) -> bool {
+    path.segments.last().is_some_and(|segment| {
+        let name = segment.ident.to_string();
+        name == "test" || name == "bench" || name.ends_with("_test") || name.ends_with("_bench")
+    })
 }
 
 pub(crate) fn last_segment_matches(attr: &syn::Attribute, name: &str) -> bool {

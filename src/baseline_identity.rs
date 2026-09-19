@@ -91,6 +91,7 @@ pub(crate) fn baseline_subject(finding: &Finding, ordinal: usize) -> Result<Stri
         return Ok(normalise_measured_values(&finding.message));
     };
 
+    let symbol = identity_symbol(symbol);
     // A symbol carrying the separator could pose as another symbol's ordinal, so it is refused rather than guessed at.
     if symbol.contains(ORDINAL_SEPARATOR) {
         return Err(format!(
@@ -107,6 +108,17 @@ pub(crate) fn baseline_subject(finding: &Finding, ordinal: usize) -> Result<Stri
     }
 
     Ok(format!("{symbol}{ORDINAL_SEPARATOR}{ordinal}"))
+}
+
+/// Spell a symbol the way its identity names it. A raw identifier names the same item as its plain form, so
+/// `r#match` is `match` and `Parser::r#type` is `Parser::type`; left raw, its `#` would read as the ordinal
+/// separator and the finding could not be baselined at all.
+fn identity_symbol(symbol: &str) -> String {
+    symbol
+        .split("::")
+        .map(|segment| segment.strip_prefix("r#").unwrap_or(segment))
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 /// Hash the ratified identity under an explicit tool language.
@@ -170,11 +182,12 @@ fn symbol_ordinals(
     findings: &[Finding],
     declaration_position: &dyn Fn(&Finding) -> usize,
 ) -> Vec<usize> {
-    let mut positions_by_symbol: BTreeMap<(&str, &str), BTreeSet<usize>> = BTreeMap::new();
+    // Symbols are ranked by their identity spelling, so `r#match` and `match` count as one name.
+    let mut positions_by_symbol: BTreeMap<(&str, String), BTreeSet<usize>> = BTreeMap::new();
     for finding in findings {
         if let Some(symbol) = named_symbol(finding) {
             positions_by_symbol
-                .entry((finding.file_path.as_str(), symbol))
+                .entry((finding.file_path.as_str(), identity_symbol(symbol)))
                 .or_default()
                 .insert(declaration_position(finding));
         }
@@ -189,7 +202,7 @@ fn symbol_ordinals(
             };
             let position = declaration_position(finding);
             positions_by_symbol
-                .get(&(finding.file_path.as_str(), symbol))
+                .get(&(finding.file_path.as_str(), identity_symbol(symbol)))
                 .and_then(|positions| positions.iter().position(|ranked| *ranked == position))
                 .map_or(0, |rank| rank + 1)
         })

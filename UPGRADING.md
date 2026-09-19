@@ -83,6 +83,13 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
     does, and a rule with no threshold publishes neither key. Read `.rules[]` instead of `.[]`, and
     a knob value instead of `.threshold`; `list-rules --selector`, `list-rules <id> --format json`,
     SARIF rule properties and `.gruff-rs.yaml` keys are unchanged.
+12. **`sensitive-data.high-entropy-string` reports at warning** — A CI job that gated on `--fail-on error`
+    and relied on this rule to fail it must lower the gate or set
+    `rules.sensitive-data.high-entropy-string.severity: error`. The rule's two bars are now configurable
+    under `thresholds:` as `minLength` and `entropy`; the defaults, 32 and 4.2, are unchanged.
+13. **a raw identifier's identity changes once** — A finding on a symbol such as `r#match` is now named
+    `match` in its baseline identity and SARIF fingerprint. Such findings could not be baselined before, so
+    regenerate the baseline once to review them.
 
 ## What may change in `0.5.x` with deprecation
 

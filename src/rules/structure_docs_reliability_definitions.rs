@@ -95,6 +95,14 @@ pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
                 shape: "Private functions reached only through macro expansion, generated code, or symbol-name construction that same-file lexical counting cannot see.",
                 mitigation: "Prefer an explicit call or registration that leaves a source reference; otherwise add the generated or integration host path to `paths.ignore` in `.gruff-rs.yaml`.",
             },
+            FalsePositiveShape {
+                shape: "A harness entry attribute whose last segment is neither `test` nor `bench` and does not end in `_test` or `_bench`, such as `#[my_harness::case]`.",
+                mitigation: "Add the harness host path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+            FalsePositiveShape {
+                shape: "A fn named in an attribute string other than serde's `default`, `deserialize_with`, `serialize_with`, `with` and `skip_serializing_if`, such as `#[serde(getter = \"read_inner\")]`.",
+                mitigation: "Call the fn from code the scan can see, or add the host path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
         ],
         related: &[],
     ),
@@ -237,7 +245,7 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         "Flags comments whose payload looks like a disabled Rust statement or item.",
         false_positives: &[
             FalsePositiveShape {
-                shape: "Pseudocode or explanatory prose that begins with a Rust keyword and ends with statement-like punctuation.",
+                shape: "Explanatory prose that is itself valid Rust, such as `// return early;` beside a loop: it begins with a keyword, ends with statement punctuation and parses.",
                 mitigation: "Rewrite the comment as intent-focused prose instead of code-shaped text, or exclude the exact reviewed path when executable-looking notation is required.",
             },
         ],
@@ -318,8 +326,12 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         "Flags public functions returning a value whose rustdoc lacks a Returns description.",
         false_positives: &[
             FalsePositiveShape {
-                shape: "The summary implies the returned value through domain language without using a recognised Returns heading or return-value verb.",
+                shape: "The summary implies the returned value through domain language without a `# Returns` heading, a return-value verb, an opening `Return`, `Create` or `Get` followed by the value it names, a `-> Self` signature, or a `&self` getter summary that names the fn's final word.",
                 mitigation: "State what the function returns in prose or an explicit `# Returns` section, including meaningful empty or boundary cases.",
+            },
+            FalsePositiveShape {
+                shape: "A `&self` getter whose noun-phrase summary names its value in other words (`/// Shell override passed through the CLI.` on `fn command`), or whose summary opens with the fn's own name, an action verb such as `Removes`, or a plural noun such as `Bytes remaining in the buffer.`, or opens with a verb that does not read a value and puts an article before the named value, as `Wrap the output in a table.` does on `fn table`.",
+                mitigation: "Name the returned value using the fn's final word, or open the summary with `Return`, `Returns` or `Get`.",
             },
         ],
         related: &[],
@@ -410,5 +422,16 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags todo! and unimplemented! placeholders in non-test functions.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Test support code in its own file outside a `tests/` path or `tests.rs` file, such as `src/test_utils.rs`, whose placeholder never ships, even when its `mod` declaration is gated by `#[cfg(test)]`.",
+                mitigation: "Move it under `tests/`, or add its exact path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+            FalsePositiveShape {
+                shape: "A placeholder inside a code-generating macro other than `quote!` or `quote_spanned!`, whose tokens are emitted rather than run.",
+                mitigation: "Build the tokens with `quote!`, or add the generator's path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related: &[],
     ),
 ];

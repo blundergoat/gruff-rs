@@ -368,6 +368,18 @@ fn append_rule_entry(out: &mut String, definition: &RuleDefinition) {
             severity_name(definition.default_severity)
         ));
     }
+    // A detector's named parameters are seeded as the map config reads, as gruff-go's `init` seeds them.
+    let parameters = crate::rules::detector_parameters(definition.id);
+    if !parameters.is_empty() {
+        out.push_str("    thresholds:\n");
+        for parameter in parameters {
+            out.push_str(&format!(
+                "      {}: {}\n",
+                parameter.name,
+                format_threshold(parameter.default)
+            ));
+        }
+    }
 }
 
 /// Return the stable lowercase severity label written to user config.

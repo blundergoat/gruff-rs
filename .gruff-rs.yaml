@@ -36,7 +36,6 @@ paths:
     - fixtures/**
     - tests/fixtures/**
     - node_modules/**
-    - "**/Cargo.lock"
     - "**/package-lock.json"
     - "**/yarn.lock"
     - "**/pnpm-lock.yaml"
@@ -76,11 +75,12 @@ allowlists:
 
 # The reviewed entries below belong to this repository's own dogfood scan only.
 # `gruff-rs init` does not generate them, so no downstream project inherits them.
-# Every scope names one sensitive-data rule and one Rust test file whose literal
-# is synthetic calibration, renderer, or scenario material that the test needs in
-# source; none is a live credential or real patient data. The detector stays
-# unchanged and these paths stay out of `paths.ignore`, so a new secret in any of
-# these files still reports under every other sensitive-data rule.
+# Every scope names one sensitive-data rule and one path. The Rust test files hold
+# synthetic calibration, renderer, or scenario literals that the test needs in
+# source, and `Cargo.lock` holds registry checksums; none is a live credential or
+# real patient data. The detector stays unchanged and these paths stay out of
+# `paths.ignore`, so a new secret in any of these files still reports under every
+# other sensitive-data rule.
 sensitiveExclusions:
   - rule: sensitive-data.api-key-pattern
     path: src/tests/calibration/security_size_test_waste_cases.rs
@@ -163,6 +163,9 @@ sensitiveExclusions:
   - rule: sensitive-data.aws-access-key
     path: src/tests/scenarios/smoke.rs
     reason: "Synthetic AWS sentinel in the bounded-source and deep-scan-budget smoke fixtures; it proves text safety survives the budget boundary and is not a live credential."
+  - rule: sensitive-data.high-entropy-string
+    path: Cargo.lock
+    reason: "Cargo writes a SHA-256 `checksum` for every registry package; each is a public digest of a published crate, not a credential, and the file still reads under every other sensitive-data rule."
 
 rules:
   # Flags modules with more indexed items than the configured threshold.

@@ -65,7 +65,8 @@ pub(crate) use parser::{
 #[cfg(test)]
 pub(crate) use project::read_and_parse_sources;
 pub(crate) use project::{
-    build_project_context, has_cfg_test_attr, has_test_attr, is_test_module, line_from_span,
+    build_project_context, has_cfg_test_attr, has_export_attr, has_test_attr,
+    is_reached_without_rust_reference, is_test_module, line_from_span,
 };
 
 pub(crate) use analyse_project::analyse_project;
@@ -518,19 +519,35 @@ const LISTING_THRESHOLD_KNOB_NAMES: &[(&str, &str)] = &[
 /// Project a built-in rule's default threshold into the family listing map. An integral default
 /// prints as an integer (`25`, not `25.0`) so a typed consumer reads one number shape across ports.
 fn listing_thresholds(definition: &rules::RuleDefinition) -> Option<Map<String, Value>> {
+    // A detector's named parameters are its knob map, published under the names config reads.
+    let parameters = rules::detector_parameters(definition.id);
+    if !parameters.is_empty() {
+        let mut thresholds = Map::new();
+        for parameter in parameters {
+            thresholds.insert(
+                parameter.name.to_string(),
+                listing_number(parameter.default),
+            );
+        }
+        return Some(thresholds);
+    }
     let threshold = definition.threshold?;
     let knob = LISTING_THRESHOLD_KNOB_NAMES
         .iter()
         .find(|(rule_id, _)| *rule_id == definition.id)
         .map_or("threshold", |(_, knob)| knob);
-    let value = if threshold.default.fract() == 0.0 {
-        json!(threshold.default as i64)
-    } else {
-        json!(threshold.default)
-    };
     let mut thresholds = Map::new();
-    thresholds.insert(knob.to_string(), value);
+    thresholds.insert(knob.to_string(), listing_number(threshold.default));
     Some(thresholds)
+}
+
+/// An integral value prints as an integer (`25`, not `25.0`) so a typed consumer reads one number shape.
+fn listing_number(value: f64) -> Value {
+    if value.fract() == 0.0 {
+        json!(value as i64)
+    } else {
+        json!(value)
+    }
 }
 
 fn render_listed_rules_text(rules: &[ListedRule]) -> String {
