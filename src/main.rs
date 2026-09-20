@@ -74,7 +74,7 @@ pub(crate) use analyse_project::analyse_project;
 use analysis::apply_report_exclusions;
 #[cfg(test)]
 pub(crate) use analysis::project_coverage_for_test;
-pub(crate) use analysis::{apply_gate_diagnostic, run_analysis_in_project};
+pub(crate) use analysis::{apply_gate_diagnostic, failed_run_report, run_analysis_in_project};
 #[cfg(test)]
 pub(crate) use baseline::write_baseline;
 #[cfg(test)]
@@ -205,18 +205,17 @@ fn run_analyse_command(
     let fail_on_new = args.fail_on_new;
     let deep_scan_budget = args.deep_scan_budget.clone();
     let base = options_from_analyse(args, FailThreshold::Advisory);
-    let (project_root, options, config) = match resolve_command_setup(
+    // Kept for the failure branch below, which must publish an envelope after `base` has been consumed.
+    let fallback = base.clone();
+    let (project_root, options, config) = match analyse_setup(
         base,
         cli_fail_on,
-        "analyse",
-        FailThreshold::Advisory,
         deep_scan_budget.as_ref(),
+        &fallback,
+        &writer,
     ) {
         Ok(triple) => triple,
-        Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            return ExitCode::from(2);
-        }
+        Err(code) => return code,
     };
     // The execution selectors choose which rules run, so they narrow the config before anything is scanned.
     let config = analyse_run_config(config, &options, fail_on_new);
@@ -233,9 +232,72 @@ fn run_analyse_command(
         ),
         Err(error) => {
             eprintln!("gruff-rs: {error}");
-            ExitCode::from(2)
+            emit_failed_run_report(&project_root, &options, &config, &scope, &error, &writer)
         }
     }
+}
+
+/// Resolve the project root, options and config an analyse run needs, or publish why it could not.
+///
+/// A configuration the run could not load is a run that could not start, so a caller who asked for a machine format
+/// gets the same v3 envelope a missing scan target already produces rather than an empty stdout.
+#[allow(clippy::result_large_err)]
+fn analyse_setup(
+    base: AnalysisOptions,
+    cli_fail_on: Option<FailThreshold>,
+    deep_scan_budget: Option<&DeepScanBudgetOverride>,
+    fallback: &AnalysisOptions,
+    writer: &OutputWriter,
+) -> Result<(PathBuf, AnalysisOptions, Config), ExitCode> {
+    match resolve_command_setup(
+        base,
+        cli_fail_on,
+        "analyse",
+        FailThreshold::Advisory,
+        deep_scan_budget,
+    ) {
+        Ok(triple) => Ok(triple),
+        Err(error) => {
+            eprintln!("gruff-rs: {error}");
+            // The setup that failed is the one that would have named the project root and the config, so the
+            // envelope is built from the options the arguments already gave and the defaults nothing overrode.
+            let scope = RequestedScope::from_options(fallback);
+            Err(emit_failed_run_report(
+                &PathBuf::from("."),
+                fallback,
+                &Config::default(),
+                &scope,
+                &error,
+                writer,
+            ))
+        }
+    }
+}
+
+/// Publish the envelope a run that could not start still owes a caller who asked for a machine format.
+///
+/// Every other port publishes its v3 envelope here, carrying one run-invalidating diagnostic, so a consumer reading
+/// JSON learns what failed rather than reading nothing at all. A human-readable format keeps the stderr line alone.
+fn emit_failed_run_report(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    scope: &RequestedScope,
+    error: &str,
+    writer: &OutputWriter,
+) -> ExitCode {
+    if !matches!(options.format, OutputFormat::Json | OutputFormat::Sarif) {
+        return ExitCode::from(2);
+    }
+
+    let report = failed_run_report(project_root, options, config, error);
+    writer.emit_unconditional(&render_report_with_scope(
+        &report,
+        scope,
+        options.format,
+        None,
+    ));
+    ExitCode::from(2)
 }
 
 /// Score the run, decide its exit code, then narrow what the report shows and render it.

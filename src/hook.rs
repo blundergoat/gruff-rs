@@ -1,4 +1,5 @@
 use super::*;
+use crate::analysis::{failed_run_diagnostic_type, CHANGED_REGION_DIAGNOSTIC_TYPE};
 use crate::changed_region::{git_args_with_paths, git_output, git_output_bytes_with_stdin};
 use crate::cli::HookArgs;
 
@@ -100,10 +101,15 @@ fn emit_hook_report(
 /// Render the payload for a run that could not happen, naming which kind of failure it was.
 ///
 /// A baseline this port cannot read is not a configuration problem, and saying so would send the user to the wrong
-/// file. Everything else is reported as a configuration failure, which is what it has always been.
-fn render_run_failure(error: &str) -> String {
+/// file. Neither is a changed-region scope the run could not read: that carries one family type on every surface,
+/// so the hook and the analyse envelope name the same failure the same way. Everything else is a configuration
+/// failure and keeps the payload's `config` block.
+pub(crate) fn render_run_failure(error: &str) -> String {
     if error.contains("baseline") {
         return render_fatal("baseline", error);
+    }
+    if failed_run_diagnostic_type(error) == CHANGED_REGION_DIAGNOSTIC_TYPE {
+        return render_fatal(CHANGED_REGION_DIAGNOSTIC_TYPE, error);
     }
     render_config_error(error)
 }

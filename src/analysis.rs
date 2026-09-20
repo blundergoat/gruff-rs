@@ -864,6 +864,71 @@ fn report_path_summary(discovery: DiscoveryResult) -> PathSummary {
     }
 }
 
+/// The one type every port publishes when it cannot read the changed-region scope it was asked to analyse,
+/// whatever flag asked for it (FAMILY-CONTRACT.md section 6).
+pub(crate) const CHANGED_REGION_DIAGNOSTIC_TYPE: &str = "changed-region";
+
+/// The type every port publishes when it cannot load the configuration it was given.
+pub(crate) const CONFIG_ERROR_DIAGNOSTIC_TYPE: &str = "config-error";
+
+/// Choose the diagnostic type a failed run publishes from the failure itself.
+///
+/// A scope the run could not read and a configuration it could not load are the two ways a run cannot start
+/// once its arguments parsed; anything else keeps the generic run type.
+pub(crate) fn failed_run_diagnostic_type(error: &str) -> &'static str {
+    if error.contains("changed range")
+        || error.contains("--changed-ranges")
+        || error.contains("diff")
+    {
+        return CHANGED_REGION_DIAGNOSTIC_TYPE;
+    }
+    CONFIG_ERROR_DIAGNOSTIC_TYPE
+}
+
+/// Build the v3 envelope a run that could not start still owes a caller who asked for a machine format.
+///
+/// A run that never started has no findings and nothing discovered, so the envelope carries one
+/// run-invalidating diagnostic and empty everything else. Printing only to stderr would leave a JSON consumer
+/// with no diagnostic, no type and no run block to read, where every other port publishes all three.
+pub(crate) fn failed_run_report(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    error: &str,
+) -> AnalysisReport {
+    build_report(
+        project_root,
+        options,
+        config,
+        ReportInputs {
+            discovery: DiscoveryResult {
+                files: Vec::new(),
+                missing_paths: Vec::new(),
+                ignored_paths: Vec::new(),
+                ignored_path_details: Vec::new(),
+            },
+            diagnostics: vec![RunDiagnostic {
+                diagnostic_type: failed_run_diagnostic_type(error).to_string(),
+                message: error.to_string(),
+                file_path: None,
+                line: None,
+                invalidates_run: Some(true),
+            }],
+            findings: Vec::new(),
+            baseline_report: None,
+            suppressions: ReportSuppressions {
+                summaries: Vec::new(),
+                suppressed_findings: Vec::new(),
+            },
+            per_rule_deltas: None,
+            suppressed_count: None,
+            all_findings_summary: None,
+            all_findings: Vec::new(),
+            machine_diff: None,
+        },
+    )
+}
+
 pub(crate) fn build_report(
     project_root: &Path,
     options: &AnalysisOptions,

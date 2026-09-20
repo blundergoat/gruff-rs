@@ -5,6 +5,34 @@
 use super::*;
 
 #[test]
+pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_config() {
+    // A scope the run could not read carries one family type on every surface (FAMILY-CONTRACT.md section 6).
+    for message in [
+        "invalid changed range `=abc`: line numbers must be integers",
+        "--changed-ranges must include at least one line or range",
+    ] {
+        let value: Value = serde_json::from_str(&crate::hook::render_run_failure(message))
+            .expect("run failure json");
+
+        assert_eq!(
+            value["diagnostics"][0]["type"], "changed-region",
+            "{message}"
+        );
+        assert_eq!(value["diagnostics"][0]["severity"], "fatal", "{message}");
+        assert_eq!(value["findings"].as_array().expect("findings").len(), 0);
+    }
+
+    // A configuration the loader refused keeps the payload's own config block, which points at the right file.
+    let refused: Value = serde_json::from_str(&crate::hook::render_run_failure(
+        "config schema is not recognised",
+    ))
+    .expect("config failure json");
+
+    assert_eq!(refused["diagnostics"][0]["type"], "config");
+    assert_eq!(refused["config"]["schemaOk"], false);
+}
+
+#[test]
 pub(crate) fn hook_capabilities_advertise_gruff_hook_v2() {
     let value: Value =
         serde_json::from_str(&crate::hook::render_capabilities()).expect("capabilities json");
