@@ -361,6 +361,13 @@ fn suppression_value(suppression: &SuppressionSummary, root: &str) -> Value {
             .expect("suppression is an object")
             .insert("symbol".to_string(), Value::String(symbol.to_string()));
     }
+    // Only a built-in row names its source; a configured row is recognised by carrying none.
+    if let Some(source) = suppression.source {
+        payload
+            .as_object_mut()
+            .expect("suppression is an object")
+            .insert("source".to_string(), Value::String(source.to_string()));
+    }
     payload
 }
 

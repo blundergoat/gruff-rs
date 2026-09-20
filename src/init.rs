@@ -36,10 +36,6 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
     ".goat-flow/**",
     "target/**",
     "node_modules/**",
-    "**/Cargo.lock",
-    "**/package-lock.json",
-    "**/yarn.lock",
-    "**/pnpm-lock.yaml",
 ];
 
 /// Generate the user's default config on stdout or at the requested path.

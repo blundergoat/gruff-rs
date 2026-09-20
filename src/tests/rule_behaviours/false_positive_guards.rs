@@ -586,6 +586,59 @@ pub fn entry() {
     );
 }
 
+/// A dependency version spec is not a credential, but a credential that merely opens with one still is. The guard
+/// reads the whole value, so anything trailing the version keeps reporting: dropping it would hide a committed
+/// credential with no audit row anywhere. gruff-ts pins the same grammar.
+#[test]
+pub(crate) fn hardcoded_env_value_reads_the_whole_dependency_version() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    // Every credential-shaped value is assembled here, so this file stores none of them whole.
+    let quiet = [
+        "8.0.0(supports-color@11.0.0)",
+        "7.1.0(encoding@0.1.13)(supports-color@11.0.0)",
+        ">=v1.2.3",
+        "^1.20.300",
+    ];
+    let reported = [
+        format!("1.0-{}{}", "Rk8sPq2x", "T7vL9wHd"),
+        format!("2.5_{}{}", "hunter2Live", "KeyXyz99"),
+        format!("12.34{}{}", "abcdefgh", "ijklmnop"),
+    ];
+    let mut body = String::new();
+    for (index, value) in quiet
+        .iter()
+        .map(|value| (*value).to_string())
+        .chain(reported.iter().cloned())
+        .enumerate()
+    {
+        body.push_str(&format!("API_TOKEN_{index}={value}\n"));
+    }
+    std::fs::write(dir.path().join(".env"), &body).expect("env fixture");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let lines: Vec<usize> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.hardcoded-env-value")
+        .filter_map(|finding| finding.line)
+        .collect();
+    let expected: Vec<usize> = (0..reported.len())
+        .map(|offset| quiet.len() + offset + 1)
+        .collect();
+
+    assert_eq!(lines, expected, "findings={:?}", report.findings);
+}
+
 #[test]
 pub(crate) fn high_entropy_string_keeps_real_secret_shapes() {
     let _guard = analysis_lock();

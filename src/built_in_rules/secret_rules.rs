@@ -76,6 +76,8 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
 pub(crate) static ENV_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static STRUCTURED_CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
+/// Whole-value dependency version grammar, shared with gruff-ts so both ports accept the same specs.
+pub(crate) static DEPENDENCY_VERSION_SPEC_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run every sensitive-data detector that applies to one discovered user file.
@@ -428,11 +430,34 @@ fn env_like_secret_match(
 /// Decide whether a captured assignment looks like a committed value rather than a safe reference or placeholder.
 fn is_credible_secret_assignment_value(value: &str) -> bool {
     let value = clean_secret_assignment_value(value);
-    // Short values, runtime references, and explicit placeholders do not ask the user to remove real credential material.
-    if value.len() < 8 || is_secret_reference(value) || is_secret_placeholder(value) {
+    // Short values, runtime references, placeholders, and dependency versions ask no user to remove credential material.
+    if value.len() < 8
+        || is_secret_reference(value)
+        || is_secret_placeholder(value)
+        || is_dependency_version_spec(value)
+    {
         return false;
     }
     has_secret_value_shape(value)
+}
+
+/// Recognise a dependency version spec, which a manifest or lockfile writes under any key name - including one ending
+/// in `token`, as a lockfile's `gtoken: 8.0.0(supports-color@11.0.0)` does.
+///
+/// The value's shape decides this and the file's name does not, so the same line stays quiet in a lockfile, in a
+/// manifest, and in authored source alike.
+///
+/// The WHOLE value must be a version: optional range operators, a dotted numeric version, and at most a parenthesised
+/// peer suffix, of which a pnpm lockfile writes more than one. Matching only the opening token would drop a
+/// committed credential that happens to begin with one,
+/// such as `1.0-Rk8sPq2xT7vL9wHd`, and a dropped credential leaves no audit row anywhere. gruff-ts pins the same
+/// grammar in `src/sensitive-data-rules.ts` (search: `DEPENDENCY_SPEC_PATTERN`).
+fn is_dependency_version_spec(value: &str) -> bool {
+    static_regex(
+        &DEPENDENCY_VERSION_SPEC_REGEX,
+        r"^[v^~><=\s]*\d+(?:\.\d+)+(?:\((?:[^()]|\([^()]*\))*\))*$",
+    )
+    .is_match(value.trim())
 }
 
 /// Remove surrounding whitespace and quotes before classifying an assignment value.

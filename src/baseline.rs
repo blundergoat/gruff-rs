@@ -114,11 +114,14 @@ fn baseline_document(
     let mut sensitive_by_rule: BTreeMap<String, usize> = BTreeMap::new();
 
     for (finding, named) in findings.iter().zip(identities.iter()) {
-        // A sensitive finding is counted by rule and stored nowhere, so no row can ever hide a secret.
+        // A sensitive finding is counted by rule and stored nowhere, so no row can ever hide a secret. A finding
+        // left unnamed for its symbol is stored nowhere either, and is never counted as sensitive.
         let Some(named) = named else {
-            *sensitive_by_rule
-                .entry(finding.rule_id.clone())
-                .or_insert(0) += 1;
+            if !is_baseline_eligible(finding) {
+                *sensitive_by_rule
+                    .entry(finding.rule_id.clone())
+                    .or_insert(0) += 1;
+            }
             continue;
         };
         rows.entry(named.identity.clone())
@@ -569,7 +572,8 @@ fn classify(
     let mut spent_per_identity: BTreeMap<&str, usize> = BTreeMap::new();
 
     for index in spend_order(findings) {
-        // Sensitive findings are labelled before any lookup, so no reviewed row can reach a secret.
+        // Sensitive findings are labelled before any lookup, so no reviewed row can reach a secret; a finding left
+        // unnamed for its symbol takes the same label, because no reviewed row can name it either.
         let Some(named) = identities[index].as_ref() else {
             statuses[index] = BaselineStatus::NotEligible;
             continue;

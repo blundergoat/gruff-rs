@@ -8,6 +8,9 @@
 
 use super::*;
 
+use crate::init::render_default_config;
+use std::collections::BTreeMap;
+
 /// Rendered corpus case `aws`, kept byte-identical to the family fixture.
 const CORPUS_AWS_PATH: &str = "src/aws_config.rs";
 /// Rendered corpus case `aws-sibling`: the same rule in a second file.
@@ -18,6 +21,12 @@ const CORPUS_JWT_PATH: &str = "src/session_token.rs";
 const CORPUS_CLEAN_PATH: &str = "src/app_config.rs";
 
 const AWS_RULE_ID: &str = "sensitive-data.aws-access-key";
+/// The one rule the family's built-in lockfile skip covers.
+const ENTROPY_RULE_ID: &str = "sensitive-data.high-entropy-string";
+/// A package-manager lockfile, named in parts so the repository holds no literal a lockfile guard would match.
+const LOCKFILE_PATH_NAME: &str = concat!("package-", "lock.json");
+/// The same bytes under a neutral name, which must keep reporting everything.
+const LOCKFILE_TWIN_NAME: &str = "other.json";
 
 /// Materialise the four corpus cases this suite needs into one temporary project.
 /// The values are the spec's synthetic sentinels, so no real credential is ever written.
@@ -169,6 +178,92 @@ fn suppression_line(text: &str) -> &str {
     text.lines()
         .find(|line| line.starts_with("Suppressed findings: "))
         .expect("text surface publishes a suppression line")
+}
+
+/// Write one lockfile and its byte-identical twin under a neutral name, so a path-based mechanism is visible.
+/// Both hold a digest-shaped token and a key-shaped identifier, assembled here so no whole secret is stored.
+fn write_lockfile_corpus(project_root: &Path) {
+    let digest = concat!("q7ZxM2kPv9LtB4nR", "w8HsD3jFy6GcT5mV", "a1UeN0bK");
+    let key = concat!("AKIA", "QQZZRSTVZZZZWWWW");
+    let body =
+        format!("{{\n  \"resolvedDigest\": \"{digest}\",\n  \"accessKeyId\": \"{key}\"\n}}\n");
+    fs::create_dir_all(project_root.join("web")).expect("corpus web dir");
+    fs::write(project_root.join("web").join(LOCKFILE_PATH_NAME), &body).expect("lockfile write");
+    fs::write(project_root.join("web").join(LOCKFILE_TWIN_NAME), &body).expect("twin write");
+}
+
+/// Collect one report's rule ids for one file path.
+fn rules_for(report: &AnalysisReport, file_path: &str) -> Vec<String> {
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.file_path == file_path)
+        .map(|finding| finding.rule_id.clone())
+        .collect()
+}
+
+/// Skip the entropy rule in a package-manager lockfile, count it, and leave every other rule reporting there.
+/// A lockfile carries thousands of published integrity digests, so the family skips that one rule by file name -
+/// and publishes the count, because section 13a permits no surface to filter in silence.
+#[test]
+pub(crate) fn built_in_lockfile_skip_removes_only_entropy_and_publishes_its_row() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    write_lockfile_corpus(dir.path());
+
+    let report = analyse_corpus_with_config(dir.path(), "");
+
+    let twin_path = format!("web/{LOCKFILE_TWIN_NAME}");
+    let lockfile_path = format!("web/{LOCKFILE_PATH_NAME}");
+    let twin_rules = rules_for(&report, &twin_path);
+    assert!(
+        twin_rules.iter().any(|rule| rule == ENTROPY_RULE_ID),
+        "the twin must still report the entropy rule, or this test proves nothing: {twin_rules:?}"
+    );
+    let lockfile_rules = rules_for(&report, &lockfile_path);
+    assert!(
+        !lockfile_rules.iter().any(|rule| rule == ENTROPY_RULE_ID),
+        "the lockfile still reports the entropy rule: {lockfile_rules:?}"
+    );
+    assert!(
+        lockfile_rules.iter().any(|rule| rule == AWS_RULE_ID),
+        "a credential in a lockfile must still report: {lockfile_rules:?}"
+    );
+
+    let json: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("json report");
+    let row = &json["suppressions"][0];
+    assert_eq!(row["source"], "built-in");
+    assert_eq!(row["rule"], ENTROPY_RULE_ID);
+    assert_eq!(row["paths"][0], lockfile_path);
+    assert!(row["suppressed"].as_u64().expect("count") >= 1);
+
+    let text = render_report(&report, OutputFormat::Text);
+    assert!(
+        text.contains(&format!(
+            "builtInLockfile[{lockfile_path}] {ENTROPY_RULE_ID}: "
+        )),
+        "{text}"
+    );
+}
+
+/// Seed no lockfile globs into `paths.ignore`, because ignoring the file would silence every other rule there too.
+#[test]
+pub(crate) fn init_seeds_no_lockfile_ignore_globs() {
+    let registry = rules::builtin_registry();
+    let seeded = render_default_config(&registry, &[], &BTreeMap::new());
+
+    for name in [
+        LOCKFILE_PATH_NAME,
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.lock",
+    ] {
+        assert!(
+            !seeded.contains(name),
+            "init still seeds {name} into the config: {seeded}"
+        );
+    }
 }
 
 /// Report the suppression count on `summary` text, the surface that applies it.

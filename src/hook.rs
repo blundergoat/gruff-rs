@@ -751,14 +751,21 @@ fn hook_suppressions(suppressions: &[SuppressionSummary]) -> Vec<Value> {
     suppressions
         .iter()
         .map(|summary| {
-            json!({
+            let mut row = json!({
                 "rule": summary.rule,
                 // Section 13a gives each entry exactly one path; the native audit carries it in the family's list shape.
                 "path": summary.paths.first().cloned().unwrap_or_default(),
                 "symbol": summary.symbol,
                 "reason": summary.reason,
-                "suppressed": summary.suppressed
-            })
+                "suppressed": summary.suppressed,
+            });
+            // Only a built-in row names its source; a configured row omits the key rather than nulling it.
+            if let Some(source) = summary.source {
+                row.as_object_mut()
+                    .expect("suppression row is an object")
+                    .insert("source".to_string(), Value::String(source.to_string()));
+            }
+            row
         })
         .collect()
 }

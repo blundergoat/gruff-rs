@@ -195,9 +195,14 @@ pub(crate) fn render_text_suppressions(output: &mut String, report: &AnalysisRep
         .iter()
         .filter(|summary| summary.suppressed > 0)
         .map(|summary| {
+            // A built-in row names the lockfile it skipped, because it has no configured entry to point at.
+            let scope = match summary.source {
+                Some(_) => summary.paths.first().cloned().unwrap_or_default(),
+                None => summary.index.to_string(),
+            };
             format!(
                 "{}[{}] {}: {} ({})",
-                summary.config_key, summary.index, summary.rule, summary.suppressed, summary.reason
+                summary.config_key, scope, summary.rule, summary.suppressed, summary.reason
             )
         })
         .collect::<Vec<_>>()

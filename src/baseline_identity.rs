@@ -5,10 +5,11 @@
 //! and nothing positional. On the next `analyse --baseline` a finding that moved lines still matches, while a
 //! new sibling of the same rule never inherits the review.
 //!
-//! Three decisions live here:
+//! Four decisions live here:
 //! - a symbol-bearing finding is named by its symbol plus a declaration ordinal, so two same-named functions stay apart;
 //! - a finding naming no symbol falls back to its message with measured values normalised, so a grown file keeps its review;
-//! - a sensitive finding receives no identity at all, because a stored identity is what would let a review hide a secret.
+//! - a sensitive finding receives no identity at all, because a stored identity is what would let a review hide a secret;
+//! - a finding whose symbol carries the separator receives none either, and stays visible as not eligible.
 
 use super::*;
 
@@ -121,6 +122,13 @@ fn identity_symbol(symbol: &str) -> String {
         .join("::")
 }
 
+/// Whether a finding's symbol, spelled the way its identity names it, still contains the ordinal separator.
+///
+/// A raw identifier does not, because its `r#` is stripped first; a manifest key such as `"bad#dep"` does.
+fn has_separator_in_symbol(finding: &Finding) -> bool {
+    named_symbol(finding).is_some_and(|symbol| identity_symbol(symbol).contains(ORDINAL_SEPARATOR))
+}
+
 /// Hash the ratified identity under an explicit tool language.
 ///
 /// Conformance tests use it to reproduce the digests the family oracle pins for other ports, which is the only
@@ -144,7 +152,9 @@ pub(crate) fn compute_identity_for(
 /// Name every eligible finding in one run, ranking same-named declarations as it goes.
 ///
 /// This is the single entry point baseline generation and matching both use, so a written identity and a matched
-/// identity can never be computed two different ways. A sensitive finding maps to `None` and joins no group.
+/// identity can never be computed two different ways. A sensitive finding maps to `None` and joins no group, and
+/// so does a finding whose symbol carries the separator: the family withholds its identity rather than inventing
+/// one, and it never costs its neighbours theirs or aborts the run.
 pub(crate) fn finding_identities(
     findings: &[Finding],
     declaration_position: &dyn Fn(&Finding) -> usize,
@@ -153,8 +163,9 @@ pub(crate) fn finding_identities(
     let mut identities = Vec::with_capacity(findings.len());
 
     for (index, finding) in findings.iter().enumerate() {
-        // A sensitive finding is skipped before any hashing, so no secret ever reaches a stored identity.
-        if !is_baseline_eligible(finding) {
+        // A sensitive finding is skipped before any hashing, so no secret ever reaches a stored identity; a symbol
+        // carrying the separator is skipped beside it, so one unnameable finding costs the run nothing else.
+        if !is_baseline_eligible(finding) || has_separator_in_symbol(finding) {
             identities.push(None);
             continue;
         }

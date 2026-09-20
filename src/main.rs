@@ -88,7 +88,7 @@ use baseline_file::{BaselineData, BaselineEntry, SensitiveCounts, SensitiveSumma
 pub(crate) use baseline_identity::{compute_identity_for, normalise_measured_values};
 pub(crate) use baseline_identity::{
     declaration_position_by_line, declaration_position_from_blocks, finding_identities,
-    FindingIdentity, TOOL_LANGUAGE,
+    is_baseline_eligible, FindingIdentity, TOOL_LANGUAGE,
 };
 use changed_region::{
     apply_diff_file_selection, patch_intersects_finding_with_scope, resolve_diff_filter,

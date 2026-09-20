@@ -70,8 +70,27 @@ pub(crate) fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
 }
 
+/// The one rule the family's built-in lockfile skip covers; every other sensitive-data rule still reads a lockfile.
+const BUILT_IN_LOCKFILE_RULE: &str = "sensitive-data.high-entropy-string";
+
+/// The rationale every port publishes on a built-in lockfile audit row.
+const BUILT_IN_LOCKFILE_REASON: &str = "Lockfile digests are published integrity hashes, so the entropy rule skips package-manager lockfiles by name.";
+
+/// The ratified package-manager lockfile names, matched by exact base name at any depth.
+const BUILT_IN_LOCKFILE_NAMES: &[&str] = &[
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "composer.lock",
+    "Cargo.lock",
+    "go.sum",
+    "uv.lock",
+    "poetry.lock",
+];
+
 /// Remove the findings both suppression channels claim and count every configured entry.
-/// The returned summaries carry `exclude` rows first, then `sensitiveExclusions` rows.
+/// The returned summaries carry `exclude` rows first, then `sensitiveExclusions` rows, then built-in rows.
 pub(crate) fn apply_report_exclusions(
     findings: Vec<Finding>,
     exclusions: &[ExclusionRule],
@@ -81,10 +100,7 @@ pub(crate) fn apply_report_exclusions(
     Vec<SuppressionSummary>,
     Vec<SuppressedFinding>,
 ) {
-    if exclusions.is_empty() && sensitive_exclusions.is_empty() {
-        return (findings, Vec::new(), Vec::new());
-    }
-
+    // The built-in lockfile skip runs whether or not the user configured anything, so there is no early return.
     let mut summaries = initial_suppression_summaries(exclusions);
     let exclude_rows = summaries.len();
     summaries.extend(initial_sensitive_suppression_summaries(
@@ -95,7 +111,67 @@ pub(crate) fn apply_report_exclusions(
     let (kept, sensitive_suppressed) =
         partition_sensitive_findings(kept, sensitive_exclusions, &mut summaries[exclude_rows..]);
     suppressed.extend(sensitive_suppressed);
+    // A configured entry claims its findings first, so its count stays what the user wrote it for.
+    let (kept, lockfile_suppressed) = partition_built_in_lockfile_findings(kept, &mut summaries);
+    suppressed.extend(lockfile_suppressed);
     (kept, summaries, suppressed)
+}
+
+/// Remove the entropy rule's findings from package-manager lockfiles and append one audit row per lockfile that
+/// had any, after the configured rows.
+///
+/// A lockfile digest is a published integrity hash and a real project carries thousands of them, so the family
+/// skips that one rule by file name. It is counted on every surface rather than applied in silence, and a lockfile
+/// with nothing to skip publishes no row (FAMILY-CONTRACT.md section 13a). Every other sensitive-data rule still
+/// reads the lockfile, because a credential pasted into one is as live as anywhere else.
+fn partition_built_in_lockfile_findings(
+    findings: Vec<Finding>,
+    summaries: &mut Vec<SuppressionSummary>,
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
+    let mut kept = Vec::with_capacity(findings.len());
+    let mut skipped: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
+    for finding in findings {
+        if finding.rule_id == BUILT_IN_LOCKFILE_RULE && is_built_in_lockfile(&finding.file_path) {
+            skipped
+                .entry(finding.file_path.clone())
+                .or_default()
+                .push(finding);
+            continue;
+        }
+        kept.push(finding);
+    }
+    let mut suppressed = Vec::new();
+    // Built-in rows are numbered among themselves, so the index means the same thing in every port however many
+    // entries the user configured, and it keeps this port's section-local numbering. `source` is what tells a
+    // consumer which channel a row came from.
+    for (built_in_index, (lockfile, lockfile_findings)) in skipped.into_iter().enumerate() {
+        let summary = SuppressionSummary {
+            index: built_in_index,
+            rule: BUILT_IN_LOCKFILE_RULE.to_string(),
+            paths: vec![lockfile],
+            message_contains: None,
+            symbol: None,
+            reason: BUILT_IN_LOCKFILE_REASON.to_string(),
+            suppressed: lockfile_findings.len(),
+            source: Some("built-in"),
+            config_key: "builtInLockfile",
+        };
+        for finding in lockfile_findings {
+            suppressed.push(SuppressedFinding {
+                finding,
+                suppression: summary.clone(),
+            });
+        }
+        summaries.push(summary);
+    }
+    (kept, suppressed)
+}
+
+/// Decide whether a path's base name is one of the ratified package-manager lockfiles.
+fn is_built_in_lockfile(file_path: &str) -> bool {
+    let normalized = file_path.replace('\\', "/");
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    BUILT_IN_LOCKFILE_NAMES.contains(&file_name)
 }
 
 fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<SuppressionSummary> {
@@ -111,6 +187,8 @@ fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<Suppressio
             symbol: None,
             reason: exclusion.reason.clone(),
             suppressed: 0,
+            // A configured row names no source; only the built-in lockfile skip does.
+            source: None,
             config_key: "exclude",
         })
         .collect()
@@ -133,6 +211,8 @@ fn initial_sensitive_suppression_summaries(
             symbol: exclusion.symbol.clone(),
             reason: exclusion.reason.clone(),
             suppressed: 0,
+            // A configured row names no source; only the built-in lockfile skip does.
+            source: None,
             config_key: "sensitiveExclusions",
         })
         .collect()

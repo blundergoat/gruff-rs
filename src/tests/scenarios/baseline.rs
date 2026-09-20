@@ -124,6 +124,66 @@ pub(crate) fn a_raw_identifier_is_baselined_under_its_plain_name() {
     assert_eq!(subjects, vec!["Parser::type#1", "match#1", "match#2"]);
 }
 
+/// A manifest key such as `"bad#dep"` is a symbol no raw-identifier rule can clean. The family withholds that one
+/// finding's identity: generation still writes its neighbour, and the unnamed finding is not counted as a secret.
+#[test]
+pub(crate) fn a_symbol_carrying_the_separator_is_left_out_and_its_neighbour_is_still_baselined() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    let findings = [
+        baseline_test_finding(
+            "dependency.wildcard-version",
+            "Cargo.toml",
+            7,
+            Some("bad#dep"),
+        ),
+        baseline_test_finding("dependency.wildcard-version", "Cargo.toml", 8, Some("good")),
+    ];
+
+    write_baseline(&baseline_path, &findings)
+        .expect("one unnameable symbol no longer aborts the baseline");
+    let document: Value =
+        serde_json::from_str(&fs::read_to_string(&baseline_path).expect("baseline read"))
+            .expect("baseline json");
+    let subjects: Vec<&str> = document["occurrences"]
+        .as_array()
+        .expect("occurrence rows")
+        .iter()
+        .filter_map(|row| row["subject"].as_str())
+        .collect();
+
+    assert_eq!(subjects, vec!["good#1"]);
+    assert_eq!(document["sensitive"]["counts"]["total"], 0);
+}
+
+/// Matching follows generation: the unnamed finding stays visible as not eligible, and a reviewed neighbour in the
+/// same run is still hidden rather than losing its identity with it.
+#[test]
+pub(crate) fn a_symbol_carrying_the_separator_stays_visible_beside_a_reviewed_neighbour() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_path = dir.path().join("baseline.json");
+    let reviewed =
+        baseline_test_finding("dependency.wildcard-version", "Cargo.toml", 8, Some("good"));
+    write_baseline(&baseline_path, std::slice::from_ref(&reviewed)).expect("baseline write");
+
+    let mut findings = vec![
+        baseline_test_finding(
+            "dependency.wildcard-version",
+            "Cargo.toml",
+            7,
+            Some("bad#dep"),
+        ),
+        baseline_test_finding("dependency.wildcard-version", "Cargo.toml", 8, Some("good")),
+    ];
+    let application = apply_baseline(&baseline_path, &mut findings, &declaration_position_by_line)
+        .expect("one unnameable symbol no longer aborts matching");
+
+    assert_eq!(application.counts.unchanged, 1);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].symbol.as_deref(), Some("bad#dep"));
+    assert_eq!(findings[0].baseline_status.as_deref(), Some("notEligible"));
+}
+
 #[test]
 pub(crate) fn a_line_shifted_finding_stays_hidden_and_a_new_sibling_does_not() {
     let dir = tempdir().expect("tempdir");
