@@ -176,6 +176,9 @@ fn regex_match_should_be_suppressed(
         }
         // Hide the generic private-key duplicate only when the enabled GCP rule will show the user a more specific finding.
         "sensitive-data.private-key" => gcp_finding_contains_private_key(source, config, capture),
+        // A body that is entirely X shows where a key goes and names no credential (FAMILY-CONTRACT.md section 5). Only
+        // the whole body counts: a real key may contain a run of X, and hiding it would hide a live credential.
+        "sensitive-data.aws-access-key" => capture.as_str()[4..].bytes().all(|byte| byte == b'X'),
         _ => false,
     }
 }
