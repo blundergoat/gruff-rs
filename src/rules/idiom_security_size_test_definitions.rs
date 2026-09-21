@@ -554,7 +554,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Severity::Error,
         Confidence::High,
         None,
-        "Flags AWS access key patterns (AKIA long-term and ASIA session identifiers).",
+        "Flags AWS access key identifiers, both long-term keys and temporary session credentials.",
     ),
     rule_definition!(
         "sensitive-data.database-url-password",
