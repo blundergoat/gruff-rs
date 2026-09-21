@@ -62,6 +62,46 @@ fn sensitive_finding<'a>(report: &'a AnalysisReport, rule_id: &str) -> &'a Findi
         .unwrap_or_else(|| panic!("missing {rule_id} in {:#?}", report.findings))
 }
 
+/// AWS issues temporary session credentials under the `ASIA` prefix over the same fixed body, so a rule naming
+/// only `AKIA` left a live credential unreported. gruff-php and gruff-py already named both shapes.
+#[test]
+pub(crate) fn aws_session_token_reports_as_an_access_key() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let session_token = format!("{}{}", "ASIA", "IOSFODNN7EXAMPLE");
+    let source = format!(
+        r####"/// Probe.
+pub fn entry() {{
+    let _session = "{session_token}";
+}}
+"####
+    );
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("src/lib.rs")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let aws: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.aws-access-key")
+        .collect();
+
+    assert_eq!(
+        aws.len(),
+        1,
+        "expected the session token reported: {:#?}",
+        report.findings
+    );
+}
+
 /// Identity-independent findings expose only detector-owned zero-payload markers.
 #[test]
 pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers() {

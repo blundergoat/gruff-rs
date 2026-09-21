@@ -36,7 +36,9 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     RegexRule {
         rule_id: "sensitive-data.aws-access-key",
         regex: &AWS_ACCESS_KEY_REGEX,
-        pattern: r"AKIA[0-9A-Z]{16}",
+        // ASIA is AWS's prefix for temporary session credentials, over the same fixed body; missing it left a
+        // live credential unnamed.
+        pattern: r"(?:AKIA|ASIA)[0-9A-Z]{16}",
         message: "AWS access key pattern detected.",
     },
     RegexRule {
