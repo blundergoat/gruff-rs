@@ -132,7 +132,7 @@ fn run_value(report: &AnalysisReport) -> Value {
     let mut payload = json!({
         "failOn": report.run.fail_on,
         "format": report.run.format,
-        "inputs": machine_paths(&context.inputs, &context.project_root),
+        "inputs": machine_inputs(&context.inputs, &context.project_root),
         "projectRoot": ".",
     });
     let object = payload.as_object_mut().expect("run is an object");
@@ -451,6 +451,21 @@ fn machine_paths(values: &[String], root: &str) -> Vec<String> {
         }
     }
     paths
+}
+
+/// Publish the inputs that have a project-relative form and leave out the rest.
+///
+/// A run that could not start never resolved a project root, so its envelope is rooted at the launch directory,
+/// and a target named from a sibling directory, such as `analyse ../proj`, has no form under it. A host path may
+/// not be published, so the input is left out the way `insert_optional_path` leaves out such a config path, and the
+/// way gruff-go leaves out the same input, instead of failing the one envelope that says why the run could not start.
+fn machine_inputs(values: &[String], root: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .iter()
+        .filter_map(|value| relative_machine_path(value, root))
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
 }
 
 fn machine_path(value: &str, root: &str) -> String {

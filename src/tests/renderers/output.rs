@@ -401,3 +401,28 @@ pub(crate) fn bounded_deep_scan_note_reaches_every_supported_output_surface() {
         .as_str()
         .is_some_and(|message| message.contains("override=cli")));
 }
+
+#[test]
+pub(crate) fn failed_run_envelope_leaves_out_a_target_named_from_a_sibling_directory() {
+    // A run whose config cannot load never resolves a project root, so its envelope is rooted at the launch
+    // directory, and `analyse ../proj` from a sibling directory names a target with no form under it. The envelope
+    // leaves that input out, as it already does the config path, rather than panicking on the way to stdout.
+    let report = failed_run_report(
+        Path::new("."),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from("../proj")],
+            config: Some(PathBuf::from("../c.yaml")),
+            ..default_test_options()
+        },
+        &Config::default(),
+        "unable to read config ../c.yaml",
+    );
+
+    let envelope: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("analysis json");
+
+    assert_eq!(envelope["run"]["inputs"], json!([]));
+    assert!(envelope["run"].get("config").is_none());
+    assert_eq!(envelope["diagnostics"][0]["type"], "config-error");
+    assert_eq!(envelope["diagnostics"][0]["invalidatesRun"], true);
+}

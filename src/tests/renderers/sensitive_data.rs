@@ -102,6 +102,50 @@ pub fn entry() {{
     );
 }
 
+/// FAMILY-CONTRACT.md section 5 reads a key whose body is entirely `X` as naming no credential, while a real key that
+/// merely contains a run of `X` still reports, because hiding it would hide a live credential.
+#[test]
+pub(crate) fn aws_key_whose_whole_body_is_x_is_read_as_masked() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let masked = "X".repeat(16);
+    let partly_masked = format!("{}{}", "IOSFODNN", "X".repeat(8));
+    let source = format!(
+        r####"/// Probe.
+pub fn entry() {{
+    let _long = "AKIA{masked}";
+    let _session = "ASIA{masked}";
+    let _partly = "AKIA{partly_masked}";
+}}
+"####
+    );
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("src/lib.rs")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let lines: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.aws-access-key")
+        .map(|finding| finding.line)
+        .collect();
+
+    assert_eq!(
+        lines,
+        vec![Some(5)],
+        "expected only the partly masked key reported: {:#?}",
+        report.findings
+    );
+}
+
 /// Identity-independent findings expose only detector-owned zero-payload markers.
 #[test]
 pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers() {
