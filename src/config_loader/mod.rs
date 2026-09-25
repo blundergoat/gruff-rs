@@ -64,16 +64,35 @@ pub(crate) fn read_config_value(
     project_root: &Path,
     config: Option<&Path>,
 ) -> Result<Option<(PathBuf, Value)>, String> {
-    let config_path = config
-        .map(|path| absolutize(project_root, path))
-        .or_else(|| default_config_path(project_root));
+    // An explicit path means what the user typed, relative to the launch directory as scan targets are; only the
+    // discovered default is looked up at the project root.
+    let config_path = match config {
+        Some(path) => Some(absolutize(
+            &std::env::current_dir()
+                .map_err(|error| format!("unable to resolve current directory: {error}"))?,
+            path,
+        )),
+        None => default_config_path(project_root),
+    };
     // When the user has no config file, callers retain defaults rather than treating setup as an error.
     let Some(path) = config_path else {
         return Ok(None);
     };
 
-    let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("unable to read config {}: {error}", path.display()))?;
+    // The message reaches the analysis envelope, which may not publish a host path, so it names the file the way the
+    // user typed it, or by its file name when it was discovered.
+    let raw = fs::read_to_string(&path).map_err(|error| {
+        let named = config.map_or_else(
+            || {
+                path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+            },
+            |typed| typed.display().to_string(),
+        );
+        format!("unable to read config {named}: {error}")
+    })?;
     let value = parse_config_value(&path, &raw)?;
     Ok(Some((path, value)))
 }

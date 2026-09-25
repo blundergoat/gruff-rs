@@ -586,6 +586,47 @@ pub fn entry() {
     );
 }
 
+/// FAMILY-CONTRACT section 12's floor: a literal needs a letter and a digit to be credential-shaped, so lowercase-only
+/// and uppercase-only runs and a digit-free mix of cases stay quiet while a literal mixing letters and digits still
+/// reports. gruff-go, gruff-php, gruff-py and gruff-ts pin the same literals.
+#[test]
+pub(crate) fn high_entropy_string_needs_a_letter_and_a_digit() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry() {
+    let _lower = "vxezaawdsdwcvvuvryyabvkvbgdqlcqstgddkefmpdrjp";
+    let _upper = "VXEZAAWDSDWCVVUVRYYABVKVBGDQLCQSTGDDKEFMPDRJP";
+    let _camel = "VxEzAaWdSdWcVvUvRyYaBvKvBgDqLcQsTgDdKeFmPdRjP";
+    let _mixed = "k3j9x2m7q1w8e5r4t6y0u9i8o7p6a5s4d3f2g1h0zb";
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        entropy_lines,
+        vec![Some(6)],
+        "only the letter-and-digit literal on line 6 reports"
+    );
+}
+
 /// A dependency version spec is not a credential, but a credential that merely opens with one still is. The guard
 /// reads the whole value, so anything trailing the version keeps reporting: dropping it would hide a committed
 /// credential with no audit row anywhere. gruff-ts pins the same grammar.

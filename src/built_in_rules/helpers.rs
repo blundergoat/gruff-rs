@@ -253,6 +253,9 @@ impl SensitiveDisplayMarker<'_> {
 /// Decide whether a value has enough length, character variety, and entropy to warrant a secret finding.
 /// This is a candidate check; detector-owned inert shapes are filtered later. Both bars come from the
 /// rule's configured detector parameters, so a value's fate never depends on a number repeated here.
+/// Variety is FAMILY-CONTRACT section 12's floor: a letter and a digit. A run of one character class clears the
+/// entropy bar by construction, and a digit-free mix of cases is an identifier; gruff-rs once required upper,
+/// lower and digit together, which hid lowercase-and-digit keys the other four ports report.
 pub(crate) fn is_high_entropy(value: &str, min_length: usize, min_entropy: f64) -> bool {
     // Short values do not meet the detector's minimum evidence bar for a user finding.
     if value.chars().count() < min_length {
@@ -265,7 +268,7 @@ pub(crate) fn is_high_entropy(value: &str, min_length: usize, min_entropy: f64) 
         .chars()
         .any(|character| character.is_ascii_lowercase());
     let has_digit = value.chars().any(|character| character.is_ascii_digit());
-    has_upper && has_lower && has_digit && shannon_entropy(value) >= min_entropy
+    (has_upper || has_lower) && has_digit && shannon_entropy(value) >= min_entropy
 }
 
 /// Measure Shannon entropy so generated-looking values can be separated from ordinary user text.

@@ -778,7 +778,21 @@ fn resolve_baseline_inner(
         findings,
         declaration_position,
     )
+    .map_err(|error| baseline_named_as_given(&error, &baseline_path, options))
     .map(Some)
+}
+
+/// A load error names the absolute path it read, and the envelope may not publish a host path, so the message names the
+/// baseline as the run was given it, or by the default file name when it was discovered.
+fn baseline_named_as_given(error: &str, baseline_path: &Path, options: &AnalysisOptions) -> String {
+    let shown = options
+        .baseline
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_BASELINE));
+    error.replace(
+        &baseline_path.display().to_string(),
+        &shown.display().to_string(),
+    )
 }
 
 fn generate_baseline_report(

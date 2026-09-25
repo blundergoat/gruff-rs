@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Component;
 
 /// Resolve `project_root` and load the project's `Config` once at the CLI
 /// edge. Shared by `analyse`, `report`, and `summary` so each command
@@ -23,6 +24,12 @@ pub(crate) fn resolve_project_root_and_config(
             .map(|target| rebase_scan_target(&project_root, target))
             .collect();
     }
+    // A baseline path means what the user typed from the launch directory, as the targets do.
+    options.baseline = rebase_typed_path(&caller_root, &project_root, options.baseline);
+    options.generate_baseline =
+        rebase_typed_path(&caller_root, &project_root, options.generate_baseline);
+    options.migrate_baseline =
+        rebase_typed_path(&caller_root, &project_root, options.migrate_baseline);
     let mut config = load_config(&project_root, &options)?;
     config.apply_deep_scan_budget_override(deep_scan_budget);
     Ok((project_root, options, config))
@@ -87,6 +94,51 @@ fn target_directory(target: &Path) -> PathBuf {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| target.to_path_buf())
+}
+
+/// Rewrite a path the user typed, such as `--baseline`, so that joined to the project root it names the file they meant
+/// from the launch directory. It stays relative, with `..` for a file outside the project, so no report names a host path.
+fn rebase_typed_path(
+    caller_root: &Path,
+    project_root: &Path,
+    path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let path = path?;
+    // Inside the launch directory the root and the typed path already agree, so the path is passed on as typed.
+    if path.is_absolute() || caller_root == project_root {
+        return Some(path);
+    }
+    let target = lexically_normal(&absolutize(caller_root, &path));
+    let root_parts: Vec<Component<'_>> = project_root.components().collect();
+    let target_parts: Vec<Component<'_>> = target.components().collect();
+    let shared = root_parts
+        .iter()
+        .zip(&target_parts)
+        .take_while(|(root_part, target_part)| root_part == target_part)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in shared..root_parts.len() {
+        relative.push("..");
+    }
+    for part in &target_parts[shared..] {
+        relative.push(part.as_os_str());
+    }
+    Some(relative)
+}
+
+/// Resolve `.` and `..` without touching the filesystem, because a baseline about to be generated does not exist yet.
+fn lexically_normal(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normal.pop();
+            }
+            Component::CurDir => {}
+            other => normal.push(other.as_os_str()),
+        }
+    }
+    normal
 }
 
 fn rebase_scan_target(project_root: &Path, target: &Path) -> PathBuf {

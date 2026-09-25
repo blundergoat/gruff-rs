@@ -5,6 +5,56 @@
 use super::*;
 
 #[test]
+pub(crate) fn unreadable_config_is_named_as_typed_not_by_its_host_path() {
+    // The message reaches the analysis envelope, which may not publish a host path, so a missing `--config` file is
+    // named the way the user typed it rather than by the absolute path the loader resolved.
+    let dir = tempdir().expect("tempdir");
+    let options = AnalysisOptions {
+        config: Some(PathBuf::from("missing.yaml")),
+        ..default_test_options()
+    };
+
+    let error = load_config(dir.path(), &options).expect_err("a missing config is an error");
+
+    assert!(
+        error.starts_with("unable to read config missing.yaml: "),
+        "{error}"
+    );
+    assert!(
+        !error.contains(&dir.path().display().to_string()),
+        "{error}"
+    );
+}
+
+#[test]
+pub(crate) fn explicit_relative_config_is_read_from_the_launch_directory() {
+    // `--config` means the path the user typed, so from a nested directory `../../cfg.yaml` is read against that
+    // directory, as scan targets are, and not against the project root the targets resolve to.
+    let _guard = analysis_lock();
+    let sandbox = tempdir().expect("tempdir");
+    let project = sandbox.path().join("project");
+    let nested = project.join("a/b");
+    fs::create_dir_all(&nested).expect("nested launch directory");
+    fs::write(
+        project.join("cfg.yaml"),
+        "schemaVersion: gruff-rs.config.v1\nminimumSeverity: error\n",
+    )
+    .expect("config write");
+    let options = AnalysisOptions {
+        config: Some(PathBuf::from("../../cfg.yaml")),
+        ..default_test_options()
+    };
+
+    let original_cwd = std::env::current_dir().expect("original cwd");
+    std::env::set_current_dir(&nested).expect("enter the nested launch directory");
+    let loaded = load_config(&project, &options);
+    std::env::set_current_dir(original_cwd).expect("restore cwd");
+
+    let config = loaded.expect("the typed path names the file from the launch directory");
+    assert_eq!(config.display_floor, Some(Severity::Error));
+}
+
+#[test]
 pub(crate) fn config_rejects_unknown_root_keys_and_rule_ids() {
     let dir = tempdir().expect("tempdir");
     let options = default_test_options();
@@ -191,7 +241,7 @@ pub(crate) fn unsupported_config_extensions_are_rejected() {
     let error = load_config(
         dir.path(),
         &AnalysisOptions {
-            config: Some(PathBuf::from("config.json")),
+            config: Some(dir.path().join("config.json")),
             ..default_test_options()
         },
     )

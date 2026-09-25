@@ -655,6 +655,77 @@ pub(crate) fn explicit_scan_target_makes_project_context_caller_cwd_invariant() 
     assert!(diagnostic_types(&empty_report).contains(&"partial-context-rule-suppressed"));
 }
 
+#[test]
+pub(crate) fn typed_baseline_paths_are_read_from_the_launch_directory() {
+    // `--generate-baseline ../../base.json` and `--baseline ../../base.json` typed two levels inside the project name
+    // the project's own file. Read against the project root they named a file above it: the write landed outside the
+    // project, and the read missed and published the joined host path.
+    let _guard = analysis_lock();
+    let sandbox = tempfile::tempdir().expect("sandbox");
+    let project = sandbox.path().join("outer/inner/project");
+    let nested = project.join("a/b");
+    fs::create_dir_all(&nested).expect("nested launch directory");
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"baseline-proof\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("project manifest");
+    fs::write(
+        project.join("lib.rs"),
+        "pub fn probe(rx: i32) -> i32 {\n    rx + rx\n}\n",
+    )
+    .expect("project source");
+
+    let original_cwd = std::env::current_dir().expect("original cwd");
+    let _restore = RestoreCurrentDir(original_cwd);
+    std::env::set_current_dir(&nested).expect("enter the nested launch directory");
+    let scan = |baseline_flag: &str, baseline_path: &str| {
+        let cli = Cli::try_parse_from([
+            "gruff-rs",
+            "analyse",
+            "--no-config",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            baseline_flag,
+            baseline_path,
+            "../..",
+        ])
+        .expect("CLI parses");
+        let Commands::Analyse(args) = cli.command else {
+            panic!("expected analyse command");
+        };
+        let cli_fail_on = args.fail_on;
+        let deep_scan_budget = args.deep_scan_budget.clone();
+        let base = options_from_analyse(*args, FailThreshold::Advisory);
+        let (root, options, config) = resolve_command_setup(
+            base,
+            cli_fail_on,
+            "analyse",
+            FailThreshold::Advisory,
+            deep_scan_budget.as_ref(),
+        )
+        .expect("command setup resolves");
+        run_analysis_in_project(&root, &options, &config)
+    };
+
+    scan("--generate-baseline", "../../base.json").expect("generate succeeds");
+    assert!(project.join("base.json").is_file());
+    assert!(!sandbox.path().join("outer/base.json").exists());
+
+    let applied = scan("--baseline", "../../base.json").expect("apply succeeds");
+    let baseline = applied.baseline.expect("the baseline is applied");
+    assert_eq!(baseline.path, "base.json");
+
+    let missing =
+        scan("--baseline", "../../missing.json").expect_err("a missing baseline is an error");
+    assert!(
+        !missing.contains(&sandbox.path().display().to_string()),
+        "{missing}"
+    );
+}
+
 struct RestoreCurrentDir(PathBuf);
 
 impl Drop for RestoreCurrentDir {
