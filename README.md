@@ -22,7 +22,7 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 
 | Field | Value |
 | --- | --- |
-| Release line | Published `0.5.0` package line |
+| Release line | Published `0.6.0` package line |
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
@@ -35,7 +35,7 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 
 <!-- gruff-docs:end release-status -->
 
-Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are the stable contract for the `0.5.x` line. The two schema rows above are what this checkout emits; the move to the `v3` envelopes lands in `0.6.0`, and [UPGRADING.md](UPGRADING.md) states every break it carries.
+Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavior are the stable contract for the `0.6.x` line. The two schema rows above are what this release emits, and [UPGRADING.md](UPGRADING.md) states every break the move to `0.6.0` carries.
 
 ## Requirements
 
@@ -50,7 +50,7 @@ Install into a repository-local tool directory:
 <!-- gruff-docs:begin install-version -->
 
 ```bash
-cargo install gruff-rs --locked --version 0.5.0 --root ./.cargo-tools
+cargo install gruff-rs --locked --version 0.6.0 --root ./.cargo-tools
 ./.cargo-tools/bin/gruff-rs init
 ./.cargo-tools/bin/gruff-rs summary .
 ```
@@ -154,10 +154,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Replace the placeholder with the reviewed commit for v0.5.0.
-      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.5.0
+      # Replace the placeholder with the reviewed commit for v0.6.0.
+      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.6.0
         with:
-          version: 0.5.0
+          version: 0.6.0
           argv: |
             analyse
             .
@@ -433,7 +433,7 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 <!-- gruff-docs:begin release-line -->
 
-`0.5.x` is the active release line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v2`, SARIF rendering, and CLI exit semantics are the contract for that published line. Larger contract changes move to a later release line. See [UPGRADING.md](UPGRADING.md) for the full contract.
+`0.6.x` is the active release line. Rule IDs, finding fingerprints, baseline identity, JSON schema version `gruff.analysis.v3`, SARIF rendering, and CLI exit semantics are the contract for that published line. Larger contract changes move to a later release line. See [UPGRADING.md](UPGRADING.md) for the full contract.
 
 <!-- gruff-docs:end release-line -->
 
