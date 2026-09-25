@@ -119,7 +119,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
         ),
         (
             "sensitive-data.aws-access-key",
-            Severity::Error,
+            Severity::Warning,
             "fixtures/sample.rs",
             Some(16),
             None,
@@ -127,7 +127,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
         ),
         (
             "sensitive-data.database-url-password",
-            Severity::Error,
+            Severity::Warning,
             "fixtures/sample.rs",
             Some(17),
             None,

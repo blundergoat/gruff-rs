@@ -1,6 +1,6 @@
 # Rules
 
-`gruff-rs` focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets are errors, and higher-risk complexity, security, maintainability, size, and test-quality findings are warnings. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; non-threshold rules may also accept a fixed severity override. Rules do not escalate through warning/error ranges.
+`gruff-rs` focuses on deterministic, explainable static checks that work from source text plus a shared `syn` AST for Rust files. Findings are calibrated as advisory, warning, or error: likely secrets and higher-risk complexity, security, maintainability, size, and test-quality findings are warnings, and `size.file-length` is the one default error. Advisory means enforceable low-severity signal, not optional advice; default-on advisory rules must still be precise enough for 100% compliance projects. Thresholded rubrics use one numeric threshold paired with one severity; non-threshold rules may also accept a fixed severity override. Rules do not escalate through warning/error ranges.
 
 ## Reviewed Exception Guidance
 

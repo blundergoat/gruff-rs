@@ -437,7 +437,7 @@ Default scans are source-only and local-only. `gruff-rs` does not execute target
 
 <!-- gruff-docs:end release-line -->
 
-The unreleased `0.6.0` moves the analysis envelope to `gruff.analysis.v3` and the baseline file to `gruff.baseline.v3`, and re-keys baseline identity. [UPGRADING.md](UPGRADING.md) states every break it carries.
+`0.6.0` moves the analysis envelope to `gruff.analysis.v3` and the baseline file to `gruff.baseline.v3`, and re-keys baseline identity. [UPGRADING.md](UPGRADING.md) states every break it carries.
 
 ## How It Compares
 

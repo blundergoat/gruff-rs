@@ -121,7 +121,7 @@ fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str) -> Finding {
         ),
         file_path: unit.file.display_path.clone(),
         line: Some(line),
-        severity: Severity::Error,
+        severity: rules::builtin_severity("sensitive-data.pii-test-fixture"),
         pillar: Pillar::SensitiveData,
         confidence: Confidence::High,
         symbol: None,

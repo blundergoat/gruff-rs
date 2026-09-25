@@ -120,7 +120,7 @@ fn push_regex_pattern_matches(
             message: rule.message.to_string(),
             file_path: unit.file.display_path.clone(),
             line: Some(byte_line_from_starts(unit.line_starts(), capture.start())),
-            severity: Severity::Error,
+            severity: rules::builtin_severity(rule.rule_id),
             pillar: Pillar::SensitiveData,
             confidence: Confidence::High,
             // Regex-level secret matches do not resolve to a named code symbol in the user's report.
@@ -267,7 +267,7 @@ fn push_phi_matches(
             message: format!("Protected health identifier pattern detected for {category}."),
             file_path: unit.file.display_path.clone(),
             line: Some(byte_line_from_starts(unit.line_starts(), value.start())),
-            severity: Severity::Error,
+            severity: rules::builtin_severity("sensitive-data.phi-pattern"),
             pillar: Pillar::SensitiveData,
             confidence: Confidence::High,
             // PHI matches identify a source line and category, not a parsed code symbol.
@@ -313,7 +313,7 @@ fn analyse_gcp_service_account_keys(unit: &SourceUnit<'_>, findings: &mut Vec<Fi
             message: "GCP service account private key material detected.".to_string(),
             file_path: unit.file.display_path.clone(),
             line: Some(byte_line_from_starts(unit.line_starts(), capture.start())),
-            severity: Severity::Error,
+            severity: rules::builtin_severity("sensitive-data.gcp-service-account-key"),
             pillar: Pillar::SensitiveData,
             confidence: Confidence::High,
             // A service-account object is shown by file and line rather than a language symbol.
@@ -400,7 +400,7 @@ fn push_env_like_secret_matches(
             message: "Hardcoded environment-style secret assignment detected.".to_string(),
             file_path: unit.file.display_path.clone(),
             line: Some(line),
-            severity: Severity::Error,
+            severity: rules::builtin_severity("sensitive-data.hardcoded-env-value"),
             pillar: Pillar::SensitiveData,
             confidence: Confidence::High,
             // Config-style assignments may not belong to a language symbol the UI can display.

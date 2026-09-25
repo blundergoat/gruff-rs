@@ -132,7 +132,7 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
 
     let secret = finding_by_rule(findings, "sensitive-data.aws-access-key");
     assert_eq!(secret["scope"], "line");
-    assert_eq!(secret["severity"], "error");
+    assert_eq!(secret["severity"], "warning");
     assert!(secret["remediation"]
         .as_str()
         .is_some_and(|text| !text.is_empty()));
