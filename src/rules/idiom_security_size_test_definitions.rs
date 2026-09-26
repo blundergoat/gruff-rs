@@ -261,7 +261,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags pull request workflows that reference repository secrets.",
+        "Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "The referenced secret is protected by an environment approval or unreachable job condition that the line-oriented workflow scan cannot prove.",

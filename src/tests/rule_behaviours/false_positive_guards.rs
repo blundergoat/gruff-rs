@@ -627,6 +627,49 @@ pub fn entry() {
     );
 }
 
+#[test]
+pub(crate) fn high_entropy_string_skips_public_pem_armour() {
+    // A certificate's base64 body is public by construction (FAMILY-CONTRACT section 12), so it stays quiet; the same
+    // body reports outside any armour and inside a private key's block. The key label is joined from parts so this file
+    // stores no private-key marker whole.
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let body = "k3j9x2m7q1w8e5r4t6y0u9i8o7p6a5s4d3f2g1h0zb";
+    let private = ["RSA PRIVATE", "KEY"].join(" ");
+    let wrap = |label: &str| {
+        format!(r#"concat!("-----BEGIN {label}-----\n", "{body}", "\n-----END {label}-----")"#)
+    };
+    baseline_with_lib(
+        dir.path(),
+        &format!(
+            "/// Probe.\npub fn entry() {{\n    let _certificate = {};\n    let _bare = \"{body}\";\n    let _key = {};\n}}\n",
+            wrap("CERTIFICATE"),
+            wrap(&private)
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        entropy_lines,
+        vec![Some(4), Some(5)],
+        "the bare body on line 4 and the private key's body on line 5 report; the certificate's does not"
+    );
+}
+
 /// A dependency version spec is not a credential, but a credential that merely opens with one still is. The guard
 /// reads the whole value, so anything trailing the version keeps reporting: dropping it would hide a committed
 /// credential with no audit row anywhere. gruff-ts pins the same grammar.

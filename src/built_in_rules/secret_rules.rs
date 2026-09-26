@@ -524,6 +524,7 @@ pub(crate) fn analyse_high_entropy_strings(
     );
     let min_length = config.detector_parameter(HIGH_ENTROPY_RULE_ID, "minLength") as usize;
     let min_entropy = config.detector_parameter(HIGH_ENTROPY_RULE_ID, "entropy");
+    let armoured = public_armour_spans(unit.source);
 
     // Each quoted candidate is classified before any finding metadata is built. A candidate shorter than the
     // floor gives its closing quote back, so that quote can open the next candidate: in `"ab"<secret>"cd"`
@@ -544,12 +545,48 @@ pub(crate) fn analyse_high_entropy_strings(
         } else {
             candidate.end()
         };
+        // A public PEM block's base64 body is certificate or public-key material, never a secret.
+        if armoured.iter().any(|span| span.contains(&secret.start())) {
+            continue;
+        }
         // Inert shapes remain silent so users can focus on credible generated-secret candidates.
         if !high_entropy_secret_should_report(value, min_length, min_entropy) {
             continue;
         }
         findings.push(high_entropy_finding(unit, &secret));
     }
+}
+
+static PEM_ARMOUR_OPENING_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// Offset spans of complete PEM blocks whose label names no private key. A certificate, public key, certificate
+/// request, PKCS7 bundle or CRL is public by construction, so its base64 body is never a secret; a private key's block
+/// stays scannable (FAMILY-CONTRACT section 12).
+fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
+    let opening = static_regex(&PEM_ARMOUR_OPENING_REGEX, r"-----BEGIN ([A-Z0-9 ]+)-----");
+    let mut spans = Vec::new();
+    for captures in opening.captures_iter(source) {
+        let (Some(marker), Some(label)) = (captures.get(0), captures.get(1)) else {
+            continue;
+        };
+        // A private key's block stays scannable: the key material there is the secret this rule exists for.
+        if label.as_str().contains("PRIVATE") {
+            continue;
+        }
+        // The block ends at the first closing marker of the same label; without one nothing is exempted.
+        let tail = &source[marker.end()..];
+        let closing_end = tail
+            .match_indices("-----END ")
+            .find_map(|(offset, prefix)| {
+                let after_label = tail[offset + prefix.len()..].strip_prefix(label.as_str())?;
+                after_label.strip_prefix("-----")?;
+                Some(offset + prefix.len() + label.len() + "-----".len())
+            });
+        if let Some(end) = closing_end {
+            spans.push(marker.start()..marker.end() + end);
+        }
+    }
+    spans
 }
 
 /// Return whether a high-entropy value should produce a finding.

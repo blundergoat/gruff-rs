@@ -225,7 +225,6 @@ struct GithubMetadataScanState {
 #[derive(Default)]
 struct WorkflowSecuritySummary {
     triggers: WorkflowTriggerState,
-    pull_request_line: Option<usize>,
     pull_request_target_line: Option<usize>,
     secret_lines: Vec<usize>,
 }
@@ -238,20 +237,13 @@ impl WorkflowSecuritySummary {
             Some(WorkflowEvent::PullRequestTarget) => {
                 self.pull_request_target_line.get_or_insert(line_number);
             }
-            Some(WorkflowEvent::PullRequest) => {
-                self.pull_request_line.get_or_insert(line_number);
-            }
-            None => {}
+            // A plain pull_request run gets no secrets from a fork, so it exposes none to untrusted code.
+            Some(WorkflowEvent::PullRequest) | None => {}
         }
         // Secret lines are retained until the completed workflow trigger is known.
         if line_has_secret_expression(trimmed) {
             self.secret_lines.push(line_number);
         }
-    }
-
-    /// Whether either supported pull-request event was present in the workflow.
-    fn has_pull_request_event(&self) -> bool {
-        self.pull_request_line.is_some() || self.pull_request_target_line.is_some()
     }
 }
 
@@ -339,15 +331,15 @@ fn push_github_actions_summary_findings(
             json!({ "event": "pull_request_target" }),
         );
     }
-    // Secrets are actionable only when a pull-request trigger can reach them.
-    if summary.has_pull_request_event() {
+    // Secrets are exposed only when pull_request_target runs pull-request code with the repository's secrets.
+    if summary.pull_request_target_line.is_some() {
         // Each referenced secret keeps its own source line for human review.
         for line in summary.secret_lines {
             push_workflow_finding(
                 unit,
                 findings,
                 "security.github-actions-secrets-in-pr",
-                "Workflow exposes repository secrets during a pull request event.",
+                "pull_request_target workflow references a repository secret.",
                 line,
                 json!({}),
             );
@@ -617,6 +609,12 @@ fn maybe_push_unpinned_action(
         if !is_digest_pinned_image(image) {
             push_unpinned_image(unit, findings, metadata_kind, line, action);
         }
+        return;
+    }
+    // GitHub's own `actions/*` and `github/*` actions are first-party, not the third-party dependency this rule
+    // reports; gruff-ts exempts the same two owners.
+    let owner = action.split(['/', '@']).next().unwrap_or_default();
+    if owner == "actions" || owner == "github" {
         return;
     }
     // A third-party action without any ref is unpinned for either metadata kind.
@@ -1003,9 +1001,20 @@ fn workflow_event_from_name(name: &str) -> Option<WorkflowEvent> {
 
 /// Recognise a repository secret expression, including the optional interior
 /// whitespace GitHub accepts, so `${{secrets.X}}` reads the same as `${{ secrets.X }}`.
+/// `secrets.GITHUB_TOKEN` is the token GitHub mints for each run, scoped by the job's
+/// `permissions:`, so it is not a repository secret.
 fn line_has_secret_expression(trimmed: &str) -> bool {
     static SECRET_EXPRESSION_REGEX: OnceLock<Regex> = OnceLock::new();
-    static_regex(&SECRET_EXPRESSION_REGEX, r"\$\{\{\s*secrets\.").is_match(trimmed)
+    static_regex(
+        &SECRET_EXPRESSION_REGEX,
+        r"\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)",
+    )
+    .captures_iter(trimmed)
+    .any(|captures| {
+        captures
+            .get(1)
+            .is_some_and(|name| name.as_str() != "GITHUB_TOKEN")
+    })
 }
 
 /// Emit one workflow-only security finding through the normal report contract.
