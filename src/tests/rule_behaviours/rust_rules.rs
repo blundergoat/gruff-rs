@@ -669,12 +669,10 @@ pub(crate) fn rule_fixtures_prove_complexity_and_naming_rules() {
 #[test]
 pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     let _guard = analysis_lock();
-    let security_positive = analyse_test_paths(vec![PathBuf::from(
-        "tests/fixtures/rules/security_sensitive_positive.rs",
-    )]);
-    let security_negative = analyse_test_paths(vec![PathBuf::from(
-        "tests/fixtures/rules/security_sensitive_negative.rs",
-    )]);
+    let security_positive =
+        analyse_fixture_as_production_code("tests/fixtures/rules/security_sensitive_positive.rs");
+    let security_negative =
+        analyse_fixture_as_production_code("tests/fixtures/rules/security_sensitive_negative.rs");
     let test_positive = analyse_test_paths(vec![PathBuf::from(
         "tests/fixtures/rules/test_quality_positive.rs",
     )]);
@@ -702,8 +700,11 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
 }
 
+/// Sensitive-data findings in test code must be skipped and counted, one `builtInTestPath` row per file and rule.
+///
+/// The same source under `src/` keeps reporting, and the rows sort by path bytes (FAMILY-CONTRACT.md section 13a).
 #[test]
-pub(crate) fn sensitive_data_rules_do_not_change_with_test_path() {
+pub(crate) fn sensitive_data_rules_skip_test_paths_and_count_each_skip() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     let source = fs::read_to_string("tests/fixtures/rules/security_sensitive_positive.rs")
@@ -742,15 +743,33 @@ pub(crate) fn sensitive_data_rules_do_not_change_with_test_path() {
             .collect::<BTreeSet<_>>()
     };
     let production_rule_ids = sensitive_rule_ids("src/sensitive.rs");
+    let skipped_rule_ids = |relative_path: &str| {
+        report
+            .suppressions
+            .iter()
+            .filter(|row| row.config_key == "builtInTestPath" && row.paths == [relative_path])
+            .map(|row| row.rule.clone())
+            .collect::<BTreeSet<_>>()
+    };
 
     assert!(production_rule_ids.contains("sensitive-data.hardcoded-env-value"));
     assert!(production_rule_ids.contains("sensitive-data.high-entropy-string"));
+    assert!(sensitive_rule_ids("tests/sensitive.rs").is_empty());
+    assert!(sensitive_rule_ids("tests/calibration/sensitive.rs").is_empty());
+    assert_eq!(skipped_rule_ids("tests/sensitive.rs"), production_rule_ids);
     assert_eq!(
-        sensitive_rule_ids("tests/sensitive.rs"),
+        skipped_rule_ids("tests/calibration/sensitive.rs"),
         production_rule_ids
     );
+    let test_path_rows = report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath")
+        .map(|row| (row.index, row.paths[0].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(test_path_rows.first().map(|row| row.0), Some(0));
     assert_eq!(
-        sensitive_rule_ids("tests/calibration/sensitive.rs"),
-        production_rule_ids
+        test_path_rows.first().map(|row| row.1.as_str()),
+        Some("tests/calibration/sensitive.rs")
     );
 }

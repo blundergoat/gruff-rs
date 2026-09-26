@@ -114,6 +114,9 @@ pub(crate) fn apply_report_exclusions(
     // A configured entry claims its findings first, so its count stays what the user wrote it for.
     let (kept, lockfile_suppressed) = partition_built_in_lockfile_findings(kept, &mut summaries);
     suppressed.extend(lockfile_suppressed);
+    // The lockfile skip runs first, so `tests/Cargo.lock` gets one audit row, not two.
+    let (kept, test_path_suppressed) = partition_built_in_test_path_findings(kept, &mut summaries);
+    suppressed.extend(test_path_suppressed);
     (kept, summaries, suppressed)
 }
 
@@ -172,6 +175,111 @@ fn is_built_in_lockfile(file_path: &str) -> bool {
     let normalized = file_path.replace('\\', "/");
     let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
     BUILT_IN_LOCKFILE_NAMES.contains(&file_name)
+}
+
+/// Reason a user reads on each `builtInTestPath[...]` audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13a).
+const BUILT_IN_TEST_PATH_REASON: &str = "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path.";
+
+/// The one sensitive-data rule that still reads test paths, because finding realistic personal data in fixtures is its job.
+const BUILT_IN_TEST_PATH_EXEMPT_RULE: &str = "sensitive-data.pii-test-fixture";
+
+/// Directory names, compared case-insensitively, that make a path test code, e.g. `tests/` or `Fixtures/`.
+const BUILT_IN_TEST_PATH_DIRECTORIES: &[&str] = &[
+    "test",
+    "tests",
+    "__tests__",
+    "spec",
+    "testdata",
+    "fixtures",
+    "examples",
+];
+
+/// Matches a whole base name that marks a test file in any family language, e.g. `keys_test.go` or `login.spec.ts`.
+const BUILT_IN_TEST_FILE_NAME_PATTERN: &str = r"^(?:.*_test\.go|test_.*\.py|.*_test\.py|.*Test\.php|.*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs))$";
+
+static BUILT_IN_TEST_FILE_NAME_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// Hide sensitive-data findings in test, fixture and example files, and publish one audit row per hidden file and rule.
+///
+/// A user scanning a project with sample keys in `tests/fixtures/` sees `builtInTestPath[...]` rows instead of findings.
+/// The skip is never silent, and the fixture-PII rule keeps reading these files (FAMILY-CONTRACT.md section 13a).
+fn partition_built_in_test_path_findings(
+    findings: Vec<Finding>,
+    summaries: &mut Vec<SuppressionSummary>,
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
+    let (kept, skipped_by_file_and_rule) = split_test_path_findings(findings);
+    // Built-in rows are numbered among themselves, so the first test-path row follows the last lockfile row.
+    let first_index = summaries
+        .iter()
+        .filter(|summary| summary.source.is_some())
+        .count();
+    let mut suppressed = Vec::new();
+    // One row per file and rule, which text output shows as `builtInTestPath[tests/keys.rs] sensitive-data.aws-access-key: 2`.
+    for (offset, ((file_path, rule_id), skipped_findings)) in
+        skipped_by_file_and_rule.into_iter().enumerate()
+    {
+        let summary = SuppressionSummary {
+            index: first_index + offset,
+            rule: rule_id,
+            paths: vec![file_path],
+            message_contains: None,
+            symbol: None,
+            reason: BUILT_IN_TEST_PATH_REASON.to_string(),
+            suppressed: skipped_findings.len(),
+            source: Some("built-in"),
+            config_key: "builtInTestPath",
+        };
+        for finding in skipped_findings {
+            suppressed.push(SuppressedFinding {
+                finding,
+                suppression: summary.clone(),
+            });
+        }
+        summaries.push(summary);
+    }
+    (kept, suppressed)
+}
+
+/// Sensitive-data findings in test code, grouped by (path, rule); a BTreeMap orders the keys by UTF-8 bytes, as every port does.
+type TestPathFindingsByFileAndRule = BTreeMap<(String, String), Vec<Finding>>;
+
+/// Split findings into the ones the report keeps and the sensitive-data findings in test code, grouped by file and rule.
+fn split_test_path_findings(
+    findings: Vec<Finding>,
+) -> (Vec<Finding>, TestPathFindingsByFileAndRule) {
+    let mut kept = Vec::with_capacity(findings.len());
+    let mut skipped_by_file_and_rule = TestPathFindingsByFileAndRule::new();
+    // Each finding either stays in the report or is folded into its file's audit row.
+    for finding in findings {
+        // Only the pillar's findings in test code are skipped, and never the fixture-PII rule.
+        if finding.rule_id.starts_with("sensitive-data.")
+            && finding.rule_id != BUILT_IN_TEST_PATH_EXEMPT_RULE
+            && is_built_in_test_path(&finding.file_path)
+        {
+            skipped_by_file_and_rule
+                .entry((finding.file_path.clone(), finding.rule_id.clone()))
+                .or_default()
+                .push(finding);
+            continue;
+        }
+        kept.push(finding);
+    }
+    (kept, skipped_by_file_and_rule)
+}
+
+/// Decide whether a finding's file is test, fixture or example code, e.g. `tests/fixtures/keys.json` or `keys_test.go`.
+fn is_built_in_test_path(file_path: &str) -> bool {
+    let normalized = file_path.replace('\\', "/");
+    let mut segments: Vec<&str> = normalized.split('/').collect();
+    let file_name = segments.pop().unwrap_or_default();
+    // Any directory on the path, compared case-insensitively, or the file name alone can mark test code.
+    segments.iter().any(|directory| {
+        BUILT_IN_TEST_PATH_DIRECTORIES.contains(&directory.to_ascii_lowercase().as_str())
+    }) || static_regex(
+        &BUILT_IN_TEST_FILE_NAME_REGEX,
+        BUILT_IN_TEST_FILE_NAME_PATTERN,
+    )
+    .is_match(file_name)
 }
 
 fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<SuppressionSummary> {

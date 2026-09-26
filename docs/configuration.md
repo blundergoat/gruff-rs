@@ -21,7 +21,7 @@ regenerate). The supported top-level sections are:
 - `rules`
 - `custom_rules`
 - `exclude`
-- `sensitiveExclusions` — the only way to suppress a sensitive-data finding.
+- `sensitiveExclusions` — the only setting that suppresses a sensitive-data finding.
 - `failOn` — per-subcommand `--fail-on` defaults for `analyse` and `report`.
 - `minimumSeverity` — one severity; the display floor for reported findings.
 - `deepScanBudget` — paired line and byte bounds for deep Rust-source analysis.
@@ -132,9 +132,15 @@ suppressed only by `sensitiveExclusions` below.
 
 ## Sensitive Exclusions
 
-`sensitiveExclusions` is the only way to suppress a `sensitive-data.*` finding. It
+`sensitiveExclusions` is the only setting that suppresses a `sensitive-data.*` finding. It
 is a separate section from `exclude` so that no suppression can ever be expressed
 in terms of a matched secret: the section accepts no message or value key at all.
+
+Two built-in skips also hide sensitive-data findings, and count each one in
+`suppressions`: the entropy rule in package-manager lockfiles, and every
+sensitive-data rule except `sensitive-data.pii-test-fixture` in test, fixture
+and example files. A configured entry applies before either, so a finding it
+claims is counted under the entry.
 
 ```yaml
 sensitiveExclusions:

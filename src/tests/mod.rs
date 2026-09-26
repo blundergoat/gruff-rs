@@ -48,6 +48,16 @@ fn analyse_project_paths(project_root: &Path, paths: Vec<PathBuf>) -> AnalysisRe
     run_analysis_in_project(project_root, &options, &config).expect("analysis succeeds")
 }
 
+/// Analyse a fixture copied into `src/` of a temporary project, so sensitive-data rules read it as production code.
+/// A test that needs secret findings uses this, because every sensitive-data rule skips `tests/` and `fixtures/` paths.
+fn analyse_fixture_as_production_code(fixture: &str) -> AnalysisReport {
+    let dir = tempdir().expect("tempdir");
+    let file_name = Path::new(fixture).file_name().expect("fixture file name");
+    fs::create_dir_all(dir.path().join("src")).expect("src directory");
+    fs::copy(fixture, dir.path().join("src").join(file_name)).expect("fixture copy");
+    analyse_project_paths(dir.path(), vec![PathBuf::from("src").join(file_name)])
+}
+
 fn run_project_analysis(
     project_root: &Path,
     options: AnalysisOptions,

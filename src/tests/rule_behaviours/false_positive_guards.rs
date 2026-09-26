@@ -98,6 +98,61 @@ pub fn documentation_links() -> [&'static str; 3] {
     );
 }
 
+/// Vendor-documented samples must never report: AWS's example key id and secret key, and the jwt.io sample token.
+///
+/// A live-shaped key still reports (FAMILY-CONTRACT.md section 5), and every value is assembled from parts.
+#[test]
+pub(crate) fn documented_samples_are_not_reported() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "/// Probe.\npub fn keys() -> [&'static str; 4] {\n    [\n",
+            "        \"AKIA",
+            "IOSFODNN7",
+            "EXAMPLE\",\n",
+            "        \"AKIA",
+            "Q7R2M8N4",
+            "P6T9V1X3\",\n",
+            "        \"wJalrXUtnFEMI/K7MDENG/",
+            "bPxRfiCY",
+            "EXAMPLEKEY\",\n",
+            "        \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+            ".",
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+            ".",
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\",\n",
+            "    ]\n}\n"
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let sensitive_lines: BTreeSet<(usize, &str)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id.starts_with("sensitive-data."))
+        .map(|finding| (finding.line.unwrap_or_default(), finding.rule_id.as_str()))
+        .collect();
+    // Line 5 is the live-shaped key; lines 4, 6 and 7 are the documented samples.
+    assert!(
+        sensitive_lines.contains(&(5, "sensitive-data.aws-access-key")),
+        "{sensitive_lines:?}"
+    );
+    assert!(
+        sensitive_lines.iter().all(|(line, _)| *line == 5),
+        "{sensitive_lines:?}"
+    );
+}
+
 /// Regression guard: the boundary added above must not cost a real detection. A vendor-prefixed
 /// key still has to be reported wherever it appears as its own token.
 #[test]

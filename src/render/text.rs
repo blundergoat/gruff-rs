@@ -195,7 +195,7 @@ pub(crate) fn render_text_suppressions(output: &mut String, report: &AnalysisRep
         .iter()
         .filter(|summary| summary.suppressed > 0)
         .map(|summary| {
-            // A built-in row names the lockfile it skipped, because it has no configured entry to point at.
+            // A built-in row names the file it skipped, because it has no configured entry to point at.
             let scope = match summary.source {
                 Some(_) => summary.paths.first().cloned().unwrap_or_default(),
                 None => summary.index.to_string(),

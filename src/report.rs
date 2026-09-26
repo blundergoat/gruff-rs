@@ -392,11 +392,11 @@ pub(crate) struct SuppressionSummary {
     pub(crate) symbol: Option<String>,
     pub(crate) reason: String,
     pub(crate) suppressed: usize,
-    /// `built-in` on a row the family's lockfile skip produced; absent on a configured entry's row.
+    /// `built-in` on a row the family's lockfile or test-path skip produced; absent on a configured entry's row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) source: Option<&'static str>,
-    /// What authored this row: the top-level config key `exclude` or `sensitiveExclusions`, or `builtInLockfile`
-    /// for the family's built-in lockfile skip, which is a text label rather than a key a user can edit.
+    /// What authored this row: the top-level config key `exclude` or `sensitiveExclusions`, or `builtInLockfile` or
+    /// `builtInTestPath` for the family's built-in skips, which are text labels rather than keys a user can edit.
     /// `index` is section-local, so this pair is what identifies one row and lets text
     /// output name a config entry the user can edit. Internal only (`#[serde(skip)]`)
     /// because the family audit shape in FAMILY-CONTRACT.md section 13a fixes the

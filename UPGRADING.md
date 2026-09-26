@@ -97,6 +97,8 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 
 16. **`sensitive-data.aws-access-key` reports AWS session tokens** — The rule matched only the `AKIA` long-term prefix, so a temporary `ASIA` credential went unnamed. Both are reported now. A run that gates on this rule may see new findings where a session token is present in source.
 
+17. **sensitive-data rules skip test, fixture and example files** — Every sensitive-data rule except `sensitive-data.pii-test-fixture` skips a file under a `test`, `tests`, `__tests__`, `spec`, `testdata`, `fixtures` or `examples` directory, or named like a test file, and publishes each skip as a counted `source: "built-in"` audit row. A real credential committed under one of those paths is no longer reported. The rest of this entry is in `CHANGELOG.md`.
+
 ## What may change in `0.5.x` with deprecation
 
 These can evolve inside `0.5.x` provided users get at least one minor release

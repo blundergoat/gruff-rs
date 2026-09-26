@@ -51,13 +51,27 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
 
     assert_only_partial_context_diagnostic(&report);
     assert_eq!(report.summary.total, report.findings.len());
+    // `fixtures/` is a test path, so its two sample secrets are counted as `builtInTestPath` rows, not reported.
     assert_eq!(
         report
             .findings
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        10
+        8
+    );
+    let skipped_rules: Vec<(&str, usize)> = report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath" && row.paths == ["fixtures/sample.rs"])
+        .map(|row| (row.rule.as_str(), row.suppressed))
+        .collect();
+    assert_eq!(
+        skipped_rules,
+        vec![
+            ("sensitive-data.aws-access-key", 1),
+            ("sensitive-data.database-url-password", 1)
+        ]
     );
 
     let expected = [
@@ -116,22 +130,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(11),
             None,
             "80bf1a6b54a67ccf",
-        ),
-        (
-            "sensitive-data.aws-access-key",
-            Severity::Warning,
-            "fixtures/sample.rs",
-            Some(16),
-            None,
-            "1aae444024c630df",
-        ),
-        (
-            "sensitive-data.database-url-password",
-            Severity::Warning,
-            "fixtures/sample.rs",
-            Some(17),
-            None,
-            "79a7540d1b61cf02",
         ),
         (
             // Line 24 is the `#[test]` attribute, the item's own first line. Before M07's anchor repair this
@@ -290,7 +288,7 @@ pub fn eight(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> 
 #[test]
 pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
     let _guard = analysis_lock();
-    let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
+    let report = analyse_fixture_as_production_code("tests/fixtures/parser/invalid.rs");
 
     assert_eq!(
         diagnostic_types(&report),
@@ -301,10 +299,7 @@ pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
         .iter()
         .find(|diagnostic| diagnostic.diagnostic_type == "parse-error")
         .expect("parse-error diagnostic");
-    assert_eq!(
-        parse_error.file_path.as_deref(),
-        Some("tests/fixtures/parser/invalid.rs")
-    );
+    assert_eq!(parse_error.file_path.as_deref(), Some("src/invalid.rs"));
 
     let rule_ids: BTreeSet<&str> = report
         .findings

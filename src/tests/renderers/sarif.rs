@@ -214,7 +214,7 @@ pub(crate) fn sarif_marks_clean_invocation_successful() {
 
 #[test]
 pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
-    let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
+    let report = analyse_fixture_as_production_code("tests/fixtures/parser/invalid.rs");
     assert_eq!(
         diagnostic_types(&report),
         vec!["partial-context-rule-suppressed", "parse-error"]
@@ -237,7 +237,7 @@ pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
     assert_eq!(
         sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][1]["locations"][0]
             ["physicalLocation"]["artifactLocation"]["uri"],
-        "tests/fixtures/parser/invalid.rs"
+        "src/invalid.rs"
     );
     assert_eq!(
         sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["descriptor"]["id"],
