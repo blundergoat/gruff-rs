@@ -19,7 +19,7 @@ last_reviewed: 2026-08-22
 
 **Context:** Rust's scan cost grew about 2.5 times per synthetic file-size doubling and exceeded the 120-second calibration ceiling at 4 MB. Bounding deep work prevents that failure mode, but skipping the file would also drop raw-text secret checks.
 
-**Approach:** Apply the paired line/byte test in `src/project/mod.rs` (search: `bounded_deep_scan_diagnostic`) only to Rust source. Produce an analysis unit with source text, `bounded_deep_scan: true`, and a non-fatal diagnostic but no parsed Rust syntax. Text rules consult that state in `src/built_in_rules/text_rules.rs` while AST-backed and non-text custom rules decline the unit. Keep config/CLI precedence atomic in `src/config.rs` (search: `apply_deep_scan_budget_override`).
+**Approach:** Apply the paired line/byte test in `src/project/mod.rs` (search: `bounded_deep_scan_diagnostic`) only to Rust source. Produce an analysis unit with source text, `bounded_deep_scan: true`, and a non-fatal diagnostic but no parsed Rust syntax. Text rules consult that state in `src/built_in_rules/text_rules.rs` while AST-backed and non-text custom rules decline the unit. Keep config/CLI precedence atomic in `src/config/deep_scan.rs` (search: `apply_deep_scan_budget_override`).
 
 **Measurement integrity:** `scripts/test-performance.sh` rebuilds with `cargo build --release --locked`, records host, Git, runtime-source, release-binary, and harness identities, and writes `scripts/performance-baselines/linux-x86_64.json`. Its runtime-source and binary digests match the source-bound M11 cohort build.
 

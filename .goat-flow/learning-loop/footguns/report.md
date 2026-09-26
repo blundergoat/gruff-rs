@@ -25,17 +25,17 @@ Pattern for the canonical-helper-next-to-enum approach: [[architecture]] in patt
 
 **Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
 
-`src/report.rs` (search: `pub(crate) struct AnalysisReport`) and every type reachable from it (`Summary`, `Finding`, `ScoreReport`, `PillarScore`, `FileScore`, `RunInfo`, `BaselineReport`, etc.) are `#[derive(Serialize)]`. The `--format json` renderer in `src/analysis.rs` (search: `schema_version: "gruff.analysis.v2"`) calls `serde_json::to_string_pretty(&report)` on the whole tree, so any new `pub(crate)` field on any struct in that tree lands in the v2 JSON output bytes.
+The title records the historical v2 surface. At that time derived serialization of `AnalysisReport` and nested types made internal struct additions visible in JSON. Current v3 uses `src/report.rs` (search: `impl Serialize for AnalysisReport`) to delegate to `src/machine_contract.rs` (search: `pub(crate) fn serialize_analysis`). Inspect that adapter and its nested serializers before deciding whether a struct change reaches output; a field addition is no longer automatically a top-level JSON addition.
 
 Concrete instance from 2026-05-25 (PR #3): adding `pub(crate) penalty: f64` to `PillarScore` changed the v1 `score.pillars[]` shape from 3 fields (`pillar`, `score`, `findings`) to 4 (adding `penalty`). The PR shipped without flagging because there is no compiler signal — `src/scoring.rs` populated the field; the cascade through `ScoreReport → AnalysisReport → JSON` was invisible. CodeRabbit caught it as a P1 in review.
 
-The non-obvious failure mode is that the struct may live in a module that *feels* internal (`src/scoring.rs` populates `PillarScore`, `src/baseline.rs` populates `BaselineReport`) but its serialized form is part of the v2 contract. The struct's `pub(crate)` visibility lies about its true blast radius.
+The failure mode remains: crate-local types can contribute to a public JSON contract. Visibility alone does not establish the change's scope.
 
 **How to apply:**
 
-- Before adding a field to any `pub(crate) struct` in `src/report.rs`, check whether the struct is reachable from `AnalysisReport` (directly, or transitively via `Vec`/`Option`/nested struct). If yes, the new field is part of the v2 JSON shape.
-- The no-bc-ceremony rule for this codebase (see ../lessons/release.md) means the response is *not* to bump the schema version string. The response is to note the shape change factually in the changelog (`Analysis JSON gains <field>` rather than `unchanged`). The agent doing the field addition is the only one who can spot the cascade.
-- Tests asserting on field-set equality (e.g. `src/tests/renderers/output.rs` search: `summary_json_pillar_shape_includes_canonical_fields_with_penalty`) catch additions only inside the *tested* struct. New fields on untested structs pass silently — add a contract test alongside the struct change.
+- Follow the current adapter and nested serialization calls from `AnalysisReport` to the emitted field before changing a report type.
+- Check FAMILY-CONTRACT and all five ports for any contracted shape change. The historical local policy is not authority to alter the family schema.
+- `src/tests/renderers/pillar_sections.rs` (search: `summary_json_pillar_shape_includes_canonical_fields_with_penalty`) checks the current pillar field set. Field-set tests cover only the objects they assert; check the affected object explicitly.
 
 
 ## Footgun: Digest Helpers That Pull From Registry Defaults Instead Of Findings

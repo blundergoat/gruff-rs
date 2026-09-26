@@ -302,8 +302,7 @@ fn append_paths_section(out: &mut String, extra_ignores: &[String]) {
     out.push('\n');
 }
 
-/// Append user-editable naming seeds and the inert legacy preview key.
-/// New configs show the only preview value the strict loader accepts: `[]`.
+/// Append the naming seeds users retain when extending the replacement allowlist.
 fn append_allowlists_section(out: &mut String) {
     out.push_str("allowlists:\n");
     out.push_str(
@@ -330,12 +329,18 @@ fn append_sensitive_exclusions_section(out: &mut String) {
     out.push_str("# reports its own suppressed count in `suppressions[]` and on text output.\n");
     out.push_str("# Write entries by hand: gruff-rs never converts a reported marker or preview\n");
     out.push_str("# into one, and no message- or value-matching key is accepted here.\n");
+    out.push_str(
+        "# Test, fixture and example paths automatically suppress sensitive-data findings\n",
+    );
+    out.push_str(
+        "# except sensitive-data.pii-test-fixture; real credentials there are skipped too.\n",
+    );
+    out.push_str("# Add entries only for reviewed findings that still report.\n");
+    out.push_str("# Use the finding's rule id and replace the path/reason placeholders.\n");
     out.push_str("# sensitiveExclusions:\n");
     out.push_str("#   - rule: sensitive-data.aws-access-key\n");
-    out.push_str("#     path: tests/fixtures/aws-sample.env\n");
-    out.push_str(
-        "#     reason: Synthetic key used by the loader fixture; not a live credential.\n",
-    );
+    out.push_str("#     path: <reviewed-project-relative-path>\n");
+    out.push_str("#     reason: <reviewed-rationale>\n");
     out.push('\n');
 }
 
