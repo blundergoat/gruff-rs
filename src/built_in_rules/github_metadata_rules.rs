@@ -981,8 +981,9 @@ fn workflow_event_in_scalar(value: &str) -> Option<WorkflowEvent> {
 
 /// Recognise a pull-request event named by one entry inside the `on:` mapping.
 fn workflow_event_in_entry(trimmed: &str) -> Option<WorkflowEvent> {
-    // A list item names its event directly; a mapping key carries that event's filters.
-    let entry = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+    // A list item names its event directly; a mapping key carries that event's filters. A trailing
+    // comment, such as `- pull_request_target  # label bot`, is not part of the event name.
+    let entry = strip_inline_comment(trimmed.strip_prefix("- ").unwrap_or(trimmed));
     let name = match entry.split_once(':') {
         Some((key, _)) => key,
         None => entry,

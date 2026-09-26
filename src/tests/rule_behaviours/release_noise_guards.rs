@@ -267,8 +267,8 @@ pub fn print_message() {
     );
 }
 
-/// Prove workflow event gates recognise scalar, list, and mapping `on:` forms, and that
-/// the per-run `GITHUB_TOKEN` is not a repository secret.
+/// Prove workflow event gates recognise scalar, list, commented block-list and mapping `on:`
+/// forms, and that the per-run `GITHUB_TOKEN` is not a repository secret.
 #[test]
 pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
     let _guard = analysis_lock();
@@ -304,6 +304,11 @@ pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
         ".github/workflows/target-mapping.yml",
         "name: target\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n      - run: echo '${{ secrets.GITHUB_TOKEN }}'\n",
     );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/target-commented-list.yml",
+        "name: target\non:\n  - push\n  - pull_request_target  # label bot\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+    );
 
     let report = run_project_analysis(
         dir.path(),
@@ -318,12 +323,12 @@ pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
 
     assert_eq!(
         github_rule_count(&report, "security.github-actions-secrets-in-pr"),
-        3,
+        4,
         "each pull_request_target event shape exposes its secret; plain pull_request and GITHUB_TOKEN do not"
     );
     assert_eq!(
         github_rule_count(&report, "security.github-actions-pull-request-target"),
-        3,
+        4,
         "each pull_request_target event shape should be reviewed"
     );
 }

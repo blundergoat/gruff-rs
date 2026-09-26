@@ -630,8 +630,10 @@ pub fn entry() {
 #[test]
 pub(crate) fn high_entropy_string_skips_public_pem_armour() {
     // A certificate's base64 body is public by construction (FAMILY-CONTRACT section 12), so it stays quiet; the same
-    // body reports outside any armour and inside a private key's block. The key label is joined from parts so this file
-    // stores no private-key marker whole.
+    // body reports outside any armour and inside a private key's block. Markers that wrap code are not a block, so the
+    // secret between header and footer constants (line 7) and a private key between public markers (line 10) report.
+    // A one-line block breaks at its escaped line breaks, so its header vouches for nothing after it (line 12).
+    // The key label is joined from parts so this file stores no private-key marker whole.
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     let body = "k3j9x2m7q1w8e5r4t6y0u9i8o7p6a5s4d3f2g1h0zb";
@@ -642,8 +644,14 @@ pub(crate) fn high_entropy_string_skips_public_pem_armour() {
     baseline_with_lib(
         dir.path(),
         &format!(
-            "/// Probe.\npub fn entry() {{\n    let _certificate = {};\n    let _bare = \"{body}\";\n    let _key = {};\n}}\n",
+            "/// Probe.\npub fn entry() {{\n    let _certificate = {};\n    let _bare = \"{body}\";\n    let _key = {};\n    \
+             let _header = \"-----BEGIN CERTIFICATE-----\";\n    let _secret = \"{body}\";\n    \
+             let _footer = \"-----END CERTIFICATE-----\";\n    let _outer = \"-----BEGIN CERTIFICATE-----\";\n    \
+             let _nested = {};\n    let _close = \"-----END CERTIFICATE-----\";\n    \
+             let _a = \"-----BEGIN CERTIFICATE-----\\nComment: x\\n\"; let _k = \"{body}\"; \
+             let _b = \"-----END CERTIFICATE-----\";\n}}\n",
             wrap("CERTIFICATE"),
+            wrap(&private),
             wrap(&private)
         ),
     );
@@ -665,8 +673,8 @@ pub(crate) fn high_entropy_string_skips_public_pem_armour() {
         .collect();
     assert_eq!(
         entropy_lines,
-        vec![Some(4), Some(5)],
-        "the bare body on line 4 and the private key's body on line 5 report; the certificate's does not"
+        vec![Some(4), Some(5), Some(7), Some(10), Some(12)],
+        "the bare body, both private keys' bodies and the secret between marker constants report; the certificate's does not"
     );
 }
 

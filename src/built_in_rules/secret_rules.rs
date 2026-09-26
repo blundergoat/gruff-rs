@@ -558,35 +558,72 @@ pub(crate) fn analyse_high_entropy_strings(
 }
 
 static PEM_ARMOUR_OPENING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PEM_ARMOUR_MARKER_REGEX: OnceLock<Regex> = OnceLock::new();
+static PEM_BODY_LINE_BREAKS_REGEX: OnceLock<Regex> = OnceLock::new();
+static PEM_BODY_OPERATORS_REGEX: OnceLock<Regex> = OnceLock::new();
+static PEM_BODY_QUOTING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PEM_BODY_LINE_REGEX: OnceLock<Regex> = OnceLock::new();
 
-/// Offset spans of complete PEM blocks whose label names no private key. A certificate, public key, certificate
-/// request, PKCS7 bundle or CRL is public by construction, so its base64 body is never a secret; a private key's block
-/// stays scannable (FAMILY-CONTRACT section 12).
+/// Offset spans of the PEM blocks whose label names no private key. A certificate, public key, certificate request,
+/// PKCS7 bundle or CRL is public by construction, so its body is never a secret. A block ends at the next marker,
+/// which must close the same label, and its body must be PEM-shaped. Anything else means the markers are not a
+/// block, so nothing between them is exempted and a private key there stays scannable (FAMILY-CONTRACT section 12).
 fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
     let opening = static_regex(&PEM_ARMOUR_OPENING_REGEX, r"-----BEGIN ([A-Z0-9 ]+)-----");
+    let marker = static_regex(
+        &PEM_ARMOUR_MARKER_REGEX,
+        r"-----(BEGIN|END) ([A-Z0-9 ]+)-----",
+    );
     let mut spans = Vec::new();
     for captures in opening.captures_iter(source) {
-        let (Some(marker), Some(label)) = (captures.get(0), captures.get(1)) else {
+        let (Some(open), Some(label)) = (captures.get(0), captures.get(1)) else {
             continue;
         };
         // A private key's block stays scannable: the key material there is the secret this rule exists for.
         if label.as_str().contains("PRIVATE") {
             continue;
         }
-        // The block ends at the first closing marker of the same label; without one nothing is exempted.
-        let tail = &source[marker.end()..];
-        let closing_end = tail
-            .match_indices("-----END ")
-            .find_map(|(offset, prefix)| {
-                let after_label = tail[offset + prefix.len()..].strip_prefix(label.as_str())?;
-                after_label.strip_prefix("-----")?;
-                Some(offset + prefix.len() + label.len() + "-----".len())
-            });
-        if let Some(end) = closing_end {
-            spans.push(marker.start()..marker.end() + end);
+        // Another opening marker, a different label or no marker at all means these markers are not a block.
+        let tail = &source[open.end()..];
+        let Some(closing) = marker.captures(tail) else {
+            continue;
+        };
+        let (Some(whole), Some(kind), Some(closing_label)) =
+            (closing.get(0), closing.get(1), closing.get(2))
+        else {
+            continue;
+        };
+        if kind.as_str() != "END" || closing_label.as_str() != label.as_str() {
+            continue;
+        }
+        if is_pem_shaped_body(&tail[..whole.start()]) {
+            spans.push(open.start()..open.end() + whole.end());
         }
     }
     spans
+}
+
+/// Report whether every line between two markers is base64, a PGP checksum, an armour header or empty. Source code
+/// spells a PEM body across string literals, so the body breaks at real and escaped line breaks, and each line loses
+/// its concatenation operators, and its quotes, commas, brackets, comment stars and ASCII whitespace; code, a
+/// placeholder or prose is left over. Splitting at escaped line breaks too keeps a one-line block's header from
+/// vouching for the rest of the line.
+fn is_pem_shaped_body(body: &str) -> bool {
+    let line_breaks = static_regex(&PEM_BODY_LINE_BREAKS_REGEX, r"\n|\\[nrt]");
+    let operators = static_regex(
+        &PEM_BODY_OPERATORS_REGEX,
+        r"[ \t\r\f\x0B]+[+.]|[+.][ \t\r\f\x0B]+",
+    );
+    let quoting = static_regex(&PEM_BODY_QUOTING_REGEX, r#"[ \t\r\f\x0B"'`,;()\[\]{}#*\\]"#);
+    let body_line = static_regex(
+        &PEM_BODY_LINE_REGEX,
+        r"^(?:[A-Za-z0-9+/]+={0,2}|=[A-Za-z0-9+/]{4}|(?:Version|Comment|Hash|Charset|MessageID|Proc-Type|DEK-Info):.*)$",
+    );
+    line_breaks.split(body).all(|segment| {
+        let line = operators.replace_all(segment, "");
+        let line = quoting.replace_all(&line, "");
+        line.is_empty() || body_line.is_match(&line)
+    })
 }
 
 /// Return whether a high-entropy value should produce a finding.
