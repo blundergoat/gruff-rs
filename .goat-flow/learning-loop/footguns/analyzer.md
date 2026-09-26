@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-08-16
+last_reviewed: 2026-08-24
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -187,6 +187,15 @@ The non-obvious failure mode is that the rule appears correct (calibration passe
 - After every new text-pattern rule, run `cargo run --quiet -- analyse src/built_in_rules/<new_rule_file>.rs --format json --fail-on none --no-baseline` as the first verification. If the rule fires on its own file, fix it before calibration.
 
 Regression coverage for this specific case: `src/tests/calibration/cases_pillar_expansion.rs` (search: `security.hardcoded-bind-all-interfaces`); the positive case is a Rust fn returning a `"0.0.0.0:8080"` literal, the negative returns `"127.0.0.1:8080"`. Calibration would not have caught the self-fire because calibration runs in a tempdir; only dogfood revealed it. Pairs with [[rule-precision]] for the broader candidate-rule defence pattern.
+
+**2026-08-24 extension: removing a path-only suppression exposes every intentional sentinel at once.** M04's FAMILY-CONTRACT section 13a repair deleted the implicit test-and-calibration early return from `src/built_in_rules/secret_rules.rs` (search: `A test or calibration path receives the same scan`). The detector became correct and the dogfood gate went red in the same run: `bin/gruff-rs analyse . --format text --no-baseline` reported 47 `sensitive-data.*` findings in seven Rust test files that had always carried deliberate sentinels. `scripts/preflight-checks.sh` (search: `tail -20`) prints only a failed check's last 20 lines, so the visible slice looked like a stray handful rather than a bounded, reviewable population; `.goat-flow/learning-loop/footguns/preflight.md` (search: `## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check`) records that trap on its own.
+
+**How to apply when a text-pattern rule fires on this project's own tests:**
+
+- Re-run the scan as JSON before judging its size: `bin/gruff-rs analyse . --format json --no-baseline --fail-on none`. The `--fail-on none` flag returns the whole population instead of preflight's tail.
+- Group the findings by exact file-path and rule-id identity rather than by file or by raw count. Here 47 findings collapsed to 27 reviewable scopes across 7 files.
+- Write one reason-bearing `sensitiveExclusions` entry per reviewed scope, each naming why that specific literal is synthetic. The 27 entries suppressed exactly 47 findings, left the run at zero findings, and published one audit row per scope.
+- Never add the test directory to `paths.ignore` and never restore a path condition inside the detector. Both hide the next real secret in the same files. The exclusion channel keeps every other sensitive-data rule reporting there, and each row carries its own suppressed count.
 
 ## Footgun: Wrapper-Module Fan-Out Hits 8 When Adding New Rule Files
 

@@ -62,6 +62,90 @@ fn sensitive_finding<'a>(report: &'a AnalysisReport, rule_id: &str) -> &'a Findi
         .unwrap_or_else(|| panic!("missing {rule_id} in {:#?}", report.findings))
 }
 
+/// AWS issues temporary session credentials under the `ASIA` prefix over the same fixed body, so a rule naming
+/// only `AKIA` left a live credential unreported. gruff-php and gruff-py already named both shapes.
+#[test]
+pub(crate) fn aws_session_token_reports_as_an_access_key() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let session_token = format!("{}{}", "ASIA", "IOSFODNN7EXAMPLE");
+    let source = format!(
+        r####"/// Probe.
+pub fn entry() {{
+    let _session = "{session_token}";
+}}
+"####
+    );
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("src/lib.rs")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let aws: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.aws-access-key")
+        .collect();
+
+    assert_eq!(
+        aws.len(),
+        1,
+        "expected the session token reported: {:#?}",
+        report.findings
+    );
+}
+
+/// FAMILY-CONTRACT.md section 5 reads a key whose body is entirely `X` as naming no credential, while a real key that
+/// merely contains a run of `X` still reports, because hiding it would hide a live credential.
+#[test]
+pub(crate) fn aws_key_whose_whole_body_is_x_is_read_as_masked() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let masked = "X".repeat(16);
+    let partly_masked = format!("{}{}", "IOSFODNN", "X".repeat(8));
+    let source = format!(
+        r####"/// Probe.
+pub fn entry() {{
+    let _long = "AKIA{masked}";
+    let _session = "ASIA{masked}";
+    let _partly = "AKIA{partly_masked}";
+}}
+"####
+    );
+    baseline_with_lib(dir.path(), &source);
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("src/lib.rs")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let lines: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.aws-access-key")
+        .map(|finding| finding.line)
+        .collect();
+
+    assert_eq!(
+        lines,
+        vec![Some(5)],
+        "expected only the partly masked key reported: {:#?}",
+        report.findings
+    );
+}
+
 /// Identity-independent findings expose only detector-owned zero-payload markers.
 #[test]
 pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers() {
@@ -365,4 +449,103 @@ MIIEowIBAAKCAQEAwvR2b2QxdW51c2Zpe0E=
     .expect("analysis succeeds");
     assert_missing_rule(&report, "sensitive-data.gcp-service-account-key");
     assert_has_rule(&report, "sensitive-data.private-key");
+}
+
+/// Pin the ratified high-entropy contract (FAMILY-CONTRACT sections 5, 6, 12 and 13a): warning severity,
+/// medium confidence, on by default, and `minLength` and `entropy` read from configuration with defaults
+/// 32 and 4.2. A 24-character literal is silent at the default floor and reported once at a lowered one;
+/// a lowered floor reads each `concat!` literal on its own line, and the literal that directly follows
+/// another's closing quote. One finding per rule and line is reported, so each case keeps its own line.
+#[test]
+pub(crate) fn high_entropy_contract_reads_both_named_thresholds() {
+    let rule = "sensitive-data.high-entropy-string";
+    let definition = rules::builtin_registry()
+        .get(rule)
+        .copied()
+        .expect("catalogued");
+    assert_eq!(
+        (
+            definition.default_severity,
+            definition.confidence,
+            definition.default_enabled
+        ),
+        (Severity::Warning, Confidence::Medium, true)
+    );
+    assert_eq!(rules::builtin_detector_parameter(rule, "minLength"), 32.0);
+    assert_eq!(rules::builtin_detector_parameter(rule, "entropy"), 4.2);
+
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    // Assembled at run time, so no file in this repository holds a secret-shaped literal.
+    let first = ["Gt5Hy9Ju", "3Ki7Lo1P", "z4Xa8Sd2"].concat();
+    let second = ["Qw8Er2Ty", "6Ui0Op4A", "s1Df5Gh9"].concat();
+    fs::write(
+        dir.path().join("src/token.rs"),
+        format!("/// Probe.\npub const TOKEN: &str = \"{first}\";\n"),
+    )
+    .expect("token write");
+    fs::write(
+        dir.path().join("src/pair.rs"),
+        format!(
+            "/// Probe.\npub const PAIR: &str = concat!(\n    \"{first}\",\n    \"{second}\"\n);\n"
+        ),
+    )
+    .expect("pair write");
+    // A low-entropy literal first: the secret after its closing quote must still be read.
+    let filler = "abcdabcdabcdabcdabcd";
+    fs::write(
+        dir.path().join("src/adjacent.rs"),
+        format!("/// Probe.\n// \"{filler}\"\"{second}\"\npub fn adjacent() {{}}\n"),
+    )
+    .expect("adjacent write");
+
+    let entropy_findings = |report: &AnalysisReport| {
+        let mut found: Vec<(String, Option<usize>, Severity)> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == rule)
+            .map(|finding| (finding.file_path.clone(), finding.line, finding.severity))
+            .collect();
+        found.sort();
+        found
+    };
+    let default_scan = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("default scan");
+    assert!(
+        entropy_findings(&default_scan).is_empty(),
+        "24 characters sit below the default floor of 32"
+    );
+
+    write_config(
+        dir.path(),
+        r#"{ "rules": { "sensitive-data.high-entropy-string": { "thresholds": { "minLength": 16 } } } }"#,
+    );
+    let lowered_scan = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("lowered scan");
+    let expected: Vec<(String, Option<usize>, Severity)> = [
+        ("src/adjacent.rs", 2),
+        ("src/pair.rs", 3),
+        ("src/pair.rs", 4),
+        ("src/token.rs", 2),
+    ]
+    .into_iter()
+    .map(|(path, line)| (path.to_string(), Some(line), Severity::Warning))
+    .collect();
+    assert_eq!(entropy_findings(&lowered_scan), expected);
 }

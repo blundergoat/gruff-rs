@@ -130,6 +130,139 @@ pub(crate) fn discovery_includes_security_relevant_text_names_and_extensions() {
 }
 
 #[test]
+pub(crate) fn fallback_matches_any_depth_and_keeps_ordinary_control_directories() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    for path in [
+        "target/root.rs",
+        "nested/target/deep.rs",
+        "cache/visible.rs",
+        "generated/visible.rs",
+        "tmp/visible.rs",
+        ".goat-flow/visible.rs",
+    ] {
+        let absolute = dir.path().join(path);
+        fs::create_dir_all(absolute.parent().expect("fixture parent")).expect("fixture dir");
+        fs::write(absolute, "pub fn visible() {}\n").expect("fixture file");
+    }
+
+    let discovery = discover_sources(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    );
+    let discovered: BTreeSet<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+
+    assert_eq!(
+        discovered,
+        BTreeSet::from([
+            ".goat-flow/visible.rs",
+            "cache/visible.rs",
+            "generated/visible.rs",
+            "tmp/visible.rs",
+        ])
+    );
+    assert!(discovery.ignored_paths.iter().any(|path| path == "target"));
+    assert!(discovery
+        .ignored_paths
+        .iter()
+        .any(|path| path == "nested/target"));
+}
+
+#[test]
+pub(crate) fn ancestor_gitignore_disables_fallback_for_its_subtree() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    for path in ["packages/app/target", "packages/other/target"] {
+        fs::create_dir_all(dir.path().join(path)).expect("fixture dir");
+    }
+    fs::write(dir.path().join("packages/app/.gitignore"), "*.log\n").expect("gitignore write");
+    fs::write(
+        dir.path().join("packages/app/target/visible.rs"),
+        "pub fn visible() {}\n",
+    )
+    .expect("visible file");
+    fs::write(
+        dir.path().join("packages/other/target/hidden.rs"),
+        "pub fn hidden() {}\n",
+    )
+    .expect("hidden file");
+
+    let discovery = discover_sources(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    );
+    let discovered: BTreeSet<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+
+    assert!(discovered.contains("packages/app/target/visible.rs"));
+    assert!(!discovered.contains("packages/other/target/hidden.rs"));
+}
+
+#[test]
+pub(crate) fn explicit_files_bypass_git_and_fallback_but_not_vcs_internals() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("dist")).expect("dist dir");
+    fs::create_dir_all(dir.path().join(".git")).expect("vcs dir");
+    fs::write(dir.path().join(".gitignore"), "dist/\n").expect("gitignore write");
+    fs::write(dir.path().join("dist/explicit.rs"), "pub fn visible() {}\n").expect("explicit file");
+    fs::write(dir.path().join(".git/config.rs"), "pub fn hidden() {}\n").expect("vcs file");
+
+    let discovery = discover_sources(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![
+                PathBuf::from("dist/explicit.rs"),
+                PathBuf::from(".git/config.rs"),
+            ],
+            include_ignored: true,
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    );
+
+    assert_eq!(
+        discovery
+            .files
+            .iter()
+            .map(|file| file.display_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dist/explicit.rs"]
+    );
+    assert!(discovery
+        .ignored_path_details
+        .iter()
+        .any(|entry| entry.path == ".git/config.rs" && entry.pattern.as_deref() == Some(".git")));
+    assert!(crate::discovery::classify_explicit_file(
+        dir.path(),
+        &dir.path().join("dist/explicit.rs"),
+        &Config::default()
+    )
+    .is_none());
+}
+
+#[test]
 pub(crate) fn broad_scan_skips_invalid_utf8_low_risk_text_non_fatally() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");

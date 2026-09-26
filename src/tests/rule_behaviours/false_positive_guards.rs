@@ -98,6 +98,61 @@ pub fn documentation_links() -> [&'static str; 3] {
     );
 }
 
+/// Vendor-documented samples must never report: AWS's example key id and secret key, and the jwt.io sample token.
+///
+/// A live-shaped key still reports (FAMILY-CONTRACT.md section 5), and every value is assembled from parts.
+#[test]
+pub(crate) fn documented_samples_are_not_reported() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "/// Probe.\npub fn keys() -> [&'static str; 4] {\n    [\n",
+            "        \"AKIA",
+            "IOSFODNN7",
+            "EXAMPLE\",\n",
+            "        \"AKIA",
+            "Q7R2M8N4",
+            "P6T9V1X3\",\n",
+            "        \"wJalrXUtnFEMI/K7MDENG/",
+            "bPxRfiCY",
+            "EXAMPLEKEY\",\n",
+            "        \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+            ".",
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
+            ".",
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\",\n",
+            "    ]\n}\n"
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let sensitive_lines: BTreeSet<(usize, &str)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id.starts_with("sensitive-data."))
+        .map(|finding| (finding.line.unwrap_or_default(), finding.rule_id.as_str()))
+        .collect();
+    // Line 5 is the live-shaped key; lines 4, 6 and 7 are the documented samples.
+    assert!(
+        sensitive_lines.contains(&(5, "sensitive-data.aws-access-key")),
+        "{sensitive_lines:?}"
+    );
+    assert!(
+        sensitive_lines.iter().all(|(line, _)| *line == 5),
+        "{sensitive_lines:?}"
+    );
+}
+
 /// Regression guard: the boundary added above must not cost a real detection. A vendor-prefixed
 /// key still has to be reported wherever it appears as its own token.
 #[test]
@@ -586,6 +641,151 @@ pub fn entry() {
     );
 }
 
+/// FAMILY-CONTRACT section 12's floor: a literal needs a letter and a digit to be credential-shaped, so lowercase-only
+/// and uppercase-only runs and a digit-free mix of cases stay quiet while a literal mixing letters and digits still
+/// reports. gruff-go, gruff-php, gruff-py and gruff-ts pin the same literals.
+#[test]
+pub(crate) fn high_entropy_string_needs_a_letter_and_a_digit() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry() {
+    let _lower = "vxezaawdsdwcvvuvryyabvkvbgdqlcqstgddkefmpdrjp";
+    let _upper = "VXEZAAWDSDWCVVUVRYYABVKVBGDQLCQSTGDDKEFMPDRJP";
+    let _camel = "VxEzAaWdSdWcVvUvRyYaBvKvBgDqLcQsTgDdKeFmPdRjP";
+    let _mixed = "k3j9x2m7q1w8e5r4t6y0u9i8o7p6a5s4d3f2g1h0zb";
+}
+"##,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        entropy_lines,
+        vec![Some(6)],
+        "only the letter-and-digit literal on line 6 reports"
+    );
+}
+
+#[test]
+pub(crate) fn high_entropy_string_skips_public_pem_armour() {
+    // A certificate's base64 body is public by construction (FAMILY-CONTRACT section 12), so it stays quiet; the same
+    // body reports outside any armour and inside a private key's block. Markers that wrap code are not a block, so the
+    // secret between header and footer constants (line 7) and a private key between public markers (line 10) report.
+    // A one-line block breaks at its escaped line breaks, so its header vouches for nothing after it (line 12).
+    // The key label is joined from parts so this file stores no private-key marker whole.
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let body = "k3j9x2m7q1w8e5r4t6y0u9i8o7p6a5s4d3f2g1h0zb";
+    let private = ["RSA PRIVATE", "KEY"].join(" ");
+    let wrap = |label: &str| {
+        format!(r#"concat!("-----BEGIN {label}-----\n", "{body}", "\n-----END {label}-----")"#)
+    };
+    baseline_with_lib(
+        dir.path(),
+        &format!(
+            "/// Probe.\npub fn entry() {{\n    let _certificate = {};\n    let _bare = \"{body}\";\n    let _key = {};\n    \
+             let _header = \"-----BEGIN CERTIFICATE-----\";\n    let _secret = \"{body}\";\n    \
+             let _footer = \"-----END CERTIFICATE-----\";\n    let _outer = \"-----BEGIN CERTIFICATE-----\";\n    \
+             let _nested = {};\n    let _close = \"-----END CERTIFICATE-----\";\n    \
+             let _a = \"-----BEGIN CERTIFICATE-----\\nComment: x\\n\"; let _k = \"{body}\"; \
+             let _b = \"-----END CERTIFICATE-----\";\n}}\n",
+            wrap("CERTIFICATE"),
+            wrap(&private),
+            wrap(&private)
+        ),
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        entropy_lines,
+        vec![Some(4), Some(5), Some(7), Some(10), Some(12)],
+        "the bare body, both private keys' bodies and the secret between marker constants report; the certificate's does not"
+    );
+}
+
+/// A dependency version spec is not a credential, but a credential that merely opens with one still is. The guard
+/// reads the whole value, so anything trailing the version keeps reporting: dropping it would hide a committed
+/// credential with no audit row anywhere. gruff-ts pins the same grammar.
+#[test]
+pub(crate) fn hardcoded_env_value_reads_the_whole_dependency_version() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    // Every credential-shaped value is assembled here, so this file stores none of them whole.
+    let quiet = [
+        "8.0.0(supports-color@11.0.0)",
+        "7.1.0(encoding@0.1.13)(supports-color@11.0.0)",
+        ">=v1.2.3",
+        "^1.20.300",
+    ];
+    let reported = [
+        format!("1.0-{}{}", "Rk8sPq2x", "T7vL9wHd"),
+        format!("2.5_{}{}", "hunter2Live", "KeyXyz99"),
+        format!("12.34{}{}", "abcdefgh", "ijklmnop"),
+    ];
+    let mut body = String::new();
+    for (index, value) in quiet
+        .iter()
+        .map(|value| (*value).to_string())
+        .chain(reported.iter().cloned())
+        .enumerate()
+    {
+        body.push_str(&format!("API_TOKEN_{index}={value}\n"));
+    }
+    std::fs::write(dir.path().join(".env"), &body).expect("env fixture");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let lines: Vec<usize> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.hardcoded-env-value")
+        .filter_map(|finding| finding.line)
+        .collect();
+    let expected: Vec<usize> = (0..reported.len())
+        .map(|offset| quiet.len() + offset + 1)
+        .collect();
+
+    assert_eq!(lines, expected, "findings={:?}", report.findings);
+}
+
 #[test]
 pub(crate) fn high_entropy_string_keeps_real_secret_shapes() {
     let _guard = analysis_lock();
@@ -622,6 +822,38 @@ pub fn entry() {
         5,
         "all real-secret-shaped values must still trigger high entropy; findings={entropy_findings:?}"
     );
+}
+
+/// A quoted run shorter than `minLength` must not swallow the quote that opens the next literal, so a secret
+/// written straight after a short quoted word is still read.
+#[test]
+pub(crate) fn high_entropy_string_reads_a_secret_after_a_short_quoted_run() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let secret = ["Az9qL2sT", "8vX3pR6n", "Y0aB4cD7", "eG1hJ5kM", "9pQ2rS"].concat();
+    fs::create_dir_all(dir.path().join("scripts")).expect("scripts dir");
+    fs::write(
+        dir.path().join("scripts/run.sh"),
+        format!("TOKEN=\"ab\"{secret}\"cd\"\n"),
+    )
+    .expect("script write");
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let entropy_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.high-entropy-string")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(entropy_lines, vec![Some(1)]);
 }
 
 #[test]
@@ -661,5 +893,144 @@ pub fn entry() {
         entropy_findings.len(),
         1,
         "only the conservative zero-separator boundary should still trigger; findings={entropy_findings:?}"
+    );
+}
+
+/// Both dead-code rules treat a fn reached without a countable Rust call as reachable: a bench or test
+/// harness entry, including one applied through `cfg_attr`, a serde target (also through `cfg_attr`), an
+/// exported `extern "C"` fn and an empty-body `where` assertion over concrete types. A `cfg_attr(test, ...)`
+/// condition, a `cfg(not(test))` item, an unexported `extern "C"` fn, a generic `where` helper, a serde path
+/// into another crate (`Option::is_none`), a serde attribute inside a comment and a plainly unused helper still
+/// fire.
+#[test]
+pub(crate) fn dead_code_rules_read_harness_serde_ffi_and_assertion_reachability() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"//! Probe crate.
+
+/// Probe.
+pub fn entry() {}
+
+#[bench]
+fn bench_parse() {}
+
+#[divan::bench]
+fn divan_case() {}
+
+#[cfg_attr(feature = "tokio", tokio::test)]
+async fn applied_test() {}
+
+/// Probe.
+pub struct Settings {
+    #[serde(deserialize_with = "parse_level")]
+    level: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<u8>,
+    #[cfg_attr(feature = "serde", serde(default = "default_port"))]
+    port: u16,
+}
+
+fn default_port() -> u16 {
+    80
+}
+
+fn is_none() -> bool {
+    false
+}
+
+// #[serde(serialize_with = "commented_serializer")]
+fn commented_serializer() -> u8 {
+    8
+}
+
+fn parse_level() -> u8 {
+    1
+}
+
+#[no_mangle]
+extern "C" fn exported_callback() {}
+
+#[unsafe(no_mangle)]
+extern "C" fn exported_2024() {}
+
+extern "C" fn unexported_callback() {}
+
+fn assert_send()
+where
+    Settings: Send,
+{
+}
+
+fn assert_generic<T>()
+where
+    T: Send,
+{
+}
+
+#[cfg(not(test))]
+fn production_only() {}
+
+#[cfg_attr(test, allow(dead_code))]
+fn lint_quieted_in_tests() {}
+
+fn read_write() {}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("dead-code analysis succeeds");
+    let flagged = |rule: &str| {
+        let mut names: Vec<String> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == rule)
+            .filter_map(|finding| finding.symbol.clone())
+            .map(|symbol| symbol.rsplit("::").next().unwrap_or(&symbol).to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        flagged("dead-code.unused-private-function"),
+        vec![
+            "assert_generic",
+            "commented_serializer",
+            "is_none",
+            "lint_quieted_in_tests",
+            "production_only",
+            "read_write",
+            "unexported_callback",
+        ]
+    );
+    let reachable = [
+        "bench_parse",
+        "divan_case",
+        "applied_test",
+        "parse_level",
+        "default_port",
+        "exported_callback",
+        "exported_2024",
+        "assert_send",
+    ];
+    let candidates = flagged("dead-code.unused-private-item-candidate");
+    assert!(
+        reachable
+            .iter()
+            .all(|name| !candidates.iter().any(|flagged| flagged == name)),
+        "{candidates:?}"
+    );
+    assert!(
+        candidates.iter().any(|flagged| flagged == "read_write"),
+        "{candidates:?}"
     );
 }

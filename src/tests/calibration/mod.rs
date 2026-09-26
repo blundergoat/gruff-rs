@@ -3,7 +3,7 @@ use super::*;
 #[test]
 pub(crate) fn json_report_uses_schema_version() {
     let report = AnalysisReport {
-        schema_version: "gruff.analysis.v2".to_string(),
+        schema_version: "gruff.analysis.v3".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),
@@ -31,8 +31,12 @@ pub(crate) fn json_report_uses_schema_version() {
         findings: Vec::new(),
         suppressed_count: None,
         score: ScoreReport {
-            composite: 100.0,
-            grade: "A".to_string(),
+            composite: Some(100.0),
+            grade: Some("A".to_string()),
+            evaluated_files: 10,
+            scored_pillars: Vec::new(),
+            clusters: Vec::new(),
+            rule_attribution: Vec::new(),
             pillars: Vec::new(),
             top_offenders: Vec::new(),
         },
@@ -40,10 +44,11 @@ pub(crate) fn json_report_uses_schema_version() {
         per_rule_deltas: None,
         suppressed_findings: Vec::new(),
         all_findings_summary: None,
+        machine_context: MachineReportContext::default(),
     };
 
     let rendered = render_report(&report, OutputFormat::Json);
-    assert!(rendered.contains("\"schemaVersion\": \"gruff.analysis.v2\""));
+    assert!(rendered.contains("\"schemaVersion\": \"gruff.analysis.v3\""));
 }
 
 const CALIBRATION_BASELINE_MANIFEST: &str = r#"[package]

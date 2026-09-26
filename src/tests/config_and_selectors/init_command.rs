@@ -1,9 +1,12 @@
+//! Generated-config and regeneration behavior visible to `gruff-rs init` users.
+//!
+//! Tests keep registry defaults, family seeds, preserved settings, and safe
+//! empty legacy keys consistent through render-and-load round trips.
+
 use super::*;
 
 use crate::config::DEFAULT_ABBREVIATIONS;
-use crate::init::{
-    read_existing_ignore_patterns, read_existing_minimum_severity, render_default_config,
-};
+use crate::init::{read_existing_fail_on, read_existing_ignore_patterns, render_default_config};
 use std::collections::BTreeMap;
 
 #[test]
@@ -36,11 +39,20 @@ pub(crate) fn default_config_round_trips_through_load_config() {
     }
 }
 
+/// Section 5 removed the key, so a generated file offering it would fail to load on the port that wrote it.
+#[test]
+pub(crate) fn default_config_omits_the_removed_secret_previews_key() {
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+
+    assert!(
+        !body.contains("secretPreviews"),
+        "generated config still offers the removed key: {body}"
+    );
+}
+
 #[test]
 pub(crate) fn generated_config_reproduces_builtin_rule_defaults() {
-    // A generated config that disagrees with the catalogue makes the same file
-    // report differently depending on whether the project ever ran `init`, so this
-    // walks the rendered-then-parsed config rather than reading the catalogue twice.
+    // Round-trip generated config because users should receive the same findings before and after running `init`.
     let registry = rules::builtin_registry();
     let body = render_default_config(&registry, &[], &BTreeMap::new());
 
@@ -143,6 +155,22 @@ pub(crate) fn default_config_explains_ignores_and_baseline_starting_point() {
 }
 
 #[test]
+/// Ship the sensitive-suppression section commented out and describe how entries are authored.
+pub(crate) fn default_config_documents_manually_authored_sensitive_exclusions() {
+    let body = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
+
+    assert!(body.contains("# sensitiveExclusions:"));
+    assert!(body.contains("#   - rule: sensitive-data.aws-access-key"));
+    assert!(body.contains("Write entries by hand"));
+    assert!(body.contains("no message- or value-matching key is accepted here"));
+    // A commented example must never arrive as an active suppression in a fresh project.
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join(".gruff-rs.yaml"), &body).expect("generated config write");
+    let config = load_config(dir.path(), &default_test_options()).expect("generated config loads");
+    assert!(config.sensitive_exclusions.is_empty());
+}
+
+#[test]
 pub(crate) fn init_preserves_existing_ignore_entries_on_regenerate() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join(".gruff-rs.yaml");
@@ -179,11 +207,11 @@ rules: {}
 }
 
 #[test]
-pub(crate) fn init_preserves_existing_minimum_severity_on_regenerate() {
+pub(crate) fn init_preserves_existing_fail_on_thresholds_on_regenerate() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join(".gruff-rs.yaml");
     let existing = r#"schemaVersion: gruff-rs.config.v1
-minimumSeverity:
+failOn:
   analyse: error
   report: warning
 paths:
@@ -192,7 +220,7 @@ paths:
 "#;
     fs::write(&config_path, existing).expect("write existing config");
 
-    let preserved = read_existing_minimum_severity(&config_path);
+    let preserved = read_existing_fail_on(&config_path);
     assert_eq!(
         preserved.get("analyse"),
         Some(&FailThreshold::Error),
@@ -220,22 +248,22 @@ paths:
 }
 
 #[test]
-pub(crate) fn read_existing_minimum_severity_returns_empty_for_missing_or_malformed() {
+pub(crate) fn read_existing_fail_on_returns_empty_for_missing_or_malformed() {
     let dir = tempdir().expect("tempdir");
     let missing = dir.path().join("nope.yaml");
-    assert!(read_existing_minimum_severity(&missing).is_empty());
+    assert!(read_existing_fail_on(&missing).is_empty());
 
     let no_block = dir.path().join("no_block.yaml");
     fs::write(&no_block, "schemaVersion: gruff-rs.config.v1\npaths: {}\n").expect("write no_block");
-    assert!(read_existing_minimum_severity(&no_block).is_empty());
+    assert!(read_existing_fail_on(&no_block).is_empty());
 
     let bogus_value = dir.path().join("bogus_value.yaml");
     fs::write(
         &bogus_value,
-        "minimumSeverity:\n  analyse: never\n  report: advisory\n",
+        "failOn:\n  analyse: never\n  report: advisory\n",
     )
     .expect("write bogus_value");
-    let preserved = read_existing_minimum_severity(&bogus_value);
+    let preserved = read_existing_fail_on(&bogus_value);
     assert_eq!(
         preserved.get("analyse"),
         None,

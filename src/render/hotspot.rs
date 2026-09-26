@@ -5,6 +5,7 @@ pub(super) fn render_hotspot(report: &AnalysisReport) -> String {
         "schemaVersion": "gruff.hotspot.v1",
         "tool": report.tool,
         "score": report.score.composite,
+        "diagnostics": report.diagnostics,
         "files": report.score.top_offenders,
     }))
     .expect("hotspot serializes")

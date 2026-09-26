@@ -12,7 +12,7 @@ This glossary defines terms used by `gruff-rs`, its public reports, and local pr
 
 ### Analysis Report
 
-The complete result of one scan: schema version, tool metadata, run metadata, paths, summary counts, score data, diagnostics, findings, suppressions, baseline state, and optional diff/history state. Native JSON uses `gruff.analysis.v2`.
+The complete result of one scan: schema version, tool metadata, run metadata, paths, summary counts, score data, diagnostics, findings, suppressions, baseline state, and optional diff state. Native JSON uses `gruff.analysis.v3`; JSON summary uses the exact `gruff.summary.v3` projection with only the top-level findings array removed.
 
 ### Baseline
 
@@ -52,7 +52,7 @@ A stable 16-character hash derived from finding identity fields. Baselines and d
 
 ### Gruff Config
 
-Project configuration that tunes discovery, allowlists, rule selection, per-rule thresholds/severity, report suppressions, and custom rules. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, `allowlists.secretPreviews`, and per-rule configuration.
+Project configuration that tunes discovery, allowlists, rule selection, per-rule thresholds/severity, report suppressions, and custom rules. Shared keys include `paths.ignore`, `allowlists.acceptedAbbreviations`, and per-rule configuration.
 
 ### Hotspot Output
 

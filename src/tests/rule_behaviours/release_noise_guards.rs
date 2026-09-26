@@ -267,7 +267,8 @@ pub fn print_message() {
     );
 }
 
-/// Prove workflow event gates recognise scalar, list, and mapping `on:` forms.
+/// Prove workflow event gates recognise scalar, list, commented block-list and mapping `on:`
+/// forms, and that the per-run `GITHUB_TOKEN` is not a repository secret.
 #[test]
 pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
     let _guard = analysis_lock();
@@ -291,17 +292,22 @@ pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
     write_github_metadata(
         dir.path(),
         ".github/workflows/target-scalar.yml",
-        "name: target\non: pull_request_target\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+        "name: target\non: pull_request_target\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
     write_github_metadata(
         dir.path(),
         ".github/workflows/target-list.yml",
-        "name: target\non: [push, pull_request_target]\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+        "name: target\non: [push, pull_request_target]\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
     write_github_metadata(
         dir.path(),
         ".github/workflows/target-mapping.yml",
-        "name: target\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+        "name: target\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n      - run: echo '${{ secrets.GITHUB_TOKEN }}'\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/target-commented-list.yml",
+        "name: target\non:\n  - push\n  - pull_request_target  # label bot\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
 
     let report = run_project_analysis(
@@ -317,12 +323,12 @@ pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
 
     assert_eq!(
         github_rule_count(&report, "security.github-actions-secrets-in-pr"),
-        3,
-        "each pull-request event shape should expose its secret reference"
+        4,
+        "each pull_request_target event shape exposes its secret; plain pull_request and GITHUB_TOKEN do not"
     );
     assert_eq!(
         github_rule_count(&report, "security.github-actions-pull-request-target"),
-        3,
+        4,
         "each pull_request_target event shape should be reviewed"
     );
 }
@@ -400,7 +406,8 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
 }
 
 /// Prove `uses:` reports a dependency attached directly to a GitHub step or job,
-/// and stays silent for `env:`, `with:`, and lookalike keys that only spell `uses`.
+/// and stays silent for `env:`, `with:`, and lookalike keys that only spell `uses`,
+/// and for GitHub's own first-party `actions/*` and `github/*` actions.
 #[test]
 pub(crate) fn github_actions_uses_requires_step_placement() {
     let _guard = analysis_lock();
@@ -414,7 +421,7 @@ pub(crate) fn github_actions_uses_requires_step_placement() {
     write_github_metadata(
         dir.path(),
         ".github/workflows/placement.yml",
-        "name: placement\nenv:\n  uses: acme/env-value@v1\njobs:\n  reusable:\n    uses: acme/reusable/.github/workflows/check.yml@v1\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Configure\n        with:\n          uses: acme/config-value@v1\n      - uses: acme/workflow-tool@v1\nmetadata:\n  jobs:\n    fake:\n      steps:\n        - uses: acme/nested-workflow-value@v1\n",
+        "name: placement\nenv:\n  uses: acme/env-value@v1\njobs:\n  reusable:\n    uses: acme/reusable/.github/workflows/check.yml@v1\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Configure\n        with:\n          uses: acme/config-value@v1\n      - uses: acme/workflow-tool@v1\n      - uses: actions/checkout@v4\n      - uses: github/codeql-action/init@v3\nmetadata:\n  jobs:\n    fake:\n      steps:\n        - uses: acme/nested-workflow-value@v1\n",
     );
 
     let report = run_project_analysis(
@@ -439,7 +446,7 @@ pub(crate) fn github_actions_uses_requires_step_placement() {
     assert_eq!(
         unpinned_findings.len(),
         3,
-        "only direct step and job dependencies should report; findings={unpinned_findings:?}"
+        "only direct third-party step and job dependencies should report; findings={unpinned_findings:?}"
     );
     assert!(unpinned_findings
         .iter()
@@ -473,12 +480,12 @@ pub(crate) fn github_actions_events_require_top_level_on_placement() {
     write_github_metadata(
         dir.path(),
         ".github/workflows/quoted-event.yml",
-        "name: quoted event\non:\n  \"pull_request\":\n    branches: [main]\njobs:\n  build:\n    steps:\n      - run: echo '${{secrets.DEPLOY_TOKEN}}'\n",
+        "name: quoted event\non:\n  \"pull_request_target\":\n    branches: [main]\njobs:\n  build:\n    steps:\n      - run: echo '${{secrets.DEPLOY_TOKEN}}'\n",
     );
     write_github_metadata(
         dir.path(),
         ".github/workflows/flow-mapping.yml",
-        "name: flow mapping\non: {push: null, pull_request: null}\njobs:\n  build:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+        "name: flow mapping\non: {push: null, pull_request_target: null}\njobs:\n  build:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
 
     let report = run_project_analysis(
@@ -492,8 +499,8 @@ pub(crate) fn github_actions_events_require_top_level_on_placement() {
     )
     .expect("analysis succeeds");
 
-    // Only the two real pull-request workflows expose their secret reference, and the
-    // second proves interior expression whitespace is optional.
+    // The three real pull_request_target workflows expose their secret reference, and the
+    // quoted event proves interior expression whitespace is optional.
     assert_eq!(
         github_rule_count(&report, "security.github-actions-secrets-in-pr"),
         3,
@@ -501,8 +508,8 @@ pub(crate) fn github_actions_events_require_top_level_on_placement() {
     );
     assert_eq!(
         github_rule_count(&report, "security.github-actions-pull-request-target"),
-        1,
-        "only the quoted target trigger is a pull_request_target workflow"
+        3,
+        "the quoted scalar, quoted event and flow-mapping triggers are pull_request_target workflows"
     );
     let event_findings = github_metadata_findings(&report);
     assert!(

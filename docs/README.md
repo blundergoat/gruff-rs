@@ -13,11 +13,11 @@ Use these docs with the top-level README for the stable user-facing surface.
 
 ## Extra Docs
 
-- [Git Commit Standard](coding-standards/git-commit-message.md) - local coding standard.
+- [Git Commit Standard](https://github.com/blundergoat/gruff-rs/blob/main/docs/coding-standards/git-commit-message.md) - maintainer-only: local coding standard. `Cargo.toml` excludes `docs/coding-standards/` from the published crate, so this one is linked absolutely.
 
 ## Shared Contract
 
 Cross-language naming and CLI expectations live in the workspace-level
-`CONTRACT.md` (at the gruff workspace root, sibling to this crate). Rust keeps
+`FAMILY-CONTRACT.md` (at the gruff workspace root, sibling to this crate). That file is workspace-internal and ships in no published crate; the behaviour it governs is documented here and in the top-level README. Rust keeps
 documented extensions for patch-based diffing, explicit unsafe Git diff opt-in,
 and `init --stdout`.

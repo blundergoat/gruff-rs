@@ -8,6 +8,7 @@ pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagn
             message: format!("Input path does not exist: {missing_path}"),
             file_path: Some(missing_path.clone()),
             line: None,
+            invalidates_run: None,
         })
         .collect()
 }
@@ -47,6 +48,7 @@ fn excluded_security_rule_diagnostic(rule_id: &str, pillar: Pillar) -> RunDiagno
         ),
         file_path: None,
         line: None,
+        invalidates_run: None,
     }
 }
 
@@ -68,21 +70,216 @@ pub(crate) fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.dedup_by(|left, right| left.fingerprint == right.fingerprint);
 }
 
+/// The one rule the family's built-in lockfile skip covers; every other sensitive-data rule still reads a lockfile.
+const BUILT_IN_LOCKFILE_RULE: &str = "sensitive-data.high-entropy-string";
+
+/// The rationale every port publishes on a built-in lockfile audit row.
+const BUILT_IN_LOCKFILE_REASON: &str = "Lockfile digests are published integrity hashes, so the entropy rule skips package-manager lockfiles by name.";
+
+/// The ratified package-manager lockfile names, matched by exact base name at any depth.
+const BUILT_IN_LOCKFILE_NAMES: &[&str] = &[
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "composer.lock",
+    "Cargo.lock",
+    "go.sum",
+    "uv.lock",
+    "poetry.lock",
+];
+
+/// Remove the findings both suppression channels claim and count every configured entry.
+/// The returned summaries carry `exclude` rows first, then `sensitiveExclusions` rows, then built-in rows.
 pub(crate) fn apply_report_exclusions(
     findings: Vec<Finding>,
     exclusions: &[ExclusionRule],
+    sensitive_exclusions: &[SensitiveExclusionRule],
 ) -> (
     Vec<Finding>,
     Vec<SuppressionSummary>,
     Vec<SuppressedFinding>,
 ) {
-    if exclusions.is_empty() {
-        return (findings, Vec::new(), Vec::new());
-    }
-
+    // The built-in lockfile skip runs whether or not the user configured anything, so there is no early return.
     let mut summaries = initial_suppression_summaries(exclusions);
-    let (kept, suppressed) = partition_excluded_findings(findings, exclusions, &mut summaries);
+    let exclude_rows = summaries.len();
+    summaries.extend(initial_sensitive_suppression_summaries(
+        sensitive_exclusions,
+    ));
+    let (kept, mut suppressed) =
+        partition_excluded_findings(findings, exclusions, &mut summaries[..exclude_rows]);
+    let (kept, sensitive_suppressed) =
+        partition_sensitive_findings(kept, sensitive_exclusions, &mut summaries[exclude_rows..]);
+    suppressed.extend(sensitive_suppressed);
+    // A configured entry claims its findings first, so its count stays what the user wrote it for.
+    let (kept, lockfile_suppressed) = partition_built_in_lockfile_findings(kept, &mut summaries);
+    suppressed.extend(lockfile_suppressed);
+    // The lockfile skip runs first, so `tests/Cargo.lock` gets one audit row, not two.
+    let (kept, test_path_suppressed) = partition_built_in_test_path_findings(kept, &mut summaries);
+    suppressed.extend(test_path_suppressed);
     (kept, summaries, suppressed)
+}
+
+/// Remove the entropy rule's findings from package-manager lockfiles and append one audit row per lockfile that
+/// had any, after the configured rows.
+///
+/// A lockfile digest is a published integrity hash and a real project carries thousands of them, so the family
+/// skips that one rule by file name. It is counted on every surface rather than applied in silence, and a lockfile
+/// with nothing to skip publishes no row (FAMILY-CONTRACT.md section 13a). Every other sensitive-data rule still
+/// reads the lockfile, because a credential pasted into one is as live as anywhere else.
+fn partition_built_in_lockfile_findings(
+    findings: Vec<Finding>,
+    summaries: &mut Vec<SuppressionSummary>,
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
+    let mut kept = Vec::with_capacity(findings.len());
+    let mut skipped: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
+    for finding in findings {
+        if finding.rule_id == BUILT_IN_LOCKFILE_RULE && is_built_in_lockfile(&finding.file_path) {
+            skipped
+                .entry(finding.file_path.clone())
+                .or_default()
+                .push(finding);
+            continue;
+        }
+        kept.push(finding);
+    }
+    let mut suppressed = Vec::new();
+    // Built-in rows are numbered among themselves, so the index means the same thing in every port however many
+    // entries the user configured, and it keeps this port's section-local numbering. `source` is what tells a
+    // consumer which channel a row came from.
+    for (built_in_index, (lockfile, lockfile_findings)) in skipped.into_iter().enumerate() {
+        let summary = SuppressionSummary {
+            index: built_in_index,
+            rule: BUILT_IN_LOCKFILE_RULE.to_string(),
+            paths: vec![lockfile],
+            message_contains: None,
+            symbol: None,
+            reason: BUILT_IN_LOCKFILE_REASON.to_string(),
+            suppressed: lockfile_findings.len(),
+            source: Some("built-in"),
+            config_key: "builtInLockfile",
+        };
+        for finding in lockfile_findings {
+            suppressed.push(SuppressedFinding {
+                finding,
+                suppression: summary.clone(),
+            });
+        }
+        summaries.push(summary);
+    }
+    (kept, suppressed)
+}
+
+/// Decide whether a path's base name is one of the ratified package-manager lockfiles.
+fn is_built_in_lockfile(file_path: &str) -> bool {
+    let normalized = file_path.replace('\\', "/");
+    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    BUILT_IN_LOCKFILE_NAMES.contains(&file_name)
+}
+
+/// Reason a user reads on each `builtInTestPath[...]` audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13a).
+const BUILT_IN_TEST_PATH_REASON: &str = "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path.";
+
+/// The one sensitive-data rule that still reads test paths, because finding realistic personal data in fixtures is its job.
+const BUILT_IN_TEST_PATH_EXEMPT_RULE: &str = "sensitive-data.pii-test-fixture";
+
+/// Directory names, compared case-insensitively, that make a path test code, e.g. `tests/` or `Fixtures/`.
+const BUILT_IN_TEST_PATH_DIRECTORIES: &[&str] = &[
+    "test",
+    "tests",
+    "__tests__",
+    "spec",
+    "testdata",
+    "fixtures",
+    "examples",
+];
+
+/// Matches a whole base name that marks a test file in any family language, e.g. `keys_test.go` or `login.spec.ts`.
+const BUILT_IN_TEST_FILE_NAME_PATTERN: &str = r"^(?:.*_test\.go|test_.*\.py|.*_test\.py|.*Test\.php|.*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs))$";
+
+static BUILT_IN_TEST_FILE_NAME_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// Hide sensitive-data findings in test, fixture and example files, and publish one audit row per hidden file and rule.
+///
+/// A user scanning a project with sample keys in `tests/fixtures/` sees `builtInTestPath[...]` rows instead of findings.
+/// The skip is never silent, and the fixture-PII rule keeps reading these files (FAMILY-CONTRACT.md section 13a).
+fn partition_built_in_test_path_findings(
+    findings: Vec<Finding>,
+    summaries: &mut Vec<SuppressionSummary>,
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
+    let (kept, skipped_by_file_and_rule) = split_test_path_findings(findings);
+    // Built-in rows are numbered among themselves, so the first test-path row follows the last lockfile row.
+    let first_index = summaries
+        .iter()
+        .filter(|summary| summary.source.is_some())
+        .count();
+    let mut suppressed = Vec::new();
+    // One row per file and rule, which text output shows as `builtInTestPath[tests/keys.rs] sensitive-data.aws-access-key: 2`.
+    for (offset, ((file_path, rule_id), skipped_findings)) in
+        skipped_by_file_and_rule.into_iter().enumerate()
+    {
+        let summary = SuppressionSummary {
+            index: first_index + offset,
+            rule: rule_id,
+            paths: vec![file_path],
+            message_contains: None,
+            symbol: None,
+            reason: BUILT_IN_TEST_PATH_REASON.to_string(),
+            suppressed: skipped_findings.len(),
+            source: Some("built-in"),
+            config_key: "builtInTestPath",
+        };
+        for finding in skipped_findings {
+            suppressed.push(SuppressedFinding {
+                finding,
+                suppression: summary.clone(),
+            });
+        }
+        summaries.push(summary);
+    }
+    (kept, suppressed)
+}
+
+/// Sensitive-data findings in test code, grouped by (path, rule); a BTreeMap orders the keys by UTF-8 bytes, as every port does.
+type TestPathFindingsByFileAndRule = BTreeMap<(String, String), Vec<Finding>>;
+
+/// Split findings into the ones the report keeps and the sensitive-data findings in test code, grouped by file and rule.
+fn split_test_path_findings(
+    findings: Vec<Finding>,
+) -> (Vec<Finding>, TestPathFindingsByFileAndRule) {
+    let mut kept = Vec::with_capacity(findings.len());
+    let mut skipped_by_file_and_rule = TestPathFindingsByFileAndRule::new();
+    // Each finding either stays in the report or is folded into its file's audit row.
+    for finding in findings {
+        // Only the pillar's findings in test code are skipped, and never the fixture-PII rule.
+        if finding.rule_id.starts_with("sensitive-data.")
+            && finding.rule_id != BUILT_IN_TEST_PATH_EXEMPT_RULE
+            && is_built_in_test_path(&finding.file_path)
+        {
+            skipped_by_file_and_rule
+                .entry((finding.file_path.clone(), finding.rule_id.clone()))
+                .or_default()
+                .push(finding);
+            continue;
+        }
+        kept.push(finding);
+    }
+    (kept, skipped_by_file_and_rule)
+}
+
+/// Decide whether a finding's file is test, fixture or example code, e.g. `tests/fixtures/keys.json` or `keys_test.go`.
+fn is_built_in_test_path(file_path: &str) -> bool {
+    let normalized = file_path.replace('\\', "/");
+    let mut segments: Vec<&str> = normalized.split('/').collect();
+    let file_name = segments.pop().unwrap_or_default();
+    // Any directory on the path, compared case-insensitively, or the file name alone can mark test code.
+    segments.iter().any(|directory| {
+        BUILT_IN_TEST_PATH_DIRECTORIES.contains(&directory.to_ascii_lowercase().as_str())
+    }) || static_regex(
+        &BUILT_IN_TEST_FILE_NAME_REGEX,
+        BUILT_IN_TEST_FILE_NAME_PATTERN,
+    )
+    .is_match(file_name)
 }
 
 fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<SuppressionSummary> {
@@ -94,8 +291,37 @@ fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<Suppressio
             rule: exclusion.selector.clone(),
             paths: exclusion.paths.clone(),
             message_contains: exclusion.message_contains.clone(),
+            // Ordinary exclusions have no symbol scope, so this stays null in every report.
+            symbol: None,
             reason: exclusion.reason.clone(),
             suppressed: 0,
+            // A configured row names no source; only the built-in lockfile skip does.
+            source: None,
+            config_key: "exclude",
+        })
+        .collect()
+}
+
+/// Publish one audit row per sensitive exclusion, including entries that match nothing.
+/// A zero count is a valid result, so a fixed fixture never breaks the user's build.
+fn initial_sensitive_suppression_summaries(
+    sensitive_exclusions: &[SensitiveExclusionRule],
+) -> Vec<SuppressionSummary> {
+    sensitive_exclusions
+        .iter()
+        .enumerate()
+        .map(|(index, exclusion)| SuppressionSummary {
+            index,
+            rule: exclusion.rule_id.clone(),
+            paths: vec![exclusion.path.clone()],
+            // This section accepts no message matcher, so no row can describe a matched value.
+            message_contains: None,
+            symbol: exclusion.symbol.clone(),
+            reason: exclusion.reason.clone(),
+            suppressed: 0,
+            // A configured row names no source; only the built-in lockfile skip does.
+            source: None,
+            config_key: "sensitiveExclusions",
         })
         .collect()
 }
@@ -154,6 +380,52 @@ fn exclusion_matches_finding_with_paths(
         .is_none_or(|message| finding.message.contains(message))
 }
 
+/// Remove the sensitive-data findings inside a declared exclusion scope and count each entry.
+/// Findings outside every declared scope pass through untouched.
+fn partition_sensitive_findings(
+    findings: Vec<Finding>,
+    sensitive_exclusions: &[SensitiveExclusionRule],
+    summaries: &mut [SuppressionSummary],
+) -> (Vec<Finding>, Vec<SuppressedFinding>) {
+    let mut kept = Vec::with_capacity(findings.len());
+    let mut suppressed = Vec::new();
+    for finding in findings {
+        match sensitive_exclusions
+            .iter()
+            .position(|exclusion| sensitive_exclusion_matches_finding(exclusion, &finding))
+        {
+            Some(index) => {
+                summaries[index].suppressed += 1;
+                suppressed.push(SuppressedFinding {
+                    finding,
+                    suppression: summaries[index].clone(),
+                });
+            }
+            None => kept.push(finding),
+        }
+    }
+    (kept, suppressed)
+}
+
+/// Decide whether one finding falls inside one declared sensitive exclusion scope.
+/// Every comparison is exact: no glob, prefix, message, or value matching participates.
+fn sensitive_exclusion_matches_finding(
+    exclusion: &SensitiveExclusionRule,
+    finding: &Finding,
+) -> bool {
+    if exclusion.rule_id != finding.rule_id {
+        return false;
+    }
+    // The normalised display path is compared so the caller's working directory cannot change the result.
+    if exclusion.path != normalize_report_path(&finding.file_path) {
+        return false;
+    }
+    exclusion
+        .symbol
+        .as_deref()
+        .is_none_or(|symbol| finding.symbol.as_deref() == Some(symbol))
+}
+
 pub(crate) fn run_analysis_in_project(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -197,6 +469,7 @@ pub(crate) fn apply_gate_diagnostic(report: &mut AnalysisReport, gate: Option<&G
             message,
             file_path: None,
             line: None,
+            invalidates_run: None,
         },
         None => gate.diagnostic(report),
     };
@@ -213,24 +486,23 @@ fn collect_report_inputs(
     diff_filter: Option<&ResolvedDiffFilter>,
 ) -> Result<ReportInputs, String> {
     let analysed_paths = analysed_display_paths(&discovery.files);
-    let AnalysisArtifacts {
-        mut findings,
-        function_blocks_by_file,
-    } = analyse_discovered_sources_with_artifacts(
+    let (mut findings, all_findings, function_blocks_by_file) = analysed_findings(
         project_root,
-        &discovery.files,
         config,
+        &discovery,
         coverage,
         has_symbol_scope_diff(diff_filter),
         &mut diagnostics,
     );
-    sort_and_dedupe_findings(&mut findings);
-    let all_findings = findings.clone();
-    let (baseline_resolution, all_findings_summary) =
-        resolve_baseline(project_root, options, &mut findings)?;
+    let (baseline_report, per_rule_deltas, all_findings_summary) = resolve_run_baseline(
+        project_root,
+        options,
+        &mut findings,
+        &function_blocks_by_file,
+        &mut diagnostics,
+    )?;
     let (findings, summaries, suppressed_findings) =
-        apply_report_exclusions(findings, &config.exclusions);
-    let (baseline_report, per_rule_deltas) = split_baseline_resolution(baseline_resolution);
+        apply_report_exclusions(findings, &config.exclusions, &config.sensitive_exclusions);
     let inputs = ReportInputs {
         discovery,
         diagnostics,
@@ -241,6 +513,7 @@ fn collect_report_inputs(
         suppressed_count: None,
         all_findings_summary: Some(all_findings_summary),
         all_findings,
+        machine_diff: machine_diff_context(options, diff_filter),
     };
     Ok(apply_changed_region_to_inputs(
         project_root,
@@ -251,6 +524,62 @@ fn collect_report_inputs(
         &analysed_paths,
         &function_blocks_by_file,
     ))
+}
+
+/// Run the rules over the discovered sources and hand back the findings, a pre-baseline copy, and the parsed functions.
+///
+/// The pre-baseline copy is what a gate scoped to everything counts, so it is taken before suppression drops the
+/// debt the user already accepted; the parsed functions are what name a finding by the declaration it sits on.
+#[allow(clippy::type_complexity)]
+fn analysed_findings(
+    project_root: &Path,
+    config: &Config,
+    discovery: &DiscoveryResult,
+    coverage: ProjectCoverage,
+    has_symbol_scope: bool,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> (
+    Vec<Finding>,
+    Vec<Finding>,
+    BTreeMap<String, Vec<FunctionBlock>>,
+) {
+    let AnalysisArtifacts {
+        mut findings,
+        function_blocks_by_file,
+    } = analyse_discovered_sources_with_artifacts(
+        project_root,
+        &discovery.files,
+        config,
+        coverage,
+        has_symbol_scope,
+        diagnostics,
+    );
+    sort_and_dedupe_findings(&mut findings);
+    // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads
+    // the same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
+    name_findings(&mut findings, &function_blocks_by_file);
+    let all_findings = findings.clone();
+    (findings, all_findings, function_blocks_by_file)
+}
+
+/// Attach each ordinary finding's durable identity, which SARIF publishes as its code-scanning fingerprint.
+///
+/// A sensitive finding is left unnamed, because it has no durable identity at all; a finding this run cannot name
+/// keeps `None` and is published without a fingerprint rather than with a guessed one.
+fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>) {
+    let declaration_position = declaration_position_from_blocks(blocks_by_file);
+    let Ok(identities) = finding_identities(findings, &declaration_position) else {
+        return;
+    };
+    for (finding, named) in findings.iter_mut().zip(identities) {
+        // The subject travels beside the identity so a consumer can recompute the identity from the payload alone.
+        let (identity, subject) = match named {
+            Some(named) => (Some(named.identity), Some(named.subject)),
+            None => (None, None),
+        };
+        finding.baseline_identity = identity;
+        finding.baseline_subject = subject;
+    }
 }
 
 fn has_symbol_scope_diff(diff_filter: Option<&ResolvedDiffFilter>) -> bool {
@@ -311,7 +640,26 @@ fn apply_changed_region_to_inputs(
         per_rule_deltas: report.per_rule_deltas,
         suppressed_count: report.suppressed_count,
         all_findings,
+        machine_diff: report.machine_context.diff,
     }
+}
+
+fn machine_diff_context(
+    options: &AnalysisOptions,
+    diff_filter: Option<&ResolvedDiffFilter>,
+) -> Option<MachineDiffContext> {
+    let filter = diff_filter?;
+    let selection = options.diff.as_ref()?;
+    let mode = match selection {
+        DiffSelection::Patch { path, .. } if path == Path::new("-") => "stdin".to_string(),
+        DiffSelection::Patch { .. } => "patch".to_string(),
+        DiffSelection::Git { mode, .. } => mode.clone(),
+        DiffSelection::ExplicitRanges { .. } => "changed-ranges".to_string(),
+    };
+    Some(MachineDiffContext {
+        mode,
+        changed_files: filter.patch.changed_files().into_iter().collect(),
+    })
 }
 
 fn changed_scope_all_summary(
@@ -327,14 +675,72 @@ fn changed_scope_all_summary(
     )
 }
 
+/// What meeting the baseline produced: the report section, per-rule movement, and the pre-baseline summary.
+///
+/// The summary is taken before suppression drops the unchanged findings, so a gate scoped to everything can
+/// still count the debt the user has already accepted.
+type RunBaseline = (Option<BaselineReport>, Option<Vec<RuleDelta>>, Summary);
+
+/// Meet the baseline for this run and turn every collision it found into a diagnostic the user reads.
+///
+/// Findings are named by the declaration they sit on, so two findings inside one function share an identity while
+/// a second function of the same name takes its own, which is what keeps one review from covering both.
+fn resolve_run_baseline(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    findings: &mut Vec<Finding>,
+    function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+    diagnostics: &mut Vec<RunDiagnostic>,
+) -> Result<RunBaseline, String> {
+    let declaration_position = declaration_position_from_blocks(function_blocks_by_file);
+    let (resolution, all_findings_summary) =
+        resolve_baseline(project_root, options, findings, &declaration_position)?;
+    let (report, deltas, collisions) = split_baseline_resolution(resolution);
+    diagnostics.extend(collision_diagnostics(&collisions));
+    Ok((report, deltas, all_findings_summary))
+}
+
 fn split_baseline_resolution(
     resolution: Option<BaselineResolution>,
-) -> (Option<BaselineReport>, Option<Vec<RuleDelta>>) {
-    let Some(BaselineResolution { report, deltas }) = resolution else {
-        return (None, None);
+) -> (
+    Option<BaselineReport>,
+    Option<Vec<RuleDelta>>,
+    Vec<BaselineCollision>,
+) {
+    let Some(BaselineResolution {
+        report,
+        deltas,
+        collisions,
+    }) = resolution
+    else {
+        return (None, None, Vec::new());
     };
     let deltas = (!report.generated && !deltas.is_empty()).then_some(deltas);
-    (Some(report), deltas)
+    (Some(report), deltas, collisions)
+}
+
+/// Name every identity that covered two declarations, so a user sees which ones could not be told apart.
+///
+/// Neither finding is suppressed and the run is not invalidated: hiding either would let one review cover a
+/// finding nobody read, which is exactly what the declaration ordinal exists to prevent.
+fn collision_diagnostics(collisions: &[BaselineCollision]) -> Vec<RunDiagnostic> {
+    collisions
+        .iter()
+        .map(|collision| RunDiagnostic {
+            diagnostic_type: "baseline-collision".to_string(),
+            message: format!(
+                "collision: identity {} covers {} declarations of {} for rule {} in {}; none is suppressed",
+                collision.identity,
+                collision.subjects.len(),
+                collision.subjects.join(", "),
+                collision.rule_id,
+                collision.path,
+            ),
+            file_path: Some(collision.path.clone()),
+            line: None,
+            invalidates_run: Some(false),
+        })
+        .collect()
 }
 
 pub(crate) fn analysed_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
@@ -424,8 +830,11 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> AnalysisArtifacts {
     let capabilities = AnalysisCapabilities::from_config(config);
-    let (parsed_sources, read_diagnostics) =
-        crate::project::read_and_parse_sources_with_options(files, capabilities.parse_rust);
+    let (parsed_sources, read_diagnostics) = crate::project::read_and_parse_sources_with_options(
+        files,
+        capabilities.parse_rust,
+        &config.deep_scan_budget,
+    );
     diagnostics.extend(read_diagnostics);
     let mut blocks_by_file = BTreeMap::new();
 
@@ -526,6 +935,7 @@ pub(crate) fn record_history_if_requested(
             history_file,
             &report.findings,
             config,
+            report.score.evaluated_files,
             &mut report.diagnostics,
         );
     }
@@ -541,6 +951,90 @@ pub(crate) struct ReportInputs {
     pub(crate) suppressed_count: Option<usize>,
     pub(crate) all_findings_summary: Option<Summary>,
     pub(crate) all_findings: Vec<Finding>,
+    pub(crate) machine_diff: Option<MachineDiffContext>,
+}
+
+fn report_run_info(project_root: &Path, options: &AnalysisOptions) -> RunInfo {
+    RunInfo {
+        project_root: project_root.display().to_string(),
+        format: options.format.as_str().to_string(),
+        fail_on: options.fail_on.as_str().to_string(),
+        generated_at: Utc::now().to_rfc3339(),
+    }
+}
+
+fn report_path_summary(discovery: DiscoveryResult) -> PathSummary {
+    PathSummary {
+        analysed_files: discovery.files.len(),
+        ignored_paths: discovery.ignored_paths,
+        ignored_path_details: discovery.ignored_path_details,
+        missing_paths: discovery.missing_paths,
+    }
+}
+
+/// The one type every port publishes when it cannot read the changed-region scope it was asked to analyse,
+/// whatever flag asked for it (FAMILY-CONTRACT.md section 6).
+pub(crate) const CHANGED_REGION_DIAGNOSTIC_TYPE: &str = "changed-region";
+
+/// The type every port publishes when it cannot load the configuration it was given.
+pub(crate) const CONFIG_ERROR_DIAGNOSTIC_TYPE: &str = "config-error";
+
+/// Choose the diagnostic type a failed run publishes from the failure itself.
+///
+/// A scope the run could not read and a configuration it could not load are the two ways a run cannot start
+/// once its arguments parsed; anything else keeps the generic run type.
+pub(crate) fn failed_run_diagnostic_type(error: &str) -> &'static str {
+    if error.contains("changed range")
+        || error.contains("--changed-ranges")
+        || error.contains("diff")
+    {
+        return CHANGED_REGION_DIAGNOSTIC_TYPE;
+    }
+    CONFIG_ERROR_DIAGNOSTIC_TYPE
+}
+
+/// Build the v3 envelope a run that could not start still owes a caller who asked for a machine format.
+///
+/// A run that never started has no findings and nothing discovered, so the envelope carries one
+/// run-invalidating diagnostic and empty everything else. Printing only to stderr would leave a JSON consumer
+/// with no diagnostic, no type and no run block to read, where every other port publishes all three.
+pub(crate) fn failed_run_report(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    config: &Config,
+    error: &str,
+) -> AnalysisReport {
+    build_report(
+        project_root,
+        options,
+        config,
+        ReportInputs {
+            discovery: DiscoveryResult {
+                files: Vec::new(),
+                missing_paths: Vec::new(),
+                ignored_paths: Vec::new(),
+                ignored_path_details: Vec::new(),
+            },
+            diagnostics: vec![RunDiagnostic {
+                diagnostic_type: failed_run_diagnostic_type(error).to_string(),
+                message: error.to_string(),
+                file_path: None,
+                line: None,
+                invalidates_run: Some(true),
+            }],
+            findings: Vec::new(),
+            baseline_report: None,
+            suppressions: ReportSuppressions {
+                summaries: Vec::new(),
+                suppressed_findings: Vec::new(),
+            },
+            per_rule_deltas: None,
+            suppressed_count: None,
+            all_findings_summary: None,
+            all_findings: Vec::new(),
+            machine_diff: None,
+        },
+    )
 }
 
 pub(crate) fn build_report(
@@ -559,28 +1053,23 @@ pub(crate) fn build_report(
         suppressed_count,
         all_findings_summary,
         all_findings: _,
+        machine_diff,
     } = inputs;
     let summary = summarize(&findings);
-    let score = score_report(&findings, config);
+    // Only Rust files carry code to score, so the ratified denominator is narrower than
+    // analysed_files, which also counts the text inputs the raw-text rules read.
+    let evaluated_files = discovery.files.iter().filter(|file| file.is_rust).count();
+    let score = score_report(&findings, config, evaluated_files);
+    let machine_context = machine_contract::report_context(project_root, options, machine_diff);
     AnalysisReport {
-        schema_version: "gruff.analysis.v2".to_string(),
+        schema_version: "gruff.analysis.v3".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),
         },
-        run: RunInfo {
-            project_root: project_root.display().to_string(),
-            format: options.format.as_str().to_string(),
-            fail_on: options.fail_on.as_str().to_string(),
-            generated_at: Utc::now().to_rfc3339(),
-        },
+        run: report_run_info(project_root, options),
         summary,
-        paths: PathSummary {
-            analysed_files: discovery.files.len(),
-            ignored_paths: discovery.ignored_paths,
-            ignored_path_details: discovery.ignored_path_details,
-            missing_paths: discovery.missing_paths,
-        },
+        paths: report_path_summary(discovery),
         diagnostics,
         suppressions: suppressions.summaries,
         findings,
@@ -590,5 +1079,6 @@ pub(crate) fn build_report(
         per_rule_deltas,
         suppressed_findings: suppressions.suppressed_findings,
         all_findings_summary,
+        machine_context,
     }
 }

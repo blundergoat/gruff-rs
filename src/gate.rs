@@ -129,6 +129,7 @@ impl Gate {
             message,
             file_path: None,
             line: None,
+            invalidates_run: None,
         }
     }
 }

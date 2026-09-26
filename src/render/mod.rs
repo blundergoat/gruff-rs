@@ -9,6 +9,9 @@ mod text;
 #[cfg(test)]
 pub(crate) use sarif::{sarif_physical_location_from_parts, sarif_uri};
 
+// Shared with the `summary` text surface, which applies the same suppressions.
+pub(crate) use text::render_text_suppressions;
+
 #[cfg(test)]
 pub(crate) fn render_report(report: &AnalysisReport, format: OutputFormat) -> String {
     render_report_with_scope(report, &RequestedScope::default(), format, None)
@@ -21,7 +24,7 @@ pub(crate) fn render_report_with_scope(
     duration_ms: Option<u128>,
 ) -> String {
     match format {
-        OutputFormat::Json => serde_json::to_string_pretty(report).expect("report serializes"),
+        OutputFormat::Json => crate::machine_contract::render_analysis(report),
         OutputFormat::Sarif => sarif::render_sarif(report),
         OutputFormat::Html => html_report::render(report, scope),
         OutputFormat::Markdown => markdown::render_markdown(report),

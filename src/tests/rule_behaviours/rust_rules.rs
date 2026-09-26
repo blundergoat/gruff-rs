@@ -136,6 +136,92 @@ mod tests {
     assert_missing_rule(&negative, "error-handling.public-unwrap");
 }
 
+/// `unimplemented-placeholder` reports a placeholder a production fn would run: a helper under `tests/`, a
+/// macro named in a comment, and one quoted into a `quote!` stream stay silent, while `todo!()` in `src/`
+/// still fires and names only the macro it found.
+#[test]
+pub(crate) fn unimplemented_placeholder_reads_production_code_only() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join("tests/support")).expect("tests dir");
+    fs::write(
+        dir.path().join("tests/support/helpers.rs"),
+        "/// Probe.\npub fn helper() -> i32 {\n    todo!()\n}\n",
+    )
+    .expect("helper write");
+    fs::write(
+        dir.path().join("src/prose.rs"),
+        "/// Probe.\npub fn prose() -> i32 {\n    // Replace the todo!() stub once the parser lands.\n    1\n}\n",
+    )
+    .expect("prose write");
+    fs::write(
+        dir.path().join("src/generated.rs"),
+        "/// Probe.\npub fn generated() -> TokenStream {\n    quote! { fn stub() { unimplemented!() } }\n}\n",
+    )
+    .expect("generated write");
+    fs::write(
+        dir.path().join("src/live.rs"),
+        // The masking ends at the stream's closing brace, so a placeholder after it still counts.
+        "/// Probe.\npub fn live() -> i32 {\n    let _stream = quote! { fn stub() {} };\n    todo!()\n}\n",
+    )
+    .expect("live write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("placeholder analysis succeeds");
+    let placeholders: Vec<(&str, &Value)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "error-handling.unimplemented-placeholder")
+        .map(|finding| (finding.file_path.as_str(), &finding.metadata["macros"]))
+        .collect();
+    assert_eq!(placeholders, vec![("src/live.rs", &json!(["todo!"]))]);
+}
+
+/// `public-unwrap` asks a public fn to map a failure into its API contract. A `pub fn` in an integration-test
+/// support module has no such contract, so it stays silent there while a public `src/` fn still fires.
+#[test]
+pub(crate) fn public_unwrap_skips_test_infrastructure_paths() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        "/// Probe.\npub fn entry(input: &str) -> usize {\n    input.parse::<usize>().unwrap()\n}\n",
+    );
+    fs::create_dir_all(dir.path().join("tests/support")).expect("tests dir");
+    fs::write(
+        dir.path().join("tests/support/command.rs"),
+        "/// Probe.\npub fn run(input: &str) -> usize {\n    input.parse::<usize>().unwrap()\n}\n",
+    )
+    .expect("support write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("public-unwrap analysis succeeds");
+    let paths: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "error-handling.public-unwrap")
+        .map(|finding| finding.file_path.as_str())
+        .collect();
+    assert_eq!(paths, vec!["src/lib.rs"]);
+}
+
 #[test]
 pub(crate) fn concurrency_rules_flag_narrow_async_and_channel_patterns() {
     let _guard = analysis_lock();
@@ -583,12 +669,10 @@ pub(crate) fn rule_fixtures_prove_complexity_and_naming_rules() {
 #[test]
 pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     let _guard = analysis_lock();
-    let security_positive = analyse_test_paths(vec![PathBuf::from(
-        "tests/fixtures/rules/security_sensitive_positive.rs",
-    )]);
-    let security_negative = analyse_test_paths(vec![PathBuf::from(
-        "tests/fixtures/rules/security_sensitive_negative.rs",
-    )]);
+    let security_positive =
+        analyse_fixture_as_production_code("tests/fixtures/rules/security_sensitive_positive.rs");
+    let security_negative =
+        analyse_fixture_as_production_code("tests/fixtures/rules/security_sensitive_negative.rs");
     let test_positive = analyse_test_paths(vec![PathBuf::from(
         "tests/fixtures/rules/test_quality_positive.rs",
     )]);
@@ -614,4 +698,78 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
     assert_missing_rule(&test_negative, "test-quality.conditional-logic");
     assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
+}
+
+/// Sensitive-data findings in test code must be skipped and counted, one `builtInTestPath` row per file and rule.
+///
+/// The same source under `src/` keeps reporting, and the rows sort by path bytes (FAMILY-CONTRACT.md section 13a).
+#[test]
+pub(crate) fn sensitive_data_rules_skip_test_paths_and_count_each_skip() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = fs::read_to_string("tests/fixtures/rules/security_sensitive_positive.rs")
+        .expect("sensitive fixture read");
+    let relative_paths = [
+        "src/sensitive.rs",
+        "tests/sensitive.rs",
+        "tests/calibration/sensitive.rs",
+    ];
+
+    for relative_path in relative_paths {
+        let destination = dir.path().join(relative_path);
+        fs::create_dir_all(destination.parent().expect("sensitive fixture parent"))
+            .expect("sensitive fixture directory");
+        fs::write(destination, &source).expect("sensitive fixture write");
+    }
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: relative_paths.into_iter().map(PathBuf::from).collect(),
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("sensitive path analysis succeeds");
+    let sensitive_rule_ids = |relative_path: &str| {
+        report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.file_path == relative_path && finding.rule_id.starts_with("sensitive-data.")
+            })
+            .map(|finding| finding.rule_id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let production_rule_ids = sensitive_rule_ids("src/sensitive.rs");
+    let skipped_rule_ids = |relative_path: &str| {
+        report
+            .suppressions
+            .iter()
+            .filter(|row| row.config_key == "builtInTestPath" && row.paths == [relative_path])
+            .map(|row| row.rule.clone())
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert!(production_rule_ids.contains("sensitive-data.hardcoded-env-value"));
+    assert!(production_rule_ids.contains("sensitive-data.high-entropy-string"));
+    assert!(sensitive_rule_ids("tests/sensitive.rs").is_empty());
+    assert!(sensitive_rule_ids("tests/calibration/sensitive.rs").is_empty());
+    assert_eq!(skipped_rule_ids("tests/sensitive.rs"), production_rule_ids);
+    assert_eq!(
+        skipped_rule_ids("tests/calibration/sensitive.rs"),
+        production_rule_ids
+    );
+    let test_path_rows = report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath")
+        .map(|row| (row.index, row.paths[0].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(test_path_rows.first().map(|row| row.0), Some(0));
+    assert_eq!(
+        test_path_rows.first().map(|row| row.1.as_str()),
+        Some("tests/calibration/sensitive.rs")
+    );
 }

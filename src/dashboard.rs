@@ -13,7 +13,9 @@ pub(crate) fn run_dashboard(args: DashboardArgs) -> ExitCode {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_dashboard_request(stream, &args.project_root),
+            Ok(stream) => {
+                handle_dashboard_request(stream, &args.project_root, args.deep_scan_budget.as_ref())
+            }
             Err(error) => eprintln!("gruff-rs: dashboard connection error: {error}"),
         }
     }
@@ -21,7 +23,11 @@ pub(crate) fn run_dashboard(args: DashboardArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn handle_dashboard_request(mut stream: TcpStream, default_root: &Path) {
+fn handle_dashboard_request(
+    mut stream: TcpStream,
+    default_root: &Path,
+    deep_scan_budget: Option<&DeepScanBudgetOverride>,
+) {
     let mut buffer = [0u8; 4096];
     let bytes_read = match stream.read(&mut buffer) {
         Ok(bytes_read) => bytes_read,
@@ -31,7 +37,7 @@ fn handle_dashboard_request(mut stream: TcpStream, default_root: &Path) {
     let request_line = request.lines().next().unwrap_or_default();
     let target = request_line.split_whitespace().nth(1).unwrap_or("/");
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let response = dashboard_response(path, query, default_root);
+    let response = dashboard_response_with_budget(path, query, default_root, deep_scan_budget);
     respond(
         &mut stream,
         response.status,
@@ -46,18 +52,28 @@ pub(crate) struct DashboardResponse {
     pub(crate) body: String,
 }
 
+#[cfg(test)]
 pub(crate) fn dashboard_response(
     path: &str,
     query: &str,
     default_root: &Path,
 ) -> DashboardResponse {
+    dashboard_response_with_budget(path, query, default_root, None)
+}
+
+fn dashboard_response_with_budget(
+    path: &str,
+    query: &str,
+    default_root: &Path,
+    deep_scan_budget: Option<&DeepScanBudgetOverride>,
+) -> DashboardResponse {
     match path {
         "/health" => health_response(),
-        "/scan" => scan_response(query, default_root),
+        "/scan" => scan_response(query, default_root, deep_scan_budget),
         "/" => DashboardResponse {
             status: "200 OK",
             content_type: "text/html; charset=utf-8",
-            body: dashboard_index(default_root),
+            body: dashboard_index(default_root, deep_scan_budget),
         },
         _ => not_found_response(),
     }
@@ -79,7 +95,11 @@ fn not_found_response() -> DashboardResponse {
     }
 }
 
-fn scan_response(query: &str, default_root: &Path) -> DashboardResponse {
+fn scan_response(
+    query: &str,
+    default_root: &Path,
+    default_budget: Option<&DeepScanBudgetOverride>,
+) -> DashboardResponse {
     let params = parse_query(query);
     let (root, scan_path) = match dashboard_scan_target(&params, default_root) {
         Ok(target) => target,
@@ -91,16 +111,40 @@ fn scan_response(query: &str, default_root: &Path) -> DashboardResponse {
             };
         }
     };
+    let deep_scan_budget = match dashboard_budget_override(&params, default_budget) {
+        Ok(value) => value,
+        Err(message) => {
+            return DashboardResponse {
+                status: "400 Bad Request",
+                content_type: "text/plain; charset=utf-8",
+                body: message,
+            };
+        }
+    };
     let options = dashboard_scan_options(scan_path);
     let scope = RequestedScope::from_options(&options);
     let body = load_config(&root, &options)
-        .and_then(|config| run_analysis_in_project(&root, &options, &config))
+        .and_then(|mut config| {
+            config.apply_deep_scan_budget_override(deep_scan_budget.as_ref());
+            run_analysis_in_project(&root, &options, &config)
+        })
         .map(|report| dashboard_shell(&report, &scope, &root))
         .unwrap_or_else(|error| format!("<pre>{}</pre>", html_escape(&error)));
     DashboardResponse {
         status: "200 OK",
         content_type: "text/html; charset=utf-8",
         body,
+    }
+}
+
+fn dashboard_budget_override(
+    params: &HashMap<String, String>,
+    default: Option<&DeepScanBudgetOverride>,
+) -> Result<Option<DeepScanBudgetOverride>, String> {
+    match params.get("deepScanBudget") {
+        Some(value) if value.trim().is_empty() => Ok(None),
+        Some(value) => value.parse().map(Some),
+        None => Ok(default.cloned()),
     }
 }
 
@@ -177,11 +221,18 @@ fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
         history_file: None,
         baseline: None,
         generate_baseline: None,
+        migrate_baseline: None,
+        force_baseline_overwrite: false,
         no_baseline: false,
+        execution: ExecutionSelectors::default(),
+        display: DisplaySelectors::default(),
     }
 }
 
-fn dashboard_index(root: &Path) -> String {
+fn dashboard_index(root: &Path, deep_scan_budget: Option<&DeepScanBudgetOverride>) -> String {
+    let budget_value = deep_scan_budget
+        .map(DeepScanBudgetOverride::as_cli_value)
+        .unwrap_or_default();
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -204,12 +255,14 @@ fn dashboard_index(root: &Path) -> String {
     <form action="/scan" method="get">
       <label>Project root <input name="projectRoot" value="{root}"></label>
       <label>Path <input name="path" value="."></label>
+      <label>Deep scan budget <input name="deepScanBudget" value="{budget}" placeholder="20000:2000000 or off"></label>
       <button type="submit">Run scan</button>
     </form>
   </main>
 </body>
 </html>"#,
-        root = html_escape(&root.display().to_string())
+        root = html_escape(&root.display().to_string()),
+        budget = html_escape(&budget_value)
     )
 }
 

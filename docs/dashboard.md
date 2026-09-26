@@ -5,7 +5,7 @@
 ## Start
 
 ```sh
-cargo run -- dashboard --host 127.0.0.1 --port 8766 --project-root .
+./.cargo-tools/bin/gruff-rs dashboard --host 127.0.0.1 --port 8766 --project-root .
 ```
 
 ## Options

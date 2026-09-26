@@ -22,10 +22,16 @@ extends = ":workspace"
 glob_scan_max_depth = 3
 
 [permissions.goat-flow.filesystem.":workspace_roots"]
-# Codex applies the most specific matching path, so the reviewed sample can
-# remain editable inside the broader deny for real and nonstandard env files.
-"**/.env*" = "deny"
-"**/.env.example" = "write"
+# Codex accepts filename globs only for deny access, so enumerate the real env
+# variants and let .env.example inherit normal workspace editing access.
+"**/.env" = "deny"
+"**/.env.local" = "deny"
+"**/.env.development" = "deny"
+"**/.env.production" = "deny"
+"**/.env.staging" = "deny"
+"**/.env.test" = "deny"
+"**/.envrc" = "deny"
+"**/.env.*.local" = "deny"
 "**/secrets/**" = "deny"
 "**/.ssh/**" = "deny"
 "**/.aws/**" = "deny"
