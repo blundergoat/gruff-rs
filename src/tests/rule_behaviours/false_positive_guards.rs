@@ -1,7 +1,15 @@
+//! Check that supported source patterns avoid misleading findings without hiding actionable ones.
+//!
+//! Each fixture runs through project analysis as a user would scan its source tree.
+//! Related positive controls keep silent results from being mistaken for working detection.
+
 use super::*;
 
 #[path = "network_security_test_context_guards.rs"]
 mod network_security_test_context_guards;
+
+#[path = "shared_entropy_policy.rs"]
+mod shared_entropy_policy;
 
 /// Regression guard: `waste.unnecessary-clone-candidate` must skip clones
 /// whose result is immediately consumed by ownership-taking calls
@@ -288,6 +296,67 @@ mod tests {
             .map(|f| &f.rule_id)
             .collect::<Vec<_>>()
     );
+}
+
+/// A project scan can recognize an external test module when its selected parent declares `#[cfg(test)] mod tests;`.
+/// Scanning that file alone or changing the parent to a production declaration keeps the user's unwrap warning.
+#[test]
+pub(crate) fn external_cfg_test_module_requires_selected_test_only_parent() {
+    let _guard = analysis_lock();
+    let project = tempdir().expect("tempdir");
+    baseline_with_lib(project.path(), "/// Root.\n#[cfg(test)]\nmod tests;\n");
+    fs::write(
+        project.path().join("src/tests.rs"),
+        "fn setup() { let value: Option<i32> = Some(1); value.unwrap(); }\n",
+    )
+    .expect("test module source");
+
+    let unwrap_count = |paths: Vec<PathBuf>| {
+        run_project_analysis(
+            project.path(),
+            AnalysisOptions {
+                paths,
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds")
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.rule_id == "waste.unwrap-expect" && finding.file_path == "src/tests.rs"
+        })
+        .count()
+    };
+
+    assert_eq!(unwrap_count(vec![PathBuf::from(".")]), 0);
+    write_lib(
+        project.path(),
+        "#[cfg(all(test, feature = \"web\"))]\nmod tests;\n",
+    );
+    assert_eq!(unwrap_count(vec![PathBuf::from(".")]), 0);
+    assert_eq!(unwrap_count(vec![PathBuf::from("src/tests.rs")]), 1);
+    assert_eq!(
+        unwrap_count(vec![
+            PathBuf::from("src/lib.rs"),
+            PathBuf::from("src/tests.rs")
+        ]),
+        1
+    );
+
+    // A project owner can name `tests.rs` without making it test-only; those scans still need the warning.
+    for declaration in [
+        "mod tests;\n",
+        "#[cfg(not(test))]\nmod tests;\n",
+        "#[cfg(any(test, feature = \"web\"))]\nmod tests;\n",
+        "#[cfg_attr(test, allow(dead_code))]\nmod tests;\n",
+        "#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
+        "#[path = \"tests.rs\"]\nmod helpers;\n#[cfg(test)]\nmod tests;\n",
+    ] {
+        write_lib(project.path(), declaration);
+        assert_eq!(unwrap_count(vec![PathBuf::from(".")]), 1, "{declaration}");
+    }
 }
 
 #[test]

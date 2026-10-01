@@ -7,6 +7,45 @@ use super::*;
 #[path = "rustdoc_function_guards.rs"]
 mod rustdoc_function_guards;
 
+/// A scan accepts an assigned removal condition and still reports markers that a developer cannot act on.
+#[test]
+pub(crate) fn stale_todo_requires_a_complete_owner_and_removal_condition() {
+    let _guard = analysis_lock();
+    let project = tempdir().expect("tempdir");
+    baseline_with_lib(
+        project.path(),
+        r##"//FIXME(chenyukang), remove this after type ascription is removed from AST
+//FIXME(chenyukang)
+//FIXME(chenyukang), remove this after
+//FIXME(??), remove this after type ascription is removed from AST
+//FIXME(chenyukang), revisit later
+//FIXME
+pub fn entry() {}
+"##,
+    );
+
+    let report = run_project_analysis(
+        project.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let reported_lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.stale-todo")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        reported_lines,
+        [Some(2), Some(3), Some(4), Some(5), Some(6)]
+    );
+}
+
 #[test]
 pub(crate) fn unreachable_code_ignores_terminator_mentions_in_comments() {
     let _guard = analysis_lock();

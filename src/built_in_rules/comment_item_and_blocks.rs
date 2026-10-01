@@ -1,3 +1,7 @@
+//! Comment and item parsing supplies source facts to Rust's documentation and function rules.
+//! A user reaches this layer when a scan reads repair comments or parsed functions in a source file.
+//! It keeps the original report locations while carrying private context needed for precise checks.
+
 use super::*;
 
 pub(crate) fn analyse_comment_rules(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
@@ -66,30 +70,70 @@ pub(crate) fn find_marker<'a>(text: &'a str, marker: &str) -> Option<(&'a str, S
     None
 }
 
+/// Accept an issue, owner, or actionable reason after a repair marker.
+/// An empty or incomplete suffix leaves the user's comment reportable.
 pub(crate) fn has_durable_reference(after_marker: &str) -> bool {
-    let trimmed = after_marker.trim_start();
-    if let Some(rest) = trimmed.strip_prefix('(') {
-        return paren_reference_is_durable(rest);
+    let reference_text = after_marker.trim_start();
+    // A parenthesized label may contain an issue or an owner with a condition for removing the workaround.
+    if let Some(after_open_paren) = reference_text.strip_prefix('(') {
+        return paren_reference_is_durable(after_open_paren);
     }
-    if let Some(rest) = trimmed.strip_prefix('[') {
-        return bracket_reference_is_durable(rest);
+    // A bracketed issue or owner can give the user a durable place to follow up.
+    if let Some(after_open_bracket) = reference_text.strip_prefix('[') {
+        return bracket_reference_is_durable(after_open_bracket);
     }
-    if let Some(rest) = trimmed.strip_prefix(':') {
-        return rest.trim().len() >= 5;
+    // A reason after a colon is enough when it says more than a placeholder.
+    if let Some(after_colon) = reference_text.strip_prefix(':') {
+        return after_colon.trim().len() >= 5;
     }
     false
 }
 
+/// Read a parenthesized issue or owner and the text after it before deciding whether the comment needs attention.
 fn paren_reference_is_durable(after_open_paren: &str) -> bool {
-    let Some(end) = after_open_paren.find(')') else {
+    // Without a closing parenthesis the user has not finished the reference.
+    let Some(closing_paren_index) = after_open_paren.find(')') else {
         return false;
     };
-    let inner = &after_open_paren[..end];
-    inner.contains('#')
-        || inner.contains('@')
-        || inner.starts_with("GH-")
-        || inner.contains("://")
-        || (inner.contains(':') && inner.trim().len() >= 3)
+    let reference_label = &after_open_paren[..closing_paren_index];
+    let after_closing_paren = &after_open_paren[closing_paren_index + 1..];
+    reference_label.contains('#')
+        || reference_label.contains('@')
+        || reference_label.starts_with("GH-")
+        || reference_label.contains("://")
+        || (reference_label.contains(':') && reference_label.trim().len() >= 3)
+        || has_owner_and_removal_condition(reference_label, after_closing_paren)
+}
+
+/// A named owner plus a specific removal condition gives a developer enough context to act on a repair note.
+fn has_owner_and_removal_condition(owner: &str, after_owner: &str) -> bool {
+    // A bare or malformed parenthesized label cannot tell the developer who owns the work.
+    if !(3..=32).contains(&owner.len())
+        || !owner.as_bytes()[0].is_ascii_alphabetic()
+        || !owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return false;
+    }
+
+    // Clippy's `FIXME(chenyukang), remove this after type ascription is removed from AST` names an owner and exit condition.
+    let Some(condition) = after_owner
+        .trim_start()
+        .strip_prefix(',')
+        .map(str::trim_start)
+        .and_then(|reason| reason.strip_prefix("remove this after "))
+    else {
+        return false;
+    };
+    let condition = condition.trim();
+    // An unfinished or oversized condition still needs a clearer comment in the user's source.
+    condition.len() <= 160
+        && condition
+            .split_whitespace()
+            .filter(|word| word.bytes().any(|byte| byte.is_ascii_alphabetic()))
+            .count()
+            >= 3
 }
 
 fn bracket_reference_is_durable(after_open_bracket: &str) -> bool {
@@ -472,6 +516,7 @@ pub(crate) fn collect_function_blocks(
     }
 }
 
+/// Build a standalone function record so the user's findings point to that function's declaration.
 pub(crate) fn push_item_function_block(
     item_fn: &syn::ItemFn,
     lines: &[&str],
@@ -487,6 +532,7 @@ pub(crate) fn push_item_function_block(
         test_context,
         is_async: item_fn.sig.asyncness.is_some(),
         returns_bool: is_bool_return_type(&item_fn.sig.output),
+        is_trait_method: false,
         returns_result: is_result_return_type(&item_fn.sig.output),
         name_start: item_fn.sig.ident.span().start(),
         block_end: item_fn.block.span().end(),
@@ -494,6 +540,7 @@ pub(crate) fn push_item_function_block(
     }));
 }
 
+/// Collect implementation methods and their trait ownership before the user's naming checks run.
 pub(crate) fn push_impl_function_blocks(
     item_impl: &syn::ItemImpl,
     lines: &[&str],
@@ -502,17 +549,28 @@ pub(crate) fn push_impl_function_blocks(
 ) {
     let impl_test_context =
         test_context || has_test_attr(&item_impl.attrs) || has_cfg_test_attr(&item_impl.attrs);
+    let implements_trait = item_impl.trait_.is_some();
+    // Every method in `impl Trait for Type` has a trait-owned name that the user cannot rename independently.
     for impl_item in &item_impl.items {
+        // Only parsed method bodies enter function-level naming checks.
         if let ImplItem::Fn(method) = impl_item {
-            push_impl_method_function_block(method, lines, impl_test_context, blocks);
+            push_impl_method_function_block(
+                method,
+                lines,
+                impl_test_context,
+                implements_trait,
+                blocks,
+            );
         }
     }
 }
 
+/// Carry a method's trait ownership into the user's function-level rule checks without changing its report anchor.
 pub(crate) fn push_impl_method_function_block(
     method: &syn::ImplItemFn,
     lines: &[&str],
     test_context: bool,
+    is_trait_method: bool,
     blocks: &mut Vec<FunctionBlock>,
 ) {
     blocks.push(function_block_from_parts(FunctionBlockParts {
@@ -524,6 +582,7 @@ pub(crate) fn push_impl_method_function_block(
         test_context,
         is_async: method.sig.asyncness.is_some(),
         returns_bool: is_bool_return_type(&method.sig.output),
+        is_trait_method,
         returns_result: is_result_return_type(&method.sig.output),
         name_start: method.sig.ident.span().start(),
         block_end: method.block.span().end(),

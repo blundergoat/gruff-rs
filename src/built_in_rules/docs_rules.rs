@@ -270,12 +270,22 @@ pub(crate) fn analyse_missing_return_doc(
         return;
     }
     let summary = docs.summary();
-    if summary_has_return_stem(&summary, signature.as_ref())
-        || is_getter_summary_naming_value(block, signature.as_ref(), &summary)
-    {
+    if has_described_return_value(block, signature.as_ref(), &summary) {
         return;
     }
     findings.push(missing_return_doc_finding(file, block));
+}
+
+/// Accept the bounded summary forms that tell API readers what a function returns.
+/// Other prose leaves the missing-description warning in place.
+fn has_described_return_value(
+    block: &FunctionBlock,
+    signature: Option<&syn::Signature>,
+    summary: &str,
+) -> bool {
+    summary_has_return_stem(summary, signature)
+        || is_getter_summary_naming_value(block, signature, summary)
+        || is_conversion_summary_naming_return_value(summary, signature)
 }
 
 /// The fn's own signature, parsed from its item text, so a nested fn, a `where` clause or an attribute's text
@@ -398,9 +408,8 @@ fn lowercase_words(text: &str) -> Vec<String> {
 
 /// A getter documented by a description names what it returns, as `/// Logging filter level.` does on
 /// `fn log_level(&self) -> LevelFilter`. It counts only when the fn takes `&self` and nothing else and the
-/// summary names the value word ([`getter_value_word`]) or its plural after its first word, not directly after
-/// `to`, in a summary that reads as a description ([`is_descriptive_summary`]). A summary opening with the
-/// value word uses it as a verb, as `/// Lock the mutex.` does on `fn lock(&self)`.
+/// summary names the value word ([`getter_value_word`]) or its plural. A noun opening such as
+/// `Direction of the search` also counts; an action such as `Lock the mutex` still needs return prose.
 fn is_getter_summary_naming_value(
     block: &FunctionBlock,
     signature: Option<&syn::Signature>,
@@ -419,6 +428,12 @@ fn is_getter_summary_naming_value(
             || value_word.strip_suffix('s') == Some(word)
     };
     let words = lowercase_words(described_clause(summary));
+    // A getter's value noun can open a description of what the caller receives, as in `Direction of the search`.
+    if words.first() == Some(&value_word) {
+        return !has_bool_result(signature)
+            && words.get(1).is_some_and(|word| word == "of")
+            && words.len() >= 3;
+    }
     let named_at = words
         .iter()
         .skip(1)
@@ -429,6 +444,79 @@ fn is_getter_summary_naming_value(
             && words[named_at - 1] != "to"
             && is_descriptive_summary(&words, named_at, has_bool_result(signature))
     })
+}
+
+/// Accept `Converts an i128 to a Number` only when `Number` is the parsed direct or optional return value.
+/// A different destination or an unknown return shape still asks the caller for return documentation.
+fn is_conversion_summary_naming_return_value(
+    summary: &str,
+    signature: Option<&syn::Signature>,
+) -> bool {
+    // Without a parsed non-boolean return type, prose alone cannot establish the conversion's result.
+    let Some(signature) = signature.filter(|signature| !has_bool_result(signature)) else {
+        return false;
+    };
+    // An unknown or complex return shape needs a fuller description for API readers.
+    let Some(returned_name) = returned_value_type_name(signature) else {
+        return false;
+    };
+    let words = lowercase_words(summary);
+    // A summary with no input words cannot tell callers what is converted.
+    let [verb, source, ..] = words.as_slice() else {
+        return false;
+    };
+    // A summary must name the input before it can describe a conversion into the return value.
+    if !is_listed("convert converts", verb) || !is_listed("a an the", source) {
+        return false;
+    }
+    // Missing destination words leave callers unsure what the conversion produces.
+    let Some(destination_start) = words.len().checked_sub(3) else {
+        return false;
+    };
+    destination_start >= 3
+        && words[destination_start] == "to"
+        && is_listed("a an the", &words[destination_start + 1])
+        && words[destination_start + 2] == returned_name.to_ascii_lowercase()
+}
+
+/// Read a simple `T` or `Option<T>` result so conversion prose can name exactly what callers receive.
+/// Complex or qualified types stay outside this wording exception.
+fn returned_value_type_name(signature: &syn::Signature) -> Option<String> {
+    // A function without an explicit return type has no destination to compare with its docs.
+    let syn::ReturnType::Type(_, returned) = &signature.output else {
+        return None;
+    };
+    // Non-path types cannot be named by this narrow summary form.
+    let syn::Type::Path(path) = returned.as_ref() else {
+        return None;
+    };
+    // A qualified or multi-segment type leaves the short destination name ambiguous.
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = &path.path.segments[0];
+    // A direct return type may be named as written when it has no generic arguments.
+    if segment.ident != "Option" {
+        return matches!(segment.arguments, syn::PathArguments::None)
+            .then(|| segment.ident.to_string());
+    }
+    // Only a single optional value is simple enough for this wording exception.
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    // Multiple generic arguments do not identify one value for the caller.
+    if arguments.args.len() != 1 {
+        return None;
+    }
+    // The optional inner type must itself be a plain named value.
+    let syn::GenericArgument::Type(syn::Type::Path(inner)) = &arguments.args[0] else {
+        return None;
+    };
+    inner
+        .qself
+        .is_none()
+        .then(|| inner.path.get_ident().map(ToString::to_string))
+        .flatten()
 }
 
 /// Report whether a `bool` summary says what `true` means: `whether`, `true` or `false`, a `Does`, `Is`, `Has` or

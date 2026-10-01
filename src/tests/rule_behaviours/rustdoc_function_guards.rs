@@ -235,18 +235,10 @@ pub fn measured() -> usize {
     assert!(finding.message.contains("has 4 lines"));
 }
 
-/// `missing-return-doc` reads a return described by its summary: a `-> Self` constructor, a summary opening
-/// with `Return`, `Create` or `Get` and a value, and a `&self` getter whose noun-phrase summary names the fn's
-/// final word. Still reported: a getter whose summary uses that word as a verb or in a `Panics` sentence, a
-/// word that only shares its prefix, an action summary (`Removes the front element.`), a stem followed by no
-/// value (`Return early`, `Get ready`), `Create` on a `bool` (a `where` clause included), `Return` giving
-/// something back on a `bool`, a nested fn's `-> Self` or `&self`, and a fn whose doc ignores what it returns.
-/// A `{` inside an attribute does not hide a `-> Self` return. Also reported: an action summary with an article
-/// before the named word (`Validate the input.`), `Create` on a `bool` getter or an `Option<bool>`, a `-> Self`
-/// method on `&mut self`, a give-back `Return` wrapped onto the next line, a `bool` getter that never says what
-/// `true` means, and a quantifier name segment (`notify_all`). A by-value builder and a `bool` getter saying
-/// `whether` are not. Also reported: a mutator opener (`Purge`, `Apply`), a `bool` summary whose `if` states a
-/// precondition, and `self: &mut Self` returning `Self`; an article opener and a `Status` noun are not.
+/// Keep constructor, value-stem, and shared-receiver getter descriptions quiet for API readers.
+///
+/// Incomplete or action prose still warns; bool results must say what true means. The fixture also checks
+/// nested functions, receiver ownership, wrapped summaries, and attributes.
 #[test]
 pub(crate) fn missing_return_doc_reads_constructor_stem_and_getter_summaries() {
     let _guard = analysis_lock();
@@ -510,6 +502,69 @@ pub fn total(items: &[u32]) -> u32 {
             "try_lock",
             "validate_input",
             "warm",
+        ]
+    );
+}
+
+/// Keeps observed getter and conversion descriptions quiet while nearby incomplete descriptions still warn.
+/// The source forms mirror pinned alacritty and serde_json methods; each control changes the meaning users would read.
+#[test]
+pub(crate) fn missing_return_doc_reads_value_nouns_and_conversion_destinations() {
+    let _guard = analysis_lock();
+    let report = analyse_rustdoc_source(
+        r#"//! Return-description cases.
+
+pub struct Direction;
+pub struct SearchState;
+
+impl SearchState {
+    /// Direction of the search from its origin.
+    pub fn direction(&self) -> Direction { Direction }
+
+    /// Direction to take next.
+    pub fn ambiguous_direction(&self) -> Direction { Direction }
+
+    /// Direction of the search from its origin.
+    pub fn status(&self) -> Direction { Direction }
+
+    /// Lock the mutex.
+    pub fn lock(&self) -> Direction { Direction }
+}
+
+pub struct Number;
+
+impl Number {
+    /// Converts an i128 to a Number. Values outside the supported range return None.
+    pub fn from_i128(_value: i128) -> Option<Number> { Some(Number) }
+
+    /// Converts an i128 to a String.
+    pub fn wrong_target(_value: i128) -> Option<Number> { Some(Number) }
+
+    /// Converts an i128.
+    pub fn missing_destination(_value: i128) -> Option<Number> { Some(Number) }
+
+    /// Converts an i128 to a Number.
+    pub fn returns_bool(_value: i128) -> bool { true }
+}
+"#,
+    );
+    let mut warned_methods: Vec<String> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.missing-return-doc")
+        .filter_map(|finding| finding.symbol.clone())
+        .map(|symbol| symbol.rsplit("::").next().unwrap_or(&symbol).to_string())
+        .collect();
+    warned_methods.sort();
+    assert_eq!(
+        warned_methods,
+        [
+            "ambiguous_direction",
+            "lock",
+            "missing_destination",
+            "returns_bool",
+            "status",
+            "wrong_target"
         ]
     );
 }

@@ -4,6 +4,53 @@
 
 use super::*;
 
+/// A scan keeps names required by Rust traits and existence predicates quiet while still reporting unrelated boolean names.
+#[test]
+pub(crate) fn boolean_naming_respects_trait_methods_and_existence_predicates() {
+    let _guard = analysis_lock();
+    let project = tempdir().expect("tempdir");
+    baseline_with_lib(
+        project.path(),
+        r##"struct Item;
+struct MySql;
+trait Type<T> { fn compatible(&self) -> bool; }
+impl Type<MySql> for Item { fn compatible(&self) -> bool { true } }
+impl PartialEq<str> for Item { fn eq(&self, _other: &str) -> bool { true } }
+impl Item {
+    fn eq(&self) -> bool { true }
+    fn compatible(&self) -> bool { true }
+}
+fn compatible() -> bool { true }
+fn table_exists() -> bool { true }
+fn exists() -> bool { true }
+fn existential() -> bool { true }
+"##,
+    );
+
+    let report = run_project_analysis(
+        project.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let mut reported_names: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "naming.boolean-prefix")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    reported_names.sort_unstable();
+    assert_eq!(
+        reported_names,
+        ["compatible", "compatible", "eq", "existential"]
+    );
+}
+
 #[test]
 pub(crate) fn error_handling_rules_flag_production_hazards_and_skip_tests() {
     let _guard = analysis_lock();

@@ -296,147 +296,159 @@ pub(crate) fn is_integrity_hash(value: &str) -> bool {
     PREFIXES.iter().any(|prefix| value.starts_with(prefix))
 }
 
-/// Recognise generated-looking values whose structure identifies them as public tables or names.
-/// Returning true keeps those inert values out of the user's secret findings.
+/// Check a complete literal before the scanner raises an entropy warning.
+/// Empty content matches no exception; accepting a shape does not prove the value is public.
 pub(crate) fn is_structured_high_entropy_non_secret(value: &str) -> bool {
-    is_base64_alphabet_table(value)
-        || is_word_segment_slug(value)
-        || is_separated_identifier_slug(value)
+    const ALPHABETS: &[&str] = &[
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_",
+        "abcdefghijklmnopqrstuvwxyz0123456789-_",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+        "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRTUVWXY23456789",
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_",
+    ];
+    static PUBLIC_FORMAT: OnceLock<Regex> = OnceLock::new();
+    ALPHABETS.contains(&value)
+        || static_regex(
+            &PUBLIC_FORMAT,
+            r"^(?:https://entra\.microsoft\.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/isMSAApp~/false\?Microsoft_AAD_IAM_legacyAADRedirect=true|security\.access_token_handler\.oidc\.signature\.(?:ES|RS|PS)(?:256|384|512)|[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com|soljson-v[0-9]+\.[0-9]+\.[0-9]+\+commit\.[0-9a-f]{8}\.js|https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9][A-Za-z0-9._-]{0,99}/commit/[0-9a-f]{40})$",
+        ).is_match(value)
+        || is_bounded_public_entropy_format(value)
+        || is_structured_entropy_name(value)
 }
 
-/// Recognise the complete standard or URL-safe Base64 alphabet used as public reference data.
-fn is_base64_alphabet_table(value: &str) -> bool {
-    const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
-    const DIGITS: &str = "0123456789";
-    // Any other length cannot be the complete alphabet table users intentionally include.
-    if value.len() != UPPER.len() + LOWER.len() + DIGITS.len() + 2 {
-        return false;
+/// Keep established help routes and clinical codes quiet only when every word fits their complete format.
+/// An unmatched or malformed value stays eligible for entropy scoring.
+fn is_bounded_public_entropy_format(value: &str) -> bool {
+    static HELP_ARTICLE: OnceLock<Regex> = OnceLock::new();
+    // A stored relative help link uses its own title grammar after the complete route matches.
+    if let Some(article) = static_regex(
+        &HELP_ARTICLE,
+        r"^/hc/[a-z]{2}-[a-z]{2}/articles/[0-9]{12,13}-([A-Za-z]+(?:-[A-Za-z]+)*)$",
+    )
+    .captures(value)
+    {
+        // Only the approved short joiners may accompany otherwise bounded title words.
+        return article[1].split('-').all(|word| {
+            matches!(word, "a" | "to" | "in")
+                || ((3..=32).contains(&word.len()) && has_entropy_word_case(word))
+        });
     }
-    // A missing uppercase prefix means the value is not the known public alphabet sequence.
-    let Some(after_upper) = value.strip_prefix(UPPER) else {
-        return false;
-    };
-    // A missing lowercase segment likewise leaves a potentially secret value reportable.
-    let Some(after_lower) = after_upper.strip_prefix(LOWER) else {
-        return false;
-    };
-    after_lower == "0123456789+/" || after_lower == "0123456789-_"
-}
-
-/// Recognise slash, underscore, or dash-separated word names that only appear high entropy when joined.
-fn is_word_segment_slug(value: &str) -> bool {
-    // Base64 padding or symbols make this value credible secret material rather than a user-facing name.
-    if value.contains(['+', '=']) {
-        return false;
-    }
-    let segments: Vec<&str> = value.split(['/', '_', '-']).collect();
-    // One segment or an empty segment does not provide enough word structure to suppress a finding.
-    if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
-        return false;
-    }
-    segments.iter().all(|segment| {
-        segment_has_letters_then_optional_short_digits(segment)
-            && segment_has_word_like_case_runs(segment)
+    static HELP_ROUTE: OnceLock<Regex> = OnceLock::new();
+    static CLINICAL_CODE: OnceLock<Regex> = OnceLock::new();
+    let formats = [
+        static_regex(
+            &HELP_ROUTE,
+            r"^/hc/[a-z]{2}-[a-z]{2}/(?:sections|categories)/[0-9]{12}-([A-Za-z]+(?:-[A-Za-z]+)*)$",
+        ),
+        static_regex(&CLINICAL_CODE, r"^(?:PH|PHVS)_([A-Za-z]+)_HL7_V[0-9]{1,4}$"),
+    ];
+    // Either recognized format must account for the complete literal the user committed.
+    formats.iter().any(|pattern| {
+        // A missing match or an opaque label cannot grant an exception to the value.
+        pattern.captures(value).is_some_and(|matched| {
+            matched[1]
+                .split('-')
+                .all(|word| (3..=32).contains(&word.len()) && has_entropy_word_case(word))
+        })
     })
 }
 
-/// Recognise separated model names and public identifiers built from ordinary word segments.
-/// Contiguous, padded, or long opaque segments remain reportable so users do not lose credible secret findings.
-fn is_separated_identifier_slug(value: &str) -> bool {
-    // Base64 padding or symbols are evidence of secret material, not a public identifier.
-    if value.contains(['+', '=']) {
+/// Decide whether a letter run reads as an ordinary word or a compound name before granting a name exception.
+fn has_entropy_word_case(word: &str) -> bool {
+    static WORD_CASE: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &WORD_CASE,
+        r"^(?:[A-Z]*[a-z]+|[A-Z]+|(?:[a-z]{3,}|[A-Z]{3,}|[A-Z][a-z]{2,})(?:[A-Z][a-z]{2,}|[A-Z]{3,})+)$",
+    ).is_match(word)
+}
+
+/// Recognize readable names and repository paths without letting their words hide an opaque tail.
+/// At least two word segments must supply a strict letter majority; empty or malformed names remain eligible for scoring.
+fn is_structured_entropy_name(value: &str) -> bool {
+    static NAME_SHAPE: OnceLock<Regex> = OnceLock::new();
+    // A committed path may start with two parent components or one rooted, hidden or current-directory prefix.
+    let normalized = value
+        .strip_prefix("../../")
+        .or_else(|| value.strip_prefix("../"))
+        .or_else(|| value.strip_prefix("./"))
+        .or_else(|| value.strip_prefix('/'))
+        .or_else(|| value.strip_prefix('.'))
+        .unwrap_or(value);
+    // Missing segments or other punctuation keep the value eligible for a warning.
+    if !static_regex(&NAME_SHAPE, r"^[A-Za-z0-9]+(?:[/._-]+[A-Za-z0-9]+)+$").is_match(normalized) {
         return false;
     }
-    let segments: Vec<&str> = value.split(['/', '_', '-', '.']).collect();
-    // Fewer than three populated segments do not establish a clear public-name shape.
-    if segments.len() < 3 || segments.iter().any(|segment| segment.is_empty()) {
-        return false;
-    }
-    // Non-alphanumeric segment content keeps the value visible for user review.
-    if segments.iter().any(|segment| {
-        !segment
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-    }) {
-        return false;
-    }
-    let mut word_segments = 0;
-    // Each segment must look like a word or a short version/size code to be safely ignored.
-    for segment in &segments {
-        // Word-like segments make the full value resemble a public model or resource name.
-        if segment_has_word_like_case_runs(segment) {
-            word_segments += 1;
-        // A long opaque segment could contain a credential, so the user must still see it.
-        } else if segment.len() > 6 {
+    let mut alphanumeric_count = 0;
+    let mut word_letter_count = 0;
+    let mut word_segment_count = 0;
+    // Readable directories do not excuse a random-looking filename; check each populated part independently.
+    for segment in normalized
+        .split(['/', '.', '_', '-'])
+        .filter(|part| !part.is_empty())
+    {
+        // A rejected segment prevents the whole value from receiving the public-name exception.
+        let Some(segment_word_letters) = entropy_segment_word_letters(segment) else {
             return false;
-        }
+        };
+        alphanumeric_count += segment.len();
+        word_letter_count += segment_word_letters;
+        word_segment_count += usize::from(segment_word_letters > 0);
     }
-    word_segments >= 2
+    word_segment_count >= 2 && word_letter_count * 2 > alphanumeric_count
 }
 
-/// Check that a name segment contains letters followed only by a short numeric suffix.
-/// This accepts familiar UI names such as `Model17` without accepting opaque mixed tokens.
-fn segment_has_letters_then_optional_short_digits(segment: &str) -> bool {
-    let mut letter_count = 0;
-    let mut digit_count = 0;
-    let mut seen_digit = false;
-    // Inspect the whole segment so later letters or symbols cannot make a secret-like token look inert.
-    for character in segment.chars() {
-        // Letters are valid only before the optional version or size suffix starts.
-        if character.is_ascii_alphabetic() {
-            // A letter after a digit breaks the ordinary user-facing name shape.
-            if seen_digit {
-                return false;
-            }
-            letter_count += 1;
-        // A short trailing number can be a public version or model size.
-        } else if character.is_ascii_digit() {
-            seen_digit = true;
-            digit_count += 1;
-        // Symbols inside a segment keep the candidate visible for user review.
-        } else {
-            return false;
-        }
+/// Count readable word letters without accepting an opaque suffix in the same populated ASCII segment.
+/// A zero count supplies no word evidence; None rejects the whole name and keeps it eligible for scoring.
+fn entropy_segment_word_letters(segment: &str) -> Option<usize> {
+    static SHORT_CODE: OnceLock<Regex> = OnceLock::new();
+    static RUNS: OnceLock<Regex> = OnceLock::new();
+    // Long undivided segments can hold opaque values, so they remain eligible for a warning.
+    if segment.len() > 32 {
+        return None;
     }
-    letter_count > 0 && digit_count <= 4
-}
-
-/// Check whether most camel-case runs look like readable words rather than random characters.
-fn segment_has_word_like_case_runs(segment: &str) -> bool {
-    let alpha_prefix: String = segment
-        .chars()
-        .take_while(|character| character.is_ascii_alphabetic())
-        .collect();
-    let runs = camel_case_runs(&alpha_prefix);
-    // No runs means there is no readable word evidence for suppressing the user's finding.
-    !runs.is_empty() && runs.iter().filter(|run| run.len() >= 3).count() * 2 > runs.len()
-}
-
-/// Split a public-style identifier into its camel-case word runs for readability checks.
-fn camel_case_runs(value: &str) -> Vec<String> {
-    // No word run exists until the first identifier character is inspected.
-    let mut runs: Vec<String> = Vec::new();
-    // Each character either extends the current word or starts a new camel-case word.
-    for character in value.chars() {
-        // An uppercase letter after lowercase text starts a new readable name segment.
-        if character.is_ascii_uppercase()
-            && runs.last().is_some_and(|run| {
-                run.chars()
-                    .last()
-                    .is_some_and(|last| last.is_ascii_lowercase())
-            })
-        {
-            runs.push(String::new());
-        }
-        // The first character starts the first run; later characters extend the active run.
-        if let Some(run) = runs.last_mut() {
-            run.push(character);
-        } else {
-            runs.push(character.to_string());
-        }
+    // Model codes and timestamps may occur in public paths but contribute no readable-word evidence.
+    if static_regex(
+        &SHORT_CODE,
+        r"^(?:[vVxXrR][0-9]{1,4}|[0-9]{1,4}[bBeE]|[aA][0-9]{1,4}[bB]|FP[0-9]{1,4}|i18n|ec2|[mMtT][0-9]{2,3}|[0-9]{8}T[0-9]{4}(?:[0-9]{2})?Z)$",
+    )
+    .is_match(segment)
+    {
+        return Some(0);
     }
-    runs
+    let (digits, letters): (Vec<_>, Vec<_>) = static_regex(&RUNS, r"[A-Za-z]+|[0-9]+")
+        .find_iter(segment)
+        .map(|part| part.as_str())
+        .partition(|part| part.as_bytes()[0].is_ascii_digit());
+    // A standalone short number can label a version; numbers mixed with words need tighter bounds.
+    let max_digits = if letters.is_empty() { 6 } else { 4 };
+    // Repeated or long number runs prevent the name from receiving an exception.
+    if digits.len() > 2 || digits.iter().any(|part| part.len() > max_digits) {
+        return None;
+    }
+    // Short labels may occur alone, but short letters interleaved with numbers do not establish a readable name.
+    let min_letters = if digits.is_empty() { 1 } else { 3 };
+    // Arbitrary case changes keep the value eligible for a warning.
+    if letters
+        .iter()
+        .any(|part| part.len() < min_letters || !has_entropy_word_case(part))
+    {
+        return None;
+    }
+    Some(
+        letters
+            .iter()
+            .filter(|part| part.len() >= 3)
+            .map(|part| part.len())
+            .sum(),
+    )
 }
 
 /// Recognise analyser calibration fixtures that intentionally contain patterns users should normally fix.

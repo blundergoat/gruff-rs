@@ -1,3 +1,8 @@
+//! Line rules turn Rust source into safety and maintainability findings.
+//!
+//! A developer sees these warnings during project and single-file scans.
+//! Selected-parent evidence can silence a test-only unwrap without changing production warnings.
+
 use super::*;
 
 #[path = "safety_rationale.rs"]
@@ -16,10 +21,13 @@ static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// Check each source line for unsafe and waste patterns in the user's scan.
+/// A proved external test module affects only `waste.unwrap-expect`.
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
     source: &str,
     blocks: &[FunctionBlock],
+    external_test_module: bool,
     findings: &mut Vec<Finding>,
 ) {
     let source_lines: Vec<&str> = source.lines().collect();
@@ -38,6 +46,7 @@ pub(crate) fn analyse_line_rules(
         raw_lines: &raw_lines,
         code_only_lines: &code_only_lines,
         test_context_ranges: &test_context_ranges,
+        external_test_module,
     };
 
     for line_index in 0..raw_lines.len() {
@@ -47,12 +56,17 @@ pub(crate) fn analyse_line_rules(
     analyse_unreachable(file, &code_only_source, findings);
 }
 
+/// Source and test-context facts used while producing line-level findings.
+///
+/// The external-module fact comes from another selected parsed file.
+/// A developer scanning only this file receives no parent-module exception.
 pub(crate) struct LineRuleContext<'a> {
     file: &'a SourceFile,
     source_lines: &'a [&'a str],
     raw_lines: &'a [&'a str],
     code_only_lines: &'a [&'a str],
     test_context_ranges: &'a [(usize, usize)],
+    external_test_module: bool,
 }
 
 impl LineRuleContext<'_> {
@@ -145,10 +159,12 @@ impl LineRuleContext<'_> {
         line_number: usize,
         findings: &mut Vec<Finding>,
     ) {
+        // A proved external test module is test code; other unwrap calls remain in the user's report.
         if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
             && !expect_has_substantive_rationale(raw_line)
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
+            && !self.external_test_module
         {
             findings.push(finding(SimpleFindingDescriptor {
                 rule_id: "waste.unwrap-expect",

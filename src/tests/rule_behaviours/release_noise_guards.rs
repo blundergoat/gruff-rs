@@ -4,6 +4,22 @@
 
 use super::*;
 
+/// Repository discovery retains workflow env and reachable steps beside isolated guards.
+#[test]
+pub(crate) fn github_secret_event_guards_keep_unsafe_ownership_reported() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(dir.path(), ".github/workflows/guards.yml", "on:\n  pull_request_target:\nenv:\n  TOKEN: ${{ secrets.WORKFLOW_TOKEN }}\njobs:\n  issues:\n    if: github.event_name == 'issues'\n    env:\n      TOKEN: ${{ secrets.ISSUES_TOKEN }}\n  build:\n    steps:\n      - if: github.event_name == 'issues'\n        run: echo ${{ secrets.STEP_TOKEN }}\n      - run: echo ${{ secrets.REACHABLE_TOKEN }}\n");
+    let mut options = default_test_options();
+    options.no_config = true;
+    let report = run_project_analysis(dir.path(), options).expect("analysis succeeds");
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-secrets-in-pr"),
+        2
+    );
+}
+
 const RETAINED_PYPA_ACTION: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/github-actions/pypa-cibuildwheel/action.yml"

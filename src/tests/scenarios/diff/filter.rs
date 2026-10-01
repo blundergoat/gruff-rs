@@ -469,6 +469,7 @@ fn function_block(
         test_context: false,
         is_async: false,
         returns_bool: false,
+        is_trait_method: false,
         returns_result: false,
         ignore_without_reason: false,
         body_is_declarative_literal: false,

@@ -242,7 +242,12 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
         );
     }
     for (rule_id, message, fingerprint, stable_identity) in expected_identity_contract {
-        let finding = sensitive_finding(&report, rule_id);
+        // Newly covered literals may appear earlier; the original occurrence must retain both of its frozen identities.
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == rule_id && finding.fingerprint == fingerprint)
+            .expect("the original sensitive finding must retain its frozen fingerprint");
         assert_eq!(finding.message, message, "{rule_id}");
         assert_eq!(finding.fingerprint, fingerprint, "{rule_id}");
         assert_eq!(finding.stable_identity, stable_identity, "{rule_id}");

@@ -1,6 +1,7 @@
 //! Built-in rule dispatch and shared analyzer vocabulary.
-//! Focused sibling modules evaluate source units, then this parent combines
-//! their deterministic findings for the configured report pipeline.
+//!
+//! Focused sibling modules evaluate source units, then this parent combines their deterministic findings for the configured report pipeline.
+//! A user reaches this layer when a scan enables Rust and text rule families.
 
 pub(crate) use super::*;
 
@@ -290,13 +291,14 @@ fn analyse_rust_rules(
             .get_or_insert_with(|| rust_function_blocks(ast, unit.source))
             .as_slice()
     });
-    analyse_block_dependent_rust_rules(unit, config, families, blocks, findings);
+    analyse_block_dependent_rust_rules(unit, ast, config, families, blocks, findings);
     analyse_rust_source_rules(unit, ast, families, findings);
     analyse_rust_ast_rules(unit, ast, config, families, findings);
 }
 
 fn analyse_block_dependent_rust_rules(
     unit: &SourceUnit<'_>,
+    ast: &syn::File,
     config: &Config,
     families: EnabledBuiltinFamilies,
     blocks: Option<&[FunctionBlock]>,
@@ -311,10 +313,16 @@ fn analyse_block_dependent_rust_rules(
     if families.network_block_security {
         analyse_ssrf_candidate(unit.file, blocks, findings);
         analyse_unsafe_deserialization(unit.file, blocks, findings);
-        analyse_template_injection_xss(unit.file, blocks, findings);
+        analyse_template_injection_xss(unit.file, ast, blocks, findings);
     }
     if families.line_rules {
-        analyse_line_rules(unit.file, unit.source, blocks, findings);
+        analyse_line_rules(
+            unit.file,
+            unit.source,
+            blocks,
+            unit.external_test_module,
+            findings,
+        );
     }
 }
 

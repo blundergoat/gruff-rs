@@ -1,3 +1,8 @@
+//! Project analysis reads selected files, runs rule families, and assembles report evidence.
+//!
+//! A developer can scan a directory or name individual files.
+//! External test-module ownership is proved only from the selected, parsed directory scan.
+
 use super::*;
 
 pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagnostic> {
@@ -821,6 +826,8 @@ pub(crate) struct AnalysisArtifacts {
     pub(crate) function_blocks_by_file: BTreeMap<String, Vec<FunctionBlock>>,
 }
 
+/// Analyze the selected sources and retain optional function evidence for the user's report.
+/// External test ownership is derived before per-file rules run, so an unselected parent cannot silence a warning.
 pub(crate) fn analyse_discovered_sources_with_artifacts(
     project_root: &Path,
     files: &[SourceFile],
@@ -837,6 +844,7 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
     );
     diagnostics.extend(read_diagnostics);
     let mut blocks_by_file = BTreeMap::new();
+    let external_test_modules = source_proven_external_test_modules(&parsed_sources, &coverage);
 
     let mut findings = if capabilities.project_context {
         let project_context = build_project_context(project_root, &parsed_sources, coverage);
@@ -845,8 +853,10 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
     } else {
         Vec::new()
     };
+    // Each selected file receives only test ownership proved by another selected Rust source.
     for parsed_source in &parsed_sources {
-        let source_unit = parsed_source.as_source_unit();
+        let source_unit = parsed_source
+            .as_source_unit(external_test_modules.contains(&parsed_source.file.display_path));
         if retain_function_blocks {
             let source_artifacts =
                 crate::analyse_source_with_artifacts(&source_unit, config, retain_function_blocks);
@@ -863,6 +873,91 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
         findings,
         function_blocks_by_file: blocks_by_file,
     }
+}
+
+/// Find external `tests.rs` modules whose selected parent compiles them only for tests.
+/// Partial and single-file scans keep production warnings because their module owner is unproved.
+fn source_proven_external_test_modules(
+    sources: &[ParsedSource],
+    coverage: &ProjectCoverage,
+) -> BTreeSet<String> {
+    // A narrowed scan may omit a production owner for the same source file.
+    if coverage.is_partial() {
+        return BTreeSet::new();
+    }
+    let selected_rust_paths: BTreeSet<&str> = sources
+        .iter()
+        .filter(|source| source.file.origin == SourceOrigin::Directory && source.rust_ast.is_some())
+        .map(|source| source.file.display_path.as_str())
+        .collect();
+    let mut module_declarations: BTreeMap<String, Vec<bool>> = BTreeMap::new();
+    // Every selected parent contributes its ownership claim before any test-file warning is removed.
+    for parent in sources {
+        if let Some((child_path, declarations)) = external_test_declarations(parent) {
+            module_declarations
+                .entry(child_path)
+                .or_default()
+                .extend(declarations);
+        }
+    }
+
+    module_declarations
+        .into_iter()
+        .filter(|(path, declarations)| {
+            selected_rust_paths.contains(path.as_str())
+                && declarations.len() == 1
+                && declarations[0]
+        })
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// Read only direct crate-root or `mod.rs` declarations for their sibling `tests.rs`.
+/// A path override or another owner makes the user's test-only ownership claim ambiguous.
+fn external_test_declarations(parent: &ParsedSource) -> Option<(String, Vec<bool>)> {
+    // An explicitly named file may have an unseen production owner.
+    if parent.file.origin != SourceOrigin::Directory {
+        return None;
+    }
+    // A source without parsed Rust cannot prove the declaration the user wrote.
+    let Some(ast) = &parent.rust_ast else {
+        return None;
+    };
+    let parent_path = Path::new(&parent.file.display_path);
+    // Other module files have different child-path rules, so their ownership stays unproved.
+    if !matches!(
+        parent_path.file_name().and_then(|name| name.to_str()),
+        Some("main.rs" | "lib.rs" | "mod.rs")
+    ) {
+        return None;
+    }
+    let child_path = parent_path
+        .with_file_name("tests.rs")
+        .to_string_lossy()
+        .to_string();
+    let mut declarations = Vec::new();
+    // Only external declarations can assign this file; inline modules remain local to the parent.
+    for item in &ast.items {
+        let syn::Item::Mod(module) = item else {
+            continue;
+        };
+        // An inline module does not make a separate `tests.rs` file test-only.
+        if module.content.is_some() {
+            continue;
+        }
+        let has_path_override = module
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("path") || attr.path().is_ident("cfg_attr"));
+        // A custom path may assign `tests.rs` to another production module.
+        if module.ident != "tests" && !has_path_override {
+            continue;
+        }
+        let test_only =
+            module.ident == "tests" && !has_path_override && has_cfg_test_attr(&module.attrs);
+        declarations.push(test_only);
+    }
+    (!declarations.is_empty()).then_some((child_path, declarations))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

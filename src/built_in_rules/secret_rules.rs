@@ -162,11 +162,12 @@ fn connection_string_display_marker(matched_value: &str) -> String {
     SensitiveDisplayMarker::ConnectionString(scheme).render()
 }
 
-/// SHA-256 digests of the 19 values vendors publish as documentation samples, so code that pastes one never reports.
+/// SHA-256 digests of the 20 values vendors publish as documentation samples, so code that pastes one never reports.
 ///
-/// They are AWS's example access key ids and secret keys, the jwt.io sample token and fourteen published test card numbers.
+/// They cover AWS and jwt.io examples, fourteen published test cards and Google's reCAPTCHA v2 test site key.
 /// Digests keep the literals out of this source (FAMILY-CONTRACT.md section 5).
 const DOCUMENTED_SAMPLE_DIGESTS: &[&str] = &[
+    "03b970ed8171d73b58bbc9a5c72e3e4eec28503b56b3bb400a0801857dd45614",
     "19ff47cc8024c133d5845d3f8938caca289929031e7d508c3adf7adff177f0c2",
     "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",
     "1c9d38ed26cd808fa3b02b9b3b988a7caf474e2e42d95789c0fe07e267c80d8f",
@@ -558,17 +559,17 @@ pub(crate) fn analyse_high_entropy_strings(
     // floor reaches shorter literals and no configured value can exceed the engine's repetition limit.
     let regex = static_regex(
         &HIGH_ENTROPY_STRING_REGEX,
-        r#""([A-Za-z0-9+/=_-]+)"|'([A-Za-z0-9+/=_-]+)'"#,
+        r#""([A-Za-z0-9+/=._-]+)"|'([A-Za-z0-9+/=._-]+)'"#,
     );
     let min_length = config.detector_parameter(HIGH_ENTROPY_RULE_ID, "minLength") as usize;
     let min_entropy = config.detector_parameter(HIGH_ENTROPY_RULE_ID, "entropy");
     let armoured = public_armour_spans(unit.source);
 
-    // Each quoted candidate is classified before any finding metadata is built. A candidate shorter than the
-    // floor gives its closing quote back, so that quote can open the next candidate: in `"ab"<secret>"cd"`
-    // the short `ab` must not consume the quote that opens the secret.
+    // Classify complete quoted values before creating findings, keeping matched text out of report metadata.
+    // A short quoted fragment must not consume the opening quote of a following reportable value.
     let mut search_start = 0;
     while let Some(captures) = regex.captures_at(unit.source, search_start) {
+        // Without a source match there is no location to report, so this scan cannot continue.
         let Some(candidate) = captures.get(0) else {
             break;
         };
@@ -578,6 +579,7 @@ pub(crate) fn analyse_high_entropy_strings(
             continue;
         };
         let value = secret.as_str();
+        // A short fragment returns its closing quote to the search so a following secret remains discoverable.
         search_start = if value.len() < min_length {
             candidate.end() - 1
         } else {
@@ -602,10 +604,9 @@ static PEM_BODY_OPERATORS_REGEX: OnceLock<Regex> = OnceLock::new();
 static PEM_BODY_QUOTING_REGEX: OnceLock<Regex> = OnceLock::new();
 static PEM_BODY_LINE_REGEX: OnceLock<Regex> = OnceLock::new();
 
-/// Offset spans of the PEM blocks whose label names no private key. A certificate, public key, certificate request,
-/// PKCS7 bundle or CRL is public by construction, so its body is never a secret. A block ends at the next marker,
-/// which must close the same label, and its body must be PEM-shaped. Anything else means the markers are not a
-/// block, so nothing between them is exempted and a private key there stays scannable (FAMILY-CONTRACT section 12).
+/// Locate public PEM material that users need not review as an entropy warning.
+///
+/// Only a matching next closing marker and a PEM-shaped body grant the exception; an empty result leaves all source scannable.
 fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
     let opening = static_regex(&PEM_ARMOUR_OPENING_REGEX, r"-----BEGIN ([A-Z0-9 ]+)-----");
     let marker = static_regex(

@@ -4,6 +4,9 @@
 
 use super::super::*;
 
+#[path = "github_metadata_rules/event_guards.rs"]
+mod event_guards;
+
 /// Find direct event-context interpolation in understood GitHub shell steps.
 pub(super) fn analyse_ci_github_event_shell_interpolation(
     unit: &SourceUnit<'_>,
@@ -333,8 +336,12 @@ fn push_github_actions_summary_findings(
     }
     // Secrets are exposed only when pull_request_target runs pull-request code with the repository's secrets.
     if summary.pull_request_target_line.is_some() {
+        let unreachable = event_guards::unreachable_secret_lines(unit.source);
         // Each referenced secret keeps its own source line for human review.
         for line in summary.secret_lines {
+            if unreachable.contains(&line) {
+                continue;
+            }
             push_workflow_finding(
                 unit,
                 findings,
