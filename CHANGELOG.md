@@ -2,6 +2,8 @@
 
 ## v0.6.0 - Unreleased
 
+- Private-key warnings retain bare headers and truncated or escaped key material; enabled service-account warnings still replace generic duplicates.
+
 - Workflow secret warnings skip jobs or steps whose own event guard proves them unreachable for every detected PR event.
 
 - **Externally declared Rust test modules avoid unwrap warnings** - A complete project scan reads the parent's test-only `mod tests;` gate.

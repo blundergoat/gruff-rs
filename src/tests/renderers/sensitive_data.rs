@@ -1,8 +1,68 @@
-//! Sensitive-data output contracts across native, CI, and human renderers.
-//! These tests prove secret-like source values never reach reports while the
-//! metadata marker and legacy suppression paths remain separate.
+//! Check sensitive-data reports across native, CI and human output formats.
+//!
+//! Users should see fixed category markers while secret-like source bytes remain absent from every renderer.
+//! Run these tests when changing detectors or rendering to preserve warnings and safe output together.
 
 use super::*;
+
+/// Native pattern ownership is required; names and embedded material cannot establish safety.
+#[test]
+pub(crate) fn private_key_native_patterns_require_absolute_calls_and_marker_only_material() {
+    let _guard = analysis_lock();
+    let header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+    let footer = ["-----END ", "PRIVATE KEY-----"].concat();
+    let native_call = "::regex::Regex::new(self::KEY_PATTERN)";
+    // Try native calls, aliases and body-bearing patterns to check which key warnings a scan may safely suppress.
+    for (pattern, call, declaration, expected) in [
+        (header.clone(), native_call, "", 0),
+        (format!("{header}.*?{footer}"), native_call, "", 0),
+        (
+            format!("{header}MIIEowIBAAKCAQEA{footer}"),
+            native_call,
+            "",
+            1,
+        ),
+        (
+            header.clone(),
+            "local::Regex::new(self::KEY_PATTERN)",
+            "",
+            1,
+        ),
+        (header.clone(), "::regex::Regex::new(KEY_PATTERN)", "", 1),
+        (header.clone(), native_call, "extern crate unrelated as regex;", 1),
+        (
+            header,
+            "()",
+            "mod child { const KEY_PATTERN: &str = \"public\"; pub fn inspect() { let _ = ::regex::Regex::new(self::KEY_PATTERN); } }",
+            1,
+        ),
+    ] {
+        let dir = tempdir().expect("tempdir");
+        let source = format!(
+            "{declaration}\nconst KEY_PATTERN: &str = r#\"{pattern}\"#;\npub fn inspect() {{ let _ = {call}; }}\n"
+        );
+        baseline_with_lib(dir.path(), &source);
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from("src/lib.rs")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.rule_id == "sensitive-data.private-key")
+                .count(),
+            expected,
+            "{call}: unexpected native-pattern decision"
+        );
+    }
+}
 
 const FIXTURE_API_KEY: &str = "ghp_aaaaaaaaaaaaaaaaaaaaaa";
 const FIXTURE_AWS_KEY: &str = "AKIAABCDEFGHIJKLMNOP";
@@ -62,8 +122,8 @@ fn sensitive_finding<'a>(report: &'a AnalysisReport, rule_id: &str) -> &'a Findi
         .unwrap_or_else(|| panic!("missing {rule_id} in {:#?}", report.findings))
 }
 
-/// AWS issues temporary session credentials under the `ASIA` prefix over the same fixed body, so a rule naming
-/// only `AKIA` left a live credential unreported. gruff-php and gruff-py already named both shapes.
+/// AWS issues temporary session credentials under the `ASIA` prefix over the same fixed body, so a rule naming only `AKIA` left a live credential
+/// unreported. gruff-php and gruff-py already named both shapes.
 #[test]
 pub(crate) fn aws_session_token_reports_as_an_access_key() {
     let _guard = analysis_lock();
@@ -102,8 +162,8 @@ pub fn entry() {{
     );
 }
 
-/// FAMILY-CONTRACT.md section 5 reads a key whose body is entirely `X` as naming no credential, while a real key that
-/// merely contains a run of `X` still reports, because hiding it would hide a live credential.
+/// FAMILY-CONTRACT.md section 5 reads a key whose body is entirely `X` as naming no credential, while a real key that merely contains a run of `X`
+/// still reports, because hiding it would hide a live credential.
 #[test]
 pub(crate) fn aws_key_whose_whole_body_is_x_is_read_as_masked() {
     let _guard = analysis_lock();
@@ -235,12 +295,14 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
         ),
     ];
 
+    // Each detected category must show the fixed marker that the user can recognize without seeing secret bytes.
     for (rule_id, marker) in expected_markers {
         assert_eq!(
             sensitive_finding(&report, rule_id).metadata["preview"],
             marker
         );
     }
+    // Original findings must retain their identities when newly covered values appear earlier in the scan.
     for (rule_id, message, fingerprint, stable_identity) in expected_identity_contract {
         // Newly covered literals may appear earlier; the original occurrence must retain both of its frozen identities.
         let finding = report
@@ -255,6 +317,7 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
 
     let json = render_report(&report, OutputFormat::Json);
     let sarif = render_report(&report, OutputFormat::Sarif);
+    // Check category markers in both machine formats that consumers use to display the scan.
     for marker in expected_markers.map(|(_, marker)| marker) {
         assert!(json.contains(marker), "JSON omitted {marker}: {json}");
         assert!(sarif.contains(marker), "SARIF omitted {marker}: {sarif}");
@@ -271,6 +334,7 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
         FIXTURE_ENV_SECRET,
         FIXTURE_ENTROPY_SECRET,
     ];
+    // Render every supported report format to check the same secret-safety boundary.
     for format in [
         OutputFormat::Json,
         OutputFormat::Text,
@@ -281,6 +345,7 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
         OutputFormat::Hotspot,
     ] {
         let rendered = render_report(&report, format);
+        // None of the matched source values may appear in a report the user exports.
         for raw_value in raw_values {
             assert!(
                 !rendered.contains(raw_value),
@@ -298,6 +363,7 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
     }
 
     let hook = crate::hook::render_hook_report(report, false, false);
+    // The hook report must retain the same safe category markers.
     for marker in expected_markers.map(|(_, marker)| marker) {
         assert!(hook.contains(marker), "hook omitted {marker}: {hook}");
     }
@@ -309,6 +375,7 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
 }
 
 #[test]
+/// Check that newly detected values stay absent from every user-facing report format.
 pub(crate) fn sensitive_data_renderers_do_not_leak_new_secret_values() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -338,6 +405,7 @@ pub fn entry() {
     assert_has_rule(&report, "sensitive-data.phi-pattern");
     assert_has_rule(&report, "sensitive-data.gcp-service-account-key");
 
+    // Check each output format for newly covered secret-like values.
     for format in [
         OutputFormat::Json,
         OutputFormat::Text,
@@ -360,13 +428,12 @@ pub fn entry() {
 }
 
 #[test]
+/// Keep the private-key warning available when nearby multibyte text crosses the detector's context window.
 pub(crate) fn private_key_scan_survives_multibyte_context_window() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
-    // Place a 3-byte `€` run so the private-key context window's lower bound
-    // (key_start - 1500) lands one byte into a `€`. Slicing the source at that
-    // raw byte offset is a non-char-boundary that used to panic; the scan must
-    // complete and still report the key.
+    // Place a 3-byte `€` run so the private-key context window's lower bound (key_start - 1500) lands one byte into a `€`.
+    // Slicing the source at that raw byte offset is a non-char-boundary that used to panic; the scan must complete and still report the key.
     let header = "pub fn k() -> &'static str {\n    \"";
     let filler = "€".repeat(500);
     assert_eq!(filler.len(), 1500, "filler must be exactly 1500 bytes");
@@ -386,13 +453,55 @@ pub(crate) fn private_key_scan_survives_multibyte_context_window() {
     assert_has_rule(&report, "sensitive-data.private-key");
 }
 
+/// Missing armour and short material cannot establish that a private-key marker is harmless.
+/// Existing provider tests separately ensure duplicate suppression never removes the only warning.
 #[test]
+pub(crate) fn private_key_headers_report_bare_truncated_escaped_and_short_closed_material() {
+    let _guard = analysis_lock();
+    // Scan every supported private-key header family against the same incomplete-material policy.
+    for label in ["", "RSA ", "EC ", "DSA ", "OPENSSH "] {
+        let header = format!("-----BEGIN {label}{}-----", "PRIVATE KEY");
+        let footer = format!("-----END {label}{}-----", "PRIVATE KEY");
+        // Bare, truncated, escaped and short closed forms must each retain the user's warning.
+        for material in [
+            header.clone(),
+            format!("{header}\nMIIEowIBAAKCAQEA"),
+            format!("{header}\\nMIIEowIBAAKCAQEA"),
+            format!("{header}\nMIIEowIBAAKCAQEA\n{footer}"),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            baseline_with_lib(
+                dir.path(),
+                &format!("pub fn entry() {{\n    let key = r#\"{material}\"#;\n}}\n"),
+            );
+            let report = run_project_analysis(
+                dir.path(),
+                AnalysisOptions {
+                    paths: vec![PathBuf::from("src/lib.rs")],
+                    no_config: true,
+                    no_baseline: true,
+                    ..default_test_options()
+                },
+            )
+            .expect("analysis succeeds");
+            let keys: Vec<_> = report
+                .findings
+                .iter()
+                .filter(|finding| finding.rule_id == "sensitive-data.private-key")
+                .collect();
+            assert_eq!(keys.len(), 1, "missing coverage for {label:?}");
+            assert_eq!(keys[0].line, Some(2));
+        }
+    }
+}
+
+#[test]
+/// Keep a service-account key visible when the developer changes its JSON field order.
 pub(crate) fn reordered_service_account_key_is_still_reported() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
-    // `private_key` appears before `type`: the order-sensitive GCP rule cannot
-    // match, so suppression must not fire and the generic private-key rule must
-    // still report the key (no silently-dropped secret).
+    // `private_key` appears before `type`: the order-sensitive GCP rule cannot match, so suppression must not fire and the generic private-key rule
+    // must still report the key (no silently-dropped secret).
     baseline_with_lib(
         dir.path(),
         r##"pub fn k() {
@@ -403,6 +512,7 @@ MIIEowIBAAKCAQEAwvR2b2QxdW51c2Zpe0E=
         "type": "service_account"
     }"#;
 }
+
 "##,
     );
     let report = run_project_analysis(
@@ -420,11 +530,11 @@ MIIEowIBAAKCAQEAwvR2b2QxdW51c2Zpe0E=
 }
 
 #[test]
+/// Preserve the generic private-key warning when the user disables the provider-specific rule.
 pub(crate) fn disabling_gcp_rule_keeps_generic_private_key_coverage() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
-    // With the GCP-specific rule disabled, the generic private-key suppression
-    // must not fire, otherwise a committed service-account key produces no
+    // With the GCP-specific rule disabled, the generic private-key suppression must not fire, otherwise a committed service-account key produces no
     // finding at all.
     write_config(
         dir.path(),
@@ -456,11 +566,10 @@ MIIEowIBAAKCAQEAwvR2b2QxdW51c2Zpe0E=
     assert_has_rule(&report, "sensitive-data.private-key");
 }
 
-/// Pin the ratified high-entropy contract (FAMILY-CONTRACT sections 5, 6, 12 and 13a): warning severity,
-/// medium confidence, on by default, and `minLength` and `entropy` read from configuration with defaults
-/// 32 and 4.2. A 24-character literal is silent at the default floor and reported once at a lowered one;
-/// a lowered floor reads each `concat!` literal on its own line, and the literal that directly follows
-/// another's closing quote. One finding per rule and line is reported, so each case keeps its own line.
+/// Check the high-entropy defaults and configurable minLength and entropy limits from FAMILY-CONTRACT sections 5, 6, 12 and 13a.
+///
+/// Lowering the floor must expose shorter candidates, concat literals and adjacent quoted values.
+/// Each fixture keeps a separate source line because users receive one finding per rule and line.
 #[test]
 pub(crate) fn high_entropy_contract_reads_both_named_thresholds() {
     let rule = "sensitive-data.high-entropy-string";

@@ -1,7 +1,13 @@
+//! Check that focused false-positive exceptions preserve nearby actionable warnings.
+//!
+//! Fixtures cover sensitive values, references, dependency files, bindings, performance checks and documentation.
+//! Run these controls when narrowing a rule so developers keep warnings outside the proved exception.
+
 use super::*;
 
 #[test]
-pub(crate) fn sensitive_data_rules_skip_common_placeholder_and_detector_contexts() {
+/// Keep unproved private-key markers visible beside safe runtime secret references.
+pub(crate) fn sensitive_data_rules_keep_unproved_key_markers_beside_runtime_placeholders() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -65,23 +71,25 @@ aws-sdk-secretsmanager = "1"
         },
     )
     .expect("analysis succeeds");
-    for rule in [
-        "sensitive-data.hardcoded-env-value",
-        "sensitive-data.private-key",
-    ] {
-        let findings: Vec<&Finding> = report
-            .findings
-            .iter()
-            .filter(|finding| finding.rule_id == rule)
-            .collect();
-        assert!(
-            findings.is_empty(),
-            "{rule} must skip placeholders, runtime values, dependency names, and detector patterns; findings={findings:?}"
-        );
-    }
+    assert_missing_rule(&report, "sensitive-data.hardcoded-env-value");
+    // An unused array supplies no native parsing proof; naming it SECRET_PATTERNS cannot grant trust.
+    let keys: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.private-key")
+        .collect();
+    assert_eq!(keys.len(), 3);
+    assert_eq!(
+        keys.iter().map(|finding| finding.line).collect::<Vec<_>>(),
+        vec![Some(2), Some(3), Some(4)]
+    );
+    assert!(keys
+        .iter()
+        .all(|finding| finding.file_path == "scripts/oss-gate-check.sh"));
 }
 
 #[test]
+/// Keep indirectly referenced functions out of the developer's unused-code warnings.
 pub(crate) fn dead_code_unused_private_function_recognises_indirect_references() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -124,6 +132,7 @@ pub fn entry(values: &[i32]) -> Vec<bool> {
         },
     )
     .expect("analysis succeeds");
+    // Indirect callback, default and formatter references must keep these symbols out of unused-code warnings.
     for symbol in ["check_ai_tool", "default_branch", "fmt"] {
         assert!(
             !report.findings.iter().any(|finding| {
@@ -141,12 +150,14 @@ pub fn entry(values: &[i32]) -> Vec<bool> {
 }
 
 #[test]
+/// Keep generated dependency lockfiles quiet while authored long files remain reportable.
 pub(crate) fn file_length_skips_dependency_lockfiles() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
     let mut cargo_lock = String::from("# This is intentionally large lockfile metadata.\n");
     let mut package_lock = String::from("{\n");
+    // Make both dependency fixtures long enough to exercise the file-length exception.
     for index in 0..620 {
         cargo_lock.push_str(&format!("# package row {index}\n"));
         package_lock.push_str(&format!("  \"package-{index}\": \"1.0.0\",\n"));
@@ -319,6 +330,7 @@ pub fn combine(ok: usize, id: usize) -> usize {
 }
 
 #[test]
+/// Keep prose mentioning loops from producing a performance warning.
 pub(crate) fn performance_loop_rules_ignore_loop_words_in_comments() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -351,6 +363,7 @@ pub fn forge_cancel(current_distro: Option<String>) -> Option<String> {
         },
     )
     .expect("analysis succeeds");
+    // Neither performance rule should treat loop words in prose as executable repeated work.
     for rule in ["performance.format-in-loop", "performance.clone-in-loop"] {
         assert!(
             !report
@@ -368,6 +381,7 @@ pub fn forge_cancel(current_distro: Option<String>) -> Option<String> {
 }
 
 #[test]
+/// Keep static probe and report construction quiet while repeated user-work formatting remains visible.
 pub(crate) fn format_in_loop_skips_static_probe_and_report_message_construction() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -426,6 +440,7 @@ pub fn dynamic_format_loop(values: &[String]) -> Vec<String> {
     )
     .expect("analysis succeeds");
 
+    // Both static-probe and report-message functions must remain outside these performance findings.
     for symbol in ["build_wsl_batch_probe_script", "scan_security_groups"] {
         assert!(
             !report.findings.iter().any(|finding| {
@@ -455,6 +470,7 @@ pub fn dynamic_format_loop(values: &[String]) -> Vec<String> {
 }
 
 #[test]
+/// Accept a separate module file's description when reporting public-module documentation.
 pub(crate) fn external_public_module_declaration_uses_module_file_docs() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -499,6 +515,7 @@ pub fn entry() {}
 }
 
 #[test]
+/// Keep an ordinary call argument from being mistaken for a removable clone.
 pub(crate) fn unnecessary_clone_candidate_skips_standalone_call_argument() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -615,8 +632,8 @@ mod tests {
     );
 }
 
-/// `should-panic-without-expected` skips a test item whose own attributes exclude test builds, since it is
-/// never compiled as a test, while a bare `#[should_panic]` beside it still fires.
+/// `should-panic-without-expected` skips a test item whose own attributes exclude test builds, since it is never compiled as a test, while a bare
+/// `#[should_panic]` beside it still fires.
 #[test]
 pub(crate) fn should_panic_skips_items_excluded_from_test_builds() {
     let _guard = analysis_lock();
@@ -698,14 +715,10 @@ mod tests {
     );
 }
 
-/// `commented-out-code` keeps reporting a disabled fn, one finding per line, and stays silent on a fenced
-/// example, placeholder pseudocode and the specimens of a clippy UI test file. The specimen line is
-/// byte-identical to the true positive; only its file's `//~` annotation differs. Disabled code still reports
-/// beside `// ~/` prose or a `//~~~~` banner, with rest patterns, a spaced range or an ellipsis inside a string,
-/// and between a prose lead-in line and a trailing prose line (one ending in `)` included), after a non-ASCII
-/// identifier before a spaced range, with prose between
-/// two snippets, a closing line that carries its own comment, a `...` in a nested comment, and a `//~ ERROR`
-/// mentioned in ordinary prose.
+/// Keep disabled code reportable while fenced examples, placeholders and annotated Clippy UI specimens stay quiet.
+///
+/// Identical specimen text changes classification only with its file's annotation context.
+/// Prose, banners, ranges and nested comments must not hide nearby disabled code.
 #[test]
 pub(crate) fn commented_out_code_skips_fences_placeholders_and_ui_specimens() {
     let _guard = analysis_lock();
@@ -729,6 +742,7 @@ pub(crate) fn commented_out_code_skips_fences_placeholders_and_ui_specimens() {
         "//~v empty_line_after_doc_comments\n/// Probe.\npub fn specimen() {}\n\n// fn old_code() {}\n",
     )
     .expect("specimen write");
+    // Try each documented example shape beside disabled code that must still warn.
     for (name, body) in [
         (
             "tilde",

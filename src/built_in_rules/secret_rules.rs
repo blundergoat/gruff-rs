@@ -1,7 +1,7 @@
-//! Detect secret-like and protected-health values in supported source files.
+//! Detect secret-like and protected-health values in files selected for a Gruff scan.
 //!
-//! Users receive one finding per reportable occurrence with a detector-owned
-//! zero-payload marker; legacy preview config cannot remove those findings.
+//! Report each credible occurrence with a fixed category marker so users can replace it without exposing its bytes.
+//! Reviewed placeholders stay quiet; legacy preview settings cannot remove a reportable occurrence.
 
 use super::*;
 
@@ -36,15 +36,17 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     RegexRule {
         rule_id: "sensitive-data.aws-access-key",
         regex: &AWS_ACCESS_KEY_REGEX,
-        // ASIA is AWS's prefix for temporary session credentials, over the same fixed body; missing it left a
-        // live credential unnamed.
+        // ASIA is AWS's prefix for temporary session credentials, over the same fixed body; missing it left a live credential unnamed.
         pattern: r"(?:AKIA|ASIA)[0-9A-Z]{16}",
         message: "AWS access key pattern detected.",
     },
     RegexRule {
         rule_id: "sensitive-data.private-key",
         regex: &PRIVATE_KEY_REGEX,
-        pattern: r"(?s)-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{16,}\s+-----END (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----",
+        pattern: concat!(
+            r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?",
+            r"PRIVATE KEY-----"
+        ),
         message: "Private key block detected.",
     },
     RegexRule {
@@ -114,6 +116,12 @@ fn push_regex_pattern_matches(
         if regex_match_should_be_suppressed(unit.source, config, rule.rule_id, &capture) {
             continue;
         }
+        // Only native syntax that owns this marker-only pattern can explain away a key header.
+        if rule.rule_id == "sensitive-data.private-key"
+            && private_key_is_native_pattern(unit, &capture)
+        {
+            continue;
+        }
         let display_marker = regex_display_marker(rule.rule_id, capture.as_str());
         findings.push(Finding::new(FindingDescriptor {
             rule_id: rule.rule_id.to_string(),
@@ -130,6 +138,133 @@ fn push_regex_pattern_matches(
             ),
             metadata: json!({ "preview": display_marker }),
         }));
+    }
+}
+
+/// Prove a marker-only constant's native consumer using the existing bounded syntax tree.
+fn private_key_is_native_pattern(unit: &SourceUnit<'_>, capture: &regex::Match<'_>) -> bool {
+    // Missing Rust syntax cannot prove a native pattern consumer, so the private-key warning remains.
+    let Some(ast) = unit.rust_ast else {
+        return false;
+    };
+    // Inspect module constants for the exact header-only literal that could explain this warning.
+    for item in &ast.items {
+        // Other item kinds cannot establish the supported constant-to-regex proof.
+        let syn::Item::Const(constant) = item else {
+            continue;
+        };
+        // A computed constant cannot prove that this marker is only a format detector.
+        let syn::Expr::Lit(expression) = constant.expr.as_ref() else {
+            continue;
+        };
+        // Only a string literal can own the matched header's source span.
+        let syn::Lit::Str(literal) = &expression.lit else {
+            continue;
+        };
+        // An unrelated span or embedded key body keeps this private-key occurrence reportable.
+        if !is_private_key_pattern_match(unit, literal, capture) {
+            continue;
+        }
+        let mut use_proof = NativePrivateKeyPatternUse {
+            constant_name: constant.ident.to_string(),
+            native_call: false,
+            aliased_crate: false,
+            module_depth: 0,
+        };
+        syn::visit::visit_file(&mut use_proof, ast);
+        return use_proof.native_call && !use_proof.aliased_crate;
+    }
+    false
+}
+
+/// Prove that this literal owns the matched header and has no embedded private-key body.
+fn is_private_key_pattern_match(
+    unit: &SourceUnit<'_>,
+    literal: &syn::LitStr,
+    capture: &regex::Match<'_>,
+) -> bool {
+    let span = literal.span();
+    let start = span.start();
+    let end = span.end();
+    // Missing source-line offsets leave ownership unproved and preserve the private-key warning.
+    let starts = unit.line_starts();
+    let (Some(start_line), Some(end_line)) = (
+        starts.get(start.line.saturating_sub(1)),
+        starts.get(end.line.saturating_sub(1)),
+    ) else {
+        return false;
+    };
+    // A header outside this literal's span cannot borrow its native-pattern exception.
+    if capture.start() < start_line + start.column || capture.end() > end_line + end.column {
+        return false;
+    }
+    let value = literal.value();
+    // A literal without the matched header cannot explain away this occurrence.
+    let Some((_, tail)) = value.split_once(capture.as_str()) else {
+        return false;
+    };
+    // A bare marker or a wildcard between matching armour names describes a format, not key bytes.
+    tail.is_empty() || tail == format!(".*?{}", capture.as_str().replacen("BEGIN", "END", 1))
+}
+
+/// NativePrivateKeyPatternUse records whether a header-only constant is used as a native regex pattern.
+///
+/// The scan needs an absolute regex constructor reading this module's constant before it can quiet the key warning.
+/// A crate alias invalidates that proof and keeps the warning visible.
+struct NativePrivateKeyPatternUse {
+    constant_name: String,
+    native_call: bool,
+    aliased_crate: bool,
+    module_depth: usize,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for NativePrivateKeyPatternUse {
+    /// Record qualifying native regex calls so a developer's format detector can stay quiet.
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        // Only a path-based call can establish the absolute native constructor required for a quiet result.
+        if let syn::Expr::Path(function) = call.func.as_ref() {
+            let names: Vec<_> = function
+                .path
+                .segments
+                .iter()
+                .map(|part| part.ident.to_string())
+                .collect();
+            // Only this module's absolute constructor can prove use of its constant; a child's self names another module.
+            if self.module_depth == 0
+                && function.path.leading_colon.is_some()
+                && names == ["regex", "Regex", "new"]
+                && call.args.len() == 1
+            {
+                // Only a path argument can show that the constructor reads this module's named constant.
+                if let Some(syn::Expr::Path(argument)) = call.args.first() {
+                    let argument_names: Vec<_> = argument
+                        .path
+                        .segments
+                        .iter()
+                        .map(|part| part.ident.to_string())
+                        .collect();
+                    self.native_call |= argument.path.leading_colon.is_none()
+                        && argument_names == ["self", self.constant_name.as_str()];
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    /// Keep child-module calls from lending their same-named constants to the enclosing file's quiet-pattern proof.
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        self.module_depth += 1;
+        syn::visit::visit_item_mod(self, item);
+        self.module_depth -= 1;
+    }
+
+    /// Reject a regex crate alias that could make an unrelated constructor hide the key warning.
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        self.aliased_crate |= item
+            .rename
+            .as_ref()
+            .is_some_and(|(_, name)| name == "regex");
+        syn::visit::visit_item_extern_crate(self, item);
     }
 }
 
@@ -204,7 +339,8 @@ fn regex_match_should_be_suppressed(
     rule_id: &str,
     capture: &regex::Match<'_>,
 ) -> bool {
-    // A vendor-documented sample, e.g. AWS's example key id pasted from its docs, is not a credential, whichever rule matched it.
+    // A vendor-documented sample, e.g.
+    // AWS's example key id pasted from its docs, is not a credential, whichever rule matched it.
     if is_documented_sample(capture.as_str()) {
         return true;
     }
@@ -214,15 +350,15 @@ fn regex_match_should_be_suppressed(
         }
         // Hide the generic private-key duplicate only when the enabled GCP rule will show the user a more specific finding.
         "sensitive-data.private-key" => gcp_finding_contains_private_key(source, config, capture),
-        // A body that is entirely X shows where a key goes and names no credential (FAMILY-CONTRACT.md section 5). Only
-        // the whole body counts: a real key may contain a run of X, and hiding it would hide a live credential.
+        // A body that is entirely X shows where a key goes and names no credential (FAMILY-CONTRACT.md section 5).
+        // Only the whole body counts: a real key may contain a run of X, and hiding it would hide a live credential.
         "sensitive-data.aws-access-key" => capture.as_str()[4..].bytes().all(|byte| byte == b'X'),
         _ => false,
     }
 }
 
 /// Recognise safe credentials intentionally used in example or local-only URLs.
-/// Users do not need findings for values such as `password@localhost` that cannot authenticate a remote service.
+/// This detector treats values such as password@localhost as placeholders under its reviewed URL policy.
 fn credential_url_is_placeholder(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.contains("@example.")
@@ -244,7 +380,10 @@ fn gcp_finding_contains_private_key(
     if !config.is_rule_enabled("sensitive-data.gcp-service-account-key") {
         return false;
     }
-    let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
+    let regex = GCP_SERVICE_ACCOUNT_REGEX.get_or_init(|| {
+        ::regex::Regex::new(self::GCP_SERVICE_ACCOUNT_PATTERN)
+            .expect("valid service-account pattern")
+    });
     regex
         .find_iter(source)
         .any(|gcp| gcp.start() <= capture.start() && capture.start() < gcp.end())
@@ -342,7 +481,10 @@ const GCP_SERVICE_ACCOUNT_PATTERN: &str = r#"(?s)"type"\s*:\s*"service_account".
 /// Emit each GCP service-account finding with a fixed provider marker.
 /// Generic private-key coverage remains coordinated by `gcp_finding_contains_private_key`.
 fn analyse_gcp_service_account_keys(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
-    let regex = static_regex(&GCP_SERVICE_ACCOUNT_REGEX, GCP_SERVICE_ACCOUNT_PATTERN);
+    let regex = GCP_SERVICE_ACCOUNT_REGEX.get_or_init(|| {
+        ::regex::Regex::new(self::GCP_SERVICE_ACCOUNT_PATTERN)
+            .expect("valid service-account pattern")
+    });
     // Each matched service-account object produces at most one provider-specific finding.
     for capture in regex.find_iter(unit.source) {
         let display_marker = SensitiveDisplayMarker::GcpServiceAccount.render();
@@ -485,17 +627,10 @@ fn is_credible_secret_assignment_value(value: &str) -> bool {
     has_secret_value_shape(value)
 }
 
-/// Recognise a dependency version spec, which a manifest or lockfile writes under any key name - including one ending
-/// in `token`, as a lockfile's `gtoken: 8.0.0(supports-color@11.0.0)` does.
+/// Keep complete dependency versions quiet, including a lockfile's gtoken entry with parenthesised peer versions.
 ///
-/// The value's shape decides this and the file's name does not, so the same line stays quiet in a lockfile, in a
-/// manifest, and in authored source alike.
-///
-/// The WHOLE value must be a version: optional range operators, a dotted numeric version, and at most a parenthesised
-/// peer suffix, of which a pnpm lockfile writes more than one. Matching only the opening token would drop a
-/// committed credential that happens to begin with one,
-/// such as `1.0-Rk8sPq2xT7vL9wHd`, and a dropped credential leaves no audit row anywhere. gruff-ts pins the same
-/// grammar in `src/sensitive-data-rules.ts` (search: `DEPENDENCY_SPEC_PATTERN`).
+/// A credential that merely starts like a version remains reportable; the filename grants no exception.
+/// Gruff-ts shares the whole-value grammar in sensitive-data-rules.ts at DEPENDENCY_SPEC_PATTERN.
 fn is_dependency_version_spec(value: &str) -> bool {
     static_regex(
         &DEPENDENCY_VERSION_SPEC_REGEX,
@@ -555,8 +690,8 @@ pub(crate) fn analyse_high_entropy_strings(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    // The pattern takes every quoted run and the configured `minLength` is applied below, so a lowered
-    // floor reaches shorter literals and no configured value can exceed the engine's repetition limit.
+    // The pattern takes every quoted run and the configured `minLength` is applied below, so a lowered floor reaches shorter literals and no
+    // configured value can exceed the engine's repetition limit.
     let regex = static_regex(
         &HIGH_ENTROPY_STRING_REGEX,
         r#""([A-Za-z0-9+/=._-]+)"|'([A-Za-z0-9+/=._-]+)'"#,
@@ -568,6 +703,7 @@ pub(crate) fn analyse_high_entropy_strings(
     // Classify complete quoted values before creating findings, keeping matched text out of report metadata.
     // A short quoted fragment must not consume the opening quote of a following reportable value.
     let mut search_start = 0;
+    // Continue through quoted candidates so each reportable secret gets a source location.
     while let Some(captures) = regex.captures_at(unit.source, search_start) {
         // Without a source match there is no location to report, so this scan cannot continue.
         let Some(candidate) = captures.get(0) else {
@@ -614,7 +750,9 @@ fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
         r"-----(BEGIN|END) ([A-Z0-9 ]+)-----",
     );
     let mut spans = Vec::new();
+    // Check each public armour opening before excluding its body from entropy warnings.
     for captures in opening.captures_iter(source) {
+        // Missing marker captures cannot identify a public block, so its bytes stay scannable.
         let (Some(open), Some(label)) = (captures.get(0), captures.get(1)) else {
             continue;
         };
@@ -624,17 +762,21 @@ fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
         }
         // Another opening marker, a different label or no marker at all means these markers are not a block.
         let tail = &source[open.end()..];
+        // Without a following marker, the public-material exception remains unproved.
         let Some(closing) = marker.captures(tail) else {
             continue;
         };
+        // Incomplete closing-marker captures cannot establish a matching public block.
         let (Some(whole), Some(kind), Some(closing_label)) =
             (closing.get(0), closing.get(1), closing.get(2))
         else {
             continue;
         };
+        // A different closing label or another opening marker leaves the candidate body scannable.
         if kind.as_str() != "END" || closing_label.as_str() != label.as_str() {
             continue;
         }
+        // Only a complete public block with an armour-shaped body can stay quiet.
         if is_pem_shaped_body(&tail[..whole.start()]) {
             spans.push(open.start()..open.end() + whole.end());
         }
@@ -642,11 +784,10 @@ fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
-/// Report whether every line between two markers is base64, a PGP checksum, an armour header or empty. Source code
-/// spells a PEM body across string literals, so the body breaks at real and escaped line breaks, and each line loses
-/// its concatenation operators, and its quotes, commas, brackets, comment stars and ASCII whitespace; code, a
-/// placeholder or prose is left over. Splitting at escaped line breaks too keeps a one-line block's header from
-/// vouching for the rest of the line.
+/// Accept a public PEM body only when every cleaned line has an armour-compatible shape or is empty.
+///
+/// Split real and escaped line breaks and strip source wrappers so authored public material can stay quiet.
+/// Remaining code, placeholders or prose prevent the header from hiding the rest of the line.
 fn is_pem_shaped_body(body: &str) -> bool {
     let line_breaks = static_regex(&PEM_BODY_LINE_BREAKS_REGEX, r"\n|\\[nrt]");
     let operators = static_regex(
@@ -693,9 +834,8 @@ fn high_entropy_finding(unit: &SourceUnit<'_>, secret: &regex::Match<'_>) -> Fin
         // Entropy matches are string locations rather than parsed symbols in the user's report.
         symbol: None,
         remediation: Some("Move generated secrets to a secure runtime secret source.".to_string()),
-        // The rule's own threshold already explains why this fired. The value's entropy is a
-        // statistic computed from the matched characters and is forbidden in serialized output
-        // by FAMILY-CONTRACT section 5.
+        // The rule's own threshold already explains why this fired.
+        // The value's entropy is a statistic computed from the matched characters and is forbidden in serialized output by FAMILY-CONTRACT section 5.
         metadata: json!({
             "preview": SensitiveDisplayMarker::Generic.render()
         }),
