@@ -22,8 +22,13 @@ extends = ":workspace"
 glob_scan_max_depth = 3
 
 [permissions.goat-flow.filesystem.":workspace_roots"]
-# Codex accepts filename globs only for deny access, so enumerate the real env
-# variants and let .env.example inherit normal workspace editing access.
+# Deny rules win over allow/read rules on both Codex and Claude, so a broad
+# .env* deny cannot be re-opened for the sample file. Real env variants are
+# denied individually so .env.example stays readable, matching the Bash deny
+# hook; nonstandard variants (e.g. .env.backup) are covered by that hook.
+# Rules match secret content shapes and credential stores, never plain folder
+# or file names such as secrets/ or credentials*, which collide with ordinary
+# application code. The Bash deny hook covers shell access to home stores.
 "**/.env" = "deny"
 "**/.env.local" = "deny"
 "**/.env.development" = "deny"
@@ -32,14 +37,17 @@ glob_scan_max_depth = 3
 "**/.env.test" = "deny"
 "**/.envrc" = "deny"
 "**/.env.*.local" = "deny"
-"**/secrets/**" = "deny"
 "**/.ssh/**" = "deny"
 "**/.aws/**" = "deny"
-"**/.docker/**" = "deny"
 "**/.gnupg/**" = "deny"
+"**/.config/gcloud/**" = "deny"
+"**/.docker/**" = "deny"
 "**/.kube/**" = "deny"
-"**/credentials*" = "deny"
 "**/.npmrc" = "deny"
+"**/.netrc" = "deny"
+"**/.git-credentials" = "deny"
+"**/.config/gh/hosts.yml" = "deny"
+"**/.pgpass" = "deny"
 "**/.pypirc" = "deny"
 "**/*.pem" = "deny"
 "**/*.key" = "deny"

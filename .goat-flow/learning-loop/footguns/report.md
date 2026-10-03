@@ -1,6 +1,6 @@
 ---
 category: report
-last_reviewed: 2026-06-05
+last_reviewed: 2026-10-03
 ---
 
 ## Footgun: Per-Format Renderer Helpers Tend To Duplicate
@@ -53,7 +53,7 @@ The same trap exists for any future digest field sourced from `RuleDefinition.*`
 - For any per-rule digest field, ask: "is this configurable through `rules.<id>.*` in `.gruff-rs.yaml`?" If yes, source it from a representative finding (or `config.<field>(rule_id, default)`), not from `RuleDefinition.default_*`.
 - The registry value is the right source ONLY for fields that are immutable at config time: `description`, `pillar` (built-in pillar is fixed), `default_enabled`, `kind` (Rust / Text / Project).
 - When the report has findings for the rule, the most reliable source is the first matching finding's field — every finding for the same rule carries the same configured severity (resolved once at rule-emission time).
-- Add a contract test that configures an override and asserts the digest matches: PR #3 review comment thread pinned this for `severity` via `summary_top_rules_severity_reflects_configured_override` (search: in `src/tests/scenarios/summary_enrichment.rs`).
+- Add a contract test that configures an override and asserts the digest matches: PR #3 review comment thread pinned this for `severity`; the pin now lives in `src/tests/scenarios/summary_enrichment.rs` (search: `summary_text_top_rules_severity_reflects_configured_override`).
 
 Related: [[verification]] — "verify bot claims against current code before fixing" — covers the inverse, where a bot points at an already-fixed surface.
 
@@ -96,7 +96,7 @@ The same trap applies to any future step that derives per-rule / per-pillar / pe
 - When introducing a new mid-pipeline aggregate, audit every step that runs after it. Each subsequent step that mutates `findings` is a potential drift source.
 - For changed-region filters, do not rebuild an "all" aggregate from the visible post-baseline report list unless the aggregate is explicitly new-only. `scope: all` needs the pre-baseline list filtered by the same patch/symbol logic.
 - Prefer computing aggregates AFTER all mutations are done — at `build_report` time, on the final findings list. Where that is not possible (because an earlier step is the only one with access to the right inputs — e.g. `apply_baseline` needs the baseline entries to compute `removed`), capture only what cannot be reconstructed later and recompute the rest at the end.
-- Add a regression test that constructs the failure mode the ordering bug would produce. For the baseline-then-dedupe case, the failing input is "raw findings with duplicates by fingerprint + empty baseline"; the assertion is "introduced count equals final per-rule count". See `baseline_deltas_do_not_over_count_duplicate_findings` (search: in `src/tests/scenarios/baseline.rs`).
+- Add a regression test that constructs the failure mode the ordering bug would produce. For the baseline-then-dedupe case, the failing input is "raw findings with duplicates by fingerprint + empty baseline"; the assertion is "introduced count equals final per-rule count". The original pin, `baseline_deltas_do_not_over_count_duplicate_findings`, was rewritten on 2026-09-05 (commit d4515c3) into a baseline tri-state test that no longer builds duplicates, so this order is currently held only by code structure: `src/analysis.rs` (search: `fn analysed_findings`) dedupes inside the call that `run_analysis_in_project` makes before `resolve_run_baseline`. Restore a duplicate-fixture pin before reordering that pipeline.
 - When reading `run_analysis_in_project` in code review, treat the comment annotations on the dedupe/baseline order as load-bearing. They are documenting a constraint the code's structure cannot itself enforce.
 
 ## Footgun: Shared Analysis Core Must Stay Command-Neutral

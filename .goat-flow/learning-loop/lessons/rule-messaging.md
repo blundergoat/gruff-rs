@@ -1,6 +1,6 @@
 ---
 category: rule-messaging
-last_reviewed: 2026-05-26
+last_reviewed: 2026-10-03
 ---
 
 ## Lesson: Rule Messages Must Communicate Intent, Not Just Absence
@@ -30,4 +30,4 @@ The fix is text-only. The rule's detection logic is correct; the rule's *message
 
 Each shares the structure: message names the *content shape* the rule wants; remediation names the *anti-pattern* (boilerplate, stub-comments) the rule does NOT want.
 
-**Where tests assert this pattern:** No tests pin the message text directly. M06's kill criterion was "tests that pin specific text use substring matching" - any test added later should follow that pattern. Greppable contract: `rg -n 'is missing|lacks a' src/built_in_rules/` should find zero hits for absence-shaped rule messages in any future audit (the pattern is the absence of those phrases).
+**Where tests assert this pattern:** No tests pin the message text directly. M06's kill criterion was "tests that pin specific text use substring matching" - any test added later should follow that pattern. Greppable check: `rg -n 'is missing|lacks a' src/built_in_rules/docs_rules.rs` should find zero hits, and `push_missing_public_item_doc` should keep its "needs a brief intent description" wording. A search across all of `src/built_in_rules/` is not zero and never was: two absence-shaped messages that predate this lesson remain, in `src/built_in_rules/behavior_rules.rs` (search: `lacks a nearby SAFETY rationale`) and `src/built_in_rules/comment_item_and_blocks.rs` (search: `comment lacks an owner, issue reference, or reason`). Rewording them changes report text, so check the workspace FAMILY-CONTRACT and the other four ports first.
