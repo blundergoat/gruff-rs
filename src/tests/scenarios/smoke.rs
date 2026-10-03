@@ -51,13 +51,27 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
 
     assert_only_partial_context_diagnostic(&report);
     assert_eq!(report.summary.total, report.findings.len());
+    // `fixtures/` is a test path, so its two sample secrets are counted as `builtInTestPath` rows, not reported.
     assert_eq!(
         report
             .findings
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        10
+        8
+    );
+    let skipped_rules: Vec<(&str, usize)> = report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath" && row.paths == ["fixtures/sample.rs"])
+        .map(|row| (row.rule.as_str(), row.suppressed))
+        .collect();
+    assert_eq!(
+        skipped_rules,
+        vec![
+            ("sensitive-data.aws-access-key", 1),
+            ("sensitive-data.database-url-password", 1)
+        ]
     );
 
     let expected = [
@@ -118,28 +132,14 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "80bf1a6b54a67ccf",
         ),
         (
-            "sensitive-data.aws-access-key",
-            Severity::Error,
-            "fixtures/sample.rs",
-            Some(16),
-            None,
-            "1aae444024c630df",
-        ),
-        (
-            "sensitive-data.database-url-password",
-            Severity::Error,
-            "fixtures/sample.rs",
-            Some(17),
-            None,
-            "79a7540d1b61cf02",
-        ),
-        (
+            // Line 24 is the `#[test]` attribute, the item's own first line. Before M07's anchor repair this
+            // pinned line 23, the blank separator belonging to the function above it.
             "test-quality.sleep-in-test",
             Severity::Advisory,
             "fixtures/sample.rs",
-            Some(23),
+            Some(24),
             Some("test_sleeps_without_assertion"),
-            "8e9591ae5cdf9beb",
+            "3da3d9f1b4bfed50",
         ),
     ];
 
@@ -156,6 +156,65 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "missing expected fixture finding `{rule_id}` at {path}:{line:?}"
         );
     }
+}
+
+#[test]
+pub(crate) fn block_findings_anchor_on_the_item_not_the_blank_line_above_it() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let rust_file = dir.path().join("anchors.rs");
+
+    // Two items separated by a blank line, the layout every Rust file uses. Before M07's repair the prefix
+    // walk crossed that separator and reported the blank line, which belongs to the function above.
+    let source = r#"pub fn first() -> usize {
+    1
+}
+
+/// Doc line for second.
+pub fn second(alpha: usize, beta: usize) -> usize {
+    alpha + beta
+}
+
+#[test]
+fn third() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+"#;
+    fs::write(&rust_file, source).expect("fixture write");
+
+    let report = analyse_project_paths(dir.path(), vec![PathBuf::from(".")]);
+    let lines: Vec<&str> = source.lines().collect();
+
+    assert!(
+        !report.findings.is_empty(),
+        "the anchor fixture produced no findings, so it could not prove where one lands"
+    );
+
+    // The claim is about the source text at the reported line, not about which rules happened to fire.
+    for finding in &report.findings {
+        let Some(line) = finding.line else {
+            continue;
+        };
+        let text = lines.get(line - 1).copied().unwrap_or_default();
+        assert!(
+            !text.trim().is_empty(),
+            "`{}` anchors on blank line {line}; block anchors must land on the item's own first line",
+            finding.rule_id
+        );
+    }
+
+    // `second` carries a doc comment, so its block starts at the doc line, never at the blank line above it.
+    let second = report
+        .findings
+        .iter()
+        .find(|finding| finding.symbol.as_deref() == Some("second"))
+        .expect("a finding on `second`");
+
+    assert_eq!(
+        second.line,
+        Some(5),
+        "`second` must anchor on its doc line, not the blank line 4 above it"
+    );
 }
 
 #[test]
@@ -229,7 +288,7 @@ pub fn eight(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> 
 #[test]
 pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
     let _guard = analysis_lock();
-    let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
+    let report = analyse_fixture_as_production_code("tests/fixtures/parser/invalid.rs");
 
     assert_eq!(
         diagnostic_types(&report),
@@ -240,10 +299,7 @@ pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
         .iter()
         .find(|diagnostic| diagnostic.diagnostic_type == "parse-error")
         .expect("parse-error diagnostic");
-    assert_eq!(
-        parse_error.file_path.as_deref(),
-        Some("tests/fixtures/parser/invalid.rs")
-    );
+    assert_eq!(parse_error.file_path.as_deref(), Some("src/invalid.rs"));
 
     let rule_ids: BTreeSet<&str> = report
         .findings
@@ -388,7 +444,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     assert!(!discovered_paths.contains("info-excluded.env"));
     assert!(!discovered_paths.contains("local/secret.env"));
     assert!(!discovered_paths.contains("nested/secret.env"));
-    assert!(!discovered_paths.contains("target/secret.env"));
+    assert!(discovered_paths.contains("target/secret.env"));
     assert!(!discovered_paths.contains("ignored/secret.env"));
 
     let default_scan = run_project_analysis(
@@ -401,7 +457,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         },
     )
     .expect("analysis succeeds");
-    assert!(default_scan
+    assert!(!default_scan
         .paths
         .ignored_paths
         .contains(&"target".to_string()));
@@ -412,6 +468,10 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     assert!(default_scan.findings.iter().any(|finding| {
         finding.rule_id == "sensitive-data.hardcoded-env-value"
             && finding.file_path == ".github/workflows/ci.yml"
+    }));
+    assert!(default_scan.findings.iter().any(|finding| {
+        finding.rule_id == "sensitive-data.hardcoded-env-value"
+            && finding.file_path == "target/secret.env"
     }));
     assert!(!default_scan.findings.iter().any(|finding| {
         finding.rule_id == "sensitive-data.hardcoded-env-value"
@@ -490,9 +550,9 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
 
 #[test]
 pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
-    let clean = score_report(&[], &Config::default());
-    assert_eq!(clean.composite, 100.0);
-    assert_eq!(clean.grade, "A");
+    let clean = score_report(&[], &Config::default(), 10);
+    assert_eq!(clean.composite, Some(100.0));
+    assert_eq!(clean.grade.as_deref(), Some("A"));
     assert_eq!(clean.pillars.len(), SCORE_PILLARS.len());
     assert!(clean.pillars.iter().all(|pillar| pillar.findings == 0));
 
@@ -522,8 +582,8 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
             Pillar::Documentation,
         ),
     ];
-    let score = score_report(&findings, &Config::default());
-    assert_eq!(score.grade, "A");
+    let score = score_report(&findings, &Config::default(), 10);
+    assert_eq!(score.grade.as_deref(), Some("A"));
     assert_eq!(score.top_offenders[0].file_path, "src/a.rs");
     let security = score
         .pillars
@@ -535,12 +595,139 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
         .iter()
         .find(|pillar| pillar.pillar == Pillar::DeadCode)
         .expect("dead-code pillar");
-    assert_eq!(security.score, 92.0);
-    assert_eq!(dead_code.score, 98.0);
+    // Over ten evaluated files: security carries one high-confidence error (weight 12.0, density
+    // 1.20) and dead-code one low-confidence warning (weight 2.0, density 0.20).
+    assert_eq!(security.score, Some(53.85));
+    assert_eq!(dead_code.score, Some(66.67));
 
     assert_eq!(grade(90.0), "A");
     assert_eq!(grade(80.0), "B");
     assert_eq!(grade(70.0), "C");
     assert_eq!(grade(60.0), "D");
     assert_eq!(grade(59.9), "F");
+}
+
+#[test]
+pub(crate) fn bounded_rust_source_keeps_text_safety_and_drops_deep_analysis() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = concat!(
+        "pub fn run() {\n",
+        "    let key = \"AKIA1234567890ABCDEF\";\n",
+        "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+        "}\n",
+    );
+    fs::write(dir.path().join("large.rs"), source).expect("Rust fixture write");
+    let options = AnalysisOptions {
+        paths: vec![PathBuf::from("large.rs")],
+        no_config: true,
+        no_baseline: true,
+        ..default_test_options()
+    };
+    let mut config = Config::default();
+    config.deep_scan_budget = DeepScanBudget {
+        enabled: true,
+        max_lines: 1,
+        max_bytes: usize::MAX,
+        override_state: "cli",
+    };
+    config.rule_settings.insert(
+        "size.file-length".to_string(),
+        RuleSetting {
+            threshold: Some(1.0),
+            ..RuleSetting::default()
+        },
+    );
+
+    let report = run_analysis_in_project(dir.path(), &options, &config)
+        .expect("bounded Rust analysis succeeds");
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.diagnostic_type == "bounded-deep-scan")
+        .expect("bounded deep scan is visible");
+
+    assert_eq!(report.paths.analysed_files, 1);
+    assert_eq!(diagnostic.invalidates_run, Some(false));
+    assert!(!diagnostic.is_failure());
+    assert!(diagnostic.message.contains("path=large.rs"));
+    assert!(diagnostic.message.contains("lines=5"));
+    assert!(diagnostic
+        .message
+        .contains(&format!("bytes={}", source.len())));
+    assert!(diagnostic.message.contains("maxLines=1"));
+    assert!(diagnostic
+        .message
+        .contains(&format!("maxBytes={}", usize::MAX)));
+    assert!(diagnostic.message.contains("override=cli"));
+    assert_has_rule(&report, "size.file-length");
+    assert_has_rule(&report, "sensitive-data.aws-access-key");
+    assert_missing_rule(&report, "security.process-command");
+}
+
+#[test]
+pub(crate) fn deep_scan_budget_honours_both_boundaries_disable_and_source_classification() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let rust_source = concat!(
+        "pub fn run() {\n",
+        "    std::process::Command::new(\"sh\").spawn().unwrap();\n",
+        "}\n",
+    );
+    fs::write(dir.path().join("boundary.rs"), rust_source).expect("Rust fixture write");
+    fs::write(
+        dir.path().join("oversized.env"),
+        "LEAKED=AKIA1234567890ABCDEF\nSECOND=value\n",
+    )
+    .expect("text fixture write");
+    let rust_options = AnalysisOptions {
+        paths: vec![PathBuf::from("boundary.rs")],
+        no_config: true,
+        no_baseline: true,
+        ..default_test_options()
+    };
+
+    let mut equal = Config::default();
+    equal.deep_scan_budget = DeepScanBudget {
+        enabled: true,
+        max_lines: rust_source.bytes().filter(|byte| *byte == b'\n').count() + 1,
+        max_bytes: rust_source.len(),
+        override_state: "config",
+    };
+    let equal_report = run_analysis_in_project(dir.path(), &rust_options, &equal)
+        .expect("equal bounds remain deep-scanned");
+    assert!(!diagnostic_types(&equal_report).contains(&"bounded-deep-scan"));
+    assert_has_rule(&equal_report, "security.process-command");
+
+    let mut byte_only = equal.clone();
+    byte_only.deep_scan_budget.max_lines = usize::MAX;
+    byte_only.deep_scan_budget.max_bytes = rust_source.len() - 1;
+    let byte_report = run_analysis_in_project(dir.path(), &rust_options, &byte_only)
+        .expect("byte-only overflow degrades");
+    assert!(diagnostic_types(&byte_report).contains(&"bounded-deep-scan"));
+
+    let mut disabled = byte_only.clone();
+    disabled.deep_scan_budget.enabled = false;
+    disabled.deep_scan_budget.override_state = "cli";
+    let disabled_report = run_analysis_in_project(dir.path(), &rust_options, &disabled)
+        .expect("disabled budget restores deep scan");
+    assert!(!diagnostic_types(&disabled_report).contains(&"bounded-deep-scan"));
+    assert_has_rule(&disabled_report, "security.process-command");
+
+    let text_options = AnalysisOptions {
+        paths: vec![PathBuf::from("oversized.env")],
+        ..rust_options
+    };
+    let mut tiny = Config::default();
+    tiny.deep_scan_budget = DeepScanBudget {
+        enabled: true,
+        max_lines: 1,
+        max_bytes: 1,
+        override_state: "cli",
+    };
+    let text_report = run_analysis_in_project(dir.path(), &text_options, &tiny)
+        .expect("oversized non-code text remains fully scanned");
+    assert_eq!(text_report.paths.analysed_files, 1);
+    assert!(!diagnostic_types(&text_report).contains(&"bounded-deep-scan"));
+    assert_has_rule(&text_report, "sensitive-data.aws-access-key");
 }

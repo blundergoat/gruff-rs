@@ -204,15 +204,36 @@ fn sarif_result(finding: &Finding, rule_indices: &HashMap<String, usize>) -> Val
             "text": &finding.message,
         },
         "locations": sarif_result_locations(finding),
-        "partialFingerprints": {
-            "gruffFingerprint": &finding.fingerprint,
-        },
         "properties": sarif_result_properties(finding),
     });
+    // gruffFingerprint is the ratified durable identity, so an alert survives a line move while a second
+    // declaration of one name opens its own alert. A sensitive finding has none, so it carries no key at all:
+    // publishing one would give a secret a stable name in a system gruff does not control.
+    if let Some(fingerprints) = sarif_partial_fingerprints(finding) {
+        result["partialFingerprints"] = fingerprints;
+    }
     if let Some(rule_index) = rule_indices.get(finding.rule_id.as_str()) {
         result["ruleIndex"] = json!(rule_index);
     }
     result
+}
+
+/// Project one finding into the fingerprints GitHub code scanning groups its alerts by.
+///
+/// `gruffFingerprint` is the ratified durable identity and nothing else, so an alert survives a line move while a
+/// second declaration of one name opens its own alert. A sensitive finding has no identity at all and therefore
+/// carries no key: publishing one would give a secret a stable name in a system gruff does not control.
+///
+/// The run names every finding before the baseline filters any; a finding built outside that pipeline is named
+/// here, ranked by its own line, so an ordinary result is never published without a fingerprint.
+fn sarif_partial_fingerprints(finding: &Finding) -> Option<Value> {
+    if let Some(identity) = finding.baseline_identity.as_deref() {
+        return Some(json!({ "gruffFingerprint": identity }));
+    }
+    let identities =
+        finding_identities(std::slice::from_ref(finding), &declaration_position_by_line).ok()?;
+    let named = identities.into_iter().next().flatten()?;
+    Some(json!({ "gruffFingerprint": named.identity }))
 }
 
 fn sarif_suppressed_result(

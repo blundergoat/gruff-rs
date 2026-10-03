@@ -17,7 +17,7 @@ pub(crate) fn analyse_text_rules(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    analyse_file_length(unit.file, unit.source, config, findings);
+    analyse_file_length(unit, config, findings);
     analyse_ci_github_event_shell_interpolation(unit, findings);
     analyse_github_actions_rules(unit, findings);
     analyse_sensitive_data(unit, config, findings);
@@ -25,17 +25,22 @@ pub(crate) fn analyse_text_rules(
 }
 
 /// Report a source file whose substantive review surface exceeds the configured line threshold.
-fn analyse_file_length(
-    file: &SourceFile,
-    source: &str,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
+fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Vec<Finding>) {
     // Exempt formats have separate generated, prose, or declarative review contracts.
-    if file_length_is_exempt(&file.display_path) {
+    if file_length_is_exempt(&unit.file.display_path) {
         return;
     }
-    let line_count = substantive_line_count(&file.display_path, source);
+    // Bounded Rust sources cannot enter the string-aware comment projection: that
+    // masking pass is part of the deep work the budget removes. Raw non-blank lines
+    // retain the size signal without reconstructing syntax.
+    let line_count = if unit.bounded_deep_scan && unit.file.is_rust {
+        unit.source
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+    } else {
+        substantive_line_count(&unit.file.display_path, unit.source)
+    };
     let rule_id = "size.file-length";
     let threshold = config.threshold(rule_id) as usize;
     // Only files beyond the user's threshold add a size finding to the report.
@@ -46,7 +51,7 @@ fn analyse_file_length(
                 message: format!(
                     "File has {line_count} substantive lines, above the threshold of {threshold}."
                 ),
-                file,
+                file: unit.file,
                 line: Some(1),
                 severity: config.severity(rule_id, rules::builtin_severity(rule_id)),
                 pillar: Pillar::Size,

@@ -314,6 +314,7 @@ pub(crate) fn analyse_block_naming(
     analyse_placeholder_block_name(file, block, config, findings);
 }
 
+/// Report a boolean name only when the user can rename it without breaking a Rust trait contract.
 pub(crate) fn analyse_boolean_block_name(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -324,7 +325,12 @@ pub(crate) fn analyse_boolean_block_name(
     let accepts_extra = extra_prefixes
         .iter()
         .any(|prefix| block.name.starts_with(prefix.as_str()));
-    if block.returns_bool && !is_boolean_predicate_name(&block.name) && !accepts_extra {
+    // Trait implementations inherit method names; only independently named boolean functions need this warning.
+    if block.returns_bool
+        && !block.is_trait_method
+        && !is_boolean_predicate_name(&block.name)
+        && !accepts_extra
+    {
         findings.push(block_finding(BlockFindingDescriptor {
             rule_id: "naming.boolean-prefix",
             message: format!(

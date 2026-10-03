@@ -1,10 +1,61 @@
-// goat-flow-hook-version: 1.15.1
+// goat-flow-hook-version: 1.17.0
 /**
  * Owns the bounded lifecycle result for an already-started managed hook.
- * The launcher uses it to capture output, enforce deadlines, and render failures.
- * Use this module when the coding agent needs one provider-visible result even
- * when the analyzer stalls, floods output, or exits without a usable envelope.
+ *
+ * The launcher captures output, enforces deadlines, and renders one provider-visible result when a hook stalls, floods output, or exits unexpectedly.
+ * Use this module when the coding agent must receive a bounded outcome instead of waiting on child processes.
  */
+
+/**
+ * Bounded state returned after a managed hook reaches its first terminal event.
+ *
+ * @typedef {object} CapturedHookProcessResult
+ * @property {number | null} status - child exit code; null means no trustworthy status arrived
+ * @property {boolean} timedOut - true when the user's configured deadline ended the hook
+ * @property {Error | null} launchError - startup failure; null means the child started or no startup error was reported
+ * @property {string} stdout - bounded captured output; empty means feedback relay or no child output
+ * @property {string} stderr - bounded captured diagnostic; empty means the child reported no error text
+ * @property {boolean} hasExceededOutputLimit - true when feedback was stopped before it could flood the coding agent
+ */
+
+/**
+ * Provider-facing result prepared after launcher-owned validation or delivery work.
+ *
+ * @typedef {object} ProviderLauncherDelivery
+ * @property {"delivered" | "unavailable"} state - whether the coding agent received a valid provider response
+ * @property {number} [exitCode] - provider status; absent when adaptation could not produce a response
+ * @property {string} [reason] - practical failure reason; absent after successful delivery
+ * @property {string} stdout - bounded provider output; empty when delivery is unavailable or intentionally silent
+ * @property {string} stderr - bounded diagnostic; empty when no human-only detail exists
+ */
+
+export const HOOK_RESULT_OUTPUT_LIMIT_BYTES = 10_000; // Cap: fits Copilot's smallest feedback channel.
+
+/**
+ * Retain one legacy policy or migrated-result chunk within the shared provider limit.
+ * Side effects: appends to capturedHookOutput only when the combined bytes remain bounded.
+ * @param {object} capturedHookOutput - retained stdout and stderr strings
+ * @param {"stdout" | "stderr"} outputStreamName - channel receiving the next chunk
+ * @param {Buffer | string} outputChunk - next child bytes
+ * @returns {boolean} false when the next chunk would exceed the limit; the caller stops the hook.
+ */
+export function appendBoundedHookOutput(
+  capturedHookOutput,
+  outputStreamName,
+  outputChunk,
+) {
+  const nextStreamOutput =
+    capturedHookOutput[outputStreamName] + String(outputChunk);
+  const nextCombinedOutputBytes = Buffer.byteLength(
+    outputStreamName === "stdout"
+      ? nextStreamOutput + capturedHookOutput.stderr
+      : capturedHookOutput.stdout + nextStreamOutput,
+    "utf8",
+  );
+  if (nextCombinedOutputBytes > HOOK_RESULT_OUTPUT_LIMIT_BYTES) return false;
+  capturedHookOutput[outputStreamName] = nextStreamOutput;
+  return true;
+}
 
 const MANAGED_HOOK_IDENTIFIERS_BY_RESPONSE_KIND = new Map([
   ["policy", "deny-dangerous"],
@@ -15,28 +66,44 @@ const MANAGED_HOOK_IDENTIFIERS_BY_RESPONSE_KIND = new Map([
 /**
  * Select a safe user wait below the registered host deadline.
  * Use before launch so invalid overrides cannot leave the coding agent waiting indefinitely.
+ * Rejection is a session-wide outage for a policy hook, so only a value that cannot bound
+ * the wait at all is rejected; an empty or oversized override still yields a usable wait.
  *
  * @param {number} timeoutCeiling - validated host deadline; zero or missing values are rejected earlier
- * @param {NodeJS.ProcessEnv} hookEnvironment - hook settings; an empty override uses the registered ceiling
- * @returns {number | null} timeout in milliseconds, or null when the user override is invalid
+ * @param {NodeJS.ProcessEnv} hookEnvironment - hook settings; missing or empty uses the ceiling, while a larger override is clamped
+ * @returns {number | null} timeout in milliseconds, or null when the user override is not a whole number of milliseconds of at least 1
  */
 export function resolveHookLaunchTimeoutMs(timeoutCeiling, hookEnvironment) {
   const configuredUserTimeout =
     hookEnvironment.GOAT_FLOW_HOOK_LAUNCH_TIMEOUT_MS;
-  // Missing configuration uses the mode ceiling, which remains below supported host limits.
-  if (configuredUserTimeout === undefined) return timeoutCeiling;
-  // Only a plain positive decimal can lower the ceiling; signs, spaces, and fractions are ambiguous.
+  // `export VAR=` arrives as "" rather than undefined; both mean "use the mode ceiling", which stays below host limits.
+  if (configuredUserTimeout === undefined || configuredUserTimeout === "") {
+    return timeoutCeiling;
+  }
+  // Only a plain decimal is a wait; signs, spaces, and fractions are ambiguous.
   if (!/^[0-9]+$/u.test(configuredUserTimeout)) return null;
   const configuredTimeoutMilliseconds = Number(configuredUserTimeout);
-  // An unsafe or out-of-range value cannot replace the user's bounded host contract.
-  if (
-    !Number.isSafeInteger(configuredTimeoutMilliseconds) ||
-    configuredTimeoutMilliseconds < 1 ||
-    configuredTimeoutMilliseconds > timeoutCeiling
-  ) {
-    return null;
-  }
-  return configuredTimeoutMilliseconds;
+  // Zero would time out before the hook starts, so it cannot bound the user's wait.
+  if (configuredTimeoutMilliseconds < 1) return null;
+  // A larger override cannot exceed the bounded host contract; the ceiling is the closest safe wait.
+  return Math.min(configuredTimeoutMilliseconds, timeoutCeiling);
+}
+
+/**
+ * Explain a rejected timeout override so the user can repair one setting instead of reading launcher source.
+ * Use only after resolveHookLaunchTimeoutMs returned null for the same ceiling and environment.
+ *
+ * @param {number} timeoutCeiling - validated host deadline named as the accepted maximum
+ * @param {NodeJS.ProcessEnv} hookEnvironment - hook settings whose override was rejected; a missing value is reported as ""
+ * @returns {string} failure reason naming the variable, the supplied value, and the accepted range
+ */
+export function describeInvalidHookLaunchTimeout(
+  timeoutCeiling,
+  hookEnvironment,
+) {
+  const configuredUserTimeout =
+    hookEnvironment.GOAT_FLOW_HOOK_LAUNCH_TIMEOUT_MS ?? "";
+  return `hook timeout configuration is invalid: GOAT_FLOW_HOOK_LAUNCH_TIMEOUT_MS=${JSON.stringify(configuredUserTimeout)} must be a whole number of milliseconds from 1 to ${timeoutCeiling}`;
 }
 
 /**
@@ -60,13 +127,13 @@ function unavailableLauncherDelivery(userFacingReason, childStandardError) {
  * Capture one started hook until it exits, fails, floods output, or reaches its deadline.
  * Keep first-result ownership here because deadline, error, close, and output events can race.
  *
- * @param {import("node:child_process").ChildProcess} hookProcess - started Bash child; missing streams are valid only for legacy pass-through
+ * @param {import("node:child_process").ChildProcess} hookProcess - started Bash child; missing streams mean startup failed before output pipes opened
  * @param {NodeJS.ProcessEnv} hookEnvironment - hook environment; missing Windows roots allow direct-process cleanup only
  * @param {number} launchTimeout - positive deadline in milliseconds; zero would time out immediately
  * @param {NodeJS.Platform} hostPlatform - active host; empty text cannot select safe tree cleanup
- * @param {Function | null} appendCapturedHookOutput - bounded adapter writer; null preserves direct legacy streams
+ * @param {Function | null} appendCapturedHookOutput - bounded output writer; null preserves relayed feedback streams
  * @param {Function} stopHookProcessTree - required cleanup callback; missing behavior could strand timed-out user work
- * @returns {Promise<{status: number | null, timedOut: boolean, launchError: Error | null, stdout: string, stderr: string, hasExceededOutputLimit: boolean}>} first terminal result; empty streams mean legacy pass-through or no child output
+ * @returns {Promise<CapturedHookProcessResult>} first terminal result; empty captured streams mean feedback relay or no child output
  */
 export function captureHookProcessUntilDeadline(
   hookProcess,
@@ -77,16 +144,32 @@ export function captureHookProcessUntilDeadline(
   stopHookProcessTree,
 ) {
   return new Promise((resolveHookResult) => {
-    // A null adapter keeps the user's legacy hook output attached directly to the host.
+    // A null writer keeps feedback output attached directly to the host.
     const shouldCaptureResult = appendCapturedHookOutput !== null;
     let hasDeliveredHookResult = false;
     let hasHookReachedDeadline = false;
     let hasExceededOutputLimit = false;
     const capturedHookOutput = { stdout: "", stderr: "" };
+
+    /**
+     * Release launcher-owned pipe handles after a forced terminal result.
+     * Use so a descendant that outlives Bash cannot keep the provider-facing Node process open.
+     *
+     * @returns {void} no value; captured text remains in memory for the provider adapter.
+     */
+    function releaseHookOutputStreams() {
+      for (const outputStream of [hookProcess.stdout, hookProcess.stderr]) {
+        if (!outputStream) continue;
+        outputStream.removeAllListeners("data");
+        outputStream.destroy();
+      }
+    }
+
     const launchDeadlineTimer = setTimeout(() => {
       hasHookReachedDeadline = true;
       stopHookProcessTree(hookProcess, hostPlatform, hookEnvironment);
       hookProcess.unref();
+      releaseHookOutputStreams();
       // A deadline has no trustworthy exit code or startup error, so the agent gets timeout context.
       deliverHookResult(null, null);
     }, launchTimeout);
@@ -140,10 +223,11 @@ export function captureHookProcessUntilDeadline(
       hasExceededOutputLimit = true;
       stopHookProcessTree(hookProcess, hostPlatform, hookEnvironment);
       hookProcess.unref();
+      releaseHookOutputStreams();
       deliverHookResult(null, null);
     }
 
-    // Envelope mode owns both child streams; legacy mode leaves them inherited and null here.
+    // Captured modes retain both child streams; feedback relay listeners are attached by the launcher.
     if (shouldCaptureResult && hookProcess.stdout && hookProcess.stderr) {
       hookProcess.stdout.on("data", (outputChunk) => {
         captureHookOutputChunk("stdout", outputChunk);
@@ -173,7 +257,7 @@ export function captureHookProcessUntilDeadline(
  * @param {string} userFacingReason - practical explanation; empty text would leave feedback unactionable
  * @param {string} childStandardError - bounded child detail; empty means no diagnostic arrived
  * @param {number} launcherDurationMs - measured wait; zero means startup failed before useful work
- * @returns {{state: "delivered", exitCode: number, stdout: string, stderr: string} | {state: "unavailable", reason: string, stdout: "", stderr: string}} provider response or explicit adaptation failure
+ * @returns {ProviderLauncherDelivery} provider response or explicit adaptation failure
  */
 export function prepareProviderLauncherUnavailableDelivery(
   providerAdapterRuntime,
@@ -182,11 +266,16 @@ export function prepareProviderLauncherUnavailableDelivery(
   userFacingReason,
   childStandardError = "",
   launcherDurationMs = 0,
+  registeredHookIdentifier,
 ) {
   const managedHookIdentifier =
+    (launchContract.responseKind === "policy"
+      ? registeredHookIdentifier
+      : undefined) ??
     MANAGED_HOOK_IDENTIFIERS_BY_RESPONSE_KIND.get(
       launchContract.responseKind,
-    ) ?? "managed-hook";
+    ) ??
+    "managed-hook";
   const launcherUnavailableResult = {
     schema: providerAdapterRuntime.HOOK_RESULT_SCHEMA,
     hookId: managedHookIdentifier,

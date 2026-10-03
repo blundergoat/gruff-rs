@@ -1,6 +1,6 @@
 use super::styles::css;
 use super::{severity_text, DistributionBar, OffenderRow, PillarRow, ReportView, SCHEMA_VERSION};
-use crate::{html_escape, pillar_label, Finding, RunDiagnostic, Severity};
+use crate::{html_escape, pillar_label, scoring::score_text, Finding, RunDiagnostic, Severity};
 use std::fmt::Write as _;
 
 pub(crate) fn document(view: &ReportView<'_>) -> String {
@@ -183,7 +183,7 @@ fn pillar_row(row: &PillarRow) -> String {
             "<tr>",
             "<td class=\"pillar-name\">{name}</td>",
             "<td class=\"num\"><span class=\"grade-pill {class}\">{letter}</span></td>",
-            "<td class=\"num\">{score:.2}</td>",
+            "<td class=\"num\">{score}</td>",
             "<td class=\"num\">{findings}</td>",
             "{advisory_cell}{warning_cell}{error_cell}",
             "</tr>"
@@ -191,7 +191,7 @@ fn pillar_row(row: &PillarRow) -> String {
         name = html_escape(pillar_label(row.pillar)),
         class = row.grade_class,
         letter = html_escape(&row.grade_letter),
-        score = row.score,
+        score = score_text(row.score),
         findings = row.findings,
         advisory_cell = severity_count_cell(row.advisories, "note"),
         warning_cell = severity_count_cell(row.warnings, "warn"),

@@ -1,3 +1,8 @@
+//! Source records connect discovered files with parsed Rust and the scan report.
+//!
+//! A project scan records which files were selected before rules run.
+//! A file scanned alone keeps production warnings when no parent module was selected.
+
 use super::*;
 
 #[derive(Clone)]
@@ -14,10 +19,16 @@ pub(crate) enum SourceOrigin {
     Directory,
 }
 
+/// One selected source as the rules see it during a scan.
+///
+/// A complete project scan can attach test-only ownership from a selected parent module.
+/// A single-file scan carries no such ownership proof.
 pub(crate) struct SourceUnit<'a> {
     pub(crate) file: &'a SourceFile,
     pub(crate) source: &'a str,
     pub(crate) rust_ast: Option<&'a syn::File>,
+    pub(crate) external_test_module: bool,
+    pub(crate) bounded_deep_scan: bool,
     line_starts: &'a OnceLock<Vec<usize>>,
 }
 
@@ -25,16 +36,20 @@ pub(crate) struct ParsedSource {
     pub(crate) file: SourceFile,
     pub(crate) source: String,
     pub(crate) rust_ast: Option<syn::File>,
+    pub(crate) bounded_deep_scan: bool,
     pub(crate) diagnostics: Vec<RunDiagnostic>,
     pub(crate) line_starts: OnceLock<Vec<usize>>,
 }
 
 impl ParsedSource {
-    pub(crate) fn as_source_unit(&self) -> SourceUnit<'_> {
+    /// Pass the selected parent module's test-only ownership into rules for this source file.
+    pub(crate) fn as_source_unit(&self, external_test_module: bool) -> SourceUnit<'_> {
         SourceUnit {
             file: &self.file,
             source: &self.source,
             rust_ast: self.rust_ast.as_ref(),
+            external_test_module,
+            bounded_deep_scan: self.bounded_deep_scan,
             line_starts: &self.line_starts,
         }
     }
@@ -151,6 +166,8 @@ pub(crate) struct ItemSummary {
     pub(crate) cfg_gated: bool,
     pub(crate) test_context: bool,
     pub(crate) trait_impl: bool,
+    /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
+    /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
     pub(crate) allow_dead_code: bool,
 }
@@ -163,6 +180,8 @@ pub(crate) struct ProjectItemContext {
     pub(crate) test_context: bool,
     pub(crate) container: Option<String>,
     pub(crate) trait_impl: bool,
+    /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
+    /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
     pub(crate) allow_dead_code: bool,
 }

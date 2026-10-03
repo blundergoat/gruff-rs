@@ -86,7 +86,8 @@ pub(crate) fn collect_project_function(
                 || has_cfg_test_attr(&item_fn.attrs),
             container: None,
             trait_impl: false,
-            exported_by_attr: has_export_attr(&item_fn.attrs),
+            exported_by_attr: has_export_attr(&item_fn.attrs)
+                || is_reached_without_rust_reference(&item_fn.attrs, &item_fn.sig, &item_fn.block),
             allow_dead_code: scope.allow_dead_code_context
                 || has_allow_dead_code_attr(&item_fn.attrs),
         },
@@ -273,7 +274,8 @@ pub(crate) fn collect_project_method(
                 || has_cfg_test_attr(&method.attrs),
             container: impl_self_type_name(item_impl),
             trait_impl: item_impl.trait_.is_some(),
-            exported_by_attr: has_export_attr(&method.attrs),
+            exported_by_attr: has_export_attr(&method.attrs)
+                || is_reached_without_rust_reference(&method.attrs, &method.sig, &method.block),
             allow_dead_code: scope.allow_dead_code_context
                 || has_allow_dead_code_attr(&item_impl.attrs)
                 || has_allow_dead_code_attr(&method.attrs),
@@ -336,7 +338,7 @@ pub(crate) fn project_item(
     }
 }
 
-fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         let Some(segment) = attr.path().segments.last() else {
             return false;

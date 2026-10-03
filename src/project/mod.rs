@@ -5,7 +5,7 @@ mod lockfile;
 mod manifest;
 
 pub(crate) use items::{
-    collect_project_rust_index, inferred_file_module_path, ProjectIndexBuilders,
+    collect_project_rust_index, has_export_attr, inferred_file_module_path, ProjectIndexBuilders,
 };
 pub(crate) use lockfile::read_lockfile_summary;
 pub(crate) use manifest::read_manifest_summary;
@@ -14,19 +14,25 @@ pub(crate) use manifest::read_manifest_summary;
 pub(crate) fn read_and_parse_sources(
     files: &[SourceFile],
 ) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
-    read_and_parse_sources_with_options(files, true)
+    read_and_parse_sources_with_options(files, true, &DeepScanBudget::default())
 }
 
 pub(crate) fn read_and_parse_sources_with_options(
     files: &[SourceFile],
     parse_rust: bool,
+    deep_scan_budget: &DeepScanBudget,
 ) -> (Vec<ParsedSource>, Vec<RunDiagnostic>) {
     let mut parsed_sources = Vec::with_capacity(files.len());
     let mut diagnostics = Vec::new();
 
     for source_file in files {
         match read_source_text(source_file) {
-            Ok(source) => parsed_sources.push(parse_source_file(source_file, source, parse_rust)),
+            Ok(source) => parsed_sources.push(parse_source_file(
+                source_file,
+                source,
+                parse_rust,
+                deep_scan_budget,
+            )),
             Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
@@ -45,6 +51,7 @@ fn read_source_text(source_file: &SourceFile) -> Result<String, RunDiagnostic> {
             message: "Skipped supported text file because it is not valid UTF-8.".to_string(),
             file_path: Some(source_file.display_path.clone()),
             line: Some(1),
+            invalidates_run: None,
         }),
         Err(_) => Err(read_error_diagnostic(
             source_file,
@@ -65,6 +72,7 @@ fn read_error_diagnostic(source_file: &SourceFile, message: String) -> RunDiagno
         message,
         file_path: Some(source_file.display_path.clone()),
         line: Some(1),
+        invalidates_run: None,
     }
 }
 
@@ -72,41 +80,102 @@ pub(crate) fn parse_source_file(
     file: &SourceFile,
     source: String,
     parse_rust: bool,
+    deep_scan_budget: &DeepScanBudget,
 ) -> ParsedSource {
     let file_owned = file.clone();
-    if !parse_rust || !file_owned.is_rust {
-        return ParsedSource {
-            file: file_owned,
-            source,
-            rust_ast: None,
-            diagnostics: Vec::new(),
-            line_starts: OnceLock::new(),
-        };
+    if !file_owned.is_rust {
+        return parsed_source(file_owned, source, None, false, Vec::new());
     }
 
-    match syn::parse_file(&source) {
-        Ok(ast) => ParsedSource {
-            file: file_owned,
+    let line_count = physical_line_count(&source);
+    let byte_count = source.len();
+    if deep_scan_budget.enabled
+        && (line_count > deep_scan_budget.max_lines || byte_count > deep_scan_budget.max_bytes)
+    {
+        let display_path = file_owned.display_path.clone();
+        return parsed_source(
+            file_owned,
             source,
-            rust_ast: Some(ast),
-            diagnostics: Vec::new(),
-            line_starts: OnceLock::new(),
-        },
+            None,
+            true,
+            vec![bounded_deep_scan_diagnostic(
+                display_path,
+                line_count,
+                byte_count,
+                deep_scan_budget,
+            )],
+        );
+    }
+
+    if !parse_rust {
+        return parsed_source(file_owned, source, None, false, Vec::new());
+    }
+
+    parse_rust_source(file_owned, source)
+}
+
+fn parse_rust_source(file: SourceFile, source: String) -> ParsedSource {
+    match syn::parse_file(&source) {
+        Ok(ast) => parsed_source(file, source, Some(ast), false, Vec::new()),
         Err(error) => {
-            let display_path = file_owned.display_path.clone();
-            ParsedSource {
-                file: file_owned,
+            let display_path = file.display_path.clone();
+            parsed_source(
+                file,
                 source,
-                rust_ast: None,
-                diagnostics: vec![RunDiagnostic {
+                None,
+                false,
+                vec![RunDiagnostic {
                     diagnostic_type: "parse-error".to_string(),
                     message: format!("Rust parser error: {error}"),
                     file_path: Some(display_path),
                     line: Some(line_from_span(error.span().start())),
+                    invalidates_run: None,
                 }],
-                line_starts: OnceLock::new(),
-            }
+            )
         }
+    }
+}
+
+fn parsed_source(
+    file: SourceFile,
+    source: String,
+    rust_ast: Option<syn::File>,
+    bounded_deep_scan: bool,
+    diagnostics: Vec<RunDiagnostic>,
+) -> ParsedSource {
+    ParsedSource {
+        file,
+        source,
+        rust_ast,
+        bounded_deep_scan,
+        diagnostics,
+        line_starts: OnceLock::new(),
+    }
+}
+
+fn physical_line_count(source: &str) -> usize {
+    if source.is_empty() {
+        0
+    } else {
+        source.bytes().filter(|byte| *byte == b'\n').count() + 1
+    }
+}
+
+fn bounded_deep_scan_diagnostic(
+    display_path: String,
+    line_count: usize,
+    byte_count: usize,
+    budget: &DeepScanBudget,
+) -> RunDiagnostic {
+    RunDiagnostic {
+        diagnostic_type: "bounded-deep-scan".to_string(),
+        message: format!(
+            "path={display_path}; lines={line_count}; bytes={byte_count}; maxLines={}; maxBytes={}; override={}. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.",
+            budget.max_lines, budget.max_bytes, budget.override_state
+        ),
+        file_path: Some(display_path),
+        line: Some(1),
+        invalidates_run: Some(false),
     }
 }
 
@@ -311,6 +380,55 @@ pub(crate) fn cfg_meta_is_test_only(meta: &syn::Meta) -> bool {
 
 pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| last_segment_matches(attr, "test"))
+}
+
+/// Report whether a fn is reached without a Rust reference the dead-code rules can count: a test or bench
+/// entry point (`#[bench]`, `#[divan::bench]`, `#[maybe_tokio_test]`, or one applied through `cfg_attr`), or
+/// an empty-body fn with no generics and no inputs whose `where` clause is a compile-time assertion over
+/// concrete types, such as `fn assert_send() where Client: Send {}`. A foreign ABI alone reaches nothing;
+/// `#[no_mangle]` and `#[export_name]` are read by `has_export_attr`.
+/// Only the two dead-code rules read this; `has_test_attr` keeps its narrower meaning for its other consumers.
+pub(crate) fn is_reached_without_rust_reference(
+    attrs: &[syn::Attribute],
+    sig: &syn::Signature,
+    block: &syn::Block,
+) -> bool {
+    let is_type_assertion = block.stmts.is_empty()
+        && sig.generics.params.is_empty()
+        && sig.inputs.is_empty()
+        && sig
+            .generics
+            .where_clause
+            .as_ref()
+            .is_some_and(|clause| !clause.predicates.is_empty());
+    is_type_assertion || attrs.iter().any(is_harness_entry_attr)
+}
+
+/// Report whether an attribute marks a test or bench harness entry point. `cfg_attr` counts only through the
+/// attributes it applies, never through its condition, so `#[cfg_attr(test, allow(dead_code))]` stays
+/// production code.
+fn is_harness_entry_attr(attr: &syn::Attribute) -> bool {
+    if attr.path().is_ident("cfg_attr") {
+        let Ok(arguments) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        ) else {
+            return false;
+        };
+        return arguments
+            .iter()
+            .skip(1)
+            .any(|applied| path_is_harness_entry(applied.path()));
+    }
+    path_is_harness_entry(attr.path())
+}
+
+/// Report whether an attribute path's last segment names a harness entry: `test`, `bench`, or a macro ending
+/// in `_test` or `_bench`.
+fn path_is_harness_entry(path: &syn::Path) -> bool {
+    path.segments.last().is_some_and(|segment| {
+        let name = segment.ident.to_string();
+        name == "test" || name == "bench" || name.ends_with("_test") || name.ends_with("_bench")
+    })
 }
 
 pub(crate) fn last_segment_matches(attr: &syn::Attribute, name: &str) -> bool {

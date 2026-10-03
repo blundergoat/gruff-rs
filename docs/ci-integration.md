@@ -74,7 +74,7 @@ argv: |
 For blocking jobs, choose the lowest severity that should fail the build:
 
 ```sh
-cargo run -- analyse src --fail-on warning
+./.cargo-tools/bin/gruff-rs analyse src --fail-on warning
 ```
 
 Use `--fail-on none` when the job should only publish reports.
@@ -84,7 +84,7 @@ Use `--fail-on none` when the job should only publish reports.
 Generate an adoption baseline after reviewing current findings:
 
 ```sh
-cargo run -- analyse src --generate-baseline --fail-on none
+./.cargo-tools/bin/gruff-rs analyse src --generate-baseline --fail-on none
 ```
 
 Future scans auto-apply `gruff-baseline.json` when present. Use
@@ -95,8 +95,8 @@ Future scans auto-apply `gruff-baseline.json` when present. Use
 Rust keeps a safety-biased diff contract:
 
 ```sh
-cargo run -- analyse src --diff-patch /tmp/gruff.patch --format json --fail-on none
-cargo run -- analyse src --diff staged --diff-git-unsafe --fail-on warning
+./.cargo-tools/bin/gruff-rs analyse src --diff-patch /tmp/gruff.patch --format json --fail-on none
+./.cargo-tools/bin/gruff-rs analyse src --diff staged --diff-git-unsafe --fail-on warning
 ```
 
 `--diff-git-unsafe` is required for Git-backed diff modes because they shell out
@@ -112,16 +112,16 @@ out-of-scope findings. `--include-ignored` opts into git-ignored and built-in
 default-directory paths only; it never reveals a config-ignored path, and VCS
 internals stay blocked.
 
-Ignored paths are reported additively under `paths.ignoredPathDetails` (the
+Ignored paths are reported additively under `paths.details` (the
 existing `paths.ignoredPaths` string list is unchanged):
 
 ```jsonc
-"ignoredPathDetails": [
-  { "path": "vendor/lib.rs", "source": "config", "pattern": "vendor/**" }
+"details": [
+  { "path": "vendor/lib.rs", "reason": "config-ignore", "source": "config", "pattern": "vendor/**" }
 ]
 ```
 
-`source` is one of `config`, `gitignore`, `default`, or `generated`.
+`source` is one of `config`, `gitignore`, or `default`.
 
 ## check-ignore
 
@@ -130,7 +130,7 @@ the same config and ignore engine as `analyse`, with no analysis. A hook can cal
 it to scope its own work:
 
 ```sh
-cargo run -- check-ignore --format json src/app.css vendor/lib.rs src/main.rs
+./.cargo-tools/bin/gruff-rs check-ignore --format json src/app.css vendor/lib.rs src/main.rs
 # [{ "path": "src/app.css", "ignored": false, "source": null, "pattern": null },
 #  { "path": "vendor/lib.rs", "ignored": true, "source": "config", "pattern": "vendor/**" },
 #  { "path": "src/main.rs", "ignored": false, "source": null, "pattern": null }]

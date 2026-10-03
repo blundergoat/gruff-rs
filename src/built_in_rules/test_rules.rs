@@ -5,8 +5,6 @@ static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
 static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
-static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
-static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const TEST_ASSERTION_PATTERN: &str = r"(?:\b(?:assert!|assert_eq!|assert_ne!|matches!|panic!)|\bassert_[A-Za-z0-9_]*!\s*|\bassert_[A-Za-z0-9_]*(?:\s*::\s*<[^;\n()]+>)?)\s*\(|\.\s*expect\s*\(";
 
@@ -56,6 +54,111 @@ pub(crate) fn analyse_test_block(
 /// distinguish the intended panic from an unrelated panic that masks a
 /// real bug. Fires only when the attribute appears without any
 /// `expected` arg.
+/// Report whether the test fn's own `#[should_panic]` leaves its message unpinned while the fn runs in a test
+/// build. Only the fn's own attributes are read, so an attribute quoted in a string or written on a nested
+/// item never counts; code syn cannot parse falls back to reading the attribute text.
+fn has_unpinned_should_panic(code: &str) -> bool {
+    let Ok(item) = syn::parse_str::<syn::ItemFn>(code) else {
+        return has_unpinned_should_panic_text(code);
+    };
+    let Some(attr) = item
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("should_panic"))
+    else {
+        return false;
+    };
+    !has_pinned_panic_message(&attr.meta) && !is_excluded_from_test_builds(&item)
+}
+
+/// `#[should_panic = "msg"]` is the shorthand for `expected = "msg"` and pins the message just as well. An
+/// empty message matches every panic, so it pins nothing.
+fn has_pinned_panic_message(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::NameValue(pair) => is_non_empty_string(&pair.value),
+        syn::Meta::List(list) => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|pairs| {
+                pairs
+                    .iter()
+                    .any(|pair| pair.path.is_ident("expected") && is_non_empty_string(&pair.value))
+            }),
+        syn::Meta::Path(_) => false,
+    }
+}
+
+/// Report whether an attribute value is a non-empty string literal.
+fn is_non_empty_string(value: &syn::Expr) -> bool {
+    matches!(value, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) if !text.value().is_empty())
+}
+
+/// Text fallback for a test fn syn cannot parse: a `#[should_panic]` with no non-empty pinned message.
+fn has_unpinned_should_panic_text(code: &str) -> bool {
+    static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
+    static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(code)
+        && !static_regex(
+            &SHOULD_PANIC_EXPECTED_REGEX,
+            r##"#\s*\[\s*should_panic\s*(?:=|\([^)]*\bexpected\s*=)\s*r?#*"[^"]"##,
+        )
+        .is_match(code)
+}
+
+/// Report whether the test fn's own `#[cfg(...)]` attributes are false in every test build, so it is never
+/// compiled as a test and never runs: `not(test)`, `all(..)` holding such a predicate, or `any(..)` whose every
+/// branch is one. A member of a `#[cfg(not(test))] mod` is not caught, because the module's attributes are not
+/// the fn's; the rule's catalogue entry lists that shape.
+fn is_excluded_from_test_builds(item: &syn::ItemFn) -> bool {
+    item.attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .filter_map(|attr| attr.parse_args::<syn::Meta>().ok())
+        .any(|predicate| is_false_under_test(&predicate))
+}
+
+/// Report whether a cfg predicate is false in every test build.
+fn is_false_under_test(predicate: &syn::Meta) -> bool {
+    let Some((operator, arguments)) = cfg_combinator(predicate) else {
+        return false;
+    };
+    match operator.as_str() {
+        "not" => arguments.len() == 1 && arguments.iter().all(is_true_under_test),
+        "all" => arguments.iter().any(is_false_under_test),
+        "any" => !arguments.is_empty() && arguments.iter().all(is_false_under_test),
+        _ => false,
+    }
+}
+
+/// Report whether a cfg predicate is true in every test build: `test` itself, or a combination forcing it.
+fn is_true_under_test(predicate: &syn::Meta) -> bool {
+    if let syn::Meta::Path(path) = predicate {
+        return path.is_ident("test");
+    }
+    let Some((operator, arguments)) = cfg_combinator(predicate) else {
+        return false;
+    };
+    match operator.as_str() {
+        "not" => arguments.len() == 1 && arguments.iter().all(is_false_under_test),
+        "all" => !arguments.is_empty() && arguments.iter().all(is_true_under_test),
+        "any" => arguments.iter().any(is_true_under_test),
+        _ => false,
+    }
+}
+
+/// Split a `not(..)`, `all(..)` or `any(..)` cfg predicate into its operator and arguments.
+fn cfg_combinator(predicate: &syn::Meta) -> Option<(String, Vec<syn::Meta>)> {
+    let syn::Meta::List(list) = predicate else {
+        return None;
+    };
+    let operator = list.path.get_ident()?.to_string();
+    let arguments = list
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .ok()?;
+    Some((operator, arguments.into_iter().collect()))
+}
+
 pub(crate) fn analyse_should_panic_without_expected(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -64,18 +167,7 @@ pub(crate) fn analyse_should_panic_without_expected(
     if !block.is_test {
         return;
     }
-    let code = body_without_doc_comments(&block.body);
-    let has_should_panic =
-        static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(&code);
-    if !has_should_panic {
-        return;
-    }
-    let has_expected = static_regex(
-        &SHOULD_PANIC_EXPECTED_REGEX,
-        r"#\s*\[\s*should_panic\s*\([^)]*\bexpected\s*=",
-    )
-    .is_match(&code);
-    if has_expected {
+    if !has_unpinned_should_panic(&body_without_doc_comments(&block.body)) {
         return;
     }
     findings.push(block_finding_with_extras(

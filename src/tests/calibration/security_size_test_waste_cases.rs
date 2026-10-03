@@ -203,7 +203,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n",
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: acme/tool@v4\n",
                 )
                 .expect("workflow write");
             }),
@@ -212,7 +212,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@1111111111111111111111111111111111111111\n",
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: acme/tool@1111111111111111111111111111111111111111\n",
                 )
                 .expect("workflow write");
             }),
@@ -287,7 +287,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\non:\n  pull_request:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+                    "name: ci\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
                 )
                 .expect("workflow write");
             }),

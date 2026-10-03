@@ -375,6 +375,7 @@ pub(crate) fn diff_patch_diagnostics_are_sarif_notifications_without_failed_exec
                 message: "Patch filter kept 0 of 0 findings; suppressed 0 outside changed new-side lines. All patch files were analysed.".to_string(),
                 file_path: None,
                 line: None,
+                invalidates_run: None,
             }],
         );
 
@@ -468,6 +469,7 @@ fn function_block(
         test_context: false,
         is_async: false,
         returns_bool: false,
+        is_trait_method: false,
         returns_result: false,
         ignore_without_reason: false,
         body_is_declarative_literal: false,

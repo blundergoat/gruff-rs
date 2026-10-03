@@ -57,13 +57,15 @@ Runs the local gruff-rs preflight suite:
   - shellcheck for shell scripts when shellcheck is installed
   - deny-dangerous hook policy self-test (smoke tier)
   - post-turn safety hook exit-contract self-test
+  - Claude permission pairing, plus goat-flow template deny coverage when the package is installed
+  - local goat-flow hook and doc deltas, and goat-flow learning-loop stats when the package is installed
   - cargo fmt, clippy, and tests
   - crate version consistency between Cargo.toml and Cargo.lock
   - RustSec dependency audit, auto-installing cargo-audit when missing
   - pinned action.yml and GitHub Actions workflow validators
   - exact-path GitHub workflow and composite-action security scan without project config
   - rule-listing, summary, fixture JSON/SARIF, patch, selector, exclusion, and custom-rule smokes
-  - gruff-rs dogfood scan (analyse the whole project, gated by minimumSeverity.analyse in .gruff-rs.yaml)
+  - gruff-rs dogfood scan (analyse the whole project, gated by failOn.analyse in .gruff-rs.yaml)
   - documentation drift guards for release examples, built-in rules, schemas, and CLI commands
 
 Options:
@@ -448,10 +450,8 @@ release_version_is_newer() {
 MANAGED_HOOK_DELTAS=(
   $'post-turn-safety.sh\tis_line_allowlisted\tline-scoped goat-flow-allow-secret marker (ADR-022); without it every turn touching fixtures/sample.rs blocks on a calibration token the repository must keep'
   $'post-turn-safety.sh\t"@@ "*)\tonly a real hunk header is skipped; without it an added line rendering as "+++" under --unified=0 is dropped and a credential on it ends the turn with exit 0'
-  $'run-with-bash.mjs\tsymlinkFreePath\tlauncher resolves symlinks before comparing its own path; without it a symlinked project directory loads the launcher, runs no hook, and exits 0 as "guard passed"'
-  $'deny-dangerous.sh\twatch --any-unknown-flag\tan unknown watch option skips instead of abandoning normalisation; without it "watch --any-unknown-flag rm -rf /" reaches the policy modules as a bare watch call and is allowed'
-  $'deny-dangerous.sh\tparallel --any-unknown-flag\tan unknown parallel option skips instead of abandoning normalisation; without it "parallel --any-unknown-flag rm -rf /" is allowed for the same reason'
-  $'deny-dangerous/deny-dangerous-self-test.sh\twatch unknown long option\tregression cases pinning the two wrapper repairs above; without them a reverted wrapper parser still passes --self-test=full'
+  $'run-with-bash.mjs\tlaunchedModulePath = realpathSync(resolvedLaunchPath)\tlauncher resolves symlinks before comparing its own path (adopted upstream in 1.17.0); without it a symlinked project directory loads the launcher, runs no hook, and exits 0 as "guard passed"'
+  $'deny-dangerous/deny-dangerous-self-test.sh\tfor command_wrapper in watch parallel env\tregression cases requiring an unknown watch/parallel option to block (adopted upstream in 1.17.0, which fails closed); without them a wrapper parser that skips or abandons on an unknown option lets "watch --any-unknown-flag rm -rf /" through and still passes --self-test=full'
 )
 
 # Prove every local hook delta is still present in the installed managed hooks. A goat-flow install or hooks sync
@@ -484,13 +484,15 @@ managed_hook_deltas_present() {
   printf '%s local hook deltas present\n' "${#MANAGED_HOOK_DELTAS[@]}"
 }
 
-# Correctness fixes this repository carries on top of the managed goat-flow skill docs, as "doc<TAB>anchor<TAB>reason"
-# rows, in the same shape and for the same reason as MANAGED_HOOK_DELTAS above. `goat-flow install` rewrites these files
-# from the template, so a repair that is right for this repository but not yet upstream needs an assertion or it leaves
-# silently. Anchors are semantic; every reason states what breaks without the fix.
+# Correctness fixes this repository carries on top of the managed goat-flow skill docs and the installer-edited
+# .goat-flow/config.yaml, as "path<TAB>anchor<TAB>reason" rows relative to .goat-flow/, in the same shape and for the same
+# reason as MANAGED_HOOK_DELTAS above. `goat-flow install` rewrites the docs from the template and a forced install can
+# re-scaffold config.yaml, so a repair that is right for this repository but not yet upstream needs an assertion or it
+# leaves silently. Anchors are semantic; every reason states what breaks without the fix.
 MANAGED_DOC_DELTAS=(
-  $'skill-docs/playbooks/gruff-code-quality.md\t"bin/$target"\tthe availability probe checks the repo-local wrapper first; without it the probe returns empty inside gruff-rs and an agent following CLAUDE.md READ declares the analyzer unavailable in its own repository'
-  $'skill-docs/playbooks/gruff-code-quality.md\trather than assuming a spelling\tthe threshold guidance sends the reader to analyse --help instead of naming a flag; without it an agent runs the suggested --min-severity, which this port does not expose, and reads the exit 2 as a config fault'
+  $'config.yaml\trs: bin/gruff-rs\tpins the cargo-run wrapper as the gruff-rs analyzer for both the playbook and the gruff hook; without it the 1.17.0 playbook probe tries target/release/gruff-rs before bin/gruff-rs, so an agent proves a fix with a build artifact that can lag HEAD'
+  $'skill-docs/playbooks/gruff-code-quality.md\thooks.gruff-code-quality.binaries.\tthe playbook treats a configured repo-relative binary as project authority; without it the config pin above no longer steers an agent away from target/release/gruff-rs'
+  $'skill-docs/playbooks/gruff-code-quality.md\tConfirm the threshold flag against `analyse --help`\tthe threshold guidance sends the reader to analyse --help instead of naming a flag (adopted upstream in 1.17.0); without it an agent runs the suggested --min-severity, which this port does not expose, and reads the exit 2 as a config fault'
 )
 
 # Prove every local skill-doc delta is still present in the installed managed docs. Same failure mode as the hook
@@ -514,7 +516,7 @@ managed_doc_deltas_present() {
   done
 
   if ((${#missing[@]} > 0)); then
-    printf 'managed doc deltas: reverted by an install; restore with: git checkout <rev-before-the-install> -- .goat-flow/skill-docs/\n' >&2
+    printf 'managed doc deltas: reverted by an install; restore with: git checkout <rev-before-the-install> -- .goat-flow/skill-docs/ .goat-flow/config.yaml\n' >&2
     printf '  %s\n' "${missing[@]}" >&2
     return 1
   fi
@@ -522,9 +524,41 @@ managed_doc_deltas_present() {
   printf '%s local doc deltas present\n' "${#MANAGED_DOC_DELTAS[@]}"
 }
 
+# Run goat-flow's learning-loop gate so a dead semantic anchor, a stale generated index, or a bucket at its size limit
+# fails here. Without it the gate only ran inside manual audits, and two dead anchors sat unnoticed behind a green
+# preflight. CI installs no Node toolchain, so the check skips there rather than failing.
+learning_loop_stats_check() {
+  local package_dir
+
+  package_dir=$(version_matched_goat_flow_package)
+  # A missing or mismatched CLI cannot speak for this project's learning-loop contract.
+  if [[ -z "$package_dir" ]]; then
+    printf 'skipped (no version-matched goat-flow package in node_modules)\n'
+    return 0
+  fi
+  node "$package_dir/dist/cli/cli.js" stats "$REPO_ROOT" --check --format text
+}
+
 # Rule forms Claude never matches in permissions.deny/allow/ask. Such a rule warns at launch and enforces nothing, so
 # it reads as protection that does not exist. See ADR-023.
 INERT_PERMISSION_TOOLS='["Write","MultiEdit","NotebookEdit","Glob"]'
+
+# Print the repo-local goat-flow package directory when its version matches .goat-flow/config.yaml, or nothing. A
+# different package version would hold this project to templates and checks it never agreed to install.
+version_matched_goat_flow_package() {
+  local package_dir="$REPO_ROOT/node_modules/@blundergoat/goat-flow"
+  local config_version
+  local package_version
+
+  # CI installs no Node toolchain, so an absent package is an expected skip rather than a failure.
+  [[ -f "$package_dir/package.json" && -f "$REPO_ROOT/.goat-flow/config.yaml" ]] || return 0
+  config_version=$(awk -F'"' '/^version:/ { print $2; exit }' "$REPO_ROOT/.goat-flow/config.yaml")
+  package_version=$(jq -r '.version // empty' "$package_dir/package.json" 2>/dev/null)
+  # Only an exact match may speak for the installed setup.
+  if [[ -n "$config_version" && "$package_version" == "$config_version" ]]; then
+    printf '%s' "$package_dir"
+  fi
+}
 
 # Prove the agent settings still pair Read with Edit on every secret path and carry no inert rule form. An Edit deny
 # already refuses the Write tool, so pairing - not one entry per tool name - is the invariant worth guarding.
@@ -584,8 +618,43 @@ permission_rule_hygiene() {
     return 1
   fi
 
-  printf 'Read/Edit denies paired on %s paths; no inert rule forms\n' \
-    "$(jq -r '[(.permissions.deny // [])[] | select(startswith("Read("))] | length' "$settings_file")"
+  # goat-flow install repairs the deny rules a project already has but never adds a family its template gained, and the
+  # Bash deny hook cannot see Read/Edit tool calls (ADR-023), so a missing family is an open read path for the agent.
+  # Extra project rules are fine; only template rules absent here are reported. An explicit second argument names the
+  # template directly so the comparison can be exercised without a package install.
+  local template_file="${2:-}"
+  local package_dir
+  local missing_template_rules
+  local coverage='template coverage skipped (no version-matched goat-flow package)'
+
+  if [[ -z "$template_file" ]]; then
+    package_dir=$(version_matched_goat_flow_package)
+    [[ -n "$package_dir" ]] && template_file="$package_dir/workflow/hooks/agent-config/claude.json"
+  fi
+  # A missing template file inside a matched package means the installer layout changed and the guard is blind.
+  if [[ -n "$template_file" && ! -f "$template_file" ]]; then
+    printf 'permission rule hygiene: goat-flow Claude template %s is missing\n' "$template_file" >&2
+    return 1
+  fi
+  if [[ -n "$template_file" ]]; then
+    missing_template_rules=$(jq -r --slurpfile template "$template_file" '
+      (($template[0].permissions.deny // []) - (.permissions.deny // [])) | .[]
+    ' "$settings_file") || {
+      printf 'permission rule hygiene: could not compare %s with %s\n' "$settings_file" "$template_file" >&2
+      return 1
+    }
+    # Listing the exact rules makes the repair a copy from the template rather than a re-derivation.
+    if [[ -n "$missing_template_rules" ]]; then
+      printf 'permission rule hygiene: goat-flow template deny rules missing from %s:\n' "$settings_file" >&2
+      printf '%s\n' "$missing_template_rules" | sed 's/^/  /' >&2
+      return 1
+    fi
+    coverage='every goat-flow template deny rule present'
+  fi
+
+  printf 'Read/Edit denies paired on %s paths; no inert rule forms; %s\n' \
+    "$(jq -r '[(.permissions.deny // [])[] | select(startswith("Read("))] | length' "$settings_file")" \
+    "$coverage"
 }
 
 # Keep manifest, lockfile, tag, and changelog versions aligned for users and publishers.
@@ -923,7 +992,7 @@ focused_github_metadata_scan() {
   fi
   # Ignored or missing entries mean the exact-path config bypass did not reach every user file.
   if ! grep -q '"ignoredPaths": \[\]' "$report_file" \
-    || ! grep -q '"ignoredPathDetails": \[\]' "$report_file" \
+    || ! grep -q '"details": \[\]' "$report_file" \
     || ! grep -q '"missingPaths": \[\]' "$report_file"; then
     printf 'GitHub metadata scan reported an ignored or missing exact path\n' >&2
     return 1
@@ -958,13 +1027,13 @@ security_selector_listing_smoke() {
   cargo run --quiet -- list-rules --selector Security >"$WORK_DIR/security-rules.txt"
 }
 
-# Prove summary users receive the current schema and ranked rule data.
+# Prove summary users receive the current v3 schema and canonical score data.
 summary_json_smoke() {
   local summary_file="$WORK_DIR/summary.json"
 
   cargo run --quiet -- summary fixtures --format json --top 5 --include-ignored >"$summary_file" || return $?
-  grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*"gruff\.summary\.v2"' "$summary_file" || return $?
-  grep -q '"topRules":' "$summary_file"
+  grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*"gruff\.summary\.v3"' "$summary_file" || return $?
+  grep -q '"topOffenders":' "$summary_file"
 }
 
 # Prove a user-provided patch limits findings to the changed source region.
@@ -1204,11 +1273,12 @@ release_docs_drift_check() {
   done
   # Invalid or incomplete catalogue JSON cannot establish the built-in rule truth.
   if ! jq -e '
-    type == "array"
-    and length > 0
-    and all(.[]; (.id | type == "string") and (.pillar | type == "string"))
+    type == "object"
+    and (.rules | type == "array")
+    and (.rules | length > 0)
+    and all(.rules[]; (.id | type == "string") and (.pillar | type == "string"))
   ' "$catalogue_file" >/dev/null 2>&1; then
-    printf "docs drift: %s: catalogue JSON actual='invalid' expected='non-empty list-rules array'\n" \
+    printf "docs drift: %s: catalogue JSON actual='invalid' expected='non-empty rules array under rules'\n" \
       "$catalogue_file" >&2
     return 1
   fi
@@ -1243,14 +1313,14 @@ release_docs_drift_check() {
   assert_docs_value "$readme_doc" 'active release line' \
     "$release_line" "$expected_release_line" || drift_found=1
 
-  expected_rule_count=$(jq -r 'length' "$catalogue_file")
+  expected_rule_count=$(jq -r '.rules | length' "$catalogue_file")
   documented_rule_count=$(printf '%s\n' "$rule_catalogue_block" \
     | sed -n 's/^The catalogue contains \([0-9][0-9]*\) rules:$/\1/p')
   assert_docs_value "$readme_doc" 'built-in rule count' \
     "$documented_rule_count" "$expected_rule_count" || drift_found=1
 
   expected_pillars=$(jq -r '
-    sort_by(.pillar)
+    .rules | sort_by(.pillar)
     | group_by(.pillar)[]
     | "\(.[0].pillar)\t\(length)"
   ' "$catalogue_file")
@@ -1265,7 +1335,7 @@ release_docs_drift_check() {
     drift_found=1
   fi
 
-  registered_rule_ids=$(jq -r '.[].id' "$catalogue_file" | sort -u)
+  registered_rule_ids=$(jq -r '.rules[].id' "$catalogue_file" | sort -u)
   # Only explicitly marked examples are registry-owned; normal dotted prose stays reviewer-owned.
   while IFS= read -r rule_id; do
     # Empty extraction means this iteration has no candidate rule for the user-facing block.
@@ -1308,6 +1378,34 @@ release_docs_drift_check() {
     return 1
   fi
 
+  # Decision namespace (M09 task 16): every ADR the documentation cites must exist in this
+  # port's decisions directory, so a reader is never sent to a record another port carries. A
+  # citation that carries a slug must name that exact record, so a number borrowed from another
+  # port or from the family cannot pass against an unrelated local record with the same number.
+  local decision decision_document
+  local -a decision_documents=("$readme_doc" "$rules_doc")
+  while IFS= read -r decision_document; do
+    decision_documents+=("$decision_document")
+  done < <({ ls "$docs_root"/UPGRADING.md "$docs_root"/docs/*.md 2>/dev/null || true; } | sort -u)
+  while IFS= read -r decision; do
+    if [[ -z "$decision" ]]; then
+      continue
+    fi
+    if [[ "$decision" == ADR-[0-9][0-9][0-9]-* ]]; then
+      if [[ ! -f "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision.md" ]]; then
+        printf "docs drift: decision-namespace: %s cited but actual='absent' expected='.goat-flow/learning-loop/decisions/%s.md'\n" \
+          "$decision" \
+          "$decision" >&2
+        return 1
+      fi
+    elif ! compgen -G "$REPO_ROOT/.goat-flow/learning-loop/decisions/$decision-*.md" >/dev/null; then
+      printf "docs drift: decision-namespace: %s cited but actual='absent' expected='.goat-flow/learning-loop/decisions/%s-*.md'\n" \
+        "$decision" \
+        "$decision" >&2
+      return 1
+    fi
+  done < <({ cat "${decision_documents[@]}" 2>/dev/null | grep -oE 'ADR-[0-9]{3}(-[a-z0-9]+)*' || true; } | sort -u)
+
   # Any collected mismatch keeps preflight red after all actionable values are printed.
   if ((drift_found != 0)); then
     return 1
@@ -1327,8 +1425,8 @@ write_valid_docs_drift_fixture() {
   local rule_count
   local example_rule
 
-  rule_count=$(jq -r 'length' "$catalogue_file")
-  example_rule=$(jq -r '.[0].id' "$catalogue_file")
+  rule_count=$(jq -r '.rules | length' "$catalogue_file")
+  example_rule=$(jq -r '.rules[0].id' "$catalogue_file")
   mkdir -p "$fixture_root/docs"
 
   {
@@ -1356,7 +1454,7 @@ write_valid_docs_drift_fixture() {
     while IFS=$'\t' read -r pillar count; do
       printf "| \`%s\` | %s |\n" "$pillar" "$count"
     done < <(jq -r '
-      sort_by(.pillar)
+      .rules | sort_by(.pillar)
       | group_by(.pillar)[]
       | "\(.[0].pillar)\t\(length)"
     ' "$catalogue_file")
@@ -1484,8 +1582,8 @@ docs_drift_fixture_harness() {
   local custom_rule_count
 
   package_version=$(package_version_for_docs) || return $?
-  rule_count=$(jq -r 'length' "$catalogue_file")
-  example_rule=$(jq -r '.[0].id' "$catalogue_file")
+  rule_count=$(jq -r '.rules | length' "$catalogue_file")
+  example_rule=$(jq -r '.rules[0].id' "$catalogue_file")
   write_valid_docs_drift_fixture "$valid_root" "$catalogue_file" "$package_version"
 
   # The valid synthetic docs include an unmarked phantom phrase that must stay reviewer-owned.
@@ -1535,6 +1633,23 @@ docs_drift_fixture_harness() {
   expect_docs_drift_failure phantom-marked-rule 'marked rule ID' \
     "$phantom_rule_root" "$catalogue_file" "$package_version" || return $?
 
+  # A decision this port does not carry cannot be cited (M09 task 16, decision-namespace).
+  local stale_decision_root="$harness_root/stale-decision"
+  copy_docs_drift_fixture "$valid_root" "$stale_decision_root"
+  printf '\nSee ADR-999 for the rationale.\n' >>"$stale_decision_root/README.md"
+  expect_docs_drift_failure stale-decision 'decision-namespace' \
+    "$stale_decision_root" "$catalogue_file" "$package_version" || return $?
+
+  # A real decision number with another record's slug must not pass on the number alone.
+  local borrowed_slug_root="$harness_root/borrowed-decision-slug"
+  local first_decision
+  first_decision=$(find "$REPO_ROOT/.goat-flow/learning-loop/decisions" -maxdepth 1 -name 'ADR-[0-9][0-9][0-9]-*.md' | sort | head -n 1)
+  first_decision=$(basename "$first_decision")
+  copy_docs_drift_fixture "$valid_root" "$borrowed_slug_root"
+  printf '\nSee %s-not-this-record for the rationale.\n' "${first_decision:0:7}" >>"$borrowed_slug_root/README.md"
+  expect_docs_drift_failure borrowed-decision-slug 'decision-namespace' \
+    "$borrowed_slug_root" "$catalogue_file" "$package_version" || return $?
+
   cat >"$custom_config" <<'YAML'
 schemaVersion: gruff-rs.config.v1
 custom_rules:
@@ -1547,7 +1662,7 @@ custom_rules:
 YAML
   cargo run --quiet -- list-rules --format json --config "$custom_config" >"$custom_catalogue" \
     || return $?
-  custom_rule_count=$(jq -r 'length' "$custom_catalogue")
+  custom_rule_count=$(jq -r '.rules | length' "$custom_catalogue")
   # A valid project custom rule must not alter the no-config built-in count used by docs.
   if ((custom_rule_count != rule_count + 1)); then
     printf 'docs drift fixture: custom catalogue count actual=%s expected=%s\n' \
@@ -1566,11 +1681,15 @@ YAML
 docs_drift_check() {
   local architecture_doc="$REPO_ROOT/.goat-flow/architecture.md"
   local glossary_doc="$REPO_ROOT/.goat-flow/glossary.md"
+  local code_map_doc="$REPO_ROOT/.goat-flow/code-map.md"
   local analysis_source="$REPO_ROOT/src/analysis.rs"
+  local summary_source="$REPO_ROOT/src/machine_contract.rs"
   local catalogue_file="$WORK_DIR/list-rules.json"
   local backtick='`'
   local package_version
   local live_schema
+  local live_summary_schema
+  local expected_schema
   local orientation_doc
   local document_schema
   local cli_command
@@ -1585,29 +1704,38 @@ docs_drift_check() {
   # Missing orientation inputs mean reviewers cannot compare docs with live behavior.
   [[ -f "$architecture_doc" \
     && -f "$glossary_doc" \
-    && -f "$analysis_source" ]] || {
-    printf 'docs drift: expected architecture.md, glossary.md, and src/analysis.rs\n' >&2
+    && -f "$code_map_doc" \
+    && -f "$analysis_source" \
+    && -f "$summary_source" ]] || {
+    printf 'docs drift: expected architecture.md, glossary.md, code-map.md, src/analysis.rs, and src/machine_contract.rs\n' >&2
     return 1
   }
 
-  # Schema-version drift: the orientation docs must not name a stale
-  # gruff.analysis.v* that differs from the live schema string in the code.
+  # Schema-version drift: the orientation docs must not name a stale gruff.analysis.v* or gruff.summary.v* that
+  # differs from the live schema string in the code. Both envelopes are family-contracted, so a stale version sends
+  # a reader to the wrong contract.
   live_schema=$(grep -oE 'gruff\.analysis\.v[0-9]+' "$analysis_source" | sort -u | head -1)
+  live_summary_schema=$(grep -oE 'gruff\.summary\.v[0-9]+' "$summary_source" | sort -u | head -1)
   # An empty schema means the gate cannot tell users which report contract is current.
-  if [[ -z "$live_schema" ]]; then
-    printf 'docs drift: could not read live analysis schema from src/analysis.rs\n' >&2
+  if [[ -z "$live_schema" || -z "$live_summary_schema" ]]; then
+    printf 'docs drift: could not read live analysis and summary schemas from src/analysis.rs and src/machine_contract.rs\n' >&2
     return 1
   fi
-  # Both orientation documents must name only the report schema users receive now.
-  for orientation_doc in "$architecture_doc" "$glossary_doc"; do
+  # Every orientation document must name only the schemas users receive now.
+  for orientation_doc in "$architecture_doc" "$glossary_doc" "$code_map_doc"; do
     # Every schema mention is compared independently so the failure names its document.
     while IFS= read -r document_schema; do
+      # Each mention is judged against the live version of its own envelope.
+      case "$document_schema" in
+        gruff.summary.*) expected_schema=$live_summary_schema ;;
+        *) expected_schema=$live_schema ;;
+      esac
       # Empty grep output has no contract, while the live schema is already correct.
-      if [[ -z "$document_schema" || "$document_schema" == "$live_schema" ]]; then
+      if [[ -z "$document_schema" || "$document_schema" == "$expected_schema" ]]; then
         continue
       fi
       stale_schemas+=("${orientation_doc##*/}:$document_schema")
-    done < <(grep -oE 'gruff\.analysis\.v[0-9]+' "$orientation_doc" | sort -u)
+    done < <(grep -oE 'gruff\.(analysis|summary)\.v[0-9]+' "$orientation_doc" | sort -u)
   done
 
   # Command-surface drift: every command the binary exposes must be named in
@@ -1631,8 +1759,9 @@ docs_drift_check() {
   if ((${#stale_schemas[@]} > 0 || ${#missing_commands[@]} > 0)); then
     # Stale schema entries tell maintainers which report-contract references to update.
     if ((${#stale_schemas[@]} > 0)); then
-      printf 'docs drift: stale analysis schema (live=%s): %s\n' \
+      printf 'docs drift: stale schema (live=%s, %s): %s\n' \
         "$live_schema" \
+        "$live_summary_schema" \
         "${stale_schemas[*]}" >&2
     fi
     # Missing commands tell maintainers which user-visible mode lacks orientation.
@@ -1643,8 +1772,9 @@ docs_drift_check() {
     return 1
   fi
 
-  printf '%s + %d CLI commands match orientation docs\n' \
+  printf '%s + %s + %d CLI commands match orientation docs\n' \
     "$live_schema" \
+    "$live_summary_schema" \
     "$checked_command_count"
 }
 
@@ -1728,6 +1858,7 @@ run_preflight_suite() {
   run_preflight_check "permission rule hygiene" permission_rule_hygiene
   run_preflight_check "managed hook deltas" managed_hook_deltas_present
   run_preflight_check "managed doc deltas" managed_doc_deltas_present
+  run_preflight_check "learning-loop stats" learning_loop_stats_check
   run_preflight_check "version metadata" version_metadata_check
   run_preflight_check "dependency audit" dependency_audit_check
   run_preflight_check "action metadata" action_metadata_validation

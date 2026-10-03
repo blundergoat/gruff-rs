@@ -90,6 +90,21 @@ pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
         Confidence::Low,
         None,
         "Flags private functions with no same-file call sites.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Private functions reached only through macro expansion, generated code, or symbol-name construction that same-file lexical counting cannot see.",
+                mitigation: "Prefer an explicit call or registration that leaves a source reference; otherwise add the generated or integration host path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+            FalsePositiveShape {
+                shape: "A harness entry attribute whose last segment is neither `test` nor `bench` and does not end in `_test` or `_bench`, such as `#[my_harness::case]`.",
+                mitigation: "Add the harness host path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+            FalsePositiveShape {
+                shape: "A fn named in an attribute string other than serde's `default`, `deserialize_with`, `serialize_with`, `with` and `skip_serializing_if`, such as `#[serde(getter = \"read_inner\")]`.",
+                mitigation: "Call the fn from code the scan can see, or add the host path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "dead-code.unused-private-item-candidate",
@@ -191,6 +206,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags public Rust API items without attached outer `///` or `/** */` rustdoc.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Public items generated for a bridge or macro contract whose user-facing documentation lives on the generating interface rather than the emitted declaration.",
+                mitigation: "Attach a concise outer rustdoc comment to the emitted item when possible; otherwise exclude only the generated host path with a documented reason.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.missing-readme",
@@ -221,6 +243,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags comments whose payload looks like a disabled Rust statement or item.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Explanatory prose that is itself valid Rust, such as `// return early;` beside a loop: it begins with a keyword, ends with statement punctuation and parses.",
+                mitigation: "Rewrite the comment as intent-focused prose instead of code-shaped text, or exclude the exact reviewed path when executable-looking notation is required.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.weak-safety-rationale",
@@ -231,6 +260,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags unsafe blocks whose nearby SAFETY: rationale is too short or vague.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A short project-conventional SAFETY note relies on an invariant documented on a nearby type or constructor that the local word-count heuristic cannot connect.",
+                mitigation: "Restate the load-bearing invariant beside the unsafe block so the rationale stands alone for review.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.missing-errors-section",
@@ -271,6 +307,13 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags public functions whose rustdoc lacks per-parameter documentation.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Rustdoc explains several parameters collectively with domain terms but does not repeat each identifier as a complete word.",
+                mitigation: "Mention each parameter name in prose or an `# Arguments` section while keeping the explanation focused on meaning and constraints.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "docs.missing-return-doc",
@@ -281,6 +324,17 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags public functions returning a value whose rustdoc lacks a Returns description.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The summary implies the returned value through domain language without a `# Returns` heading, a return-value verb, an opening `Return`, `Create` or `Get` followed by the value it names, a `-> Self` signature, or a `&self` getter summary that names the fn's final word.",
+                mitigation: "State what the function returns in prose or an explicit `# Returns` section, including meaningful empty or boundary cases.",
+            },
+            FalsePositiveShape {
+                shape: "A `&self` getter whose noun-phrase summary names its value in other words (`/// Shell override passed through the CLI.` on `fn command`), or whose summary opens with the fn's own name, an action verb such as `Removes`, or a plural noun such as `Bytes remaining in the buffer.`, or opens with a verb that does not read a value and puts an article before the named value, as `Wrap the output in a table.` does on `fn table`.",
+                mitigation: "Name the returned value using the fn's final word, or open the summary with `Return`, `Returns` or `Get`.",
+            },
+        ],
+        related: &[],
     ),
 ];
 
@@ -294,6 +348,13 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags narrow blocking call patterns inside async functions.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A blocking API appears lexically inside an async function but is executed within a dedicated `spawn_blocking` closure or equivalent isolation wrapper.",
+                mitigation: "Extract the blocking operation into a synchronous helper invoked by the isolation wrapper so the execution boundary is explicit to both readers and the rule.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "concurrency.lock-across-await",
@@ -321,6 +382,13 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags unbounded channel constructors in production code.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A deliberately unbounded channel has a small, externally bounded producer set or is required by a framework API the syntax-only rule cannot model.",
+                mitigation: "Prefer a bounded channel; otherwise document the producer, lifetime, and backpressure argument and exclude only the reviewed host path.",
+            },
+        ],
+        related: &[],
     ),
 ];
 
@@ -354,5 +422,16 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags todo! and unimplemented! placeholders in non-test functions.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Test support code in its own file outside a `tests/` path or `tests.rs` file, such as `src/test_utils.rs`, whose placeholder never ships, even when its `mod` declaration is gated by `#[cfg(test)]`.",
+                mitigation: "Move it under `tests/`, or add its exact path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+            FalsePositiveShape {
+                shape: "A placeholder inside a code-generating macro other than `quote!` or `quote_spanned!`, whose tokens are emitted rather than run.",
+                mitigation: "Build the tokens with `quote!`, or add the generator's path to `paths.ignore` in `.gruff-rs.yaml`.",
+            },
+        ],
+        related: &[],
     ),
 ];

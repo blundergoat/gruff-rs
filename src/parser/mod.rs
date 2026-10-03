@@ -73,20 +73,42 @@ pub(crate) fn rust_code_reference_source(source: &str) -> String {
     let masked_source = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
     let mut reference_source = String::with_capacity(masked_source.len() + 64);
     reference_source.push_str(&masked_source);
-    append_serde_default_references(source, &mut reference_source);
+    append_serde_default_references(&source_without_comments(source), &mut reference_source);
     reference_source
 }
 
+/// Source with every comment blanked and string literals kept, so a serde attribute quoted in a comment or a
+/// doc example is not read as a reference. The two maskers keep byte offsets, so they differ only on comments.
+fn source_without_comments(source: &str) -> String {
+    let string_masked = strip_rust_string_literals(source);
+    let code_only = comments::strip_rust_comments_after_string_mask(&string_masked);
+    source
+        .char_indices()
+        .map(|(index, character)| {
+            if code_only.as_bytes().get(index) == string_masked.as_bytes().get(index) {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
+/// Append the fn names that serde attributes, including those applied through `cfg_attr`, call by string.
+/// A path whose first segment is a type or `std`, `core` or `alloc`, such as `Option::is_none`, names
+/// another crate's item and is skipped, so it cannot stand in for a same-named private fn here.
 fn append_serde_default_references(source: &str, output: &mut String) {
     static SERDE_ATTRIBUTE_REGEX: OnceLock<Regex> = OnceLock::new();
     static DEFAULT_REFERENCE_REGEX: OnceLock<Regex> = OnceLock::new();
     let serde_attribute = static_regex(
         &SERDE_ATTRIBUTE_REGEX,
-        r#"(?s)#\s*\[\s*serde\s*\((.*?)\)\s*\]"#,
+        r#"(?s)#\s*\[\s*(?:cfg_attr\s*\([^\[\]]*?,\s*)?serde\s*\((.*?)\)\s*\)?\s*\]"#,
     );
+    // Only the keys whose value names a function or module count; `#[cfg(feature = "x")]` and
+    // `#[doc = "name"]` values are prose, and the serde attribute scope above already excludes them.
     let default_reference = static_regex(
         &DEFAULT_REFERENCE_REGEX,
-        r#"\bdefault\s*=\s*"([A-Za-z_][A-Za-z0-9_:]*)""#,
+        r#"\b(?:default|deserialize_with|serialize_with|with|skip_serializing_if)\s*=\s*"([A-Za-z_][A-Za-z0-9_:]*)""#,
     );
 
     for attribute in serde_attribute.captures_iter(source) {
@@ -94,11 +116,18 @@ fn append_serde_default_references(source: &str, output: &mut String) {
             continue;
         };
         for reference in default_reference.captures_iter(body.as_str()) {
-            let Some(path) = reference.get(1) else {
+            let Some(path) = reference.get(1).map(|path| path.as_str()) else {
                 continue;
             };
-            output.push(' ');
-            output.push_str(path.as_str());
+            let first_segment = path.split("::").next().unwrap_or(path);
+            let is_foreign_item = path.contains("::")
+                && first_segment != "Self"
+                && (first_segment.starts_with(|character: char| character.is_ascii_uppercase())
+                    || ["std", "core", "alloc"].contains(&first_segment));
+            if !is_foreign_item {
+                output.push(' ');
+                output.push_str(path);
+            }
         }
     }
 }

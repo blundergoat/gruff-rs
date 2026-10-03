@@ -75,40 +75,15 @@ fn collect_input_path_sources(
     collect_directory_sources(&absolute, session, files);
 }
 
-// Explicit file args bypass the directory walk, so the config `paths.ignore`
-// check has to happen here too. A coding-agent hook passes changed files
-// directly, and config-ignored files must never produce findings however they
-// were supplied (ADR-018). Git/default ignores still do not apply to explicit
-// paths (ADR-004): an operator can inspect those by naming the file - except VCS
-// internals (`.git`/`.hg`/`.svn`), which `classify_ignored_relative` and
-// `check-ignore` treat as always blocked, so naming one explicitly stays blocked
-// here too (no reading or analysing repository internals from an untrusted tree).
+// Explicit file args bypass Git and fallback exclusions. Config policy and VCS
+// internals remain authoritative for every invocation shape.
 fn collect_input_file_source(
     session: &DiscoverySession<'_>,
     absolute: &Path,
     files: &mut Vec<SourceFile>,
 ) {
-    let relative = display_path(session.project_root, absolute);
-    if let Some(matcher) = config_ignore_match(&relative, session.config) {
-        record_ignored_path(
-            session.ignored_paths,
-            IgnoredPath {
-                path: relative,
-                source: IgnoreSource::Config,
-                pattern: Some(matcher.pattern().to_string()),
-            },
-        );
-        return;
-    }
-    if let Some(component) = vcs_internal_component(&relative) {
-        record_ignored_path(
-            session.ignored_paths,
-            IgnoredPath {
-                path: relative,
-                source: IgnoreSource::Default,
-                pattern: Some(component),
-            },
-        );
+    if let Some(ignored) = classify_explicit_file(session.project_root, absolute, session.config) {
+        record_ignored_path(session.ignored_paths, ignored);
         return;
     }
     push_source_file(
@@ -209,8 +184,12 @@ pub(crate) fn should_include_file(entry: &DirEntry, filters: &DiscoveryFilters<'
 // Shared exclusion gate for directories (descend) and files (include): classify
 // the path once, record it with its reason when ignored, otherwise keep it.
 fn should_keep_entry(entry: &DirEntry, filters: &DiscoveryFilters<'_>) -> bool {
-    let relative = display_path(filters.project_root, entry.path());
-    match classify_ignored_relative(&relative, filters.config, filters.include_ignored) {
+    match classify_ignored_path(
+        filters.project_root,
+        entry.path(),
+        filters.config,
+        filters.include_ignored,
+    ) {
         Some(ignored) => {
             record_ignored_path(filters.ignored_paths, ignored);
             false
@@ -248,7 +227,7 @@ pub(crate) fn config_ignore_match<'a>(
 ///    `--include-ignored` can override it.
 /// 2. VCS internals (`.git`/`.hg`/`.svn`) — always blocked, even with
 ///    `--include-ignored` ("VCS internals remain blocked").
-/// 3. Default/generated directories — opt-out via `--include-ignored`.
+/// 3. No-gitignore fallback directories — opt-out via `--include-ignored`.
 ///
 /// gitignore exclusions are applied by the discovery walk's `ignore`-crate
 /// matchers and are not re-derived here, keeping a single ignore engine (ADR-018).
@@ -256,6 +235,7 @@ pub(crate) fn classify_ignored_relative(
     relative: &str,
     config: &Config,
     include_ignored: bool,
+    fallback_applies: bool,
 ) -> Option<IgnoredPath> {
     if let Some(matcher) = config_ignore_match(relative, config) {
         return Some(IgnoredPath {
@@ -274,15 +254,13 @@ pub(crate) fn classify_ignored_relative(
     if include_ignored {
         return None;
     }
+    if !fallback_applies {
+        return None;
+    }
     let component = default_ignored_component(relative)?;
-    let source = if component == "generated" {
-        IgnoreSource::Generated
-    } else {
-        IgnoreSource::Default
-    };
     Some(IgnoredPath {
         path: relative.to_string(),
-        source,
+        source: IgnoreSource::Default,
         pattern: Some(component),
     })
 }
@@ -293,29 +271,65 @@ pub(crate) fn classify_ignored_path(
     config: &Config,
     include_ignored: bool,
 ) -> Option<IgnoredPath> {
-    classify_ignored_relative(&display_path(project_root, path), config, include_ignored)
+    classify_ignored_relative(
+        &display_path(project_root, path),
+        config,
+        include_ignored,
+        should_apply_fallback_at(project_root, path),
+    )
+}
+
+pub(crate) fn classify_explicit_file(
+    project_root: &Path,
+    path: &Path,
+    config: &Config,
+) -> Option<IgnoredPath> {
+    classify_ignored_relative(&display_path(project_root, path), config, true, false)
 }
 
 pub(crate) fn default_ignored_component(relative: &str) -> Option<String> {
-    let first = relative.split('/').next().unwrap_or(relative);
-    matches!(
-        first,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | ".idea"
-            | ".vscode"
-            | "build"
-            | "cache"
-            | "coverage"
-            | "dist"
-            | "generated"
-            | "node_modules"
-            | "target"
-            | "tmp"
-            | "vendor"
-    )
-    .then(|| first.to_string())
+    relative
+        .split('/')
+        .find(|component| {
+            matches!(
+                *component,
+                ".fleet"
+                    | ".idea"
+                    | ".vscode"
+                    | "build"
+                    | "coverage"
+                    | "dist"
+                    | "node_modules"
+                    | "target"
+                    | "vendor"
+            )
+        })
+        .map(str::to_string)
+}
+
+pub(crate) fn should_apply_fallback_at(project_root: &Path, path: &Path) -> bool {
+    let absolute = absolutize(project_root, path);
+    let Some(parent) = absolute.parent() else {
+        return true;
+    };
+    let Ok(relative_parent) = parent.strip_prefix(project_root) else {
+        return true;
+    };
+
+    let mut current = project_root.to_path_buf();
+    if current.join(".gitignore").is_file() {
+        return false;
+    }
+    for component in relative_parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        current.push(component);
+        if current.join(".gitignore").is_file() {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn vcs_internal_component(relative: &str) -> Option<String> {

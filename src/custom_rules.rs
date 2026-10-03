@@ -79,6 +79,9 @@ fn custom_rule_matches_path(rule: &CustomRule, file: &SourceFile) -> bool {
 }
 
 fn scoped_source<'a>(scope: CustomRuleScope, unit: &'a SourceUnit<'_>) -> Option<Cow<'a, str>> {
+    if unit.bounded_deep_scan && scope != CustomRuleScope::Text {
+        return None;
+    }
     match scope {
         CustomRuleScope::Text => Some(Cow::Borrowed(unit.source)),
         CustomRuleScope::RustCode => unit.file.is_rust.then(|| {
