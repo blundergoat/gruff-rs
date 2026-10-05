@@ -216,10 +216,6 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
         ("sensitive-data.aws-access-key", "[redacted:aws-access-key]"),
         ("sensitive-data.jwt-token", "[redacted:jwt]"),
         (
-            "sensitive-data.database-url-password",
-            "[redacted:connection-string:postgres]",
-        ),
-        (
             "sensitive-data.url-embedded-credentials",
             "[redacted:connection-string:https]",
         ),
@@ -229,7 +225,6 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
             "sensitive-data.gcp-service-account-key",
             "[redacted:gcp-service-account]",
         ),
-        ("sensitive-data.hardcoded-env-value", "[redacted]"),
         ("sensitive-data.high-entropy-string", "[redacted]"),
     ];
     let expected_identity_contract = [
@@ -250,12 +245,6 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
             "JWT-looking token detected.",
             "75601609bf186847",
             "f3d5dd1b8dcddb8e",
-        ),
-        (
-            "sensitive-data.database-url-password",
-            "Database URL appears to include a password.",
-            "ae3130b926e39ca6",
-            "00a673087ed0dfa9",
         ),
         (
             "sensitive-data.url-embedded-credentials",
@@ -280,12 +269,6 @@ pub(crate) fn identity_independent_sensitive_metadata_uses_zero_payload_markers(
             "GCP service account private key material detected.",
             "56cb1be790e202cd",
             "1fad36f5db62371a",
-        ),
-        (
-            "sensitive-data.hardcoded-env-value",
-            "Hardcoded environment-style secret assignment detected.",
-            "3ae99b4c961a64d3",
-            "9330614a150e5fa7",
         ),
         (
             "sensitive-data.high-entropy-string",

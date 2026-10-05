@@ -69,7 +69,6 @@ pub(crate) fn analyse_manifest_dependency(
 ) {
     analyse_git_dependency(manifest, dependency, config, findings);
     analyse_unpinned_git_dependency(manifest, dependency, config, findings);
-    analyse_path_dependency(manifest, dependency, config, findings);
     analyse_wildcard_dependency(manifest, dependency, config, findings);
 }
 
@@ -128,36 +127,6 @@ pub(crate) fn analyse_unpinned_git_dependency(
                     "Pin git dependencies with a reviewed `rev` commit hash.".to_string(),
                 ),
                 metadata: json!({ "section": dependency.section, "git": git }),
-            }));
-        }
-    }
-}
-
-pub(crate) fn analyse_path_dependency(
-    manifest: &ManifestSummary,
-    dependency: &DependencySummary,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    if let Some(path) = &dependency.path {
-        let rule_id = "dependency.path-source";
-        if config.is_rule_enabled(rule_id) {
-            findings.push(Finding::new(FindingDescriptor {
-                rule_id: rule_id.to_string(),
-                message: format!(
-                    "Dependency `{}` in `{}` uses a local path source.",
-                    dependency.name, dependency.section
-                ),
-                file_path: manifest.file_path.clone(),
-                line: Some(dependency.line),
-                severity: Severity::Advisory,
-                pillar: Pillar::Security,
-                confidence: Confidence::High,
-                symbol: Some(dependency.name.clone()),
-                remediation: Some(
-                    "Confirm the path dependency is intentional and available in CI.".to_string(),
-                ),
-                metadata: json!({ "section": dependency.section, "path": path }),
             }));
         }
     }

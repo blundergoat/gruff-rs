@@ -165,4 +165,6 @@ direct `github.event.*` shell interpolation, remote downloads piped into a
 shell, and third-party `uses:` dependencies without full commit SHAs. Workflow
 permissions, `pull_request_target`, and pull-request secret checks remain
 workflow-only because action metadata has no workflow trigger or permission
-contract.
+contract. `ci.github-event-shell-interpolation` has been off by default since 0.6.0,
+so it runs only when a config enables it or `--include-rule` names it, which
+also narrows the run to the named rules; a `--no-config` audit skips it.

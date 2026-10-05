@@ -390,21 +390,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
             }),
         ),
         case(
-            "sensitive-data.database-url-password",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"postgres://user:secret@db/app\"; }\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"postgres://db/app\"; }\n",
-                )
-            }),
-        ),
-        case(
             "sensitive-data.url-embedded-credentials",
             Box::new(|root| {
                 baseline_with_lib(
@@ -416,21 +401,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() { let _ = \"https://example.invalid/path\"; }\n",
-                )
-            }),
-        ),
-        case(
-            "sensitive-data.hardcoded-env-value",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD=correct-horse-battery-123\"; }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD\"; }\n",
                 )
             }),
         ),

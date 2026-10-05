@@ -11,7 +11,6 @@ mod predicates;
 mod rust_block_rules;
 mod rust_other_rules;
 mod secret_rules;
-mod test_context;
 mod text_rules;
 
 pub(crate) use helpers::*;
@@ -20,7 +19,6 @@ pub(crate) use predicates::*;
 pub(crate) use rust_block_rules::*;
 pub(crate) use rust_other_rules::*;
 pub(crate) use secret_rules::*;
-pub(crate) use test_context::*;
 pub(crate) use text_rules::*;
 
 // Shared OnceLock<Regex> statics consumed by multiple submodules. Kept
@@ -68,7 +66,6 @@ pub(crate) struct EnabledBuiltinFamilies {
     pub(crate) tls_verification: bool,
     pub(crate) weak_crypto: bool,
     pub(crate) bind_all_interfaces: bool,
-    pub(crate) path_traversal: bool,
     pub(crate) network_block_security: bool,
     pub(crate) xxe_candidate: bool,
     pub(crate) modernisation_source: bool,
@@ -125,7 +122,6 @@ impl EnabledBuiltinFamilies {
                 config,
                 &[
                     "error-handling.production-panic",
-                    "error-handling.public-unwrap",
                     "error-handling.unimplemented-placeholder",
                 ],
             ),
@@ -155,7 +151,6 @@ impl EnabledBuiltinFamilies {
             tls_verification: config.is_rule_enabled("security.tls-verification-disabled"),
             weak_crypto: config.is_rule_enabled("security.weak-crypto"),
             bind_all_interfaces: config.is_rule_enabled("security.hardcoded-bind-all-interfaces"),
-            path_traversal: config.is_rule_enabled("security.path-traversal-candidate"),
             network_block_security: any_rule_is_enabled(
                 config,
                 &[
@@ -346,9 +341,6 @@ fn analyse_rust_source_rules(
     }
     if families.bind_all_interfaces {
         analyse_hardcoded_bind_all_interfaces(unit.file, unit.source, findings);
-    }
-    if families.path_traversal {
-        analyse_path_traversal_candidate(unit.file, unit.source, findings);
     }
     if families.xxe_candidate {
         analyse_xxe_candidate(unit.file, unit.source, findings);

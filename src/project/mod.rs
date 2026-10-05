@@ -491,10 +491,9 @@ pub(crate) fn visibility_is_public(visibility: &Visibility) -> bool {
 /// Returns true only for unrestricted `pub` items. `pub(crate)`, `pub(super)`,
 /// and `pub(in path)` are reachable inside the crate but not part of the
 /// external API surface, so the reportable public-API rules
-/// (`docs.missing-public-doc`, `error-handling.public-unwrap`,
-/// `architecture.public-api-surface`) use this stricter helper. Dead-code
-/// reachability and project-model indexing keep using the lenient
-/// `visibility_is_public` above.
+/// (`docs.missing-public-doc` and `architecture.public-api-surface`) use
+/// this stricter helper. Dead-code reachability and project-model indexing
+/// keep using the lenient `visibility_is_public` above.
 pub(crate) fn visibility_is_externally_public(visibility: &Visibility) -> bool {
     matches!(visibility, Visibility::Public(_))
 }

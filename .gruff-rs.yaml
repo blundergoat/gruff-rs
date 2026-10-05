@@ -88,15 +88,9 @@ sensitiveExclusions:
   - rule: sensitive-data.aws-access-key
     path: src/tests/calibration/security_size_test_waste_cases.rs
     reason: "Positive half of the sensitive-data.aws-access-key calibration pair in `cases()`; a synthetic literal written into a temporary project to prove the rule fires, not a live credential."
-  - rule: sensitive-data.database-url-password
-    path: src/tests/calibration/security_size_test_waste_cases.rs
-    reason: "Positive half of the sensitive-data.database-url-password calibration pair in `cases()`; a synthetic connection string that proves the rule fires, not a live credential."
   - rule: sensitive-data.gcp-service-account-key
     path: src/tests/calibration/security_size_test_waste_cases.rs
     reason: "Positive half of the sensitive-data.gcp-service-account-key calibration pair in `cases()`; a synthetic service-account body that proves the rule fires, not a live credential."
-  - rule: sensitive-data.hardcoded-env-value
-    path: src/tests/calibration/security_size_test_waste_cases.rs
-    reason: "Positive half of the sensitive-data.hardcoded-env-value calibration pair in `cases()`; a synthetic KEY=value literal that proves the rule fires, not a live credential."
   - rule: sensitive-data.jwt-token
     path: src/tests/calibration/security_size_test_waste_cases.rs
     reason: "Positive half of the sensitive-data.jwt-token calibration pair in `cases()`; a synthetic token literal that proves the rule fires, not a live credential."
@@ -115,15 +109,9 @@ sensitiveExclusions:
   - rule: sensitive-data.aws-access-key
     path: src/tests/renderers/sensitive_data.rs
     reason: "`FIXTURE_AWS_KEY` feeds `identity_independent_sensitive_report`; the renderer redaction contract needs the literal in source and it is not a live credential."
-  - rule: sensitive-data.database-url-password
-    path: src/tests/renderers/sensitive_data.rs
-    reason: "`FIXTURE_DATABASE_URL` feeds `identity_independent_sensitive_report`; a synthetic connection string, not a live credential."
   - rule: sensitive-data.gcp-service-account-key
     path: src/tests/renderers/sensitive_data.rs
     reason: "Synthetic service-account bodies in `identity_independent_sensitive_report`, `sensitive_data_renderers_do_not_leak_new_secret_values`, and `reordered_service_account_key_is_still_reported`; none is a live credential."
-  - rule: sensitive-data.hardcoded-env-value
-    path: src/tests/renderers/sensitive_data.rs
-    reason: "`FIXTURE_ENV_SECRET` rendered as a KEY=value literal in `identity_independent_sensitive_report`; a synthetic placeholder, not a live credential."
   - rule: sensitive-data.high-entropy-string
     path: src/tests/renderers/sensitive_data.rs
     reason: "Synthetic entropy sentinels `FIXTURE_PRIVATE_KEY_BODY` and `FIXTURE_ENTROPY_SECRET`, plus the literal the leak assertion compares against; renderer tests need them in source and none is a live credential."
@@ -148,12 +136,6 @@ sensitiveExclusions:
   - rule: sensitive-data.api-key-pattern
     path: src/tests/scenarios/calibration_extras.rs
     reason: "Synthetic vendor-token placeholders in `calibration_api_key_pattern_detects_common_formats`; each proves one provider format is recognised and none is a live credential."
-  - rule: sensitive-data.database-url-password
-    path: src/tests/scenarios/calibration_extras.rs
-    reason: "Synthetic postgres connection strings in the hardcoded-env-value and security calibration probes; placeholder credentials, not live database passwords."
-  - rule: sensitive-data.high-entropy-string
-    path: src/tests/scenarios/calibration_extras.rs
-    reason: "Synthetic DATABASE_PASSWORD placeholders in `calibration_hardcoded_env_value_skips_test_fixture_strings` that also trip the entropy heuristic; not live credentials."
   - rule: sensitive-data.url-embedded-credentials
     path: src/tests/scenarios/calibration_extras.rs
     reason: "Synthetic URL carrying placeholder credentials in the security calibration probe; not a live credential."
@@ -185,7 +167,7 @@ rules:
     severity: advisory
   # Flags GitHub event values interpolated directly into workflow or composite-action shell steps.
   ci.github-event-shell-interpolation:
-    enabled: true
+    enabled: false
   # Flags functions with high cognitive complexity.
   complexity.cognitive:
     enabled: true
@@ -230,9 +212,6 @@ rules:
   # Flags packages missing description or license metadata.
   dependency.missing-package-metadata:
     enabled: true
-  # Flags dependencies sourced from local filesystem paths.
-  dependency.path-source:
-    enabled: true
   # Flags dependency requirements that use wildcard versions.
   dependency.wildcard-version:
     enabled: true
@@ -268,9 +247,6 @@ rules:
     enabled: true
   # Flags panic! calls in non-test functions without a local invariant comment.
   error-handling.production-panic:
-    enabled: true
-  # Flags unwrap or expect calls in public non-test functions.
-  error-handling.public-unwrap:
     enabled: true
   # Flags todo! and unimplemented! placeholders in non-test functions.
   error-handling.unimplemented-placeholder:
@@ -336,18 +312,15 @@ rules:
   # Flags non-cryptographic rand calls inside secret-like generation functions.
   security.insecure-rng-for-secrets:
     enabled: true
-  # Flags filesystem path construction where externally-derived input is joined without normalisation.
-  security.path-traversal-candidate:
-    enabled: true
   # Flags process command construction for manual argument validation.
   security.process-command:
     enabled: true
   # Flags direct dynamic SQL query arguments such as query(format!(...)).
   security.sql-dynamic-query:
-    enabled: true
+    enabled: false
   # Flags request URLs derived from local input without nearby allow-list evidence.
   security.ssrf-candidate:
-    enabled: true
+    enabled: false
   # Flags HTML/template output that includes request-derived values without local escaping evidence.
   security.template-injection-xss:
     enabled: true
@@ -372,14 +345,8 @@ rules:
   # Flags AWS access key patterns.
   sensitive-data.aws-access-key:
     enabled: true
-  # Flags database URLs that appear to include passwords.
-  sensitive-data.database-url-password:
-    enabled: true
   # Flags committed GCP service-account private key material.
   sensitive-data.gcp-service-account-key:
-    enabled: true
-  # Flags secret-like KEY=value literals committed in source or config.
-  sensitive-data.hardcoded-env-value:
     enabled: true
   # Flags long string literals that look like generated secrets.
   sensitive-data.high-entropy-string:

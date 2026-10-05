@@ -371,6 +371,8 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
         "name: ordinary-yaml\nruns:\n  steps:\n    - uses: acme/tool@v1\n    - run: echo '${{ github.event.issue.title }}'\n    - run: curl https://installer.example/tool.sh | bash\n",
     );
 
+    // Off by default (ADR-024): enable it so the count proves the rule ran.
+    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -379,7 +381,6 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
                 PathBuf::from("nested/action.yaml"),
                 PathBuf::from("nested/not-action.yml"),
             ],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
@@ -750,11 +751,11 @@ pub(crate) fn github_actions_directory_discovery_keeps_action_metadata_out_of_sc
         "name: ci\njobs:\n  test:\n    steps:\n      - run: echo '${{ github.event.issue.title }}'\n",
     );
 
+    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
@@ -784,11 +785,11 @@ pub(crate) fn github_actions_retained_pypa_action_is_a_silent_negative() {
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
     write_github_metadata(dir.path(), "action.yml", RETAINED_PYPA_ACTION);
 
+    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from("action.yml")],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },

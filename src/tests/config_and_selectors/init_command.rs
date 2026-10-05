@@ -125,18 +125,23 @@ pub(crate) fn default_config_emits_every_built_in_rule() {
 }
 
 #[test]
-/// Generated config keeps style-preference rules visible without enabling them.
+/// Generated config lists every off-by-default rule, the style preferences and the low-sample security rules
+/// (ADR-024), with `enabled: false`.
 pub(crate) fn generated_config_disables_opt_in_rules() {
     let generated_config = render_default_config(&rules::builtin_registry(), &[], &BTreeMap::new());
 
-    for (rule_id, next_rule_prefix) in [
+    for (rule_id, entry_end) in [
         ("test-quality.unwrap-in-test", "\n  test-quality."),
         ("waste.unnecessary-clone-candidate", "\n  waste."),
+        // These entries end at the next rule's `# Flags ...` description line.
+        ("ci.github-event-shell-interpolation", "\n  #"),
+        ("security.sql-dynamic-query", "\n  #"),
+        ("security.ssrf-candidate", "\n  #"),
     ] {
         let rule_entry = generated_config
             .split(&format!("  {rule_id}:"))
             .nth(1)
-            .and_then(|remaining_config| remaining_config.split(next_rule_prefix).next())
+            .and_then(|remaining_config| remaining_config.split(entry_end).next())
             .expect("opt-in rule entry exists");
         assert!(
             rule_entry.contains("    enabled: false"),

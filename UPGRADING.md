@@ -99,6 +99,10 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 
 17. **sensitive-data rules skip test, fixture and example files** — Every sensitive-data rule except `sensitive-data.pii-test-fixture` skips a file under a `test`, `tests`, `__tests__`, `spec`, `testdata`, `fixtures` or `examples` directory, or named like a test file, and publishes each skip as a counted `source: "built-in"` audit row. A real credential committed under one of those paths is no longer reported. The rest of this entry is in `CHANGELOG.md`.
 
+18. **five rules are removed** — `dependency.path-source` (right on 0 of 13 judged findings), `error-handling.public-unwrap` (14 of 44), `security.path-traversal-candidate` (1 of 20), `sensitive-data.database-url-password` (0 of 25) and `sensitive-data.hardcoded-env-value` (0 of 25) were each right less than half the time in the 0.6.0 precision measurement. Config validation rejects unknown rule ids, so a `rules:` block, `rules.select`, `exclude` or `sensitiveExclusions` entry that names one fails the run with exit `2`. A config written by an earlier `init` lists every rule and so names all five: delete their blocks, or regenerate with `gruff-rs init --force`, which rewrites the whole file. `migrate-config` keeps them, so a migrated 0.5 config still needs them deleted. A baseline row for a retired rule still loads, and its findings report as resolved. `--include-rule` and `--exclude-rule` accept a retired id silently, so a run narrowed to one with `--include-rule` runs no rule and passes; check CI commands for them. The decision is ADR-024.
+
+19. **three rules are off by default** — `ci.github-event-shell-interpolation`, `security.sql-dynamic-query` and `security.ssrf-candidate` were each wrong on all four judged findings, too few to delete on. Enable one with `rules.<id>.enabled: true`; `--include-rule` also turns one on, but narrows the run to the rules it names. A config written by an earlier `init` lists them as `enabled: true` and keeps them on. The decision is ADR-024.
+
 ## What may change in `0.5.x` with deprecation
 
 These can evolve inside `0.5.x` provided users get at least one minor release

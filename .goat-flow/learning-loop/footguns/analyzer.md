@@ -34,9 +34,9 @@ produced Rust ASTs and marks any missing selected input incomplete. Keep the
 definition with no optional sections, and an enriched definition that requires both
 `false_positives:` and `related:`. There is no macro arm for `false_positives:` alone.
 
-The trap surfaced while enriching `security.path-traversal-candidate` in
-`src/rules/idiom_security_size_test_definitions.rs` (search:
-`security.path-traversal-candidate`): adding `false_positives:` without `related:` made
+The trap surfaced while enriching `security.path-traversal-candidate`, retired in 0.6.0 (ADR-024), in
+~~`src/rules/idiom_security_size_test_definitions.rs` (search:
+`security.path-traversal-candidate`)~~ at gruff-rs `3324dd6`: adding `false_positives:` without `related:` made
 `cargo run --quiet -- list-rules security.path-traversal-candidate` fail at macro expansion with
 `unexpected end of macro invocation`.
 
@@ -95,7 +95,7 @@ Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (searc
 
 **Status:** active | **Created:** 2026-05-22 | **Evidence:** OBSERVED
 
-`src/report.rs` (search: `fn line_sensitive_fingerprint`) derives finding fingerprints from rule id, file path, line, and symbol. `sensitive-data.hardcoded-env-value` findings in `src/built_in_rules/secret_rules.rs` (search: `analyse_env_like_secrets`) currently carry `symbol: None`, so two env-style secret matches for the same file and line collapse during `sort_and_dedupe_findings`.
+`src/report.rs` (search: `fn line_sensitive_fingerprint`) derives finding fingerprints from rule id, file path, line, and symbol. Regex secret findings in `src/built_in_rules/secret_rules.rs` (search: `fn push_regex_pattern_matches`) carry `symbol: None`, so two matches of one rule on the same file and line collapse during `sort_and_dedupe_findings`: two AWS-shaped keys on one line report once (probed 2026-10-05). The first case was `sensitive-data.hardcoded-env-value`, retired in 0.6.0 (ADR-024).
 
 The non-obvious failure mode is testing multi-secret JSON on one physical line and expecting one finding per key. Unless a rule intentionally changes symbol/fingerprint identity, put multi-match regression fixtures on separate lines or assert at least one same-line finding rather than exact per-key cardinality.
 

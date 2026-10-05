@@ -41,7 +41,6 @@ pub(crate) fn analyse_error_handling_block(
 ) {
     analyse_panic_block(file, block, searchable_body, findings);
     analyse_placeholder_block(file, block, searchable_body, findings);
-    analyse_public_unwrap_block(file, block, searchable_body, findings);
 }
 
 pub(crate) fn analyse_panic_block(
@@ -160,43 +159,6 @@ fn closing_delimiter_index(bytes: &[u8], open_index: usize) -> usize {
         }
     }
     bytes.len()
-}
-
-pub(crate) fn analyse_public_unwrap_block(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    searchable_body: &str,
-    findings: &mut Vec<Finding>,
-) {
-    // A `pub fn` in an integration-test support module, such as diesel's `tests/support/` helpers, has no
-    // public API contract to map a failure into.
-    if path_is_test_infrastructure(&file.display_path) {
-        return;
-    }
-    let has_unwrap = static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(")
-        .is_match(searchable_body);
-    if block.is_externally_public && has_unwrap {
-        findings.push(block_finding_with_extras(
-            BlockFindingDescriptor {
-                rule_id: "error-handling.public-unwrap",
-                message: format!(
-                    "Public function `{}` uses unwrap()/expect() in its implementation.",
-                    block.name
-                ),
-                file,
-                block,
-                severity: Severity::Warning,
-                pillar: Pillar::Maintainability,
-            },
-            BlockFindingExtras {
-                confidence: Confidence::High,
-                remediation: Some(
-                    "Return a Result or map the failure into the public API contract.".to_string(),
-                ),
-                metadata: json!({}),
-            },
-        ));
-    }
 }
 
 pub(crate) struct PerformanceCheck {

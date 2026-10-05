@@ -199,16 +199,21 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "ci.github-event-shell-interpolation",
-        "GitHub event shell interpolation",
-        Pillar::Security,
-        RuleKind::Text,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
-    ),
+    // Off by default (ADR-024): wrong on all 4 judged findings, too few to delete on.
+    // Remove this override once a larger sample measures it right at least half the time.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "ci.github-event-shell-interpolation",
+            "GitHub event shell interpolation",
+            Pillar::Security,
+            RuleKind::Text,
+            Severity::Warning,
+            Confidence::High,
+            None,
+            "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
+        )
+    },
     rule_definition!(
         "security.github-actions-broad-permissions",
         "GitHub Actions broad permissions",
@@ -368,27 +373,32 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         ],
         related: &[],
     ),
-    rule_definition!(
-        "security.sql-dynamic-query",
-        "Dynamic SQL query argument",
-        Pillar::Security,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags SQL-shaped format! values passed directly or through one local binding to query, execute, or prepare.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "A non-SQL DSL whose formatted text has a supported SQL statement shape and reaches a method named query, execute, or prepare.",
-                mitigation: "Rename the reviewed wrapper method if possible, or add an `exclude:` entry for that path and message.",
-            },
-            FalsePositiveShape {
-                shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",
-                mitigation: "Prefer a static statement per identifier, prove the identifier comes from a literal/const allowlist in code review, or add a documented `exclude:` entry for that path.",
-            },
-        ],
-        related: &[],
-    ),
+    // Off by default (ADR-024): wrong on all 4 judged findings, too few to delete on.
+    // Remove this override once a larger sample measures it right at least half the time.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "security.sql-dynamic-query",
+            "Dynamic SQL query argument",
+            Pillar::Security,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            None,
+            "Flags SQL-shaped format! values passed directly or through one local binding to query, execute, or prepare.",
+            false_positives: &[
+                FalsePositiveShape {
+                    shape: "A non-SQL DSL whose formatted text has a supported SQL statement shape and reaches a method named query, execute, or prepare.",
+                    mitigation: "Rename the reviewed wrapper method if possible, or add an `exclude:` entry for that path and message.",
+                },
+                FalsePositiveShape {
+                    shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",
+                    mitigation: "Prefer a static statement per identifier, prove the identifier comes from a literal/const allowlist in code review, or add a documented `exclude:` entry for that path.",
+                },
+            ],
+            related: &[],
+        )
+    },
     rule_definition!(
         "security.tls-verification-disabled",
         "TLS verification disabled",
@@ -437,42 +447,26 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         ],
         related: &[],
     ),
-    rule_definition!(
-        "security.path-traversal-candidate",
-        "Path traversal candidate",
-        Pillar::Security,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::Medium,
-        None,
-        "Flags filesystem path construction where externally-derived input is joined without normalisation.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "Custom domain types that expose a `.join(...)` method unrelated to filesystem paths.",
-                mitigation: "The rule requires filesystem receiver evidence for `.join(...)` calls, such as a path-typed receiver or base-directory naming. Keep non-filesystem receivers domain-specific rather than naming them like roots or directories.",
-            },
-            FalsePositiveShape {
-                shape: "Segments sanitized before joining by removing traversal and both path separators.",
-                mitigation: "Use a visible sanitizer or local replacement chain that removes `..`, `/`, and `\\`; generic names like `key` or `value` remain reportable unless the defense is explicit.",
-            },
-        ],
-        related: &["security.process-command", "security.sql-dynamic-query"],
-    ),
-    rule_definition!(
-        "security.ssrf-candidate",
-        "SSRF candidate",
-        Pillar::Security,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::Medium,
-        None,
-        "Flags request URLs derived from local input without nearby allow-list evidence, including in executable test source.",
-        false_positives: &[FalsePositiveShape {
-            shape: "An isolated integration test intentionally sends a caller-provided URL to a local mock service.",
-            mitigation: "Parse the URL and enforce a visible loopback or host allowlist before the request; if the unsafe call is the behavior under test, add an `exclude:` entry limited to that harness path and message.",
-        }],
-        related: &[],
-    ),
+    // Off by default (ADR-024): wrong on all 4 judged findings, too few to delete on.
+    // Remove this override once a larger sample measures it right at least half the time.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "security.ssrf-candidate",
+            "SSRF candidate",
+            Pillar::Security,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::Medium,
+            None,
+            "Flags request URLs derived from local input without nearby allow-list evidence, including in executable test source.",
+            false_positives: &[FalsePositiveShape {
+                shape: "An isolated integration test intentionally sends a caller-provided URL to a local mock service.",
+                mitigation: "Parse the URL and enforce a visible loopback or host allowlist before the request; if the unsafe call is the behavior under test, add an `exclude:` entry limited to that harness path and message.",
+            }],
+            related: &[],
+        )
+    },
     rule_definition!(
         "security.template-injection-xss",
         "Template injection or XSS candidate",
@@ -557,16 +551,6 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "Flags AWS access key identifiers, both long-term keys and temporary session credentials.",
     ),
     rule_definition!(
-        "sensitive-data.database-url-password",
-        "Database URL password",
-        Pillar::SensitiveData,
-        RuleKind::Text,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags database URLs that appear to include passwords.",
-    ),
-    rule_definition!(
         "sensitive-data.gcp-service-account-key",
         "GCP service account key",
         Pillar::SensitiveData,
@@ -575,16 +559,6 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags committed GCP service-account private key material.",
-    ),
-    rule_definition!(
-        "sensitive-data.hardcoded-env-value",
-        "Hardcoded environment-style secret",
-        Pillar::SensitiveData,
-        RuleKind::Text,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags secret-like KEY=value literals committed in source or config.",
     ),
     rule_definition!(
         "sensitive-data.high-entropy-string",

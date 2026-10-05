@@ -71,7 +71,6 @@ aws-sdk-secretsmanager = "1"
         },
     )
     .expect("analysis succeeds");
-    assert_missing_rule(&report, "sensitive-data.hardcoded-env-value");
     // An unused array supplies no native parsing proof; naming it SECRET_PATTERNS cannot grant trust.
     let keys: Vec<_> = report
         .findings

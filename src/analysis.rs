@@ -1014,8 +1014,10 @@ impl AnalysisCapabilities {
     }
 }
 
+/// Private-key findings read the syntax tree to prove a header-only constant is a native format detector,
+/// so a run that selects only text rules still parses Rust when it includes this one.
 fn text_rule_needs_rust_ast(rule_id: &str) -> bool {
-    rule_id == "sensitive-data.hardcoded-env-value"
+    rule_id == "sensitive-data.private-key"
 }
 
 pub(crate) fn record_history_if_requested(

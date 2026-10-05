@@ -24,7 +24,6 @@ pub(crate) struct RegexRule {
 pub(crate) static AWS_ACCESS_KEY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PRIVATE_KEY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static JWT_TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static DATABASE_URL_PASSWORD_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static URL_EMBEDDED_CREDENTIALS_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static API_KEY_PATTERN_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PHI_SSN_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -56,12 +55,6 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
         message: "JWT-looking token detected.",
     },
     RegexRule {
-        rule_id: "sensitive-data.database-url-password",
-        regex: &DATABASE_URL_PASSWORD_REGEX,
-        pattern: r"(?:postgres|postgresql|mysql|mariadb|mongodb|redis|rediss|amqp|amqps)://[^:\s]+:[^@\s]+@",
-        message: "Database URL appears to include a password.",
-    },
-    RegexRule {
         rule_id: "sensitive-data.url-embedded-credentials",
         regex: &URL_EMBEDDED_CREDENTIALS_REGEX,
         pattern: r"https?://[^/\s:@]+:[^/\s:@]+@",
@@ -77,11 +70,6 @@ pub(crate) const SENSITIVE_PATTERNS: &[RegexRule] = &[
     },
 ];
 
-pub(crate) static ENV_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static STRUCTURED_CONFIG_LIKE_SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
-/// Whole-value dependency version grammar, shared with gruff-ts so both ports accept the same specs.
-pub(crate) static DEPENDENCY_VERSION_SPEC_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run every sensitive-data detector that applies to one discovered user file.
@@ -98,7 +86,6 @@ pub(crate) fn analyse_sensitive_data(
 
     analyse_phi_patterns(unit, findings);
     analyse_gcp_service_account_keys(unit, findings);
-    analyse_env_like_secrets(unit, findings);
     analyse_high_entropy_strings(unit, config, findings);
 }
 
@@ -279,7 +266,7 @@ fn regex_display_marker(rule_id: &str, matched_value: &str) -> String {
         // JWT findings expose only the token class.
         "sensitive-data.jwt-token" => SensitiveDisplayMarker::Jwt.render(),
         // Credential URLs expose only a scheme already accepted by their detector regex.
-        "sensitive-data.database-url-password" | "sensitive-data.url-embedded-credentials" => {
+        "sensitive-data.url-embedded-credentials" => {
             connection_string_display_marker(matched_value)
         }
         // Mixed provider tokens keep the family contract's generic zero-payload marker.
@@ -345,7 +332,7 @@ fn regex_match_should_be_suppressed(
         return true;
     }
     match rule_id {
-        "sensitive-data.database-url-password" | "sensitive-data.url-embedded-credentials" => {
+        "sensitive-data.url-embedded-credentials" => {
             credential_url_is_placeholder(capture.as_str())
         }
         // Hide the generic private-key duplicate only when the enabled GCP rule will show the user a more specific finding.
@@ -504,180 +491,6 @@ fn analyse_gcp_service_account_keys(unit: &SourceUnit<'_>, findings: &mut Vec<Fi
             metadata: json!({ "provider": "gcp", "preview": display_marker }),
         }));
     }
-}
-
-/// Detect credible environment-style assignments in Rust and supported config files.
-/// Users receive a separate fixed-marker finding for each reportable assignment.
-pub(crate) fn analyse_env_like_secrets(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
-    let test_ranges = unit
-        .rust_ast
-        .map(test_context_line_ranges)
-        .unwrap_or_default();
-    // Rust assignments and structured config use different separators and key-case conventions.
-    if unit.file.is_rust {
-        let env_regex = static_regex(
-            &ENV_LIKE_SECRET_REGEX,
-            r#"(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*=\s*["']?([^"'\s,}]+)"#,
-        );
-        push_env_like_secret_matches(unit, findings, env_regex, &test_ranges);
-    } else {
-        let config_regex = config_like_secret_regex(unit.file);
-        push_env_like_secret_matches(unit, findings, config_regex, &test_ranges);
-    }
-}
-
-/// Select the structured-config detector appropriate to the user's file type.
-/// Formats with conventional lowercase keys receive case-insensitive matching.
-fn config_like_secret_regex(file: &SourceFile) -> &'static Regex {
-    // Lowercase-key formats need case-insensitive detection so values such as `api_key:` remain visible to users.
-    if allows_lowercase_secret_keys(&file.display_path) {
-        return static_regex(
-            &STRUCTURED_CONFIG_LIKE_SECRET_REGEX,
-            r#"(?i)(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*(?:=|:)\s*["']?([^"'\s,}]+)"#,
-        );
-    }
-    static_regex(
-        &CONFIG_LIKE_SECRET_REGEX,
-        r#"(?:^|[^\w.-])(["']?(?:[A-Z][A-Z0-9_-]*?(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*|(?:SECRET|TOKEN|PASSWORD|API[_-]?KEY|DATABASE[_-]?URL)[A-Z0-9_-]*)["']?)\s*(?:=|:)\s*["']?([^"'\s,}]+)"#,
-    )
-}
-
-/// Decide whether a config filename convention permits lowercase secret-like keys.
-fn allows_lowercase_secret_keys(display_path: &str) -> bool {
-    let normalized = display_path.replace('\\', "/");
-    let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
-    // Dot-env variants conventionally contain assignment keys regardless of their extension.
-    if file_name.starts_with(".env") {
-        return true;
-    }
-    matches!(
-        std::path::Path::new(file_name)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "env" | "ini" | "json" | "properties" | "tf" | "tfvars" | "toml" | "yaml" | "yml"
-    )
-}
-
-/// Emit credible environment-style assignments with a generic zero-payload marker.
-/// Each reportable assignment remains visible for the user to remediate.
-fn push_env_like_secret_matches(
-    unit: &SourceUnit<'_>,
-    findings: &mut Vec<Finding>,
-    regex: &Regex,
-    test_ranges: &[(usize, usize)],
-) {
-    // Each assignment is independently validated against test context and placeholder shapes.
-    for captures in regex.captures_iter(unit.source) {
-        // Non-credible assignments do not become findings in the user's report.
-        let Some(line) = env_like_secret_match(unit, &captures, test_ranges) else {
-            continue;
-        };
-        findings.push(Finding::new(FindingDescriptor {
-            rule_id: "sensitive-data.hardcoded-env-value".to_string(),
-            message: "Hardcoded environment-style secret assignment detected.".to_string(),
-            file_path: unit.file.display_path.clone(),
-            line: Some(line),
-            severity: rules::builtin_severity("sensitive-data.hardcoded-env-value"),
-            pillar: Pillar::SensitiveData,
-            confidence: Confidence::High,
-            // Config-style assignments may not belong to a language symbol the UI can display.
-            symbol: None,
-            remediation: Some(
-                "Load secret values from runtime configuration instead of source.".to_string(),
-            ),
-            metadata: json!({ "preview": SensitiveDisplayMarker::Generic.render() }),
-        }));
-    }
-}
-
-/// Return the source line for one reportable environment-style assignment.
-/// Missing captures, test-only lines, and placeholders stay silent for users.
-fn env_like_secret_match(
-    unit: &SourceUnit<'_>,
-    captures: &regex::Captures<'_>,
-    test_ranges: &[(usize, usize)],
-) -> Option<usize> {
-    // An incomplete regex capture cannot support a trustworthy finding location or value shape.
-    let (Some(key), Some(value)) = (captures.get(1), captures.get(2)) else {
-        return None;
-    };
-    let line = byte_line_from_starts(unit.line_starts(), key.start());
-    // Test-context assignments and non-credible values stay silent for the source author.
-    if line_in_ranges(line, test_ranges) || !is_credible_secret_assignment_value(value.as_str()) {
-        return None;
-    }
-    Some(line)
-}
-
-/// Decide whether a captured assignment looks like a committed value rather than a safe reference or placeholder.
-fn is_credible_secret_assignment_value(value: &str) -> bool {
-    let value = clean_secret_assignment_value(value);
-    // Short values, runtime references, placeholders, documented samples and dependency versions ask no user to remove credential material.
-    if value.len() < 8
-        || is_secret_reference(value)
-        || is_secret_placeholder(value)
-        || is_documented_sample(value)
-        || is_dependency_version_spec(value)
-    {
-        return false;
-    }
-    has_secret_value_shape(value)
-}
-
-/// Keep complete dependency versions quiet, including a lockfile's gtoken entry with parenthesised peer versions.
-///
-/// A credential that merely starts like a version remains reportable; the filename grants no exception.
-/// Gruff-ts shares the whole-value grammar in sensitive-data-rules.ts at DEPENDENCY_SPEC_PATTERN.
-fn is_dependency_version_spec(value: &str) -> bool {
-    static_regex(
-        &DEPENDENCY_VERSION_SPEC_REGEX,
-        r"^[v^~><=\s]*\d+(?:\.\d+)+(?:\((?:[^()]|\([^()]*\))*\))*$",
-    )
-    .is_match(value.trim())
-}
-
-/// Remove surrounding whitespace and quotes before classifying an assignment value.
-fn clean_secret_assignment_value(value: &str) -> &str {
-    value.trim().trim_matches('"').trim_matches('\'')
-}
-
-/// Recognise runtime interpolation that resolves after the user's source is loaded.
-fn is_secret_reference(value: &str) -> bool {
-    value.starts_with("${{") || value.starts_with('$')
-}
-
-/// Recognise explicit example, redaction, and masked values that users can safely keep.
-fn is_secret_placeholder(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    // Familiar example labels tell users and the analyser that no usable credential is present.
-    if lower.starts_with("your_")
-        || lower.contains("_here")
-        || lower.contains("<your")
-        || lower.contains("placeholder")
-        || lower.contains("example")
-        || lower.contains("redacted")
-        || lower.contains("changeme")
-        || lower.starts_with("arn:aws:secretsmanager:")
-    {
-        return true;
-    }
-    value
-        .chars()
-        .all(|character| matches!(character, '*' | 'x' | 'X'))
-}
-
-/// Require both letters and digits or symbols before an assignment becomes a credible secret finding.
-fn has_secret_value_shape(value: &str) -> bool {
-    let has_letter = value
-        .chars()
-        .any(|character| character.is_ascii_alphabetic());
-    let has_digit_or_symbol = value
-        .chars()
-        .any(|character| character.is_ascii_digit() || !character.is_ascii_alphanumeric());
-    has_letter && has_digit_or_symbol
 }
 
 /// Rule id shared by the detector, its catalogue parameters and its findings.

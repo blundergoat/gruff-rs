@@ -39,9 +39,6 @@ pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
                 mitigation: "Rule already skips `unwrap_or`/`unwrap_or_default`/`unwrap_or_else`; if a real false positive lands, file with the call shape so the carve-out can be extended.",
             },
         ],
-        related: &[
-            "error-handling.public-unwrap",
-            "test-quality.unwrap-in-test",
-        ],
+        related: &["test-quality.unwrap-in-test"],
     ),
 ];

@@ -52,7 +52,7 @@ pub(crate) fn medium_and_low_confidence_rules_publish_false_positive_guidance() 
         .filter(|definition| matches!(definition.confidence, Confidence::Medium | Confidence::Low))
         .collect();
 
-    assert_eq!(heuristic_rules.len(), 30);
+    assert_eq!(heuristic_rules.len(), 29);
     for definition in heuristic_rules {
         assert!(
             !definition.false_positive_shapes.is_empty(),

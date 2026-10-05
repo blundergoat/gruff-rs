@@ -136,11 +136,14 @@ pub(crate) fn network_security_test_context_policy_matrix() {
         EXECUTABLE_RISK_SOURCE,
     );
 
+    // `security.ssrf-candidate` is off by default (ADR-024), so the matrix enables it the way a project would.
+    enable_builtin_rule(dir.path(), "security.ssrf-candidate");
+
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },

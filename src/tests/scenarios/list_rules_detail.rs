@@ -98,7 +98,7 @@ pub(crate) fn flat_catalogue_exports_only_nonempty_false_positive_guidance() {
         .iter()
         .filter(|value| matches!(value["confidence"].as_str(), Some("medium" | "low")))
         .collect();
-    assert_eq!(heuristic_rules.len(), 30);
+    assert_eq!(heuristic_rules.len(), 29);
     assert!(heuristic_rules
         .iter()
         .all(|value| value["falsePositiveShapes"]

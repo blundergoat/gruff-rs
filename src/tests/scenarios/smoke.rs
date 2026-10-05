@@ -58,7 +58,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        8
+        7
     );
     let skipped_rules: Vec<(&str, usize)> = report
         .suppressions
@@ -66,13 +66,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
         .filter(|row| row.config_key == "builtInTestPath" && row.paths == ["fixtures/sample.rs"])
         .map(|row| (row.rule.as_str(), row.suppressed))
         .collect();
-    assert_eq!(
-        skipped_rules,
-        vec![
-            ("sensitive-data.aws-access-key", 1),
-            ("sensitive-data.database-url-password", 1)
-        ]
-    );
+    assert_eq!(skipped_rules, vec![("sensitive-data.aws-access-key", 1)]);
 
     let expected = [
         (
@@ -90,14 +84,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(7),
             Some("process"),
             "44dc31cc3f2fddf6",
-        ),
-        (
-            "error-handling.public-unwrap",
-            Severity::Warning,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("process"),
-            "826987132b0ba61b",
         ),
         (
             "naming.generic-function",
@@ -335,7 +321,10 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         .expect("git exclude write");
     fs::write(
         dir.path().join(".git/hooks/pre-commit.sh"),
-        "DATABASE_PASSWORD=git-hook-secret-123\n",
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "git-hook-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("git hook write");
     fs::write(dir.path().join("nested/.gitignore"), "secret.env\n")
@@ -343,37 +332,58 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
     fs::write(
         dir.path().join("info-excluded.env"),
-        concat!("DATABASE_", "PASSWORD=info-excluded-secret-123\n"),
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "info-excluded-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("info excluded write");
     fs::write(
         dir.path().join(".agents/skills/demo.md"),
-        "# Demo\nDATABASE_PASSWORD=agents-secret-123\n",
+        concat!(
+            "# Demo\nREGISTRY_URL=https://deploy:",
+            "agents-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("agents write");
     fs::write(
         dir.path().join(".claude/settings.json"),
-        r#"{"DATABASE_PASSWORD":"claude-secret-123"}"#,
+        concat!(
+            r#"{"REGISTRY_URL":"https://deploy:"#,
+            r#"claude-secret-123@registry.acme.co"}"#
+        ),
     )
     .expect("claude write");
     fs::write(
         dir.path().join(".codex/hooks/deny-dangerous.sh"),
-        "DATABASE_PASSWORD=codex-secret-123\n",
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "codex-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("codex write");
     fs::write(
         dir.path().join(".github/workflows/ci.yml"),
-        "env:\n  DATABASE_PASSWORD=github-secret-123\n",
+        concat!(
+            "env:\n  REGISTRY_URL=https://deploy:",
+            "github-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("github write");
     fs::write(
         dir.path().join(".goat-flow/architecture.md"),
-        "# Architecture\nDATABASE_PASSWORD=goat-secret-123\n",
+        concat!(
+            "# Architecture\nREGISTRY_URL=https://deploy:",
+            "goat-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("goat write");
     fs::write(
         dir.path().join(".goat-flow/audit-cache.json"),
-        r#"{"DATABASE_PASSWORD":"ignored-goat-secret-123"}"#,
+        concat!(
+            r#"{"REGISTRY_URL":"https://deploy:"#,
+            r#"ignored-goat-secret-123@registry.acme.co"}"#
+        ),
     )
     .expect("goat cache write");
     fs::write(
@@ -383,27 +393,42 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     .expect("rust write");
     fs::write(
         dir.path().join("local/secret.env"),
-        concat!("DATABASE_", "PASSWORD=local-secret-123\n"),
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "local-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("local secret write");
     fs::write(
         dir.path().join("nested/secret.env"),
-        concat!("DATABASE_", "PASSWORD=nested-secret-123\n"),
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "nested-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("nested secret write");
     fs::write(
         dir.path().join("nested/visible.env"),
-        concat!("DATABASE_", "PASSWORD=visible-secret-123\n"),
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "visible-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("nested visible write");
     fs::write(
         dir.path().join("target/secret.env"),
-        concat!("DATABASE_", "PASSWORD=target-secret-123\n"),
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "target-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("target secret write");
     fs::write(
         dir.path().join("ignored/secret.env"),
-        concat!("DATABASE_", "PASSWORD=ignored-secret-123\n"),
+        concat!(
+            "REGISTRY_URL=https://deploy:",
+            "ignored-secret-123@registry.acme.co\n"
+        ),
     )
     .expect("ignored secret write");
     write_config(dir.path(), r#"{ "paths": { "ignore": ["ignored/**"] } }"#);
@@ -466,23 +491,23 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         .ignored_paths
         .contains(&"ignored".to_string()));
     assert!(default_scan.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == ".github/workflows/ci.yml"
     }));
     assert!(default_scan.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "target/secret.env"
     }));
     assert!(!default_scan.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "local/secret.env"
     }));
     assert!(!default_scan.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "info-excluded.env"
     }));
     assert!(!default_scan.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == ".git/hooks/pre-commit.sh"
     }));
 
@@ -498,26 +523,26 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     )
     .expect("analysis succeeds");
     assert!(include_ignored.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "local/secret.env"
     }));
     // ADR-018: config `paths.ignore` is authoritative. `--include-ignored` opts
     // into git/default ignores only and must NOT reveal config-ignored files,
     // so `ignored/**` stays excluded here even with include_ignored.
     assert!(!include_ignored.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "ignored/secret.env"
     }));
     assert!(include_ignored.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "info-excluded.env"
     }));
     assert!(include_ignored.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == "target/secret.env"
     }));
     assert!(!include_ignored.findings.iter().any(|finding| {
-        finding.rule_id == "sensitive-data.hardcoded-env-value"
+        finding.rule_id == "sensitive-data.url-embedded-credentials"
             && finding.file_path == ".git/hooks/pre-commit.sh"
     }));
 
@@ -532,7 +557,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
         },
     )
     .expect("text scan succeeds");
-    assert_has_rule(&text_scan, "sensitive-data.hardcoded-env-value");
+    assert_has_rule(&text_scan, "sensitive-data.url-embedded-credentials");
 
     let missing = run_project_analysis(
         dir.path(),

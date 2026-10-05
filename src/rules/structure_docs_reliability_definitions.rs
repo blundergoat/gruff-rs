@@ -175,16 +175,6 @@ pub(crate) const DEPENDENCY_RULES: &[RuleDefinition] = &[
         "Flags packages missing description or license metadata.",
     ),
     rule_definition!(
-        "dependency.path-source",
-        "Path dependency source",
-        Pillar::Security,
-        RuleKind::Project,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags dependencies sourced from local filesystem paths.",
-    ),
-    rule_definition!(
         "dependency.wildcard-version",
         "Wildcard dependency version",
         Pillar::Security,
@@ -402,16 +392,6 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags panic! calls in non-test functions without a local invariant comment.",
-    ),
-    rule_definition!(
-        "error-handling.public-unwrap",
-        "Public API unwrap",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags unwrap or expect calls in public non-test functions.",
     ),
     rule_definition!(
         "error-handling.unimplemented-placeholder",

@@ -119,7 +119,6 @@ pub(crate) struct DependencySummary {
     pub(crate) section: String,
     pub(crate) line: usize,
     pub(crate) requirement: Option<String>,
-    pub(crate) path: Option<String>,
     pub(crate) git: Option<String>,
     pub(crate) rev: Option<String>,
 }

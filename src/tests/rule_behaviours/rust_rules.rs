@@ -103,21 +103,7 @@ fn private_unwrap(input: &str) -> usize {
     .expect("error-handling positive analysis succeeds");
     assert_has_rule(&positive, "error-handling.production-panic");
     assert_has_rule(&positive, "error-handling.unimplemented-placeholder");
-    assert_has_rule(&positive, "error-handling.public-unwrap");
     assert_has_rule(&positive, "waste.unwrap-expect");
-
-    let public_unwrap = positive
-        .findings
-        .iter()
-        .find(|finding| finding.rule_id == "error-handling.public-unwrap")
-        .expect("public unwrap finding");
-    assert_eq!(public_unwrap.symbol.as_deref(), Some("parse_public"));
-    assert_eq!(public_unwrap.severity, Severity::Warning);
-    assert!(matches!(public_unwrap.confidence, Confidence::High));
-    assert!(public_unwrap
-        .remediation
-        .as_deref()
-        .is_some_and(|message| message.contains("Result")));
 
     let panic = positive
         .findings
@@ -180,7 +166,6 @@ mod tests {
     .expect("error-handling negative analysis succeeds");
     assert_missing_rule(&negative, "error-handling.production-panic");
     assert_missing_rule(&negative, "error-handling.unimplemented-placeholder");
-    assert_missing_rule(&negative, "error-handling.public-unwrap");
 }
 
 /// `unimplemented-placeholder` reports a placeholder a production fn would run: a helper under `tests/`, a
@@ -231,42 +216,6 @@ pub(crate) fn unimplemented_placeholder_reads_production_code_only() {
         .map(|finding| (finding.file_path.as_str(), &finding.metadata["macros"]))
         .collect();
     assert_eq!(placeholders, vec![("src/live.rs", &json!(["todo!"]))]);
-}
-
-/// `public-unwrap` asks a public fn to map a failure into its API contract. A `pub fn` in an integration-test
-/// support module has no such contract, so it stays silent there while a public `src/` fn still fires.
-#[test]
-pub(crate) fn public_unwrap_skips_test_infrastructure_paths() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        "/// Probe.\npub fn entry(input: &str) -> usize {\n    input.parse::<usize>().unwrap()\n}\n",
-    );
-    fs::create_dir_all(dir.path().join("tests/support")).expect("tests dir");
-    fs::write(
-        dir.path().join("tests/support/command.rs"),
-        "/// Probe.\npub fn run(input: &str) -> usize {\n    input.parse::<usize>().unwrap()\n}\n",
-    )
-    .expect("support write");
-
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("public-unwrap analysis succeeds");
-    let paths: Vec<&str> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "error-handling.public-unwrap")
-        .map(|finding| finding.file_path.as_str())
-        .collect();
-    assert_eq!(paths, vec!["src/lib.rs"]);
 }
 
 #[test]
@@ -728,11 +677,9 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     )]);
 
     assert_has_rule(&security_positive, "security.unsafe-block");
-    assert_has_rule(&security_positive, "sensitive-data.hardcoded-env-value");
     assert_has_rule(&security_positive, "sensitive-data.high-entropy-string");
 
     assert_missing_rule(&security_negative, "security.unsafe-block");
-    assert_missing_rule(&security_negative, "sensitive-data.hardcoded-env-value");
     assert_missing_rule(&security_negative, "sensitive-data.high-entropy-string");
 
     assert_has_rule(&test_positive, "test-quality.ignored-without-reason");
@@ -799,7 +746,6 @@ pub(crate) fn sensitive_data_rules_skip_test_paths_and_count_each_skip() {
             .collect::<BTreeSet<_>>()
     };
 
-    assert!(production_rule_ids.contains("sensitive-data.hardcoded-env-value"));
     assert!(production_rule_ids.contains("sensitive-data.high-entropy-string"));
     assert!(sensitive_rule_ids("tests/sensitive.rs").is_empty());
     assert!(sensitive_rule_ids("tests/calibration/sensitive.rs").is_empty());
