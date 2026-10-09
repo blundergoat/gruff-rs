@@ -76,8 +76,9 @@ pub(crate) fn same_line_safety_rationale_ignores_string_literals() {
 }
 
 #[test]
-/// Rationale lookup is bounded and cannot cross an intervening statement.
-pub(crate) fn nearby_safety_rationale_stops_at_code_and_sixteen_lines() {
+/// Rationale lookup reads the whole contiguous comment block above the unsafe line (FAMILY-CONTRACT section 12, search
+/// `A SAFETY rationale is found by comment block`) and cannot cross an intervening statement or blank line.
+pub(crate) fn nearby_safety_rationale_reads_the_whole_comment_block() {
     let separated_lines = [
         "// SAFETY: caller validated pointer alignment",
         "let unrelated = prepare();",
@@ -88,20 +89,22 @@ pub(crate) fn nearby_safety_rationale_stops_at_code_and_sixteen_lines() {
         "an intervening statement must end the rationale prelude"
     );
 
-    let mut within_bound = vec!["// SAFETY: caller validated pointer alignment"];
-    within_bound.extend(std::iter::repeat_n("// continued invariant", 15));
-    within_bound.push("unsafe { read_pointer() }");
+    let mut long_block = vec!["// SAFETY: caller validated pointer alignment"];
+    long_block.extend(std::iter::repeat_n("// continued invariant", 40));
+    long_block.push("unsafe { read_pointer() }");
     assert!(
-        crate::built_in_rules::find_nearby_safety_rationale(&within_bound, 16).is_some(),
-        "a marker sixteen lines before the block should be accepted"
+        crate::built_in_rules::find_nearby_safety_rationale(&long_block, 41).is_some(),
+        "a marker forty lines up in one comment block should be accepted"
     );
 
-    let mut beyond_bound = vec!["// SAFETY: caller validated pointer alignment"];
-    beyond_bound.extend(std::iter::repeat_n("// continued invariant", 16));
-    beyond_bound.push("unsafe { read_pointer() }");
+    let mut broken_block = vec!["// SAFETY: caller validated pointer alignment"];
+    broken_block.extend(std::iter::repeat_n("// continued invariant", 40));
+    broken_block.push("");
+    broken_block.push("// an unrelated note");
+    broken_block.push("unsafe { read_pointer() }");
     assert!(
-        crate::built_in_rules::find_nearby_safety_rationale(&beyond_bound, 17).is_none(),
-        "a marker beyond the bounded prelude must stay unresolved"
+        crate::built_in_rules::find_nearby_safety_rationale(&broken_block, 43).is_none(),
+        "a blank line ends the comment block, so a marker above it stays unresolved"
     );
 }
 

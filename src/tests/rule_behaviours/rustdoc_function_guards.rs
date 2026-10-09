@@ -235,6 +235,59 @@ pub fn measured() -> usize {
     assert!(finding.message.contains("has 4 lines"));
 }
 
+/// Build one function with `statements` statements between its signature and its tail: `statements + 3` code lines.
+/// Padding puts a blank, comment, doc-comment or attribute line, and once a multi-line attribute, between statements.
+fn chained_function(statements: usize, padded: bool) -> String {
+    let mut source =
+        String::from("/// Sums a chain of values.\npub fn chained(seed: i32) -> i32 {\n");
+    for index in 0..statements {
+        if padded {
+            source.push_str(match index % 4 {
+                0 => "\n",
+                1 => "    // The next step adds its index.\n",
+                2 => "    /// Step of the chain.\n",
+                _ => "    #[allow(unused_variables)]\n",
+            });
+            if index == 10 {
+                source.push_str(
+                    "    #[allow(\n        unused_variables,\n        unused_mut,\n    )]\n",
+                );
+            }
+        }
+        source.push_str(&format!("    let value_{index} = seed + {index};\n"));
+    }
+    source.push_str("    seed\n}\n");
+    source
+}
+
+/// Function length counts code lines only (FAMILY-CONTRACT section 12, search `Code lines in every line count`): the
+/// blank, comment, doc-comment and attribute lines inside a body are free, and a function long in code lines reports.
+#[test]
+pub(crate) fn function_length_counts_code_lines_only() {
+    let _guard = analysis_lock();
+    let measured = |report: &AnalysisReport| {
+        report
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "size.function-length")
+            .map(|finding| finding.metadata["measured"].clone())
+    };
+
+    let at_limit = analyse_rustdoc_source(&chained_function(47, true));
+    assert_eq!(
+        measured(&at_limit),
+        None,
+        "fifty code lines with padding between them stay at the limit"
+    );
+
+    let over_limit = analyse_rustdoc_source(&chained_function(48, true));
+    assert_eq!(
+        measured(&over_limit),
+        Some(json!(51)),
+        "fifty-one code lines report whatever padding sits between them"
+    );
+}
+
 /// Keep constructor, value-stem, and shared-receiver getter descriptions quiet for API readers.
 ///
 /// Incomplete or action prose still warns; bool results must say what true means. The fixture also checks

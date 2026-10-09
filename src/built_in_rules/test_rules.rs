@@ -250,16 +250,21 @@ pub(crate) fn analyse_test_size(
     }
 }
 
+/// Count the test's code lines from its first assertion onward, or across the whole test when it asserts nothing;
+/// blank, comment, doc-comment and attribute lines are free (FAMILY-CONTRACT section 12, search `Code lines in every
+/// line count`).
 fn long_test_effective_line_count(block: &FunctionBlock) -> usize {
     let searchable =
         strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
-    let Some(first_assertion) = searchable
+    let first_assertion = searchable
         .lines()
         .position(|line| test_assertion_regex().is_match(line))
-    else {
-        return block.line_count;
-    };
-    block.body.lines().count().saturating_sub(first_assertion)
+        .unwrap_or(0);
+    rust_code_line_flags(&block.body)
+        .into_iter()
+        .skip(first_assertion)
+        .filter(|is_code| *is_code)
+        .count()
 }
 
 pub(crate) fn analyse_test_assertions(

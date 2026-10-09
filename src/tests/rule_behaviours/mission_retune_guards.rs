@@ -83,6 +83,71 @@ pub(crate) fn long_test_ignores_setup_before_first_assertion() {
     );
 }
 
+/// Long-test counts code lines on both paths (FAMILY-CONTRACT section 12, search `Code lines in every line count`):
+/// from the first assertion when the test asserts, across the whole test when it does not. Comment, doc-comment,
+/// attribute and blank lines are free; a test long in code lines still reports.
+#[test]
+pub(crate) fn long_test_counts_code_lines_on_both_paths() {
+    let _guard = analysis_lock();
+    // `steps` statements give 2 + steps code lines on either path; padding sits between them.
+    let test_module = |steps: usize| {
+        let mut source = String::from(
+            "/// Probe.\npub fn entry() -> u32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn asserted() {\n        let mut value = entry();\n        assert!(value > 0);\n",
+        );
+        for index in 0..steps {
+            source.push_str("        // Each step adds one.\n\n");
+            source.push_str(&format!("        value += {index};\n"));
+        }
+        source.push_str("    }\n\n    /// Runs the chain without asserting.\n    #[test]\n    #[allow(unused_must_use)]\n    fn unasserted() {\n");
+        for _ in 0..steps {
+            source.push_str("        /// One more call.\n        #[allow(unused_must_use)]\n");
+            source.push_str("        std::hint::black_box(entry());\n");
+        }
+        source.push_str("    }\n}\n");
+        source
+    };
+    let long_tests = |steps: usize| {
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(dir.path(), &test_module(steps));
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let mut rows: Vec<(String, Value)> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "test-quality.long-test")
+            .map(|finding| {
+                (
+                    finding.symbol.clone().unwrap_or_default(),
+                    finding.metadata["measured"].clone(),
+                )
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
+    };
+    assert_eq!(
+        long_tests(118),
+        vec![],
+        "120 code lines on either path stay at the limit"
+    );
+    assert_eq!(
+        long_tests(119),
+        vec![
+            ("asserted".to_string(), json!(121)),
+            ("unasserted".to_string(), json!(121)),
+        ],
+        "121 code lines report on both paths"
+    );
+}
+
 #[test]
 pub(crate) fn tls_true_binding_flags_within_one_function() {
     let _guard = analysis_lock();

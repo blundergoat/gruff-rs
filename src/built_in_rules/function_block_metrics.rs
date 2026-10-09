@@ -86,7 +86,10 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         param_count: parts.param_count,
         start_line: start + 1,
         line_count: end.saturating_sub(start) + 1,
-        executable_line_count: end.saturating_sub(function_index) + 1,
+        executable_line_count: declaration_code_line_count(
+            &body,
+            function_index.saturating_sub(start),
+        ),
         body,
         rustdoc: source_context.rustdoc,
         is_externally_public: is_externally_public(parts.visibility),
@@ -99,6 +102,16 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         ignore_without_reason: has_ignore_without_reason(parts.attrs),
         body_is_declarative_literal: is_declarative_literal_body(parts.block),
     }
+}
+
+/// Count the code lines from the declaration line to the end of the body (FAMILY-CONTRACT section 12, search `Code
+/// lines in every line count`). The body slice starts at the attached docs and attributes, so it is lexically whole.
+fn declaration_code_line_count(body: &str, declaration_offset: usize) -> usize {
+    rust_code_line_flags(body)
+        .into_iter()
+        .skip(declaration_offset)
+        .filter(|is_code| *is_code)
+        .count()
 }
 
 /// True iff the block is exactly one trailing expression whose shape is a

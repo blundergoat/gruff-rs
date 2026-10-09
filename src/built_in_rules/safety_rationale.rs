@@ -1,20 +1,20 @@
 //! Safety-rationale helpers preserve nearby comments for unsafe-block rules.
-//! The line analyzer resolves case-insensitive markers through a bounded comment
+//! The line analyzer resolves case-insensitive markers through the contiguous comment
 //! prelude, then decides whether the combined rationale explains enough.
 
 const SAFETY_MARKER: &[u8] = b"SAFETY:";
-const SAFETY_RATIONALE_LOOKBACK_LINES: usize = 16;
 /// Lines read inside an opened `unsafe {` block for a rationale written as its first comment.
 const SAFETY_RATIONALE_LOOKAHEAD_LINES: usize = 2;
 
-/// Return the nearest rationale in the bounded comment prelude before an unsafe line.
+/// Return the nearest rationale in the comment prelude before an unsafe line. The prelude ends at the
+/// first line that is not comment, attribute or lead-in code, not at a line count (FAMILY-CONTRACT section 12,
+/// search `A SAFETY rationale is found by comment block`), so a longer explanation is never read as a missing one.
 /// `None` means no marker is connected to the block without crossing executable code.
 pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
-    let first_candidate = line_index.saturating_sub(SAFETY_RATIONALE_LOOKBACK_LINES);
     let mut prelude = SafetyPreludeScanner::default();
 
     // Walk toward the marker so continuation comments can be restored to source order.
-    for candidate_index in (first_candidate..=line_index).rev() {
+    for candidate_index in (0..=line_index).rev() {
         let line = lines[candidate_index];
 
         // The string masker keeps a same-line literal from posing as a rationale comment.
@@ -66,14 +66,14 @@ fn forward_safety_rationale(lines: &[&str], line_index: usize) -> Option<String>
 }
 
 /// Append the line comments directly under a marker, in source order, so a rationale written below an empty
-/// `// SAFETY:` line is read whole. The run ends at the first line that is not a line comment, at another
-/// marker, or after the lookback bound.
+/// `// SAFETY:` line is read whole. The run ends at the first line that is not a line comment, or at another
+/// marker.
 fn with_following_comment_lines(marker_text: &str, following: &[&str]) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if !marker_text.is_empty() {
         parts.push(marker_text);
     }
-    for line in following.iter().take(SAFETY_RATIONALE_LOOKBACK_LINES) {
+    for line in following {
         let trimmed = line.trim_start();
         if !trimmed.starts_with("//") || safety_marker_end(trimmed).is_some() {
             break;

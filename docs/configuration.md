@@ -41,8 +41,9 @@ deepScanBudget:
 ```
 
 Crossing either limit degrades that Rust file instead of excluding it. The file
-still counts as analysed, and raw text-level size and sensitive-data checks still
-run. Masking, block parsing, AST walking, Rust-code/comment custom rules, and
+still counts as analysed, and text-level size and sensitive-data checks still
+run; `size.file-length` counts only its code lines, leaving out blank, comment,
+doc-comment and attribute lines. Masking, block parsing, AST walking, Rust-code/comment custom rules, and
 other deep script work do not. Non-code text such as `.env`, JSON, YAML, TOML,
 and `.conf` never enters this budget and remains fully scanned.
 
