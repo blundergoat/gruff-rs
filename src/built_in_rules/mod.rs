@@ -6,6 +6,7 @@
 pub(crate) use super::*;
 
 mod helpers;
+mod limit_band;
 mod naming_rules;
 mod predicates;
 mod rust_block_rules;
@@ -14,6 +15,7 @@ mod secret_rules;
 mod text_rules;
 
 pub(crate) use helpers::*;
+pub(crate) use limit_band::*;
 pub(crate) use naming_rules::*;
 pub(crate) use predicates::*;
 pub(crate) use rust_block_rules::*;
@@ -30,7 +32,6 @@ pub(crate) static PLACEHOLDER_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNWRAP_EXPECT_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static CYCLOMATIC_COMPLEXITY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -305,6 +306,12 @@ fn analyse_block_dependent_rust_rules(
     if families.has_block_rules() {
         analyse_blocks(unit, blocks, config, families, findings);
     }
+    if families.block_size || families.block_complexity {
+        let trait_defaults = rust_trait_default_blocks(ast, unit.source);
+        analyse_measure_only_blocks(unit.file, &trait_defaults, config, families, findings);
+        let const_closures = rust_const_closure_blocks(ast, unit.source);
+        analyse_measure_only_blocks(unit.file, &const_closures, config, families, findings);
+    }
     if families.network_block_security {
         analyse_ssrf_candidate(unit.file, blocks, findings);
         analyse_unsafe_deserialization(unit.file, blocks, findings);
@@ -372,6 +379,9 @@ fn analyse_rust_ast_rules(
 }
 
 fn apply_configured_severity(mut finding: Finding, config: &Config) -> Finding {
-    finding.severity = config.severity(&finding.rule_id, finding.severity);
+    // A lower-band size or complexity finding is advisory whatever severity the user configured for its rule.
+    if !is_lower_band(&finding) {
+        finding.severity = config.severity(&finding.rule_id, finding.severity);
+    }
     finding
 }

@@ -178,6 +178,7 @@ fn write_calibration_config(root: &Path, rule_id: &str) {
 
 mod cases_pillar_expansion;
 mod documentation_error_idiom_cases;
+mod limit_band_guards;
 mod security_size_test_waste_cases;
 mod structural_project_cases;
 

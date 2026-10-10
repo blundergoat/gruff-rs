@@ -152,7 +152,7 @@ pub(crate) fn analyse_dead_function(
             confidence: Confidence::Low,
             symbol: Some(name),
             remediation: Some(
-                "Remove the function or add a real call site. If the function is reachable only via macro-generated code or a build-script-produced file the discovery layer did not see, add that host path to `paths.ignore` in `.gruff-rs.yaml`."
+                "Remove the function or add a real call site. If only macro-generated or build-script-generated code calls it, make that call visible in source or name the generated caller in the function's documentation."
                     .to_string(),
             ),
             metadata: json!({}),

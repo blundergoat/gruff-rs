@@ -26,8 +26,9 @@ pub(crate) fn analyse_text_rules(
 
 /// Report a source file whose substantive review surface exceeds the configured line threshold.
 fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Vec<Finding>) {
-    // Exempt formats have separate generated, prose, or declarative review contracts.
-    if file_length_is_exempt(&unit.file.display_path) {
+    // File length measures Rust source only; JSON, YAML, TOML and other text files are data, not logic
+    // (FAMILY-CONTRACT section 12, search `Size and complexity findings in two bands`).
+    if !unit.file.is_rust || file_length_is_exempt(&unit.file.display_path) {
         return;
     }
     // A Rust file counts code lines on the bounded path too (FAMILY-CONTRACT section 12, search `Code lines in
@@ -53,7 +54,7 @@ fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Ve
                 .map(|module| module.code_lines)
                 .sum::<usize>());
         }
-        findings.push(finding_with_metadata(
+        let mut finding = finding_with_metadata(
             SimpleFindingDescriptor {
                 rule_id,
                 message: format!(
@@ -65,13 +66,22 @@ fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Ve
                 pillar: Pillar::Size,
             },
             metadata,
-        ));
+        );
+        apply_limit_band(
+            &mut finding,
+            line_count,
+            config.threshold(rule_id),
+            LOWER_BAND_FILE,
+            SPLIT_FILE,
+        );
+        findings.push(finding);
     }
     push_oversized_test_module_findings(unit, config, &test_modules, findings);
 }
 
 /// Report each inline test module over the file-length threshold on its own `mod` line, so an oversized test module
-/// stays visible; it is advisory unless the user configured the rule's severity.
+/// stays visible; it is advisory unless the user configured the rule's severity. It carries no band key, and its
+/// `testModule` key names the module, so a reader can tell it from the file's production finding without the message.
 fn push_oversized_test_module_findings(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -84,6 +94,8 @@ fn push_oversized_test_module_findings(
         .iter()
         .filter(|module| module.code_lines > threshold)
     {
+        let mut metadata = threshold_metadata(module.code_lines, threshold, "lines");
+        metadata["testModule"] = json!(module.name);
         findings.push(finding_with_metadata(
             SimpleFindingDescriptor {
                 rule_id,
@@ -96,7 +108,7 @@ fn push_oversized_test_module_findings(
                 severity: config.severity(rule_id, Severity::Advisory),
                 pillar: Pillar::Size,
             },
-            threshold_metadata(module.code_lines, threshold, "lines"),
+            metadata,
         ));
     }
 }

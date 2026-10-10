@@ -187,8 +187,13 @@ pub(crate) fn file_length_counts_the_inline_test_module_apart() {
     );
     assert_eq!(
         file_length_rows(&production_and_test_module(1000, Some(400))),
-        vec![(Some(1), Severity::Error, json!(1002), json!(405))],
-        "1002 production lines report at line 1 with the test module's 405 lines in the metadata"
+        vec![(Some(1), Severity::Advisory, json!(1002), json!(405))],
+        "1002 production lines report at line 1, as a lower-band notice, with the test module's 405 lines in the metadata"
+    );
+    assert_eq!(
+        file_length_rows(&production_and_test_module(1600, Some(400))),
+        vec![(Some(1), Severity::Error, json!(1602), json!(405))],
+        "1602 production lines are past one and a half times the limit, so they report at the rule's severity"
     );
     assert_eq!(
         file_length_rows(&production_and_test_module(10, Some(996))),
@@ -216,8 +221,8 @@ pub(crate) fn file_length_leaves_attribute_lines_out() {
     );
     assert_eq!(
         file_length_rows(&with_attributes(999)),
-        vec![(Some(1), Severity::Error, json!(1001), Value::Null)],
-        "1001 code lines report whatever attributes sit above them"
+        vec![(Some(1), Severity::Advisory, json!(1001), Value::Null)],
+        "1001 code lines report, as a lower-band notice, whatever attributes sit above them"
     );
 }
 

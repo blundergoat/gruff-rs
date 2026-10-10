@@ -195,11 +195,6 @@ pub(crate) fn block_finding_with_extras(
     })
 }
 
-/// Count pattern matches used to measure a rule threshold in one source slice.
-pub(crate) fn count_regex(source: &str, pattern: &Regex) -> usize {
-    pattern.find_iter(source).count()
-}
-
 /// Find the first one-based line containing text for a user-visible location.
 /// `None` means the requested text does not occur in the scanned source.
 #[allow(dead_code)]

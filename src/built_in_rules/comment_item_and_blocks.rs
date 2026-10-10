@@ -489,6 +489,119 @@ pub(crate) fn push_missing_public_item_doc(
     }));
 }
 
+/// Collect trait methods that carry a default body, for the size and complexity rules only.
+pub(crate) fn rust_trait_default_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    for item in &ast.items {
+        collect_trait_default_blocks(item, &lines, false, &mut blocks);
+    }
+    blocks
+}
+
+/// Walk traits and inline modules for default method bodies, carrying a `#[cfg(test)]` module's test context down.
+fn collect_trait_default_blocks(
+    item: &Item,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    match item {
+        Item::Trait(item_trait) => {
+            for trait_item in &item_trait.items {
+                // A required method has no body to measure.
+                if let syn::TraitItem::Fn(syn::TraitItemFn {
+                    attrs,
+                    sig,
+                    default: Some(body),
+                    ..
+                }) = trait_item
+                {
+                    blocks.push(function_block_from_parts(FunctionBlockParts {
+                        lines,
+                        name: sig.ident.to_string(),
+                        param_count: count_params(&sig.inputs),
+                        visibility: &item_trait.vis,
+                        attrs,
+                        test_context,
+                        is_async: sig.asyncness.is_some(),
+                        returns_bool: is_bool_return_type(&sig.output),
+                        is_trait_method: true,
+                        returns_result: is_result_return_type(&sig.output),
+                        name_start: sig.ident.span().start(),
+                        block_end: body.span().end(),
+                        block: body,
+                    }));
+                }
+            }
+        }
+        Item::Mod(item_mod) => {
+            if let Some((_, items)) = &item_mod.content {
+                let nested_test_context = test_context || is_test_module(item_mod);
+                for nested in items {
+                    collect_trait_default_blocks(nested, lines, nested_test_context, blocks);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect closures assigned to `const` items, such as `const AREA: fn() -> u32 = || { ... };`, which the size and
+/// complexity rules measure like functions (FAMILY-CONTRACT section 12, search `closure assigned to a const item`).
+pub(crate) fn rust_const_closure_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    for item in &ast.items {
+        collect_const_closure_blocks(item, &lines, false, &mut blocks);
+    }
+    blocks
+}
+
+/// Walk `const` items and inline modules for closures with a block body, carrying a `#[cfg(test)]` module's test
+/// context down; an expression-bodied closure has no body block to measure.
+fn collect_const_closure_blocks(
+    item: &Item,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    match item {
+        Item::Const(item_const) => {
+            let syn::Expr::Closure(closure) = item_const.expr.as_ref() else {
+                return;
+            };
+            let syn::Expr::Block(body) = closure.body.as_ref() else {
+                return;
+            };
+            blocks.push(function_block_from_parts(FunctionBlockParts {
+                lines,
+                name: item_const.ident.to_string(),
+                param_count: closure.inputs.len(),
+                visibility: &item_const.vis,
+                attrs: &item_const.attrs,
+                test_context,
+                is_async: closure.asyncness.is_some(),
+                returns_bool: is_bool_return_type(&closure.output),
+                is_trait_method: false,
+                returns_result: is_result_return_type(&closure.output),
+                name_start: item_const.ident.span().start(),
+                block_end: body.span().end(),
+                block: &body.block,
+            }));
+        }
+        Item::Mod(item_mod) => {
+            if let Some((_, items)) = &item_mod.content {
+                let nested_test_context = test_context || is_test_module(item_mod);
+                for nested in items {
+                    collect_const_closure_blocks(nested, lines, nested_test_context, blocks);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();

@@ -2,6 +2,22 @@
 
 ## v0.6.0 - Unreleased
 
+- **BREAKING: `complexity.cyclomatic` is off by default** - At one and a half times its limit or more it was worth acting on 23 times
+  in 45, under the 0.60 floor, and no bounded repair fits its not-worth findings. `complexity.cognitive` covers the same
+  functions and stays on. Enable it with `rules.complexity.cyclomatic.enabled: true`; a config that already sets it keeps it on.
+- **Early-exit guards and match arms score as simpler paths** - `complexity.cognitive` charges no nesting penalty for a guard
+  (an `if` with no `else` whose body is one `return`, `break`, `continue` or `panic!`) and keeps a match arm's body at the match's
+  level; the match still counts toward `complexity.nesting-depth`.
+
+- **Size and complexity findings report in two bands** - A `size.*` or `complexity.*` finding under one and a half times its limit is an advisory notice not to add to the unit, with `limitBand: "lower"`; at that ratio or above it keeps its severity and the advice to split or simplify, with `limitBand: "upper"`.
+  The message does not change between bands. The inline test-module file-length finding carries `testModule` instead of a band.
+- **Complexity is counted on the syntax tree** - A `match` counts once however many arms it has, `?` still adds nothing, and closure bars and struct-literal braces no longer count as decisions or nesting.
+  Trait methods with a default body and closures assigned to `const` items are now measured by the function-length,
+  parameter-count and complexity rules.
+- **File length reads Rust source only** - `size.file-length` no longer reports JSON, YAML, TOML or other text files.
+- **Advice no longer offers ignoring a path** - Eight remediations, including `security.process-command` and `dead-code.unused-private-function`, drop the `paths.ignore` hint; each rule's catalogue mitigation still documents its exclusion.
+  The `complexity.cognitive` mitigation now suggests one flat `match` on a tuple instead of raising the threshold or extracting per-arm helpers.
+
 - Private-key warnings retain bare headers and truncated or escaped key material; enabled service-account warnings still replace generic duplicates.
 
 - Workflow secret warnings skip jobs or steps whose own event guard proves them unreachable for every detected PR event.

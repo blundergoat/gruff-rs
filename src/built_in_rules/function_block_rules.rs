@@ -23,10 +23,7 @@ pub(crate) fn analyse_placeholder_block_name(
             },
             BlockFindingExtras {
                 confidence: Confidence::Medium,
-                remediation: Some(
-                    "Rename the function to describe its domain role. If the placeholder is intentional (test fixture, generated stub), add the host path to `paths.ignore` in `.gruff-rs.yaml`."
-                        .to_string(),
-                ),
+                remediation: Some("Rename the function to describe its domain role.".to_string()),
                 metadata: json!({}),
             },
         ));

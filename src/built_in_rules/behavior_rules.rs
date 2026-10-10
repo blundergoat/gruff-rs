@@ -617,7 +617,7 @@ fn insecure_rng_for_secrets_finding(
         confidence: Confidence::Medium,
         symbol: Some(block.name.clone()),
         remediation: Some(
-            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords. If the call is in a test fixture that intentionally uses a seeded RNG, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords."
                 .to_string(),
         ),
         metadata: json!({ "function": block.name, "call": format!("rand::{call}") }),
@@ -705,7 +705,7 @@ impl WeakCryptoReporter<'_, '_> {
             confidence: Confidence::Medium,
             symbol: Some(primitive.to_string()),
             remediation: Some(
-                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses. If the legacy primitive is required for interoperability with an existing artefact, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses. If interoperability with an existing artefact requires the legacy primitive, keep it out of security decisions and say why in a comment."
                     .to_string(),
             ),
             metadata: json!({ "primitive": primitive }),
@@ -877,7 +877,7 @@ fn push_process_command_finding(
         confidence: Confidence::High,
         symbol: None,
         remediation: Some(
-            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs. If the command construction is in a test fixture or build script, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs."
                 .to_string(),
         ),
         metadata: json!({ "riskSignals": risk_signals }),

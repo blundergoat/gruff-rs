@@ -237,8 +237,8 @@ Regression coverage: this footgun re-fires every time the catalogue grows and a 
 **hallucination-risk:** high
 **Symptoms:** Control-flow words inside Rust comments inflated cyclomatic and NPath measurements, so well-documented functions could receive complexity findings for decisions they did not contain.
 **Why it happened:** `analyse_block_complexity` originally consumed the string-masked `searchable_body` without removing comments. The stale entry also pointed at `.goat-flow/decisions/ADR-015-mission-agent-code-governance.md` instead of the live `.goat-flow/learning-loop/decisions/ADR-015-mission-agent-code-governance.md` decision.
-**Resolution:** `src/built_in_rules/blocks.rs` (search: `let code_only_body = strip_rust_comments_after_string_mask(searchable_body);`) now comment-masks the body before cyclomatic, nesting, and cognitive analysis. `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `complexity_rules_ignore_comment_keywords_and_question_marks`) proves comment-only keywords stay silent. `complexity.npath` was separately removed under ADR-016.
-**Prevention:** Keep every complexity metric on `code_only_body`, and retain the comment-keyword regression whenever the scanner or Rust masking pipeline changes.
+**Resolution:** `src/built_in_rules/syntax_complexity.rs` (search: `pub(crate) fn syntax_complexity`) counts cyclomatic, nesting, and cognitive complexity on the parsed `syn` block, which holds no comments; this replaced the comment-masked text body on 2026-10-09 (precision-floor M14). `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `complexity_rules_ignore_comment_keywords_and_question_marks`) proves comment-only keywords stay silent. `complexity.npath` was separately removed under ADR-016.
+**Prevention:** Keep every complexity metric on the syntax tree, and retain the comment-keyword regression whenever the complexity visitor changes.
 
 ## Footgun: Report Exclusions Are Not Discovery Ignores
 

@@ -992,8 +992,8 @@ pub(crate) fn file_length_no_config_gate_matches_ratified_bar() {
         .collect();
     assert_eq!(
         file_length,
-        vec![("src/over_bar.rs", Severity::Error)],
-        "only the file past the ratified bar should flag, at error severity",
+        vec![("src/over_bar.rs", Severity::Advisory)],
+        "only the file past the ratified bar should flag; just past it, the finding is a lower-band notice",
     );
 }
 

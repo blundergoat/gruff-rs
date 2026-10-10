@@ -25,6 +25,8 @@ pub(crate) struct FunctionBlock {
     pub(crate) returns_result: bool,
     pub(crate) ignore_without_reason: bool,
     pub(crate) body_is_declarative_literal: bool,
+    /// Cyclomatic, nesting and cognitive complexity counted on the parsed body.
+    pub(crate) complexity: SyntaxComplexity,
 }
 
 impl FunctionBlock {
@@ -101,6 +103,7 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         returns_result: parts.returns_result,
         ignore_without_reason: has_ignore_without_reason(parts.attrs),
         body_is_declarative_literal: is_declarative_literal_body(parts.block),
+        complexity: syntax_complexity(parts.block),
     }
 }
 
@@ -195,22 +198,6 @@ pub(crate) fn is_result_return_type(output: &ReturnType) -> bool {
         .last()
         .map(|segment| segment.ident == "Result")
         .unwrap_or(false)
-}
-
-pub(crate) fn max_nesting_depth(source: &str) -> usize {
-    let mut depth = 0usize;
-    let mut max_depth = 0usize;
-    for character in source.chars() {
-        match character {
-            '{' => {
-                depth += 1;
-                max_depth = max_depth.max(depth);
-            }
-            '}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    max_depth.saturating_sub(1)
 }
 
 /// Counts occurrences of `pattern` that appear inside a loop body in

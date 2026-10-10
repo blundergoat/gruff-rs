@@ -94,8 +94,9 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "c3694de68d5ae921",
         ),
         (
+            // Eight parameters against the limit of 7 sit under one and a half times it: a lower-band notice.
             "size.parameter-count",
-            Severity::Warning,
+            Severity::Advisory,
             "fixtures/sample.rs",
             Some(7),
             Some("process"),

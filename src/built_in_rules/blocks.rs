@@ -58,7 +58,7 @@ fn analyse_block_metric_rules(
         analyse_block_size(file, block, config, findings);
     }
     if families.block_complexity {
-        analyse_block_complexity(file, block, searchable_body, config, findings);
+        analyse_block_complexity(file, block, config, findings);
     }
     if families.block_performance {
         analyse_performance_block(file, block, searchable_body, findings);
@@ -113,9 +113,9 @@ pub(crate) fn analyse_block_size(
 ) {
     let rule_id = "size.function-length";
     let threshold = config.threshold(rule_id) as usize;
-    // Only executable source above the threshold asks the user to split a function.
+    // Only executable source above the threshold reports; its band decides whether the advice is not to grow or to split.
     if block.executable_line_count > threshold && !block.body_is_declarative_literal {
-        findings.push(block_finding_with_metadata(
+        let mut finding = block_finding_with_metadata(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!(
@@ -128,15 +128,32 @@ pub(crate) fn analyse_block_size(
                 pillar: Pillar::Size,
             },
             threshold_metadata(block.executable_line_count, threshold, "lines"),
-        ));
+        );
+        apply_limit_band(
+            &mut finding,
+            block.executable_line_count,
+            config.threshold(rule_id),
+            LOWER_BAND_FUNCTION,
+            SPLIT_FUNCTION,
+        );
+        findings.push(finding);
     }
+    analyse_parameter_count(file, block, config, findings);
+}
 
+/// Report a function that declares more parameters than the configured limit.
+fn analyse_parameter_count(
+    file: &SourceFile,
+    block: &FunctionBlock,
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
     let params = block.param_count;
     let rule_id = "size.parameter-count";
     let threshold = config.threshold(rule_id) as usize;
     // Functions over the parameter limit ask the user for a clearer input contract.
     if params > threshold {
-        findings.push(block_finding_with_metadata(
+        let mut finding = block_finding_with_metadata(
             BlockFindingDescriptor {
                 rule_id,
                 message: format!("Function `{}` declares {params} parameters.", block.name),
@@ -146,39 +163,57 @@ pub(crate) fn analyse_block_size(
                 pillar: Pillar::Size,
             },
             threshold_metadata(params, threshold, "parameters"),
-        ));
+        );
+        apply_limit_band(
+            &mut finding,
+            params,
+            config.threshold(rule_id),
+            LOWER_BAND_PARAMETER,
+            GROUP_PARAMETERS,
+        );
+        findings.push(finding);
     }
 }
 
+/// Report cyclomatic, nesting and cognitive complexity for one function, each counted on its parsed body.
 pub(crate) fn analyse_block_complexity(
     file: &SourceFile,
     block: &FunctionBlock,
-    searchable_body: &str,
     config: &Config,
     findings: &mut Vec<Finding>,
-) -> usize {
-    let code_only_body = strip_rust_comments_after_string_mask(searchable_body);
-    let cyclomatic = count_regex(
-        &code_only_body,
-        static_regex(
-            &CYCLOMATIC_COMPLEXITY_REGEX,
-            r"\b(if|else if|match|for|while|loop)\b|&&|\|\|",
-        ),
-    ) + 1;
-    analyse_cyclomatic_complexity(file, block, cyclomatic, config, findings);
-    let nesting = max_nesting_depth(&code_only_body);
-    analyse_nesting_depth(file, block, nesting, config, findings);
+) {
+    let measures = block.complexity;
+    analyse_cyclomatic_complexity(file, block, measures.cyclomatic, config, findings);
+    analyse_nesting_depth(file, block, measures.nesting, config, findings);
     analyse_cognitive_complexity(
         BlockAnalysisContext {
             file,
             block,
             config,
         },
-        cyclomatic,
-        nesting,
+        measures,
         findings,
     );
-    cyclomatic
+}
+
+/// Measure trait default methods and closures assigned to `const` items for size and complexity only: each body is code
+/// a reader reviews like any function, while the documentation and behavior rules read these items through their own
+/// paths.
+pub(crate) fn analyse_measure_only_blocks(
+    file: &SourceFile,
+    blocks: &[FunctionBlock],
+    config: &Config,
+    families: EnabledBuiltinFamilies,
+    findings: &mut Vec<Finding>,
+) {
+    for block in blocks.iter().filter(|block| !block.is_test_context()) {
+        if families.block_size {
+            analyse_block_size(file, block, config, findings);
+        }
+        if families.block_complexity {
+            analyse_block_complexity(file, block, config, findings);
+        }
+    }
 }
 
 pub(crate) fn analyse_cyclomatic_complexity(
@@ -193,7 +228,7 @@ pub(crate) fn analyse_cyclomatic_complexity(
     if cyclomatic <= threshold {
         return;
     }
-    findings.push(block_finding_with_metadata(
+    let mut finding = block_finding_with_metadata(
         BlockFindingDescriptor {
             rule_id,
             message: format!(
@@ -212,7 +247,15 @@ pub(crate) fn analyse_cyclomatic_complexity(
             "unit": "branches",
             "direction": "above"
         }),
-    ));
+    );
+    apply_limit_band(
+        &mut finding,
+        cyclomatic,
+        config.threshold(rule_id),
+        LOWER_BAND_FUNCTION,
+        SIMPLIFY_PATH,
+    );
+    findings.push(finding);
 }
 
 pub(crate) fn analyse_nesting_depth(
@@ -227,7 +270,7 @@ pub(crate) fn analyse_nesting_depth(
     if nesting <= threshold {
         return;
     }
-    findings.push(block_finding_with_metadata(
+    let mut finding = block_finding_with_metadata(
         BlockFindingDescriptor {
             rule_id,
             message: format!("Function `{}` has nesting depth {nesting}.", block.name),
@@ -243,7 +286,15 @@ pub(crate) fn analyse_nesting_depth(
             "unit": "levels",
             "direction": "above"
         }),
-    ));
+    );
+    apply_limit_band(
+        &mut finding,
+        nesting,
+        config.threshold(rule_id),
+        LOWER_BAND_FUNCTION,
+        SIMPLIFY_PATH,
+    );
+    findings.push(finding);
 }
 
 pub(crate) struct BlockAnalysisContext<'a> {
@@ -254,17 +305,20 @@ pub(crate) struct BlockAnalysisContext<'a> {
 
 pub(crate) fn analyse_cognitive_complexity(
     ctx: BlockAnalysisContext<'_>,
-    cyclomatic: usize,
-    nesting: usize,
+    measures: SyntaxComplexity,
     findings: &mut Vec<Finding>,
 ) {
-    let cognitive = cyclomatic + nesting.saturating_mul(2);
+    let SyntaxComplexity {
+        cyclomatic,
+        nesting,
+        cognitive,
+    } = measures;
     let rule_id = "complexity.cognitive";
     let threshold = ctx.config.threshold(rule_id) as usize;
     if cognitive <= threshold {
         return;
     }
-    findings.push(block_finding_with_metadata(
+    let mut finding = block_finding_with_metadata(
         BlockFindingDescriptor {
             rule_id,
             message: format!(
@@ -287,7 +341,15 @@ pub(crate) fn analyse_cognitive_complexity(
             "unit": "points",
             "direction": "above"
         }),
-    ));
+    );
+    apply_limit_band(
+        &mut finding,
+        cognitive,
+        ctx.config.threshold(rule_id),
+        LOWER_BAND_FUNCTION,
+        SIMPLIFY_PATH,
+    );
+    findings.push(finding);
 }
 
 pub(crate) fn analyse_block_naming(

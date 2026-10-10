@@ -50,7 +50,7 @@ pub(crate) const COMPLEXITY_RULES: &[RuleDefinition] = &[
         false_positives: &[
             FalsePositiveShape {
                 shape: "Match-heavy dispatch functions whose cognitive load is one nested `match` per CLI subcommand or AST node.",
-                mitigation: "Raise `rules.complexity.cognitive.threshold` in `.gruff-rs.yaml`, or extract per-arm helpers.",
+                mitigation: "When the inner value does not depend on the outer arm, match on a tuple of both so one flat `match` replaces the nested ones; a flat `match` counts once however many arms it has.",
             },
         ],
         related: &[
@@ -58,16 +58,22 @@ pub(crate) const COMPLEXITY_RULES: &[RuleDefinition] = &[
             "complexity.nesting-depth",
         ],
     ),
-    rule_definition!(
-        "complexity.cyclomatic",
-        "Cyclomatic complexity",
-        Pillar::Complexity,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        COMPLEXITY_CYCLOMATIC_THRESHOLD,
-        "Flags functions with high branch and decision complexity.",
-    ),
+    // Off by default (precision-floor M14): at one and a half times its limit or more it was worth acting on 23 times in
+    // 45, under the 0.60 floor, and its not-worth shapes, independent sequential checks and match dispatch, leave no
+    // bounded repair. complexity.cognitive covers the same functions and stays on.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "complexity.cyclomatic",
+            "Cyclomatic complexity",
+            Pillar::Complexity,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            COMPLEXITY_CYCLOMATIC_THRESHOLD,
+            "Flags functions with high branch and decision complexity.",
+        )
+    },
     rule_definition!(
         "complexity.nesting-depth",
         "Nesting depth",
