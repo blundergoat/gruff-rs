@@ -383,7 +383,7 @@ rules:
     severity: warning
   # Flags tests that contain conditional logic.
   test-quality.conditional-logic:
-    enabled: true
+    enabled: false
   # Flags ignored tests that do not explain why they are skipped.
   test-quality.ignored-without-reason:
     enabled: true

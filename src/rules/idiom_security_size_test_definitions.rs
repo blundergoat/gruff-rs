@@ -683,16 +683,19 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "test-quality.conditional-logic",
-        "Conditional logic in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags tests that contain conditional logic.",
-    ),
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "test-quality.conditional-logic",
+            "Conditional logic in test",
+            Pillar::TestQuality,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::High,
+            None,
+            "Flags tests that contain conditional logic.",
+        )
+    },
     rule_definition!(
         "test-quality.ignored-without-reason",
         "Ignored test without reason",

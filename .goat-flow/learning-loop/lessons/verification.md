@@ -117,6 +117,12 @@ over adding bulky local tables to an already near-threshold function.
 ## Lesson: Calibration Fixes Must Update Fixture Contracts
 
 **Created:** 2026-05-16
+**Decision changed:** When a rule becomes opt-in, enable it through the fixture configuration in direct analysis tests, then run the full suite before diagnosing shared-lock follow-on failures.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+**Latest occurrence:** 2026-10-10
+
+**Prevention:** Keep each positive detector fixture explicitly enabled; a default change must not erase the case the assertion proves.
 
 When changing analyzer rule semantics, rerun the full unit suite after targeted
 calibration tests. A desired rule behavior change can invalidate fixture-count
@@ -125,6 +131,8 @@ so later failures look unrelated.
 
 After fixing the first semantic mismatch, rerun the full suite before diagnosing
 the lock-poison follow-on failures.
+
+**Recurrence 2026-10-10:** M15 made conditional-logic opt-in. Its branch-regression test supplied an execution selector to direct `run_project_analysis`, but still returned no findings against five required policy branches. The remaining failures reported a poisoned analysis lock. The fixture now supplies `rules.test-quality.conditional-logic.enabled: true` and permits configuration loading. Evidence: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `conditional_test_logic_proves_each_branch_independently`), `src/main.rs` (search: `fn analyse_run_config`) and `src/tests/mod.rs` (search: `analysis lock`).
 
 ## Lesson: Negative Performance Experiments Must Be Reverted
 

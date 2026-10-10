@@ -2,6 +2,10 @@
 
 ## v0.6.0 - Unreleased
 
+- **BREAKING: `test-quality.conditional-logic` is opt-in** - After repair it was worth acting on in 6 of 25 judged findings, below the 0.70 floor. Enable it with `rules.test-quality.conditional-logic.enabled: true` or `--include-rule test-quality.conditional-logic`; existing explicit settings remain effective.
+
+- **Assertion syntax no longer reads as test policy** - `test-quality.conditional-logic` accepts guards inside assertion-pattern macros and a `match` whose every arm contains only assertions. Each branch is checked independently, so a platform gate cannot hide a separate policy branch; mutation and empty match arms still report.
+
 - **BREAKING: `complexity.cyclomatic` is off by default** - At one and a half times its limit or more it was worth acting on 23 times
   in 45, under the 0.60 floor, and no bounded repair fits its not-worth findings. `complexity.cognitive` covers the same
   functions and stays on. Enable it with `rules.complexity.cyclomatic.enabled: true`; a config that already sets it keeps it on.

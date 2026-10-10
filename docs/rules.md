@@ -96,6 +96,10 @@ As of 0.6.0, `sensitive-data.pii-test-fixture` also carries a zero-payload marke
 
 Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, and `clone()` inside real loop bodies. They ignore loop words in comments/strings, bounded static inventory loops, and user-facing output assembly where the allocation is not meaningful performance debt. They are reported under maintainability because the shared cross-language contract does not define a separate performance pillar.
 
+`test-quality.conditional-logic` is off by default: after repair, 6 of 25 judged findings were worth acting on, below the 0.70 precision floor. Enable it with `rules.test-quality.conditional-logic.enabled: true` or `--include-rule test-quality.conditional-logic`.
+
+`test-quality.conditional-logic` distinguishes assertion-pattern guards and assertion-only match arms from procedural test policy. A `cfg!` platform gate applies only to its own branch. An additional policy branch, a mutating or empty match arm, or a procedural branch inside an assertion block remains reportable. Unknown macro syntax supplies no exemption.
+
 `test-quality.unwrap-in-test` allows a direct call result unwrapped inside an assertion expression when that call is the subject under test. It still reports setup/local unwraps that feed assertions because those can hide fixture failures behind a panic.
 
 `waste.unwrap-expect` stays quiet in external `tests.rs` when a complete project scan proves its parent has a test-only `mod tests;` gate.

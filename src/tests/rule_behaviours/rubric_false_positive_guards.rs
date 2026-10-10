@@ -6,6 +6,90 @@
 use super::*;
 
 #[test]
+/// Assertion predicates and per-outcome checks stay quiet beside procedural test policy.
+pub(crate) fn conditional_test_logic_proves_each_branch_independently() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"#[cfg(test)]
+mod tests {
+    #[test]
+    fn assertion_pattern_guard() {
+        assert!(matches!(even_only(3), Err(ref error) if error.contains("boom")));
+    }
+    #[test]
+    fn every_match_arm_asserts() {
+        match result() { Ok(value) => assert_eq!(value, 2), Err(error) => { assert_eq!(error.code(), 3); assert!(!error.is_empty()); } }
+    }
+    #[test]
+    fn platform_gate() {
+        if cfg!(unix) { assert!(ready()); }
+    }
+    #[test]
+    fn mutating_match_arm() {
+        match result() { Ok(value) => assert_eq!(value, 2), Err(error) => { reset(); assert_eq!(error.code(), 3); } }
+    }
+    #[test]
+    fn empty_match_arm() {
+        match result() { Ok(value) => assert_eq!(value, 2), Err(_) => {} }
+    }
+    #[test]
+    fn platform_gate_cannot_hide_policy() {
+        if cfg!(unix) { assert!(ready()); }
+        if ready() { reset(); }
+    }
+    #[test]
+    fn assertion_block_cannot_hide_policy() {
+        assert!({ if ready() { reset(); } true });
+    }
+    #[test]
+    fn unknown_macro_supplies_no_proof() {
+        run! { if ready() { reset(); } }
+    }
+    #[test]
+    fn quoted_and_commented_branches() {
+        // if ready() { reset(); }
+        assert_eq!(text(), "if match");
+    }
+}
+"#,
+    );
+    fs::write(
+        dir.path().join(".gruff-rs.yaml"),
+        format!("schemaVersion: {SCHEMA_VERSION}\nrules:\n  test-quality.conditional-logic:\n    enabled: true\n"),
+    )
+    .expect("conditional-logic fixture config");
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("src/lib.rs")],
+            no_config: false,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let mut symbols: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "test-quality.conditional-logic")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    symbols.sort_unstable();
+    assert_eq!(
+        symbols,
+        vec![
+            "assertion_block_cannot_hide_policy",
+            "empty_match_arm",
+            "mutating_match_arm",
+            "platform_gate_cannot_hide_policy",
+            "unknown_macro_supplies_no_proof",
+        ]
+    );
+}
+
+#[test]
 /// Keep unproved private-key markers visible beside safe runtime secret references.
 pub(crate) fn sensitive_data_rules_keep_unproved_key_markers_beside_runtime_placeholders() {
     let _guard = analysis_lock();
