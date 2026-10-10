@@ -124,22 +124,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- security batch -----
-        case(
-            "security.path-traversal-candidate",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn open(input: &str) {\n    let _ = std::path::Path::new(input);\n}\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn open() {\n    let _ = std::path::Path::new(\"/etc/static-fixture\");\n}\n",
-                )
-            }),
-        ),
         // ----- test-quality batch -----
         case(
             "test-quality.should-panic-without-expected",
@@ -153,6 +137,22 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic(expected = \"boom\")]\n    fn panics() { panic!(\"boom\"); }\n}\n",
+                )
+            }),
+        ),
+        // The `= "msg"` shorthand pins the message as `expected = "msg"` does.
+        case(
+            "test-quality.should-panic-without-expected",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic]\n    fn panics() { panic!(\"boom\"); }\n}\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic = \"boom\"]\n    fn panics() { panic!(\"boom\"); }\n}\n",
                 )
             }),
         ),

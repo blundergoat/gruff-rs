@@ -41,12 +41,17 @@ pub(crate) fn is_generic_name(name: &str) -> bool {
     )
 }
 
+/// Accept names that read as a boolean question in a user's Rust report, including existence checks.
 pub(crate) fn is_boolean_predicate_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let words: Vec<&str> = lower.split('_').collect();
     // Passive-voice shape (`X_was_Y`, `X_by_Y`, `X_by`) is not a predicate.
     if words.last() == Some(&"by") {
         return false;
+    }
+    // `table_exists` describes a yes/no result; `existential` does not name an existence check.
+    if words.last() == Some(&"exists") {
+        return true;
     }
     // Predicate verbs that read as a boolean test when used anywhere in
     // the name. Subject-predicate forms (`visibility_is_public`,

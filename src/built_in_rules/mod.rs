@@ -1,25 +1,26 @@
 //! Built-in rule dispatch and shared analyzer vocabulary.
-//! Focused sibling modules evaluate source units, then this parent combines
-//! their deterministic findings for the configured report pipeline.
+//!
+//! Focused sibling modules evaluate source units, then this parent combines their deterministic findings for the configured report pipeline.
+//! A user reaches this layer when a scan enables Rust and text rule families.
 
 pub(crate) use super::*;
 
 mod helpers;
+mod limit_band;
 mod naming_rules;
 mod predicates;
 mod rust_block_rules;
 mod rust_other_rules;
 mod secret_rules;
-mod test_context;
 mod text_rules;
 
 pub(crate) use helpers::*;
+pub(crate) use limit_band::*;
 pub(crate) use naming_rules::*;
 pub(crate) use predicates::*;
 pub(crate) use rust_block_rules::*;
 pub(crate) use rust_other_rules::*;
 pub(crate) use secret_rules::*;
-pub(crate) use test_context::*;
 pub(crate) use text_rules::*;
 
 // Shared OnceLock<Regex> statics consumed by multiple submodules. Kept
@@ -31,7 +32,6 @@ pub(crate) static PLACEHOLDER_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNWRAP_EXPECT_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static CYCLOMATIC_COMPLEXITY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -67,7 +67,6 @@ pub(crate) struct EnabledBuiltinFamilies {
     pub(crate) tls_verification: bool,
     pub(crate) weak_crypto: bool,
     pub(crate) bind_all_interfaces: bool,
-    pub(crate) path_traversal: bool,
     pub(crate) network_block_security: bool,
     pub(crate) xxe_candidate: bool,
     pub(crate) modernisation_source: bool,
@@ -124,7 +123,6 @@ impl EnabledBuiltinFamilies {
                 config,
                 &[
                     "error-handling.production-panic",
-                    "error-handling.public-unwrap",
                     "error-handling.unimplemented-placeholder",
                 ],
             ),
@@ -154,7 +152,6 @@ impl EnabledBuiltinFamilies {
             tls_verification: config.is_rule_enabled("security.tls-verification-disabled"),
             weak_crypto: config.is_rule_enabled("security.weak-crypto"),
             bind_all_interfaces: config.is_rule_enabled("security.hardcoded-bind-all-interfaces"),
-            path_traversal: config.is_rule_enabled("security.path-traversal-candidate"),
             network_block_security: any_rule_is_enabled(
                 config,
                 &[
@@ -290,13 +287,14 @@ fn analyse_rust_rules(
             .get_or_insert_with(|| rust_function_blocks(ast, unit.source))
             .as_slice()
     });
-    analyse_block_dependent_rust_rules(unit, config, families, blocks, findings);
+    analyse_block_dependent_rust_rules(unit, ast, config, families, blocks, findings);
     analyse_rust_source_rules(unit, ast, families, findings);
     analyse_rust_ast_rules(unit, ast, config, families, findings);
 }
 
 fn analyse_block_dependent_rust_rules(
     unit: &SourceUnit<'_>,
+    ast: &syn::File,
     config: &Config,
     families: EnabledBuiltinFamilies,
     blocks: Option<&[FunctionBlock]>,
@@ -308,13 +306,25 @@ fn analyse_block_dependent_rust_rules(
     if families.has_block_rules() {
         analyse_blocks(unit, blocks, config, families, findings);
     }
+    if families.block_size || families.block_complexity {
+        let trait_defaults = rust_trait_default_blocks(ast, unit.source);
+        analyse_measure_only_blocks(unit.file, &trait_defaults, config, families, findings);
+        let const_closures = rust_const_closure_blocks(ast, unit.source);
+        analyse_measure_only_blocks(unit.file, &const_closures, config, families, findings);
+    }
     if families.network_block_security {
         analyse_ssrf_candidate(unit.file, blocks, findings);
         analyse_unsafe_deserialization(unit.file, blocks, findings);
-        analyse_template_injection_xss(unit.file, blocks, findings);
+        analyse_template_injection_xss(unit.file, ast, blocks, findings);
     }
     if families.line_rules {
-        analyse_line_rules(unit.file, unit.source, blocks, findings);
+        analyse_line_rules(
+            unit.file,
+            unit.source,
+            blocks,
+            unit.external_test_module,
+            findings,
+        );
     }
 }
 
@@ -338,9 +348,6 @@ fn analyse_rust_source_rules(
     }
     if families.bind_all_interfaces {
         analyse_hardcoded_bind_all_interfaces(unit.file, unit.source, findings);
-    }
-    if families.path_traversal {
-        analyse_path_traversal_candidate(unit.file, unit.source, findings);
     }
     if families.xxe_candidate {
         analyse_xxe_candidate(unit.file, unit.source, findings);
@@ -372,6 +379,9 @@ fn analyse_rust_ast_rules(
 }
 
 fn apply_configured_severity(mut finding: Finding, config: &Config) -> Finding {
-    finding.severity = config.severity(&finding.rule_id, finding.severity);
+    // A lower-band size or complexity finding is advisory whatever severity the user configured for its rule.
+    if !is_lower_band(&finding) {
+        finding.severity = config.severity(&finding.rule_id, finding.severity);
+    }
     finding
 }

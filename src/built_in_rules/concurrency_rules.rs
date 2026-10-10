@@ -37,7 +37,7 @@ pub(crate) fn analyse_concurrency_block(
                 BlockFindingExtras {
                     confidence: Confidence::Medium,
                     remediation: Some(
-                        "Prefer a bounded channel or document the producer/consumer backpressure policy. If the unbounded channel is in a test harness, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+                        "Prefer a bounded channel, or document the producer/consumer backpressure policy where the channel is created."
                             .to_string(),
                     ),
                     metadata: json!({ "pattern": "unbounded-channel" }),

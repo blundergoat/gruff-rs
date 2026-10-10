@@ -81,15 +81,21 @@ pub(crate) fn parse_rule_setting(
     let rule_object = rule_value
         .as_object()
         .ok_or_else(|| format!("config for rule `{rule_id}` must be an object"))?;
+    // `thresholds` is a key only for a rule that declares named detector parameters; for every other
+    // rule it stays unknown, so a rubric keeps ADR-011's single `threshold`.
+    let mut allowed_keys = vec![
+        "enabled",
+        "threshold",
+        "severity",
+        "options",
+        "excludeFromScore",
+    ];
+    if !is_custom && !rules::detector_parameters(rule_id).is_empty() {
+        allowed_keys.push("thresholds");
+    }
     reject_unknown_keys(
         rule_object,
-        &[
-            "enabled",
-            "threshold",
-            "severity",
-            "options",
-            "excludeFromScore",
-        ],
+        &allowed_keys,
         &format!("config for rule `{rule_id}`"),
     )?;
 
@@ -110,6 +116,7 @@ pub(crate) fn parse_rule_setting(
         return Ok(setting);
     }
     apply_rule_thresholds(rule_id, rule_object, registry, &mut setting)?;
+    apply_detector_parameters(rule_id, rule_object, &mut setting)?;
     validate_optional_rule_options(rule_id, rule_object, registry, &mut setting)?;
     Ok(setting)
 }
@@ -172,6 +179,68 @@ pub(crate) fn apply_rule_thresholds(
         (None, None) => {}
     }
     Ok(())
+}
+
+/// Read `rules.<id>.thresholds` for a rule that declares named detector parameters. Each value is
+/// checked against its declared kind and refused, not clamped, so a typo cannot quietly move a bar.
+fn apply_detector_parameters(
+    rule_id: &str,
+    rule_object: &serde_json::Map<String, Value>,
+    setting: &mut RuleSetting,
+) -> Result<(), String> {
+    let Some(thresholds_value) = rule_object.get("thresholds") else {
+        return Ok(());
+    };
+    let thresholds = thresholds_value
+        .as_object()
+        .ok_or_else(|| format!("config key `rules.{rule_id}.thresholds` must be an object"))?;
+    let declared = rules::detector_parameters(rule_id);
+    for (name, raw) in thresholds {
+        let Some(parameter) = declared.iter().find(|parameter| parameter.name == name) else {
+            let names: Vec<&str> = declared.iter().map(|parameter| parameter.name).collect();
+            return Err(format!(
+                "unknown key `{name}` in config key `rules.{rule_id}.thresholds`; expected one of: {}",
+                names.join(", ")
+            ));
+        };
+        let value = parse_detector_parameter(rule_id, parameter, raw)?;
+        setting.detector_parameters.insert(name.clone(), value);
+    }
+    Ok(())
+}
+
+/// Check one detector parameter against its declared kind and return it as the analyser reads it.
+fn parse_detector_parameter(
+    rule_id: &str,
+    parameter: &rules::DetectorParameter,
+    raw: &Value,
+) -> Result<f64, String> {
+    let key = format!("rules.{rule_id}.thresholds.{}", parameter.name);
+    match parameter.kind {
+        rules::DetectorParameterKind::WholeNumber { min, max } => raw
+            .as_u64()
+            .filter(|value| (min..=max).contains(value))
+            .map(|value| value as f64)
+            .ok_or_else(|| {
+                format!("config key `{key}` must be a whole number from {min} to {max}")
+            }),
+        rules::DetectorParameterKind::NonNegative => raw
+            .as_f64()
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .ok_or_else(|| format!("config key `{key}` must be a finite number of zero or more")),
+    }
+}
+
+// The lookup lives beside the parser that fills it, so reading and validating a detector parameter stay in
+// one place.
+impl Config {
+    /// Return the user's value for a named detector parameter, or the catalogue default `list-rules` and `init` show.
+    pub(crate) fn detector_parameter(&self, rule_id: &str, name: &str) -> f64 {
+        self.rule_settings
+            .get(rule_id)
+            .and_then(|setting| setting.detector_parameters.get(name).copied())
+            .unwrap_or_else(|| rules::builtin_detector_parameter(rule_id, name))
+    }
 }
 
 fn rule_is_thresholded(rule_id: &str, registry: &rules::RuleRegistry) -> bool {

@@ -94,21 +94,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
         ),
         case(
-            "error-handling.public-unwrap",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() { let value: Option<i32> = Some(1); value.unwrap(); }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() -> Option<i32> { Some(1) }\n",
-                )
-            }),
-        ),
-        case(
             "error-handling.unimplemented-placeholder",
             Box::new(|root| {
                 baseline_with_lib(

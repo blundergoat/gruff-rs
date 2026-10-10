@@ -65,53 +65,6 @@ repos clean (`## dev...origin/dev`), so the commit advice was wrong and stale.
 - If the command was not run, phrase the answer as a caveat or run the command
   first; do not make a confident git-state claim from memory.
 
-## Lesson: A Complete Milestone Must Have Ticked Checkboxes
-
-**Created:** 2026-05-31
-
-Never mark a milestone `implemented`, `testing-gate`, or `complete` while its
-own task, assumption, exit-criteria, or testing-gate checkboxes remain unticked.
-An implemented status with empty checkboxes is worse than no status update: it
-misleads the next reader into thinking either no work happened or the tracking
-artifact cannot be trusted.
-
-**Concrete example (this repo, 2026-05-31):** a task-tracking file's top-line
-status said its rubric-removal work was implemented, but every checklist item
-was still `- [ ]`. The code and verification had moved, yet the plan looked
-untouched until the user called it out. The corrected task now has ticked
-assumptions, tasks, exit criteria, testing gates, and a `Verification Evidence`
-section.
-
-**How to apply:**
-
-- When completing work from a plan, tick each completed checkbox immediately
-  after the code or verification proves it.
-- Before changing any task `Status:` to `implemented`, `testing-gate`, or
-  `complete`, run `rg -n '^- \[ \]' <task-file>`. If unchecked boxes remain,
-  either tick them with evidence or leave the status as in-progress/deferred.
-- Before final response for plan-backed work, re-open the task file and confirm
-  the checklist, status line, and verification evidence agree.
-- Treat task files as review artifacts, not scratch notes. A stale checklist is
-  a failed handoff even when the code is correct.
-
-**Updated 2026-05-31:** Two failure modes worse than the above surfaced when the
-user found more stale plans. (1) **The status line lies the other way.** Some
-task files read `Status: planned` with zero ticks even though the feature had
-already shipped (confirmed via `git log` and the live source symbols); another
-read `Status: completed` with none of its boxes ticked. So the status line is
-not a trustworthy done-signal — before trusting OR updating it, cross-check
-against `git log` and the actual `src/` symbols (`rg` the structs/fields the
-work introduced), not just "did I tick boxes." (2) **Reconciling a neglected
-checklist is NOT a licence to blanket-tick.** A partially-implemented plan has
-diverged from its spec: the core lands while a peripheral surface (a CLI flag, a
-renderer, docs) does not. Flipping every `- [ ]` to `- [x]` to "finish the
-board" writes false `[x]` on features that do not exist — the exact
-false-attestation this tool exists to catch (mission: `docs/mission.md`). Verify
-each box against the source this session, tick only what is real, and leave the
-rest unchecked with an inline `NOT BUILT`/`NOT DONE` note plus a
-`Verification Evidence` section. A half-true status (`core done … X and Y not
-built`) beats both a bare `planned` and a dishonest `complete`.
-
 ## Lesson: When A Self-Scan Says Zero, Confirm The Rule Still Fires Somewhere
 
 **Created:** 2026-05-24
@@ -133,7 +86,7 @@ After tightening a rule to eliminate false positives, a "zero findings on dogfoo
 ## Lesson: Rule Retunes Need Parity Fixtures For Every Detection Path
 **Created:** 2026-06-12
 **What happened:** M02 and M08 were marked technically complete with green focused tests, but review-only scratch repros found two untested shapes: direct `prepare(&format!(...))` did not receive the same fixed-placeholder exemption as bound `let sql = format!(...)`, and inline `PathBuf::from(...).join(user_input)` / `Path::new(...).join(user_input)` were missed after receiver gating.
-**Evidence:** `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `push_direct_sql_dynamic_query_findings`) and `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `dynamic_format_binding_name`) had separate paths with different exemption coverage. `src/built_in_rules/path_traversal_rules.rs` (search: `join_regex`) only captured simple receivers before the inline constructor fix.
+**Evidence:** `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `push_direct_sql_dynamic_query_findings`) and `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `dynamic_format_binding_name`) had separate paths with different exemption coverage. ~~`src/built_in_rules/path_traversal_rules.rs` (search: `join_regex`)~~ (gruff-rs `3324dd6`; the rule was retired in 0.6.0, ADR-024) only captured simple receivers before the inline constructor fix.
 **Prevention:** For every rule retune that mentions multiple detection paths or receiver shapes, add at least one positive and one negative fixture per path before closing the milestone. Re-run the original scratch repros that exposed the review finding, not just the named focused test filter.
 
 **2026-06-14 extension - narrowing for precision silently drops valid shapes.** One review round found four coverage gaps where tightening a rule excluded shapes that still matter, and a clean dogfood/calibration run could not reveal them (a clean repo has no findings to lose - only adversarial review or an external scan carrying those shapes exposes the false negative): the SQL keyword gate (`src/built_in_rules/behavior_rules/tls_sql.rs` search: `fn template_is_flaggable`) dropped non-DML statements (`TRUNCATE`/`MERGE`/`GRANT`); the path-traversal receiver grammar (search: `fn join_regex`) stopped matching accessor-call receivers like `self.root().join(x)`; the export-attribute check (`src/project/items.rs` search: `fn has_export_attr`) missed Rust 2024 `#[unsafe(no_mangle)]` (the attribute path is `unsafe`, with the export ident nested inside); and the non-UTF-8 skip classifier (`src/discovery.rs` search: `fn is_security_relevant_text_path`) did not treat `.github/workflows/*.yml` as security-relevant, so an invalid byte skipped the `security.github-actions-*` rules. When narrowing a gate, grammar, classifier, or attribute matcher, enumerate the shapes you are now EXCLUDING and add a positive fixture for each that must still fire.
@@ -336,7 +289,7 @@ Automated PR reviewers (Codex / CodeRabbit / Copilot bots) generate suggestions 
 **Concrete examples from PR #3 review (2026-05-27):**
 
 - **Stale: `pillar_label` duplication** — bot suggested extracting to shared module. Verified `src/report.rs` (search: `pub(crate) fn pillar_label`) already has the shared helper. Action: skip.
-- **Stale: `applicable` boolean assertion** — bot suggested adding `is_boolean()` checks. Verified `src/tests/renderers/pillar_sections.rs` (search: `is_boolean`) already has them. Action: skip.
+- **Stale: `applicable` assertion** — PR #3 already had the suggested check. Current coverage: `src/tests/renderers/pillar_sections.rs` (search: `non_score_pillars_are_inapplicable_and_excluded_from_composite`). Check current semantics before restoring an old assertion.
 - **Stale: schemaVersion grep brittleness** — bot suggested whitespace-tolerant regex. Verified `scripts/preflight-checks.sh` (search: `[[:space:]]*`) already uses it. Action: skip.
 - **False premise: `applicable` decoupled from composite** — bot claimed composite includes non-`SCORE_PILLARS` pillars. Verified `src/scoring.rs` (search: `SCORE_PILLARS.contains`) filters by the canonical pillar list. Action: skip — premise is wrong.
 - **False premise: init lacks schemaVersion** — bot claimed `render_default_config` omits the key. Verified `src/init.rs` (search: `append_schema_version_section`) calls the schema renderer. Action: skip — premise is wrong.
@@ -467,28 +420,6 @@ format. Regression coverage lives in `src/tests/renderers/output.rs` (search:
 Two rule-retuning hunks repeated the error: one put opt-in configuration in the wrong test; another put a test inside a raw string. Readback caught the first, and the compiler caught the second.
 
 **Prevention:** Anchor each hunk with its unique owner and message. Read the owner and scoped diff immediately; correct misplaced hunks before testing.
-
-## Lesson: Milestone Estimate Tokens Must Terminate Their Checklist Item
-
-**Created:** 2026-08-08
-**Decision changed:** An `(est: N min category)` token carries no weight unless it is the last text in its checklist item; evidence prose after it silently drops the estimate.
-**Trigger phase:** VERIFY
-
-**What happened:** Four migrated proof items each carried `(est: N min proof)` followed by their literal evidence on the same item. `goat-flow plans check --strict` reported `proof counted work (5 min) does not equal the split component (25 min)` plus `3 testing gate item(s) missing an (est: ...) entry`. The tokens looked present in the file and were invisible to the parser, which anchors on `/\(est:\s*(\d+)\s*min(?:ute)?s?\s+([a-z]+)\)\s*$/` — end-of-item only.
-
-The same trap bit again a few edits later, in a form that is harder to see: a milestone had correct end-of-line tokens on every item, but a **prose paragraph after the last checkbox, inside the same `## Proof` section**, was absorbed into that final item. The estimate stopped being at the end of the item text, so exactly one item silently dropped out of the count. A blank line does not end an item. Anything that is not another checkbox belongs outside the section.
-
-**Prevention:** Keep proof and task items short with the estimate token last, and put literal evidence in a separate section that the milestone parser does not read as Proof. Two adjacent traps in the same parser: a heading is matched by prefix, so any H2 beginning `Proof ` (for example `## Proof evidence - 2026-08-08`) is read as a second Proof section and fails with `conflicting proof representations`; and the aliases that *are* read are `Proof`, `Verification Gate`, `Testing Gate`, `Scope`, `Exit Criteria`, `Kill Criteria`, `Stop Conditions`, and `Mid-Implementation Proof`. Name an evidence section something outside that set — `## Claim evidence` works.
-
-## Lesson: Strict Plan Validation Has No Honest Escape For A Missing Historical Estimate
-
-**Created:** 2026-08-08
-**Decision changed:** When a validator demands a field that historical evidence cannot truthfully supply, move the evidence outside the validator's scope; never back-fill the field.
-**Trigger phase:** READ
-
-**What happened:** Migrating a legacy plan set to the goat-flow 1.15.0 contract produced 80 strict errors. Most were truthful re-expressions of data the files already carried — dated statuses to the bare lifecycle vocabulary, a `## Depends On` section to the `**Depends on:**` field, an untagged human acceptance box to `[human]`. One was not: strict mode hard-requires a parseable `**Effort estimate:**` product/proof/other split on every milestone in the directory. `Actual:` has honest non-numeric states (`unavailable:`, `retrospective:`, `incomplete:`); `Effort estimate` has none, and `plans check` accepts only a directory, so there is no per-file exemption. Writing estimates onto already-complete milestones would have invented planning data they never carried.
-
-**Prevention:** `plans check` does not recurse into subdirectories, so a `history/` subdirectory holds completed pre-contract milestones with their bytes preserved while strict validates the executable root. Two consequences worth stating wherever the result is reported: a green `--strict` then means "the executable root satisfies the contract", not "every milestone was validated"; and a live milestone that still has open work belongs in the root, with its already-delivered checklist items moved verbatim into a non-parsed section so the forward estimate covers only what remains.
 
 ## Lesson: A Dead Anchor Proves The Anchor Moved, Not That The Behaviour Went Away
 

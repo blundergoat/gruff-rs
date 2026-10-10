@@ -1,4 +1,4 @@
-version: "1.15.1"
+version: "1.17.0"
 
 skills:
   install: all
@@ -9,4 +9,10 @@ hooks:
   post-turn-safety:
     enabled: true
   gruff-code-quality:
+    enabled: true
+    # The cargo-run wrapper rebuilds from the worktree; target/release/gruff-rs changes only on an explicit release
+    # build, so it can lag HEAD (scripts/preflight-checks.sh, search: MANAGED_DOC_DELTAS).
+    binaries:
+      rs: bin/gruff-rs
+  deny-git-mutations:
     enabled: true

@@ -1,6 +1,6 @@
-# gruff-rs - goat-flow 1.15.1
+# gruff-rs - goat-flow 1.17.0
 
-Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, schema-versioned, and safe to run against untrusted source trees in this target repository.
+Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, safe to run against untrusted source trees, and true to the family-contracted `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3` and `gruff.hook.v2` envelopes that `FAMILY-CONTRACT.md` owns in this target repository.
 
 ## Mission
 
@@ -53,7 +53,7 @@ Concise Conventional Commits when a commit is requested (e.g. `feat: add baselin
 bash scripts/preflight-checks.sh
 cargo build
 cargo run -- analyse fixtures --format json --fail-on none
-shellcheck scripts/preflight-checks.sh scripts/start-dev.sh .goat-flow/hooks/deny-dangerous.sh .goat-flow/hooks/post-turn-safety.sh .goat-flow/hooks/gruff-code-quality.sh
+shellcheck scripts/*.sh .goat-flow/hooks/*.sh .goat-flow/hooks/*/*.sh
 ```
 
 Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.
@@ -109,6 +109,7 @@ Route "add a footgun" to `.goat-flow/learning-loop/footguns/`, "add a lesson" to
 | Learning loop | `.goat-flow/learning-loop/footguns/`, `.goat-flow/learning-loop/lessons/`, `.goat-flow/learning-loop/patterns/`, `.goat-flow/learning-loop/decisions/` |
 | Orientation | `.goat-flow/code-map.md`, `.goat-flow/glossary.md` |
 | Architecture | `.goat-flow/architecture.md` |
+| Security policy | `.goat-flow/security-policy.md` |
 | Claude skills/config | `.claude/skills/`, `.claude/settings.json` |
 | Hooks (deny + quality) | `.goat-flow/hooks/` |
 | Peer instruction files | `AGENTS.md` (Codex) |

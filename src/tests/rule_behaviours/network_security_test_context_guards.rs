@@ -1,6 +1,7 @@
 //! Test-context policy guards for executable network and security behavior.
-//! Temporary production, test, and fixture sources model paths a CLI user
-//! scans, keeping real CI risks visible while preserving semantic negatives.
+//!
+//! Temporary production, test, and fixture sources model paths a CLI user scans.
+//! Real CI risks remain visible while semantic negatives stay quiet.
 
 use super::*;
 
@@ -135,11 +136,14 @@ pub(crate) fn network_security_test_context_policy_matrix() {
         EXECUTABLE_RISK_SOURCE,
     );
 
+    // `security.ssrf-candidate` is off by default (ADR-024), so the matrix enables it the way a project would.
+    enable_builtin_rule(dir.path(), "security.ssrf-candidate");
+
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -189,4 +193,144 @@ pub(crate) fn network_security_test_context_policy_matrix() {
             "{rule_id} must provide a specific mitigation for intentional test behavior"
         );
     }
+}
+
+/// A scanned handler may print a finite enum in HTML without printing request text.
+/// Keep warnings when the same handler shape can carry a payload or another dynamic value.
+#[test]
+pub(crate) fn template_html_distinguishes_derived_unit_enum_from_dynamic_output() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = r##"
+use axum::response::Html;
+#[derive(Debug)]
+enum Version { V1, V2 }
+#[derive(Debug)]
+enum PayloadVersion { V1(String), V2 }
+#[derive(Debug)]
+enum RecordVersion { V1 { text: String }, V2 }
+#[derive(Debug)]
+enum CustomVersion { V1, V2 }
+impl std::fmt::Display for CustomVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&std::env::var("CUSTOM_VERSION").unwrap_or_default())
+    }
+}
+
+#[derive(Debug)]
+enum CustomDebugVersion { V1, V2 }
+#[cfg(feature = "custom-debug")]
+impl std::fmt::Debug for CustomDebugVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("custom")
+    }
+}
+#[derive(Debug)]
+struct UnknownVersion(String);
+
+fn render_version(version: Version) -> Html<String> { Html(format!("version {version:?}")) }
+fn render_raw_version(version: Version) -> Html<String> { Html(format!(r#"version {version:?}"#)) }
+fn render_payload(payload: PayloadVersion) -> Html<String> { Html(format!("payload {payload:?}")) }
+fn render_record(record: RecordVersion) -> Html<String> { Html(format!("record {record:?}")) }
+fn render_custom(custom: CustomVersion) -> Html<String> { Html(format!("custom {custom}")) }
+fn render_custom_debug(custom_debug: CustomDebugVersion) -> Html<String> { Html(format!("custom debug {custom_debug:?}")) }
+fn render_unknown(unknown: UnknownVersion) -> Html<String> { Html(format!("unknown {unknown:?}")) }
+fn render_mixed(version: Version, user: String) -> Html<String> { Html(format!("mixed {version:?} {user}")) }
+fn render_explicit(version: Version) -> Html<String> { Html(format!("explicit {:?}", version)) }
+fn render_indexed(version: Version) -> Html<String> { Html(format!("indexed {0:?}", version)) }
+"##;
+    baseline_with_lib(dir.path(), source);
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let reported_lines: Vec<usize> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.template-injection-xss")
+        .filter_map(|finding| finding.line)
+        .collect();
+    let expected_reported_functions = [
+        "render_payload",
+        "render_record",
+        "render_custom",
+        "render_custom_debug",
+        "render_unknown",
+        "render_mixed",
+    ];
+    // Each unsafe neighbor has a separate line, so a missing warning points to its user-visible handler.
+    for function_name in expected_reported_functions {
+        let function_line = source
+            .lines()
+            .position(|line| line.contains(&format!("fn {function_name}(")))
+            .expect("handler in source")
+            + 1;
+        assert!(
+            reported_lines.contains(&function_line),
+            "{function_name} must remain reportable; lines={reported_lines:?}"
+        );
+    }
+    // The unit-only handlers are the precise false-positive cases a user sees in the report.
+    for function_name in [
+        "render_version",
+        "render_raw_version",
+        "render_explicit",
+        "render_indexed",
+    ] {
+        let function_line = source
+            .lines()
+            .position(|line| line.contains(&format!("fn {function_name}(")))
+            .expect("handler in source")
+            + 1;
+        assert!(
+            !reported_lines.contains(&function_line),
+            "{function_name} prints only a finite enum; lines={reported_lines:?}"
+        );
+    }
+}
+
+/// A scanned project can declare another module that changes how its enum is printed.
+/// Keep the HTML warning until the formatter's behavior is proven from that source.
+#[test]
+pub(crate) fn template_html_keeps_external_formatter_module_reportable() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "use axum::response::Html;\n",
+            "mod formatter;\n",
+            "#[derive(Debug)] enum Version { V1 }\n",
+            "fn render_version(version: Version) -> Html<String> { Html(format!(\"{version:?}\")) }\n",
+        ),
+    );
+    write_policy_source(
+        dir.path(),
+        "src/formatter.rs",
+        "#[cfg(feature = \"custom-debug\")] impl std::fmt::Debug for super::Version { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(\"dynamic\") } }\n",
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.rule_id == "security.template-injection-xss"
+                && finding.file_path == "src/lib.rs"
+                && finding.line == Some(4)
+        }),
+        "an uninspected external formatter must keep the HTML warning"
+    );
 }

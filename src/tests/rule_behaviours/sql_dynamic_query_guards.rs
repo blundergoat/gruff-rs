@@ -282,11 +282,13 @@ pub fn from_less(expression: &str) {
 fn analyse_sql_fixture(body: &str) -> AnalysisReport {
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), body);
+    // The rule is off by default (ADR-024), so the fixture enables it the way a project would.
+    enable_builtin_rule(dir.path(), "security.sql-dynamic-query");
     run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },

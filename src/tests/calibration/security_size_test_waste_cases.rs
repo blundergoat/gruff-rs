@@ -203,7 +203,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n",
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: acme/tool@v4\n",
                 )
                 .expect("workflow write");
             }),
@@ -212,7 +212,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@1111111111111111111111111111111111111111\n",
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: acme/tool@1111111111111111111111111111111111111111\n",
                 )
                 .expect("workflow write");
             }),
@@ -287,7 +287,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\non:\n  pull_request:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+                    "name: ci\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
                 )
                 .expect("workflow write");
             }),
@@ -390,21 +390,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
             }),
         ),
         case(
-            "sensitive-data.database-url-password",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"postgres://user:secret@db/app\"; }\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"postgres://db/app\"; }\n",
-                )
-            }),
-        ),
-        case(
             "sensitive-data.url-embedded-credentials",
             Box::new(|root| {
                 baseline_with_lib(
@@ -416,21 +401,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() { let _ = \"https://example.invalid/path\"; }\n",
-                )
-            }),
-        ),
-        case(
-            "sensitive-data.hardcoded-env-value",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD=correct-horse-battery-123\"; }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD\"; }\n",
                 )
             }),
         ),

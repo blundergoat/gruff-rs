@@ -541,7 +541,10 @@ custom_rules:
         },
     )
     .expect("rule list json");
-    let rules: Vec<Value> = serde_json::from_str(&json_output).expect("rule list json");
+    let listing: Value = serde_json::from_str(&json_output).expect("rule list json");
+    let rules = listing["rules"]
+        .as_array()
+        .expect("the catalogue is an object carrying its rules under `rules`");
     let ids: Vec<&str> = rules
         .iter()
         .map(|rule| rule["id"].as_str().expect("id"))

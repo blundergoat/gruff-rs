@@ -83,6 +83,71 @@ pub(crate) fn long_test_ignores_setup_before_first_assertion() {
     );
 }
 
+/// Long-test counts code lines on both paths (FAMILY-CONTRACT section 12, search `Code lines in every line count`):
+/// from the first assertion when the test asserts, across the whole test when it does not. Comment, doc-comment,
+/// attribute and blank lines are free; a test long in code lines still reports.
+#[test]
+pub(crate) fn long_test_counts_code_lines_on_both_paths() {
+    let _guard = analysis_lock();
+    // `steps` statements give 2 + steps code lines on either path; padding sits between them.
+    let test_module = |steps: usize| {
+        let mut source = String::from(
+            "/// Probe.\npub fn entry() -> u32 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn asserted() {\n        let mut value = entry();\n        assert!(value > 0);\n",
+        );
+        for index in 0..steps {
+            source.push_str("        // Each step adds one.\n\n");
+            source.push_str(&format!("        value += {index};\n"));
+        }
+        source.push_str("    }\n\n    /// Runs the chain without asserting.\n    #[test]\n    #[allow(unused_must_use)]\n    fn unasserted() {\n");
+        for _ in 0..steps {
+            source.push_str("        /// One more call.\n        #[allow(unused_must_use)]\n");
+            source.push_str("        std::hint::black_box(entry());\n");
+        }
+        source.push_str("    }\n}\n");
+        source
+    };
+    let long_tests = |steps: usize| {
+        let dir = tempdir().expect("tempdir");
+        baseline_with_lib(dir.path(), &test_module(steps));
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                paths: vec![PathBuf::from(".")],
+                no_config: true,
+                no_baseline: true,
+                ..default_test_options()
+            },
+        )
+        .expect("analysis succeeds");
+        let mut rows: Vec<(String, Value)> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "test-quality.long-test")
+            .map(|finding| {
+                (
+                    finding.symbol.clone().unwrap_or_default(),
+                    finding.metadata["measured"].clone(),
+                )
+            })
+            .collect();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows
+    };
+    assert_eq!(
+        long_tests(118),
+        vec![],
+        "120 code lines on either path stay at the limit"
+    );
+    assert_eq!(
+        long_tests(119),
+        vec![
+            ("asserted".to_string(), json!(121)),
+            ("unasserted".to_string(), json!(121)),
+        ],
+        "121 code lines report on both paths"
+    );
+}
+
 #[test]
 pub(crate) fn tls_true_binding_flags_within_one_function() {
     let _guard = analysis_lock();
@@ -151,144 +216,5 @@ pub fn make_client(insecure: bool) {
             .any(|finding| finding.rule_id == "security.tls-verification-disabled"),
         "a `true` binding in another function must not flag a same-named parameter; findings={:?}",
         report.findings
-    );
-}
-
-#[test]
-pub(crate) fn path_traversal_requires_filesystem_join_and_recognises_segment_sanitizer() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r#"use std::path::{Path, PathBuf};
-
-/// Walks virtual archive parts.
-pub struct Walker;
-
-impl Walker {
-    /// Joins archive parts, not filesystem paths.
-    pub fn join(&self, parts: Vec<&str>) -> usize {
-        parts.len()
-    }
-}
-
-/// Service owning a virtual walker.
-pub struct Service {
-    pub walker: Walker,
-}
-
-impl Service {
-    /// Delegates to a virtual walker.
-    pub fn walk(&self, subdir_parts: Vec<&str>) -> usize {
-        self.walker.join(subdir_parts)
-    }
-}
-
-/// Sanitizes a lookup key before joining it to a root directory.
-pub fn sanitized_lookup(root: &Path, key: &str) -> PathBuf {
-    let safe_key = key.replace("..", "").replace('/', "").replace('\\', "");
-    root.join(safe_key)
-}
-
-/// Joins an unchecked user segment to a project root.
-pub fn unchecked_join(project_root: &Path, user_input: &str) -> PathBuf {
-    project_root.join(user_input)
-}
-
-/// Joins an unchecked user segment to an inline PathBuf constructor.
-pub fn unchecked_inline_pathbuf_join(user_input: &str) -> PathBuf {
-    PathBuf::from("/tmp").join(user_input)
-}
-
-/// Joins an unchecked user segment to an inline Path constructor.
-pub fn unchecked_inline_path_join(user_input: &str) -> PathBuf {
-    Path::new("/tmp").join(user_input)
-}
-"#,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let path_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "security.path-traversal-candidate")
-        .collect();
-    assert_eq!(
-        path_findings.len(),
-        3,
-        "only real filesystem joins with unchecked segments should flag; findings={path_findings:?}"
-    );
-    assert!(
-        path_findings
-            .iter()
-            .all(|finding| finding.metadata["argument"] == json!("user_input")),
-        "all filesystem join findings should report the unchecked segment; findings={path_findings:?}"
-    );
-}
-
-#[test]
-pub(crate) fn path_traversal_reaches_accessor_receivers_and_let_mut_bindings() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r#"use std::path::PathBuf;
-
-/// Holds a base directory.
-pub struct App;
-
-impl App {
-    /// Returns the base directory.
-    pub fn root(&self) -> PathBuf {
-        PathBuf::from("/data")
-    }
-
-    /// Joins an unchecked segment onto a path returned by an accessor call.
-    pub fn open(&self, user_input: &str) -> PathBuf {
-        self.root().join(user_input)
-    }
-}
-
-/// Joins an unchecked segment onto a `let mut` path binding.
-pub fn mutable_base_join(user_input: &str) -> PathBuf {
-    let mut store = PathBuf::from("/data");
-    store.push("sub");
-    store.join(user_input)
-}
-"#,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let path_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "security.path-traversal-candidate")
-        .collect();
-    assert_eq!(
-        path_findings.len(),
-        2,
-        "accessor-call receivers and `let mut` path bindings must flag; findings={path_findings:?}"
-    );
-    assert!(
-        path_findings
-            .iter()
-            .all(|finding| finding.metadata["argument"] == json!("user_input")),
-        "both joins should report the unchecked segment; findings={path_findings:?}"
     );
 }

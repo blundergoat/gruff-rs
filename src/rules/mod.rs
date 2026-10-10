@@ -197,6 +197,72 @@ pub(crate) fn builtin_severity(rule_id: &str) -> Severity {
     }
 }
 
+/// A named numeric knob a detector reads, as opposed to a rubric's single threshold. ADR-011 keeps
+/// every rubric at one `threshold`; a detector with independent knobs names each one under
+/// `rules.<id>.thresholds`, spelled as the sibling ports spell it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DetectorParameter {
+    pub(crate) name: &'static str,
+    pub(crate) default: f64,
+    pub(crate) kind: DetectorParameterKind,
+}
+
+/// The values a detector parameter accepts; anything else is a configuration error, never clamped.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DetectorParameterKind {
+    /// A whole number from `min` to `max` inclusive.
+    WholeNumber { min: u64, max: u64 },
+    /// A finite number of zero or more.
+    NonNegative,
+}
+
+/// The longest literal the high-entropy detector may be told to require. It matches gruff-php's
+/// scan cap, so one configured value means the same thing in both ports.
+pub(crate) const HIGH_ENTROPY_MAX_MIN_LENGTH: u64 = 65_535;
+
+/// Named detector parameters by rule id, with the family defaults ratified on 2026-09-02.
+const DETECTOR_PARAMETERS: &[(&str, &[DetectorParameter])] = &[(
+    "sensitive-data.high-entropy-string",
+    &[
+        DetectorParameter {
+            name: "minLength",
+            default: 32.0,
+            kind: DetectorParameterKind::WholeNumber {
+                min: 1,
+                max: HIGH_ENTROPY_MAX_MIN_LENGTH,
+            },
+        },
+        DetectorParameter {
+            name: "entropy",
+            default: 4.2,
+            kind: DetectorParameterKind::NonNegative,
+        },
+    ],
+)];
+
+/// Named detector parameters a rule declares; empty for every rubric and every other rule.
+pub(crate) fn detector_parameters(rule_id: &str) -> &'static [DetectorParameter] {
+    DETECTOR_PARAMETERS
+        .iter()
+        .find(|(id, _)| *id == rule_id)
+        .map(|(_, parameters)| *parameters)
+        .unwrap_or(&[])
+}
+
+/// Catalogue default for one named detector parameter, single-sourced like [`builtin_threshold`].
+pub(crate) fn builtin_detector_parameter(rule_id: &str, name: &str) -> f64 {
+    match detector_parameters(rule_id)
+        .iter()
+        .find(|parameter| parameter.name == name)
+    {
+        Some(parameter) => parameter.default,
+        // PANIC: rule code reading a parameter its rule does not declare is a catalogue defect.
+        None => panic!(
+            "built-in rule `{rule_id}` reads detector parameter `{name}` it does not declare"
+        ),
+    }
+}
+
 const COMPLEXITY_COGNITIVE_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(15.0));
 const COMPLEXITY_CYCLOMATIC_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(10.0));
 const COMPLEXITY_NESTING_DEPTH_THRESHOLD: Option<ThresholdDefinition> = Some(threshold(4.0));

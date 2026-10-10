@@ -1,7 +1,13 @@
+//! Check that focused false-positive exceptions preserve nearby actionable warnings.
+//!
+//! Fixtures cover sensitive values, references, dependency files, bindings, performance checks and documentation.
+//! Run these controls when narrowing a rule so developers keep warnings outside the proved exception.
+
 use super::*;
 
 #[test]
-pub(crate) fn sensitive_data_rules_skip_common_placeholder_and_detector_contexts() {
+/// Keep unproved private-key markers visible beside safe runtime secret references.
+pub(crate) fn sensitive_data_rules_keep_unproved_key_markers_beside_runtime_placeholders() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -65,23 +71,24 @@ aws-sdk-secretsmanager = "1"
         },
     )
     .expect("analysis succeeds");
-    for rule in [
-        "sensitive-data.hardcoded-env-value",
-        "sensitive-data.private-key",
-    ] {
-        let findings: Vec<&Finding> = report
-            .findings
-            .iter()
-            .filter(|finding| finding.rule_id == rule)
-            .collect();
-        assert!(
-            findings.is_empty(),
-            "{rule} must skip placeholders, runtime values, dependency names, and detector patterns; findings={findings:?}"
-        );
-    }
+    // An unused array supplies no native parsing proof; naming it SECRET_PATTERNS cannot grant trust.
+    let keys: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "sensitive-data.private-key")
+        .collect();
+    assert_eq!(keys.len(), 3);
+    assert_eq!(
+        keys.iter().map(|finding| finding.line).collect::<Vec<_>>(),
+        vec![Some(2), Some(3), Some(4)]
+    );
+    assert!(keys
+        .iter()
+        .all(|finding| finding.file_path == "scripts/oss-gate-check.sh"));
 }
 
 #[test]
+/// Keep indirectly referenced functions out of the developer's unused-code warnings.
 pub(crate) fn dead_code_unused_private_function_recognises_indirect_references() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -124,6 +131,7 @@ pub fn entry(values: &[i32]) -> Vec<bool> {
         },
     )
     .expect("analysis succeeds");
+    // Indirect callback, default and formatter references must keep these symbols out of unused-code warnings.
     for symbol in ["check_ai_tool", "default_branch", "fmt"] {
         assert!(
             !report.findings.iter().any(|finding| {
@@ -141,12 +149,14 @@ pub fn entry(values: &[i32]) -> Vec<bool> {
 }
 
 #[test]
+/// Keep generated dependency lockfiles quiet while authored long files remain reportable.
 pub(crate) fn file_length_skips_dependency_lockfiles() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
     let mut cargo_lock = String::from("# This is intentionally large lockfile metadata.\n");
     let mut package_lock = String::from("{\n");
+    // Make both dependency fixtures long enough to exercise the file-length exception.
     for index in 0..620 {
         cargo_lock.push_str(&format!("# package row {index}\n"));
         package_lock.push_str(&format!("  \"package-{index}\": \"1.0.0\",\n"));
@@ -319,6 +329,7 @@ pub fn combine(ok: usize, id: usize) -> usize {
 }
 
 #[test]
+/// Keep prose mentioning loops from producing a performance warning.
 pub(crate) fn performance_loop_rules_ignore_loop_words_in_comments() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -351,6 +362,7 @@ pub fn forge_cancel(current_distro: Option<String>) -> Option<String> {
         },
     )
     .expect("analysis succeeds");
+    // Neither performance rule should treat loop words in prose as executable repeated work.
     for rule in ["performance.format-in-loop", "performance.clone-in-loop"] {
         assert!(
             !report
@@ -368,6 +380,7 @@ pub fn forge_cancel(current_distro: Option<String>) -> Option<String> {
 }
 
 #[test]
+/// Keep static probe and report construction quiet while repeated user-work formatting remains visible.
 pub(crate) fn format_in_loop_skips_static_probe_and_report_message_construction() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -426,6 +439,7 @@ pub fn dynamic_format_loop(values: &[String]) -> Vec<String> {
     )
     .expect("analysis succeeds");
 
+    // Both static-probe and report-message functions must remain outside these performance findings.
     for symbol in ["build_wsl_batch_probe_script", "scan_security_groups"] {
         assert!(
             !report.findings.iter().any(|finding| {
@@ -455,6 +469,7 @@ pub fn dynamic_format_loop(values: &[String]) -> Vec<String> {
 }
 
 #[test]
+/// Accept a separate module file's description when reporting public-module documentation.
 pub(crate) fn external_public_module_declaration_uses_module_file_docs() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -499,6 +514,7 @@ pub fn entry() {}
 }
 
 #[test]
+/// Keep an ordinary call argument from being mistaken for a removable clone.
 pub(crate) fn unnecessary_clone_candidate_skips_standalone_call_argument() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -612,5 +628,222 @@ mod tests {
             .iter()
             .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
             .collect::<Vec<_>>()
+    );
+}
+
+/// `should-panic-without-expected` skips a test item whose own attributes exclude test builds, since it is never compiled as a test, while a bare
+/// `#[should_panic]` beside it still fires.
+#[test]
+pub(crate) fn should_panic_skips_items_excluded_from_test_builds() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r##"/// Probe.
+pub fn entry() {}
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[should_panic]
+    fn bare() { panic!("boom"); }
+
+    #[cfg(not(test))]
+    #[test]
+    #[should_panic]
+    fn excluded() { panic!("boom"); }
+
+    #[cfg(all(unix, not(test)))]
+    #[test]
+    #[should_panic]
+    fn excluded_by_all() { panic!("boom"); }
+
+    #[cfg(any(not(test), feature = "x"))]
+    #[test]
+    #[should_panic]
+    fn any_branch() { panic!("boom"); }
+
+    #[test]
+    #[should_panic]
+    fn nested_item() {
+        #[cfg(not(test))]
+        fn helper() {}
+        panic!("boom");
+    }
+
+    #[test]
+    #[should_panic]
+    fn body_string() {
+        let _attribute = "#[cfg(not(test))]";
+        panic!("boom");
+    }
+
+    #[test]
+    #[should_panic = ""]
+    fn empty_message() { panic!("boom"); }
+}
+"##,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("should-panic analysis succeeds");
+    let mut flagged: Vec<String> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "test-quality.should-panic-without-expected")
+        .filter_map(|finding| finding.symbol.clone())
+        .map(|symbol| symbol.rsplit("::").next().unwrap_or(&symbol).to_string())
+        .collect();
+    flagged.sort();
+    assert_eq!(
+        flagged,
+        vec![
+            "any_branch",
+            "bare",
+            "body_string",
+            "empty_message",
+            "nested_item"
+        ]
+    );
+}
+
+/// Keep disabled code reportable while fenced examples, placeholders and annotated Clippy UI specimens stay quiet.
+///
+/// Identical specimen text changes classification only with its file's annotation context.
+/// Prose, banners, ranges and nested comments must not hide nearby disabled code.
+#[test]
+pub(crate) fn commented_out_code_skips_fences_placeholders_and_ui_specimens() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        "/// Probe.\npub fn entry() {}\n\n// fn old_code() {}\n\n// fn older() {\n//     entry();\n// }\n",
+    );
+    fs::write(
+        dir.path().join("src/fenced.rs"),
+        "/// Probe.\npub fn fenced() {}\n\n// Usage:\n// ```\n// let value = compute();\n// ```\n",
+    )
+    .expect("fenced write");
+    fs::write(
+        dir.path().join("src/prose.rs"),
+        "/// Probe.\npub fn prose() {}\n\n// if .. { insert } else { .. }\n",
+    )
+    .expect("prose write");
+    fs::write(
+        dir.path().join("src/specimen.rs"),
+        "//~v empty_line_after_doc_comments\n/// Probe.\npub fn specimen() {}\n\n// fn old_code() {}\n",
+    )
+    .expect("specimen write");
+    // Try each documented example shape beside disabled code that must still warn.
+    for (name, body) in [
+        (
+            "tilde",
+            "// ~/.cargo/config.toml overrides the values below.\n\n// let disabled = old_call();\n",
+        ),
+        (
+            "rest",
+            "// let Point { x, .. } = point;\n\n// let (first, ..) = pair;\n",
+        ),
+        ("ellipsis", "// let message = \"loading...\";\n"),
+        ("unicode", "// let x = café .. y;\n"),
+        (
+            "fenceonly",
+            "// ```\n// let total = compute(1, 2);\n// ```\n",
+        ),
+        (
+            "banner",
+            "//~~~~~~~~~~~~\n\n// let total = compute_total(1, 2);\n",
+        ),
+        (
+            "range",
+            "// for i in 0 .. count { total += i; }\n\n// let window = &buffer[start .. end];\n",
+        ),
+        (
+            "paren",
+            "// match state {\n//     0 => go(),\n//     _ => stop(),\n// }\n// Disabled for now (see issue 42)\n",
+        ),
+        ("closing", "// if ready {\n//     go();\n// } // end if\n"),
+        (
+            "nested",
+            "// match state {\n//     0 => go(), // and so on...\n//     _ => stop(),\n// }\n",
+        ),
+        (
+            "mention",
+            "// annotations look like //~^ ERROR on the next line\n\n// let x = compute(state);\n",
+        ),
+        (
+            "between",
+            "// let a = compute(state);\n// then the match:\n// match state {\n//     0 => go(),\n// }\n",
+        ),
+        (
+            "trailing",
+            "// match state {\n//     State::Idle => start(),\n//     State::Busy => wait(),\n// }\n// Restore it after the state machine lands\n",
+        ),
+        (
+            "leadin",
+            "// The old version was:\n// fn old_version(x: u32) -> u32 {\n//     x + 1\n// }\n",
+        ),
+    ] {
+        fs::write(
+            dir.path().join(format!("src/{name}.rs")),
+            format!("/// Probe.\npub fn {name}() {{}}\n\n{body}"),
+        )
+        .expect("probe write");
+    }
+    // Comment text is untrusted: nesting this deep would overflow the parser's stack if it were parsed.
+    let deep = format!(
+        "/// Probe.\npub fn deep() {{}}\n\n// let x = {}1{};\n// let y = {}1;\n",
+        "(".repeat(3000),
+        ")".repeat(3000),
+        "return ".repeat(3000)
+    );
+    fs::write(dir.path().join("src/deep.rs"), deep).expect("deep write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("commented-out-code analysis succeeds");
+    let mut flagged: Vec<(&str, Option<usize>)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.commented-out-code")
+        .map(|finding| (finding.file_path.as_str(), finding.line))
+        .collect();
+    flagged.sort();
+    assert_eq!(
+        flagged,
+        vec![
+            ("src/banner.rs", Some(6)),
+            ("src/between.rs", Some(4)),
+            ("src/between.rs", Some(6)),
+            ("src/closing.rs", Some(4)),
+            ("src/ellipsis.rs", Some(4)),
+            ("src/leadin.rs", Some(5)),
+            ("src/lib.rs", Some(4)),
+            ("src/lib.rs", Some(6)),
+            ("src/mention.rs", Some(6)),
+            ("src/nested.rs", Some(4)),
+            ("src/paren.rs", Some(4)),
+            ("src/range.rs", Some(4)),
+            ("src/range.rs", Some(6)),
+            ("src/rest.rs", Some(4)),
+            ("src/rest.rs", Some(6)),
+            ("src/tilde.rs", Some(6)),
+            ("src/trailing.rs", Some(4)),
+            ("src/unicode.rs", Some(4)),
+        ]
     );
 }

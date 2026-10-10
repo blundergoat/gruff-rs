@@ -1,6 +1,7 @@
-//! Network-facing security rules inspect executable Rust for exposed listeners,
-//! tainted requests and deserialization, dangerous XML options, and raw template output.
-//! Operators reach these checks during ordinary project scans, including test and CI source.
+//! Network security rules inspect executable Rust for exposed listeners, tainted requests, unsafe parsing, and raw HTML output.
+//!
+//! Operators reach these checks during project scans, including test and CI source.
+//! Parsed source prevents a finite enum label from becoming an HTML warning.
 
 use super::*;
 
@@ -74,7 +75,7 @@ fn bind_all_interfaces_finding(file: &SourceFile, line: usize, addr: &str) -> Fi
         confidence: Confidence::High,
         symbol: None,
         remediation: Some(
-            "Bind to a loopback address for local-only servers, or gate the all-interfaces bind behind a deployment flag. If the bind is in a test harness or build script, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Bind to a loopback address for local-only servers, or gate the all-interfaces bind behind a deployment flag."
                 .to_string(),
         ),
         metadata: json!({ "address": addr }),
@@ -152,18 +153,28 @@ pub(crate) fn analyse_xxe_candidate(file: &SourceFile, source: &str, findings: &
     }
 }
 
+/// Flag request-derived HTML output unless parsed source proves the printed value is a finite enum label.
+/// An operator scanning a handler still sees warnings for payloads and mixed dynamic output.
 pub(crate) fn analyse_template_injection_xss(
     file: &SourceFile,
+    ast: &syn::File,
     blocks: &[FunctionBlock],
     findings: &mut Vec<Finding>,
 ) {
+    // Each function is checked separately so one safe handler cannot excuse another handler's output.
     for block in blocks {
         let mut taint = FunctionTaint::from_block(block);
+        // Each source line can contain a reportable HTML sink even when an earlier line was safe.
         for (line_index, line) in block.body.lines().enumerate() {
             taint.observe_line(line);
+            // Lines without a tainted template sink add no security finding for the user to review.
             let Some(argument) = template_sink_argument(line, &taint) else {
                 continue;
             };
+            // A single derived unit-enum label cannot carry request text into this exact HTML expression.
+            if derived_unit_enum_html_argument(ast, block).as_deref() == Some(argument.as_str()) {
+                continue;
+            }
             findings.push(network_candidate_finding(
                 file,
                 "security.template-injection-xss",
@@ -173,6 +184,315 @@ pub(crate) fn analyse_template_injection_xss(
             ));
         }
     }
+}
+
+/// Return the sole request parameter only when one Axum HTML expression prints its derived unit-enum label.
+/// Any missing source fact leaves the user's security warning in place.
+fn derived_unit_enum_html_argument(ast: &syn::File, block: &FunctionBlock) -> Option<String> {
+    // A trusted wrapper and formatter must be visible before suppressing a security warning.
+    if !uses_standard_axum_html_format(ast) {
+        return None;
+    }
+    let function = top_level_handler_for_block(ast, block)?;
+    let (parameter_name, enum_name) = sole_enum_parameter(function)?;
+    // A payload or custom formatter can turn the displayed enum into request-derived text.
+    if !has_derived_unit_enum_without_formatter(ast, enum_name) {
+        return None;
+    }
+    let (format_literal, uses_explicit_argument) =
+        single_html_format_literal(function, &parameter_name)?;
+    let named_field = format!("{{{parameter_name}:?}}");
+    // Captured and positional Debug fields are equivalent ways to print the same finite label.
+    let allowed_fields = if uses_explicit_argument {
+        vec!["{:?}", "{0:?}"]
+    } else {
+        vec![named_field.as_str()]
+    };
+    has_only_enum_debug_fields(&format_literal.value(), &allowed_fields).then_some(parameter_name)
+}
+
+/// Require Axum's HTML wrapper and reject source imports that can replace the expected formatter.
+fn uses_standard_axum_html_format(ast: &syn::File) -> bool {
+    let imports_html = ast.items.iter().any(
+        |item| matches!(item, syn::Item::Use(import) if has_axum_html_import(&import.tree, "")),
+    );
+    // Without the observed Axum import, a local Html call has unknown behavior.
+    if !imports_html {
+        return false;
+    }
+    // An external module could supply a formatter that this single-file check cannot inspect.
+    if ast
+        .items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Mod(module) if module.content.is_none()))
+    {
+        return false;
+    }
+    // An imported Debug derive or format macro could change what the handler prints.
+    !ast.items.iter().any(|item| match item {
+        syn::Item::Use(import) => {
+            has_named_import(&import.tree, "Debug") || has_named_import(&import.tree, "format")
+        }
+        syn::Item::Macro(macro_item) => macro_item
+            .ident
+            .as_ref()
+            .is_some_and(|name| name == "format"),
+        _ => false,
+    })
+}
+
+/// Locate only the top-level parsed handler that owns the user's reported source block.
+fn top_level_handler_for_block<'a>(
+    ast: &'a syn::File,
+    block: &FunctionBlock,
+) -> Option<&'a syn::ItemFn> {
+    let mut matching_functions = ast.items.iter().filter_map(|item| match item {
+        syn::Item::Fn(function)
+            if function.sig.ident == block.name
+                && (block.start_line..block.start_line + block.line_count)
+                    .contains(&function.sig.ident.span().start().line) =>
+        {
+            Some(function)
+        }
+        _ => None,
+    });
+    // Ambiguous top-level handlers or attributes may change what a user actually runs.
+    let function = matching_functions.next()?;
+    if matching_functions.next().is_some()
+        || !function.attrs.is_empty()
+        || !function.sig.generics.params.is_empty()
+    {
+        return None;
+    }
+    Some(function)
+}
+
+/// Return the handler's one plain enum parameter; unknown, generic and qualified types remain reportable.
+fn sole_enum_parameter(function: &syn::ItemFn) -> Option<(String, &syn::Ident)> {
+    // Multiple inputs could add unproved user text to the same HTML output.
+    if function.sig.inputs.len() != 1 {
+        return None;
+    }
+    let syn::FnArg::Typed(input) = function.sig.inputs.first()? else {
+        return None;
+    };
+    let syn::Pat::Ident(parameter) = input.pat.as_ref() else {
+        return None;
+    };
+    let syn::Type::Path(input_type) = input.ty.as_ref() else {
+        return None;
+    };
+    // A qualified or generic type needs more provenance than this same-file exception can prove.
+    if input_type.qself.is_some()
+        || input_type.path.segments.len() != 1
+        || !matches!(
+            input_type.path.segments.first()?.arguments,
+            syn::PathArguments::None
+        )
+    {
+        return None;
+    }
+    Some((
+        parameter.ident.to_string(),
+        &input_type.path.segments.first()?.ident,
+    ))
+}
+
+/// Confirm one same-file finite enum with derived Debug and no same-file custom formatter.
+fn has_derived_unit_enum_without_formatter(ast: &syn::File, enum_name: &syn::Ident) -> bool {
+    let mut matching_enums = ast.items.iter().filter_map(|item| match item {
+        syn::Item::Enum(item_enum) if item_enum.ident == *enum_name => Some(item_enum),
+        _ => None,
+    });
+    let Some(item_enum) = matching_enums.next() else {
+        return false;
+    };
+    // A second declaration, payload variant, generic or extra derive leaves the output unproved.
+    if matching_enums.next().is_some() || !enum_has_only_derived_debug_unit_variants(item_enum) {
+        return false;
+    }
+    // A same-file formatter can print more than the enum's variant label.
+    !has_same_file_enum_formatter(&ast.items, enum_name)
+}
+
+/// Read a direct `Html(format!(...))` expression with either captured or explicit enum Debug formatting.
+fn single_html_format_literal(
+    function: &syn::ItemFn,
+    parameter_name: &str,
+) -> Option<(syn::LitStr, bool)> {
+    // Extra statements may add or transform user text before HTML is returned.
+    if function.block.stmts.len() != 1 {
+        return None;
+    }
+    let [syn::Stmt::Expr(syn::Expr::Call(html_call), None)] = function.block.stmts.as_slice()
+    else {
+        return None;
+    };
+    let syn::Expr::Path(html_wrapper) = html_call.func.as_ref() else {
+        return None;
+    };
+    // A different wrapper or multiple arguments may mix request data into the rendered output.
+    if !html_wrapper.path.is_ident("Html") || html_call.args.len() != 1 {
+        return None;
+    }
+    let syn::Expr::Macro(format_expression) = html_call.args.first()? else {
+        return None;
+    };
+    // Only a built-in-looking format call with a static literal is supported.
+    if !format_expression.mac.path.is_ident("format") {
+        return None;
+    }
+    read_enum_debug_format_arguments(&format_expression.mac, parameter_name)
+}
+
+/// Read a static format literal and at most one explicit argument naming the same enum parameter.
+fn read_enum_debug_format_arguments(
+    format_macro: &syn::Macro,
+    parameter_name: &str,
+) -> Option<(syn::LitStr, bool)> {
+    let format_arguments = syn::parse::Parser::parse2(
+        syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated,
+        format_macro.tokens.clone(),
+    )
+    .ok()?;
+    let syn::Expr::Lit(first_argument) = format_arguments.first()? else {
+        return None;
+    };
+    let syn::Lit::Str(format_literal) = &first_argument.lit else {
+        return None;
+    };
+    // An explicit argument must be exactly the same enum parameter, with no other dynamic input.
+    let uses_explicit_argument = match format_arguments.len() {
+        1 => false,
+        2 => {
+            let syn::Expr::Path(argument) = format_arguments.iter().nth(1)? else {
+                return None;
+            };
+            if !argument.path.is_ident(parameter_name) {
+                return None;
+            }
+            true
+        }
+        _ => return None,
+    };
+    Some((format_literal.clone(), uses_explicit_argument))
+}
+
+/// Recognize the exact Axum HTML import so an unrelated local wrapper cannot gain this exception.
+fn has_axum_html_import(import: &syn::UseTree, prefix: &str) -> bool {
+    match import {
+        syn::UseTree::Path(path) => {
+            has_axum_html_import(&path.tree, &format!("{prefix}{}::", path.ident))
+        }
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| has_axum_html_import(item, prefix)),
+        syn::UseTree::Name(name) => prefix == "axum::response::" && name.ident == "Html",
+        _ => false,
+    }
+}
+
+/// Catch explicit imports that could replace the standard Debug derive or format macro.
+fn has_named_import(import: &syn::UseTree, symbol: &str) -> bool {
+    match import {
+        syn::UseTree::Path(path) => has_named_import(&path.tree, symbol),
+        syn::UseTree::Group(group) => group
+            .items
+            .iter()
+            .any(|item| has_named_import(item, symbol)),
+        syn::UseTree::Name(name) => name.ident == symbol,
+        syn::UseTree::Rename(rename) => rename.rename == symbol,
+        syn::UseTree::Glob(_) => true,
+    }
+}
+
+/// Confirm that Debug is derived for a finite enum whose variants have no request-carrying fields.
+fn enum_has_only_derived_debug_unit_variants(item_enum: &syn::ItemEnum) -> bool {
+    // Empty, generic or payload-bearing enums need a different proof of what Debug can print.
+    if item_enum.variants.is_empty()
+        || item_enum.variants.len() > 32
+        || !item_enum.generics.params.is_empty()
+        || !item_enum
+            .variants
+            .iter()
+            .all(|variant| matches!(variant.fields, syn::Fields::Unit))
+        || item_enum.attrs.len() != 1
+    {
+        return false;
+    }
+    let derive_attribute = &item_enum.attrs[0];
+    // Additional derives or a different attribute may alter the source shape being trusted.
+    if !derive_attribute.path().is_ident("derive") {
+        return false;
+    }
+    let derived_traits = derive_attribute.parse_args_with(
+        syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+    );
+    matches!(derived_traits, Ok(traits) if traits.len() == 1 && traits[0].is_ident("Debug"))
+}
+
+/// Find a same-file Debug or Display implementation, including one inside an inline module.
+fn has_same_file_enum_formatter(items: &[syn::Item], enum_name: &syn::Ident) -> bool {
+    items.iter().any(|item| match item {
+        syn::Item::Impl(item_impl) => has_enum_formatter_impl(item_impl, enum_name),
+        syn::Item::Mod(module) => module
+            .content
+            .as_ref()
+            .is_some_and(|(_, nested_items)| has_same_file_enum_formatter(nested_items, enum_name)),
+        _ => false,
+    })
+}
+
+/// Match only a formatter implemented for the enum whose HTML output is under review.
+fn has_enum_formatter_impl(item_impl: &syn::ItemImpl, enum_name: &syn::Ident) -> bool {
+    let Some((_, trait_path, _)) = &item_impl.trait_ else {
+        return false;
+    };
+    // Only Debug and Display can change the output promised by this narrow formatter check.
+    if !trait_path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "Debug" || segment.ident == "Display")
+    {
+        return false;
+    }
+    let syn::Type::Path(implemented_type) = item_impl.self_ty.as_ref() else {
+        return false;
+    };
+    implemented_type
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == *enum_name)
+}
+
+/// Accept literal text, escaped braces and enum Debug fields, with no other dynamic output.
+fn has_only_enum_debug_fields(format_text: &str, allowed_fields: &[&str]) -> bool {
+    let format_bytes = format_text.as_bytes();
+    let mut index = 0;
+    let mut saw_enum = false;
+    // Every opening or closing brace must be either escaped text or this enum's Debug field.
+    while index < format_bytes.len() {
+        match format_bytes[index] {
+            b'{' if format_bytes.get(index + 1) == Some(&b'{') => index += 2,
+            b'{' => {
+                // Any other field could carry request text into the returned HTML.
+                let Some(debug_field) = allowed_fields
+                    .iter()
+                    .find(|field| format_bytes[index..].starts_with(field.as_bytes()))
+                else {
+                    return false;
+                };
+                saw_enum = true;
+                index += debug_field.len();
+            }
+            b'}' if format_bytes.get(index + 1) == Some(&b'}') => index += 2,
+            b'}' => return false,
+            _ => index += 1,
+        }
+    }
+    saw_enum
 }
 
 #[derive(Default)]

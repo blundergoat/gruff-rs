@@ -21,9 +21,12 @@ pub(crate) struct FunctionBlock {
     pub(crate) test_context: bool,
     pub(crate) is_async: bool,
     pub(crate) returns_bool: bool,
+    pub(crate) is_trait_method: bool,
     pub(crate) returns_result: bool,
     pub(crate) ignore_without_reason: bool,
     pub(crate) body_is_declarative_literal: bool,
+    /// Cyclomatic, nesting and cognitive complexity counted on the parsed body.
+    pub(crate) complexity: SyntaxComplexity,
 }
 
 impl FunctionBlock {
@@ -48,6 +51,9 @@ pub(crate) fn collect_module_function_blocks(
     }
 }
 
+/// Raw parser facts used to build one function record before the user's rules run.
+/// A scan reaches these facts after Rust source parses successfully.
+/// Trait ownership stays private while report locations still come from the declaration.
 pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) lines: &'a [&'a str],
     pub(crate) name: String,
@@ -57,6 +63,7 @@ pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) test_context: bool,
     pub(crate) is_async: bool,
     pub(crate) returns_bool: bool,
+    pub(crate) is_trait_method: bool,
     pub(crate) returns_result: bool,
     pub(crate) name_start: LineColumn,
     pub(crate) block_end: LineColumn,
@@ -81,7 +88,10 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         param_count: parts.param_count,
         start_line: start + 1,
         line_count: end.saturating_sub(start) + 1,
-        executable_line_count: end.saturating_sub(function_index) + 1,
+        executable_line_count: declaration_code_line_count(
+            &body,
+            function_index.saturating_sub(start),
+        ),
         body,
         rustdoc: source_context.rustdoc,
         is_externally_public: is_externally_public(parts.visibility),
@@ -89,10 +99,22 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         test_context,
         is_async: parts.is_async,
         returns_bool: parts.returns_bool,
+        is_trait_method: parts.is_trait_method,
         returns_result: parts.returns_result,
         ignore_without_reason: has_ignore_without_reason(parts.attrs),
         body_is_declarative_literal: is_declarative_literal_body(parts.block),
+        complexity: syntax_complexity(parts.block),
     }
+}
+
+/// Count the code lines from the declaration line to the end of the body (FAMILY-CONTRACT section 12, search `Code
+/// lines in every line count`). The body slice starts at the attached docs and attributes, so it is lexically whole.
+fn declaration_code_line_count(body: &str, declaration_offset: usize) -> usize {
+    rust_code_line_flags(body)
+        .into_iter()
+        .skip(declaration_offset)
+        .filter(|is_code| *is_code)
+        .count()
 }
 
 /// True iff the block is exactly one trailing expression whose shape is a
@@ -176,22 +198,6 @@ pub(crate) fn is_result_return_type(output: &ReturnType) -> bool {
         .last()
         .map(|segment| segment.ident == "Result")
         .unwrap_or(false)
-}
-
-pub(crate) fn max_nesting_depth(source: &str) -> usize {
-    let mut depth = 0usize;
-    let mut max_depth = 0usize;
-    for character in source.chars() {
-        match character {
-            '{' => {
-                depth += 1;
-                max_depth = max_depth.max(depth);
-            }
-            '}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    max_depth.saturating_sub(1)
 }
 
 /// Counts occurrences of `pattern` that appear inside a loop body in

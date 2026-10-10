@@ -23,10 +23,7 @@ pub(crate) fn analyse_placeholder_block_name(
             },
             BlockFindingExtras {
                 confidence: Confidence::Medium,
-                remediation: Some(
-                    "Rename the function to describe its domain role. If the placeholder is intentional (test fixture, generated stub), add the host path to `paths.ignore` in `.gruff-rs.yaml`."
-                        .to_string(),
-                ),
+                remediation: Some("Rename the function to describe its domain role.".to_string()),
                 metadata: json!({}),
             },
         ));
@@ -41,7 +38,6 @@ pub(crate) fn analyse_error_handling_block(
 ) {
     analyse_panic_block(file, block, searchable_body, findings);
     analyse_placeholder_block(file, block, searchable_body, findings);
-    analyse_public_unwrap_block(file, block, searchable_body, findings);
 }
 
 pub(crate) fn analyse_panic_block(
@@ -82,9 +78,23 @@ pub(crate) fn analyse_placeholder_block(
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
-    if static_regex(&PLACEHOLDER_MACRO_REGEX, r"\b(todo!|unimplemented!)\s*\(")
-        .is_match(searchable_body)
-    {
+    // `blocks.rs` returns before this rule for a test fn or `#[cfg(test)]` code, so the one guard
+    // `analyse_panic_block` opens with that is missing here is the test-infrastructure path.
+    if path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
+    // Comments are stripped here, not by the caller, because the panic and unwrap checks read the same
+    // body. A macro named in prose, or quoted into a `quote!` stream for generated code, is not a call.
+    let code = mask_quote_token_streams(&strip_rust_comments_after_string_mask(searchable_body));
+    let regex = static_regex(&PLACEHOLDER_MACRO_REGEX, r"\b(todo!|unimplemented!)\s*\(");
+    let mut macros: Vec<&str> = Vec::new();
+    for captures in regex.captures_iter(&code) {
+        let name = captures.get(1).map_or("", |found| found.as_str());
+        if !macros.contains(&name) {
+            macros.push(name);
+        }
+    }
+    if !macros.is_empty() {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {
                 rule_id: "error-handling.unimplemented-placeholder",
@@ -103,42 +113,49 @@ pub(crate) fn analyse_placeholder_block(
                     "Replace the placeholder with implemented behavior before shipping."
                         .to_string(),
                 ),
-                metadata: json!({ "macros": ["todo!", "unimplemented!"] }),
+                metadata: json!({ "macros": macros }),
             },
         ));
     }
 }
 
-pub(crate) fn analyse_public_unwrap_block(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    searchable_body: &str,
-    findings: &mut Vec<Finding>,
-) {
-    let has_unwrap = static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(")
-        .is_match(searchable_body);
-    if block.is_externally_public && has_unwrap {
-        findings.push(block_finding_with_extras(
-            BlockFindingDescriptor {
-                rule_id: "error-handling.public-unwrap",
-                message: format!(
-                    "Public function `{}` uses unwrap()/expect() in its implementation.",
-                    block.name
-                ),
-                file,
-                block,
-                severity: Severity::Warning,
-                pillar: Pillar::Maintainability,
-            },
-            BlockFindingExtras {
-                confidence: Confidence::High,
-                remediation: Some(
-                    "Return a Result or map the failure into the public API contract.".to_string(),
-                ),
-                metadata: json!({}),
-            },
-        ));
+/// Blank the body of every `quote!` or `quote_spanned!` invocation, keeping line breaks, so a macro name
+/// inside a generated-code token stream is not read as a call. Strings are already masked, so the
+/// delimiters counted here are all code.
+fn mask_quote_token_streams(code: &str) -> String {
+    static QUOTE_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = static_regex(&QUOTE_MACRO_REGEX, r"\bquote(?:_spanned)?!\s*[\(\[\{]");
+    let bytes = code.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut search_from = 0;
+    while let Some(found) = regex.find_at(code, search_from) {
+        // The match ends on the opening delimiter.
+        let end = closing_delimiter_index(bytes, found.end() - 1);
+        for byte in &mut masked[found.end()..end] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+        search_from = end;
     }
+    String::from_utf8_lossy(&masked).into_owned()
+}
+
+/// Return the index of the delimiter that closes the one at `open_index`, counting every bracket kind, or
+/// the end of the text when the stream never closes.
+fn closing_delimiter_index(bytes: &[u8], open_index: usize) -> usize {
+    let mut depth = 0usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open_index) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => continue,
+        }
+        if depth == 0 {
+            return index;
+        }
+    }
+    bytes.len()
 }
 
 pub(crate) struct PerformanceCheck {

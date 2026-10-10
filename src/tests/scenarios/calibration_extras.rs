@@ -340,43 +340,6 @@ pub fn entry() {{
 }
 
 #[test]
-pub(crate) fn calibration_hardcoded_env_value_detects_structured_config_keys() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    fs::write(
-        dir.path().join("secrets.yaml"),
-        "database_password: yaml-secret-123\napi_token: yaml-token-456\n",
-    )
-    .expect("yaml write");
-    fs::write(
-        dir.path().join("settings.json"),
-        "{\n  \"database_url\":\"postgres://user:secret@db/app\",\n  \"service-token\":\"json-secret-123\"\n}\n",
-    )
-    .expect("json write");
-
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let hardcoded_env_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "sensitive-data.hardcoded-env-value")
-        .collect();
-    assert_eq!(
-        hardcoded_env_findings.len(),
-        4,
-        "expected YAML/JSON secret-like assignments to fire; findings={hardcoded_env_findings:?}"
-    );
-}
-
-#[test]
 pub(crate) fn calibration_process_command_records_risk_signals() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -443,15 +406,8 @@ pub fn tls() {
 }
 "#,
     );
-    write_config(
-        dir.path(),
-        r#"
-paths:
-  ignore:
-    - .github/**
-    - target/**
-"#,
-    );
+    // The CI rule is off by default (ADR-024), so the guard enables it the way a project would.
+    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
     fs::create_dir_all(dir.path().join(".github/workflows")).expect("workflow dir");
     fs::write(
         dir.path().join(".github/workflows/ci.yml"),
@@ -463,7 +419,7 @@ paths:
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -512,16 +468,20 @@ pub fn entry(tenant: &str) {
     let _strong = Sha256::new();
     let _http_credential = "https://user:secret123@payments.acme.co/path";
     let _plain_http = "https://example.invalid/path";
+    // Not an HTTP(S) URL, so the URL-credential rule must not count it.
     let _db_credential = "postgres://user:secret@db/app";
 }
 "#,
     );
 
+    // Dynamic SQL is off by default (ADR-024), so the guard enables it the way a project would.
+    enable_builtin_rule(dir.path(), "security.sql-dynamic-query");
+
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -543,11 +503,6 @@ pub fn entry(tenant: &str) {
         .iter()
         .filter(|finding| finding.rule_id == "sensitive-data.url-embedded-credentials")
         .count();
-    let database_url_count = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "sensitive-data.database-url-password")
-        .count();
 
     assert_eq!(
         sql_count,
@@ -565,12 +520,6 @@ pub fn entry(tenant: &str) {
         url_credential_count,
         1,
         "URL credential guard count drifted: {:?}",
-        rule_ids(&report)
-    );
-    assert_eq!(
-        database_url_count,
-        1,
-        "database URL guard count drifted: {:?}",
         rule_ids(&report)
     );
 }
@@ -625,52 +574,4 @@ mod tests {
         "secret RNG guard count drifted: {:?}",
         rule_ids(&report)
     );
-}
-
-/// Proves that `sensitive-data.hardcoded-env-value` still catches
-/// production Rust literals but ignores fixture strings in test context.
-#[test]
-pub(crate) fn calibration_hardcoded_env_value_skips_test_fixture_strings() {
-    let _guard = analysis_lock();
-    let dir = tempdir().expect("tempdir");
-    baseline_with_lib(
-        dir.path(),
-        r#"/// Probe.
-pub fn entry() {
-    let production = "DATABASE_PASSWORD=production-secret-123";
-    assert!(production.contains("DATABASE_PASSWORD"));
-}
-
-#[cfg(test)]
-mod fixtures {
-    #[test]
-    fn fixture_text_contains_secret_pattern() {
-        let fixture = "DATABASE_PASSWORD=correct-horse-battery-123";
-        assert!(fixture.contains("PASSWORD"));
-    }
-}
-"#,
-    );
-    let report = run_project_analysis(
-        dir.path(),
-        AnalysisOptions {
-            paths: vec![PathBuf::from(".")],
-            no_config: true,
-            no_baseline: true,
-            ..default_test_options()
-        },
-    )
-    .expect("analysis succeeds");
-    let hardcoded_env_findings: Vec<&Finding> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "sensitive-data.hardcoded-env-value")
-        .collect();
-    assert_eq!(
-        hardcoded_env_findings.len(),
-        1,
-        "calibration expected only the production env-style assignment to fire; findings={:?}",
-        rule_ids(&report)
-    );
-    assert_eq!(hardcoded_env_findings[0].line, Some(3));
 }

@@ -1,13 +1,13 @@
 ---
 category: security-analysis
-last_reviewed: 2026-08-12
+last_reviewed: 2026-10-05
 ---
 
 ## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
 
-`src/built_in_rules/path_traversal_rules.rs` (search: `fn analyse_path_traversal_candidate`) flags filesystem path construction from non-literal identifiers. A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
+`security.path-traversal-candidate` flagged filesystem path construction from non-literal identifiers until 0.6.0 retired it (ADR-024; detector at gruff-rs `3324dd6`, ~~`src/built_in_rules/path_traversal_rules.rs` (search: `fn analyse_path_traversal_candidate`)~~). A first cut that only inspected the call site and a safe-arg name list produced ~30% false-positive rate on real codebases. The patterns that look unsafe at the call site but are actually defended:
 
 - **Path-typed parameters in utility helpers**: `fn absolutize(root: &Path, path: &Path) -> PathBuf { root.join(path) }`. The `path` argument cannot carry an unconstrained string segment — it was already path-typed upstream.
 - **Validate-then-trust pattern**: `default_root.join(requested).canonicalize()?` followed by `.starts_with(default_root)`. The join is dangerous in isolation but resolved and re-checked immediately after.
@@ -16,15 +16,9 @@ last_reviewed: 2026-08-12
 
 The non-obvious failure mode is shipping a candidate rule whose recall is high but whose precision collapses on idiomatic Rust. Users either silence it project-wide or stop reading its findings.
 
-Calibrate with three guards before emitting the finding (kept in `path_traversal_finding_is_suppressed`): (1) safe-arg list restricted to validation-outcome and base-path-convention names (no slot-describing names like `dir`, `parent`, `target`); (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 25 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fires.
+That rule was calibrated with three guards before emitting the finding (kept in ~~`path_traversal_finding_is_suppressed`~~ at gruff-rs `3324dd6`): (1) safe-arg list restricted to validation-outcome and base-path-convention names (no slot-describing names like `dir`, `parent`, `target`); (2) lookback for the argument's declaration in a nearby fn signature typed as `&Path` / `&PathBuf` / `impl AsRef<Path>`; (3) forward window check for `.canonicalize()` AND `.starts_with(` within 25 lines after the join. Regression: dogfood scan moved from 10 findings on this repo to 0 after these three guards landed, while the calibration positive case (untyped `&str` parameter, no validation) still fired.
 
-## Footgun: Secret-Key Case Sensitivity Depends On File Kind
-
-**Status:** active | **Created:** 2026-05-23 | **Evidence:** OBSERVED
-
-`src/built_in_rules/secret_rules.rs` (search: `fn config_like_secret_regex`) intentionally allows lowercase secret-like keys only for structured config formats such as YAML, JSON, TOML, `.env`, and properties files. Rust source and prose/script-like text stay uppercase-only for `sensitive-data.hardcoded-env-value`, because lowercase identifiers such as `secret_access_key`, `secret_json`, `touches_secret`, and detector variable names are usually runtime values or scanner implementation details rather than committed secret assignments.
-
-The non-obvious failure mode is globally removing `(?i)` to fix false positives, which breaks real structured config coverage such as `database_password: yaml-secret-123`. The opposite mistake is making every text file case-insensitive, which reintroduces shell, Markdown, and Rust variable false positives. Regression coverage: `src/tests/scenarios/calibration_extras.rs` (search: `calibration_hardcoded_env_value_detects_structured_config_keys`) and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `sensitive_data_rules_skip_common_placeholder_and_detector_contexts`).
+The lesson holds for the remaining candidate rules: `src/built_in_rules/network_security_rules.rs` (search: `validated: BTreeSet<String>,`) gives `security.ssrf-candidate` the same validate-then-trust guard.
 
 ## Footgun: Process Command Needs Risk Signals
 
@@ -90,9 +84,9 @@ Fix: `fn is_separated_identifier_slug` recognises any separator-delimited slug w
 
 Several rules "prove" a value safe, or find "evidence" it is risky, by scanning nearby source text for a binding or function. Done with `starts_with`, substring `find`, or `rfind("\nfn ")`, those matches are too loose in two recurring ways - they ignore word boundaries and they cross function boundaries - and the failure is a silent false negative in a SECURITY rule.
 
-Concrete instances (2026-06-14, PR review): `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn placeholder_binding_is_fixed_question_list`) scoped its fixed-`?` proof window with `rfind("\nfn ")`, which only matches a bare `fn` at column zero - so for `pub fn`/`async fn`/`impl` methods (the common case) the window spilled into earlier functions and a helper's `let placeholders = ...join(",")` vouched for an untrusted `placeholders` parameter elsewhere. Same file, `line_is_name_binding` used `starts_with("let {name}")`, so `placeholders` was proven by an unrelated `placeholders_safe` binding. The identical shape lived in `src/built_in_rules/path_traversal_rules.rs` (search: `fn window_has_receiver_path_binding`): a plain `find("let {receiver}")` let a `files_backup` binding vouch for a `files` receiver, and `let mut` bindings were missed entirely.
+Concrete instances (2026-06-14, PR review): `src/built_in_rules/behavior_rules/tls_sql.rs` (search: `fn placeholder_binding_is_fixed_question_list`) scoped its fixed-`?` proof window with `rfind("\nfn ")`, which only matches a bare `fn` at column zero - so for `pub fn`/`async fn`/`impl` methods (the common case) the window spilled into earlier functions and a helper's `let placeholders = ...join(",")` vouched for an untrusted `placeholders` parameter elsewhere. Same file, `line_is_name_binding` used `starts_with("let {name}")`, so `placeholders` was proven by an unrelated `placeholders_safe` binding. The identical shape lived in ~~`src/built_in_rules/path_traversal_rules.rs` (search: `fn window_has_receiver_path_binding`)~~ (gruff-rs `3324dd6`, retired in 0.6.0): a plain `find("let {receiver}")` let a `files_backup` binding vouch for a `files` receiver, and `let mut` bindings were missed entirely.
 
-Fix pattern: scope the window to the ENCLOSING function (reuse `is_function_start_line` to find the start, not `rfind("\nfn ")`), and require a non-identifier char after a name match so `x` does not match `x_suffix`; cover both `let` and `let mut`. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_proof_is_scoped_to_current_function_and_exact_name`) and `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `path_traversal_reaches_accessor_receivers_and_let_mut_bindings`).
+Fix pattern: scope the window to the ENCLOSING function (reuse `is_function_start_line` to find the start, not `rfind("\nfn ")`), and require a non-identifier char after a name match so `x` does not match `x_suffix`; cover both `let` and `let mut`. Regression coverage: `src/tests/rule_behaviours/sql_dynamic_query_guards.rs` (search: `sql_dynamic_query_proof_is_scoped_to_current_function_and_exact_name`), and until the rule's retirement ~~`src/tests/rule_behaviours/mission_retune_guards.rs` (search: `path_traversal_reaches_accessor_receivers_and_let_mut_bindings`)~~.
 
 When adding any "look at nearby text for a binding/usage named X" helper, default to word-boundary checks and current-function scope, and add a negative fixture with a prefix-collision name (`X_safe`) plus a `let mut` binding. Pairs with [[rule-precision]].
 
@@ -105,3 +99,14 @@ When adding any "look at nearby text for a binding/usage named X" helper, defaul
 The diff path is opt-in behind `--diff-git-unsafe` (ADR-019), but `.goat-flow/architecture.md` claims the diff subprocess "does not execute arbitrary code", so the gap also makes a committed claim untrue. Fix: pass `--no-ext-diff` on every `git diff` invocation (`src/changed_region.rs` search: `fn git_diff_patch`) - it disables both global `diff.external` and attribute-driven drivers. `--no-ext-diff` is a diff/log option, so it cannot live in the shared `git_command` builder (cat-file/ls-tree reject it); add it per diff arg vector.
 
 When hardening any subprocess against an untrusted tree, enumerate the ways the tree's OWN committed files (config, attributes, hooks, ignore files) can change behaviour, not just environment variables. Pairs with ADR-019.
+
+## Resolved Entries
+
+## Footgun: Secret-Key Case Sensitivity Depends On File Kind
+
+**Status:** resolved | **Created:** 2026-05-23 | **Resolved:** 2026-10-05 | **Evidence:** OBSERVED
+**Resolution:** `sensitive-data.hardcoded-env-value` was retired in 0.6.0 (ADR-024), so no rule reads secret-like keys by file kind; the struck anchors are at gruff-rs `3324dd6`.
+
+~~`src/built_in_rules/secret_rules.rs` (search: `fn config_like_secret_regex`)~~ intentionally allowed lowercase secret-like keys only for structured config formats such as YAML, JSON, TOML, `.env`, and properties files. Rust source and prose/script-like text stayed uppercase-only for `sensitive-data.hardcoded-env-value`, because lowercase identifiers such as `secret_access_key`, `secret_json`, `touches_secret`, and detector variable names are usually runtime values or scanner implementation details rather than committed secret assignments.
+
+The non-obvious failure mode is globally removing `(?i)` to fix false positives, which breaks real structured config coverage such as `database_password: yaml-secret-123`. The opposite mistake is making every text file case-insensitive, which reintroduces shell, Markdown, and Rust variable false positives. Regression coverage was ~~`src/tests/scenarios/calibration_extras.rs` (search: `calibration_hardcoded_env_value_detects_structured_config_keys`)~~ and `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `sensitive_data_rules_keep_unproved_key_markers_beside_runtime_placeholders`).
