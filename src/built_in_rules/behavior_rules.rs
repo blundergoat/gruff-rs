@@ -4,6 +4,7 @@
 //! Selected-parent evidence can silence a test-only unwrap without changing production warnings.
 
 use super::*;
+use std::collections::HashSet;
 
 #[path = "safety_rationale.rs"]
 mod safety_rationale;
@@ -17,6 +18,10 @@ static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_BARE_ARGS_IDENTIFIER_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LITERAL_ARRAY_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LITERAL_PROGRAM_REGEX: OnceLock<Regex> = OnceLock::new();
 static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -235,8 +240,11 @@ pub(crate) fn analyse_process_commands(
         {
             continue;
         }
-        let risk_signals =
-            process_command_risk_signals(&literal_preserving_window, &code_only_window);
+        let risk_signals = process_command_risk_signals(
+            &literal_preserving_window,
+            &code_only_window,
+            &literal_argument_array_bindings(&literal_preserving_lines, line_index),
+        );
         // Fixed commands without a concrete risk shape do not warrant a security warning.
         if risk_signals.is_empty() {
             continue;
@@ -723,9 +731,48 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
+/// Name the locals an earlier statement of the same function binds to an array of plain string literals.
+///
+/// Only the nearest `let` of each name counts, so a later rebinding hides an earlier literal array, and a
+/// `mut` binding never counts because its elements can be replaced before the command runs.
+fn literal_argument_array_bindings(
+    literal_preserving_lines: &[&str],
+    line_index: usize,
+) -> HashSet<String> {
+    let let_binding = static_regex(
+        &PROCESS_LET_BINDING_REGEX,
+        r"\blet\s+(?P<mutable>mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+    );
+    let literal_array = static_regex(
+        &PROCESS_LITERAL_ARRAY_BINDING_REGEX,
+        r#"^\s*(?::[^=]*)?=\s*&?\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*(?:"(?:[^"\\]|\\.)*"\s*,?\s*)?\]\s*;"#,
+    );
+    let mut nearest_seen = HashSet::new();
+    let mut literal_arrays = HashSet::new();
+    // Walk back to the enclosing function's signature; bindings above it belong to other code.
+    for line in literal_preserving_lines[..line_index].iter().rev() {
+        for binding in let_binding.captures_iter(line) {
+            let name = binding["name"].to_string();
+            let rest = &line[binding.get(0).map_or(0, |whole| whole.end())..];
+            // The nearest binding decides; a non-`mut` literal array is the only accepted value.
+            if nearest_seen.insert(name.clone())
+                && binding.name("mutable").is_none()
+                && literal_array.is_match(rest)
+            {
+                literal_arrays.insert(name);
+            }
+        }
+        if line.contains("fn ") {
+            break;
+        }
+    }
+    literal_arrays
+}
+
 fn process_command_risk_signals(
     literal_preserving_window: &str,
     code_only_window: &str,
+    literal_argument_arrays: &HashSet<String>,
 ) -> Vec<&'static str> {
     let mut signals = Vec::new();
 
@@ -753,22 +800,54 @@ fn process_command_risk_signals(
     {
         signals.push("dynamic-executable");
     }
-    if static_regex(
-        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
-        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
-    )
-    .is_match(code_only_window)
-    {
+    if has_dynamic_process_arguments(code_only_window, literal_argument_arrays) {
         signals.push("dynamic-arguments");
     }
     if code_only_window.contains(".env(") || code_only_window.contains(".envs(") {
         signals.push("custom-environment");
     }
-    if code_only_window.contains(".current_dir(") {
+    // A literal program run without arguments or environment changes only where it runs, which injects nothing.
+    if code_only_window.contains(".current_dir(")
+        && !(signals.is_empty()
+            && is_bare_literal_program(literal_preserving_window, code_only_window))
+    {
         signals.push("custom-working-directory");
     }
 
     signals
+}
+
+/// Report whether an `.arg` or `.args` call passes a value other than a local array of plain string literals.
+fn has_dynamic_process_arguments(
+    code_only_window: &str,
+    literal_argument_arrays: &HashSet<String>,
+) -> bool {
+    let bare_args_identifier = static_regex(
+        &PROCESS_BARE_ARGS_IDENTIFIER_REGEX,
+        r"^\.args\s*\(\s*&?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)",
+    );
+    // `.args(name)` over a local array of plain string literals passes fixed arguments, not dynamic ones.
+    static_regex(
+        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
+        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
+    )
+    .find_iter(code_only_window)
+    .any(|argument| {
+        !bare_args_identifier
+            .captures(&code_only_window[argument.start()..])
+            .is_some_and(|bare| literal_argument_arrays.contains(&bare["name"]))
+    })
+}
+
+/// Report whether the command runs a literal program with no `.arg` or `.args` call.
+fn is_bare_literal_program(literal_preserving_window: &str, code_only_window: &str) -> bool {
+    static_regex(
+        &PROCESS_LITERAL_PROGRAM_REGEX,
+        r#"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"(?:[^"\\]|\\.)*"\s*\)"#,
+    )
+    .is_match(literal_preserving_window)
+        && !code_only_window.contains(".arg(")
+        && !code_only_window.contains(".args(")
 }
 
 /// End one bounded process-builder statement before risk evidence can leak from its neighbour.

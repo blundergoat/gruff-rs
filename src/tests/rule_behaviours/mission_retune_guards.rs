@@ -218,3 +218,71 @@ pub fn make_client(insecure: bool) {
         report.findings
     );
 }
+
+/// A literal argument array and a lone working directory on a literal program run fixed commands (precision-floor
+/// M05); caller-chosen, rebound or extra arguments still report.
+#[test]
+pub(crate) fn process_command_skips_literal_argument_arrays_and_lone_working_directory() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use std::path::Path;
+use std::process::Command;
+
+/// Read the current revision with fixed arguments.
+pub fn revision() -> bool {
+    let args = &["rev-parse", "--short=10", "HEAD"];
+    let output = Command::new("git").args(args).output();
+    output.is_ok()
+}
+
+/// Check spelling from the workspace root.
+pub fn spelling(root: &Path) {
+    let mut command = Command::new("typos");
+    command.current_dir(root);
+    let _ = command.status();
+}
+
+/// Forward caller-chosen arguments.
+pub fn forward(extra: &[String]) {
+    let args = extra;
+    let _ = Command::new("git").args(args).status();
+}
+
+/// Rebind the literal array before use.
+pub fn rebound(extra: &[&str]) {
+    let args = &["status"];
+    let args = extra;
+    let _ = Command::new("git").args(args).status();
+}
+
+/// Run a fixed program on a caller-chosen file in a chosen directory.
+pub fn in_directory(root: &Path, file: &str) {
+    let _ = Command::new("rustfmt").arg(file).current_dir(root).status();
+}
+"#,
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let lines: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.process-command")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![Some(21), Some(28), Some(33)],
+        "only the forwarded, rebound and file-argument commands should report"
+    );
+}
