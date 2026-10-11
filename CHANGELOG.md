@@ -2,6 +2,9 @@
 
 ## v0.6.0 - Unreleased
 
+- **Security rules skip test, fixture and example files** - Every security rule, the security-pillar `dependency.*` and `ci.*` rules included, now skips the test, fixture and example paths the sensitive-data rules already skip, because a test exercises insecure calls on purpose. **The trade-off is deliberate: a real injection, weak-crypto or TLS mistake committed under one of those paths is no longer reported.** Each skip is counted, never silent: one audit row per file and rule with `source: "built-in"` and the reason "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path." (FAMILY-CONTRACT.md section 13a).
+  The five network-security rule descriptions no longer say test source stays in scope.
+
 - **The missing-parameter message names every parameter** - `docs.missing-param-doc` names each undocumented parameter in its message, as in "rustdoc does not mention parameters `left` and `right` by name", where it named only the first.
 - **No return description is asked of `-> ()` or `-> !`** - `docs.missing-return-doc` no longer reports a function returning unit or never, which hands the caller nothing to describe.
 - **Missing-doc messages say what the rustdoc should cover** - `docs.missing-public-doc` adds "Also say ..." naming each parameter, what the function returns and when it returns an error, each asked only when the signature has it.

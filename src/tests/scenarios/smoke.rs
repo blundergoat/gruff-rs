@@ -51,14 +51,15 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
 
     assert_only_partial_context_diagnostic(&report);
     assert_eq!(report.summary.total, report.findings.len());
-    // `fixtures/` is a test path, so its two sample secrets are counted as `builtInTestPath` rows, not reported.
+    // `fixtures/` is a test path, so its sample secret and its deliberate shell call are counted as `builtInTestPath`
+    // rows, not reported.
     assert_eq!(
         report
             .findings
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        7
+        6
     );
     let skipped_rules: Vec<(&str, usize)> = report
         .suppressions
@@ -66,7 +67,13 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
         .filter(|row| row.config_key == "builtInTestPath" && row.paths == ["fixtures/sample.rs"])
         .map(|row| (row.rule.as_str(), row.suppressed))
         .collect();
-    assert_eq!(skipped_rules, vec![("sensitive-data.aws-access-key", 1)]);
+    assert_eq!(
+        skipped_rules,
+        vec![
+            ("security.process-command", 1),
+            ("sensitive-data.aws-access-key", 1)
+        ]
+    );
 
     let expected = [
         (
@@ -101,14 +108,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(7),
             Some("process"),
             "ec04a7b3fcf15f6d",
-        ),
-        (
-            "security.process-command",
-            Severity::Warning,
-            "fixtures/sample.rs",
-            Some(11),
-            None,
-            "c83527501efb5e12",
         ),
         (
             "waste.unwrap-expect",

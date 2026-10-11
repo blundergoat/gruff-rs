@@ -109,7 +109,8 @@ pub(crate) fn unsafe_deserialization_reports_turbofish_sinks() {
     );
 }
 
-/// Prove executable risks stay visible across source contexts while semantic negatives stay quiet.
+/// Prove executable risks stay visible in production code, are skipped and counted in test and fixture code, and
+/// semantic negatives stay quiet.
 #[test]
 pub(crate) fn network_security_test_context_policy_matrix() {
     let _guard = analysis_lock();
@@ -149,15 +150,26 @@ pub(crate) fn network_security_test_context_policy_matrix() {
         },
     )
     .expect("analysis succeeds");
-    let expected_paths = vec![
-        "fixtures/network_security_matrix.rs",
-        "src/lib.rs",
-        "tests/network_security_matrix.rs",
-    ];
+    // Security rules skip test, fixture and example paths and count each skip (FAMILY-CONTRACT.md section 13a).
+    let expected_paths = vec!["src/lib.rs"];
     let registry = crate::rules::builtin_registry();
 
-    // Every detector must expose the same executable risk in production, tests, and Rust fixtures.
+    // Every detector must expose the executable risk in production and count it, not report it, in tests and Rust fixtures.
     for rule_id in NETWORK_SECURITY_RULES {
+        let skipped_paths: BTreeSet<&str> = report
+            .suppressions
+            .iter()
+            .filter(|row| row.config_key == "builtInTestPath" && row.rule == rule_id)
+            .map(|row| row.paths[0].as_str())
+            .collect();
+        assert_eq!(
+            skipped_paths,
+            BTreeSet::from([
+                "fixtures/network_security_matrix.rs",
+                "tests/network_security_matrix.rs"
+            ]),
+            "{rule_id} must count its skipped test and fixture findings"
+        );
         let rule_findings: Vec<(&str, Option<usize>, Option<&str>)> = report
             .findings
             .iter()
@@ -185,8 +197,8 @@ pub(crate) fn network_security_test_context_policy_matrix() {
             .get(rule_id)
             .expect("network security rule metadata");
         assert!(
-            definition.description.contains("test"),
-            "{rule_id} must state that executable test source remains in scope"
+            !definition.description.contains("test"),
+            "{rule_id} must not claim test source stays in scope, since the test-path class skips it"
         );
         assert!(
             !definition.false_positive_shapes.is_empty(),

@@ -1100,8 +1100,10 @@ exclusion_smoke() {
   cat >"$config_file" <<'YAML'
 schemaVersion: gruff-rs.config.v1
 exclude:
-  - rule: security.process-command
-    reason: fixture command accepted for smoke testing
+  # fixtures/ is a counted test path, where security rules are already skipped, so the smoke excludes a rule
+  # that still reports there.
+  - rule: waste.unwrap-expect
+    reason: fixture unwrap accepted for smoke testing
 YAML
 
   cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --no-config >"$full_report" || return $?

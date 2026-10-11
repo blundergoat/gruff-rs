@@ -459,7 +459,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             Severity::Warning,
             Confidence::Medium,
             None,
-            "Flags request URLs derived from local input without nearby allow-list evidence, including in executable test source.",
+            "Flags request URLs derived from local input without nearby allow-list evidence in executable Rust.",
             false_positives: &[FalsePositiveShape {
                 shape: "An isolated integration test intentionally sends a caller-provided URL to a local mock service.",
                 mitigation: "Parse the URL and enforce a visible loopback or host allowlist before the request; if the unsafe call is the behavior under test, add an `exclude:` entry limited to that harness path and message.",
@@ -475,7 +475,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags request-derived HTML/template output without visible escaping, including in executable test source.",
+        "Flags request-derived HTML/template output without visible escaping in executable Rust.",
         false_positives: &[FalsePositiveShape {
             shape: "A rendering test passes raw input to a custom wrapper that performs escaping outside the matched function.",
             mitigation: "Make escaping visible before the supported sink, or add an `exclude:` entry limited to the reviewed test path and message.",
@@ -490,7 +490,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags all-interface listener literals in executable Rust, including tests and CI helpers.",
+        "Flags all-interface listener literals in executable Rust, including CI helpers.",
         false_positives: &[FalsePositiveShape {
             shape: "An integration harness intentionally listens on every interface so another container or host can connect.",
             mitigation: "Prefer loopback for same-host tests; otherwise add a documented `exclude:` entry limited to the harness path and bind-all message.",
@@ -505,7 +505,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags local-input YAML or binary deserialization in executable Rust, including tests.",
+        "Flags local-input YAML or binary deserialization in executable Rust.",
         false_positives: &[FalsePositiveShape {
             shape: "A test deserializes trusted bytes from a checked-in fixture, but the bytes arrive through a function parameter.",
             mitigation: "Read the trusted fixture directly with `include_bytes!` or otherwise keep its fixed provenance visible; if indirection is required, add an exact path-and-message `exclude:` entry.",
@@ -520,7 +520,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags executable XML parser options that enable external entities or DTD loading, including in tests.",
+        "Flags executable XML parser options that enable external entities or DTD loading.",
         false_positives: &[FalsePositiveShape {
             shape: "A security or conformance test deliberately enables external entities for an isolated parser probe.",
             mitigation: "Keep the dangerous option in a dedicated reviewed test and add an exact path-and-message `exclude:` entry; do not disable the rule for all test paths.",

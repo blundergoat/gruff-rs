@@ -182,8 +182,13 @@ fn is_built_in_lockfile(file_path: &str) -> bool {
     BUILT_IN_LOCKFILE_NAMES.contains(&file_name)
 }
 
-/// Reason a user reads on each `builtInTestPath[...]` audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13a).
-const BUILT_IN_TEST_PATH_REASON: &str = "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path.";
+/// Reasons on each `builtInTestPath[...]` audit row, indexed by `usize::from(security)`: the sensitive-data reason at 0
+/// and the security reason at 1, which says a test calls insecure APIs on purpose. Every port publishes these exact
+/// words (FAMILY-CONTRACT.md section 13a), so reordering the array swaps the reason on every row.
+const BUILT_IN_TEST_PATH_REASONS: [&str; 2] = [
+    "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path.",
+    "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path.",
+];
 
 /// The one sensitive-data rule that still reads test paths, because finding realistic personal data in fixtures is its job.
 const BUILT_IN_TEST_PATH_EXEMPT_RULE: &str = "sensitive-data.pii-test-fixture";
@@ -204,10 +209,11 @@ const BUILT_IN_TEST_FILE_NAME_PATTERN: &str = r"^(?:.*_test\.go|test_.*\.py|.*_t
 
 static BUILT_IN_TEST_FILE_NAME_REGEX: OnceLock<Regex> = OnceLock::new();
 
-/// Hide sensitive-data findings in test, fixture and example files, and publish one audit row per hidden file and rule.
+/// Hide sensitive-data and security findings in test, fixture and example files, and publish one audit row per hidden file and rule.
 ///
-/// A user scanning a project with sample keys in `tests/fixtures/` sees `builtInTestPath[...]` rows instead of findings.
-/// The skip is never silent, and the fixture-PII rule keeps reading these files (FAMILY-CONTRACT.md section 13a).
+/// A user scanning a project with sample keys or a deliberate `Command::new("sh")` in `tests/fixtures/` sees
+/// `builtInTestPath[...]` rows instead of findings. The skip is never silent, and the fixture-PII rule keeps reading
+/// these files (FAMILY-CONTRACT.md section 13a).
 fn partition_built_in_test_path_findings(
     findings: Vec<Finding>,
     summaries: &mut Vec<SuppressionSummary>,
@@ -223,13 +229,16 @@ fn partition_built_in_test_path_findings(
     for (offset, ((file_path, rule_id), skipped_findings)) in
         skipped_by_file_and_rule.into_iter().enumerate()
     {
+        let security = skipped_findings
+            .iter()
+            .any(|item| matches!(item.pillar, Pillar::Security));
         let summary = SuppressionSummary {
             index: first_index + offset,
             rule: rule_id,
             paths: vec![file_path],
             message_contains: None,
             symbol: None,
-            reason: BUILT_IN_TEST_PATH_REASON.to_string(),
+            reason: BUILT_IN_TEST_PATH_REASONS[usize::from(security)].to_string(),
             suppressed: skipped_findings.len(),
             source: Some("built-in"),
             config_key: "builtInTestPath",
@@ -245,10 +254,10 @@ fn partition_built_in_test_path_findings(
     (kept, suppressed)
 }
 
-/// Sensitive-data findings in test code, grouped by (path, rule); a BTreeMap orders the keys by UTF-8 bytes, as every port does.
+/// Sensitive-data and security findings in test code, grouped by (path, rule); a BTreeMap orders the keys by UTF-8 bytes, as every port does.
 type TestPathFindingsByFileAndRule = BTreeMap<(String, String), Vec<Finding>>;
 
-/// Split findings into the ones the report keeps and the sensitive-data findings in test code, grouped by file and rule.
+/// Split findings into the ones the report keeps and the skipped findings in test code, grouped by file and rule.
 fn split_test_path_findings(
     findings: Vec<Finding>,
 ) -> (Vec<Finding>, TestPathFindingsByFileAndRule) {
@@ -256,11 +265,12 @@ fn split_test_path_findings(
     let mut skipped_by_file_and_rule = TestPathFindingsByFileAndRule::new();
     // Each finding either stays in the report or is folded into its file's audit row.
     for finding in findings {
-        // Only the pillar's findings in test code are skipped, and never the fixture-PII rule.
-        if finding.rule_id.starts_with("sensitive-data.")
-            && finding.rule_id != BUILT_IN_TEST_PATH_EXEMPT_RULE
-            && is_built_in_test_path(&finding.file_path)
-        {
+        // Every security-pillar finding, `dependency.git-source` included, and every sensitive-data finding but the
+        // fixture-PII rule's is skipped in test code.
+        let skipped_rule = matches!(finding.pillar, Pillar::Security)
+            || (finding.rule_id.starts_with("sensitive-data.")
+                && finding.rule_id != BUILT_IN_TEST_PATH_EXEMPT_RULE);
+        if skipped_rule && is_built_in_test_path(&finding.file_path) {
             skipped_by_file_and_rule
                 .entry((finding.file_path.clone(), finding.rule_id.clone()))
                 .or_default()

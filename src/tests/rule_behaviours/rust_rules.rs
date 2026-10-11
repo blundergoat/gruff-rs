@@ -694,9 +694,10 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
 }
 
-/// Sensitive-data findings in test code must be skipped and counted, one `builtInTestPath` row per file and rule.
+/// Sensitive-data and security findings in test code must be skipped and counted, one `builtInTestPath` row per file and rule.
 ///
-/// The same source under `src/` keeps reporting, and the rows sort by path bytes (FAMILY-CONTRACT.md section 13a).
+/// The same source under `src/` keeps reporting both pillars, each skipped row carries its pillar's reason, and the
+/// rows sort by path bytes (FAMILY-CONTRACT.md section 13a).
 #[test]
 pub(crate) fn sensitive_data_rules_skip_test_paths_and_count_each_skip() {
     let _guard = analysis_lock();
@@ -731,12 +732,32 @@ pub(crate) fn sensitive_data_rules_skip_test_paths_and_count_each_skip() {
             .findings
             .iter()
             .filter(|finding| {
-                finding.file_path == relative_path && finding.rule_id.starts_with("sensitive-data.")
+                finding.file_path == relative_path
+                    && (finding.rule_id.starts_with("sensitive-data.")
+                        || finding.rule_id.starts_with("security."))
             })
             .map(|finding| finding.rule_id.clone())
             .collect::<BTreeSet<_>>()
     };
     let production_rule_ids = sensitive_rule_ids("src/sensitive.rs");
+    assert!(
+        production_rule_ids
+            .iter()
+            .any(|rule_id| rule_id.starts_with("security.")),
+        "the fixture must exercise a security rule in production code: {production_rule_ids:?}"
+    );
+    for row in report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath")
+    {
+        let expected_reason = if row.rule.starts_with("security.") {
+            "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path."
+        } else {
+            "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path."
+        };
+        assert_eq!(row.reason, expected_reason, "row {row:?}");
+    }
     let skipped_rule_ids = |relative_path: &str| {
         report
             .suppressions
