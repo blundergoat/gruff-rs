@@ -2,6 +2,11 @@
 
 ## v0.6.0 - Unreleased
 
+- **The missing-parameter message names every parameter** - `docs.missing-param-doc` names each undocumented parameter in its message, as in "rustdoc does not mention parameters `left` and `right` by name", where it named only the first.
+- **No return description is asked of `-> ()` or `-> !`** - `docs.missing-return-doc` no longer reports a function returning unit or never, which hands the caller nothing to describe.
+- **Missing-doc messages say what the rustdoc should cover** - `docs.missing-public-doc` adds "Also say ..." naming each parameter, what the function returns and when it returns an error, each asked only when the signature has it.
+- **`everyCallable` widens three documentation rules, off by default** - With `rules.<id>.options.everyCallable: true`, `docs.missing-public-doc`, `docs.missing-param-doc` and `docs.missing-return-doc` also check private and crate-visible functions, bridge-macro functions, and closures assigned to `const` and `static` items. The return rule then asks for a `Result`'s success value, and the parameter rule stops accepting a contract word such as "path" in place of the parameter's name. Nothing changes until a configuration turns it on.
+
 - **BREAKING: `test-quality.conditional-logic` is opt-in** - After repair it was worth acting on in 6 of 25 judged findings, below the 0.70 floor. Enable it with `rules.test-quality.conditional-logic.enabled: true` or `--include-rule test-quality.conditional-logic`; existing explicit settings remain effective.
 
 - **Assertion syntax no longer reads as test policy** - `test-quality.conditional-logic` accepts guards inside assertion-pattern macros and a `match` whose every arm contains only assertions. Each branch is checked independently, so a platform gate cannot hide a separate policy branch; mutation and empty match arms still report.

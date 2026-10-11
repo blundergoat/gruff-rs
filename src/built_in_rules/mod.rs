@@ -306,6 +306,10 @@ fn analyse_block_dependent_rust_rules(
     if families.has_block_rules() {
         analyse_blocks(unit, blocks, config, families, findings);
     }
+    if families.block_docs {
+        let closure_items = rust_closure_item_blocks(ast, unit.source);
+        analyse_closure_item_docs(unit.file, &closure_items, config, findings);
+    }
     if families.block_size || families.block_complexity {
         let trait_defaults = rust_trait_default_blocks(ast, unit.source);
         analyse_measure_only_blocks(unit.file, &trait_defaults, config, families, findings);

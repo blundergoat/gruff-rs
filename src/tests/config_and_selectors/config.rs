@@ -649,3 +649,59 @@ pub(crate) fn deep_scan_budget_rejects_malformed_config_and_cli_values() {
         assert!(error.contains("LINES:BYTES"), "{value:?}: {error}");
     }
 }
+
+/// `everyCallable` is stored per documentation rule, and a rule that does not set it reads as false.
+#[test]
+pub(crate) fn every_callable_boolean_option_is_stored_per_docs_rule() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+
+    write_config(
+        dir.path(),
+        r#"{ "rules": {
+            "docs.missing-param-doc": { "options": { "everyCallable": true } },
+            "docs.missing-return-doc": { "options": { "everyCallable": false } } } }"#,
+    );
+    let config = load_config(dir.path(), &options).expect("boolean option accepted");
+
+    assert!(config.is_rule_option_enabled("docs.missing-param-doc", "everyCallable"));
+    assert!(!config.is_rule_option_enabled("docs.missing-return-doc", "everyCallable"));
+    assert!(!config.is_rule_option_enabled("docs.missing-public-doc", "everyCallable"));
+}
+
+/// Control: with no rule options configured, `everyCallable` is off for every documentation rule.
+#[test]
+pub(crate) fn every_callable_defaults_to_false_without_config() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), r#"{ "rules": {} }"#);
+    let config = load_config(dir.path(), &default_test_options()).expect("empty rules load");
+
+    for rule_id in [
+        "docs.missing-param-doc",
+        "docs.missing-return-doc",
+        "docs.missing-public-doc",
+    ] {
+        assert!(
+            !config.is_rule_option_enabled(rule_id, "everyCallable"),
+            "{rule_id}"
+        );
+    }
+}
+
+/// A non-boolean `everyCallable` value is refused at load time rather than read as false.
+#[test]
+pub(crate) fn every_callable_option_rejects_a_non_boolean_value() {
+    let dir = tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        r#"{ "rules": { "docs.missing-public-doc": { "options": { "everyCallable": "yes" } } } }"#,
+    );
+    let error = load_config(dir.path(), &default_test_options()).expect_err("string rejected");
+
+    assert!(
+        error.contains(
+            "config key `rules.docs.missing-public-doc.options.everyCallable` must be a boolean"
+        ),
+        "{error}"
+    );
+}

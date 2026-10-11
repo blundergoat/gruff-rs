@@ -26,9 +26,8 @@ pub(crate) struct ThresholdDefinition {
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Value shape for a configurable rule option. Recorded so config parsing can
-/// validate the JSON shape before the rule reads it. `boolean` is reserved for
-/// future use; the current built-in surface only exposes `stringArray`.
-#[allow(dead_code)]
+/// validate the JSON shape before the rule reads it: naming allowlists take a
+/// `stringArray`, and the documentation `everyCallable` switch takes a `boolean`.
 pub(crate) enum OptionValueKind {
     Boolean,
     StringArray,
@@ -327,6 +326,35 @@ macro_rules! rule_definition {
             description: $description,
             false_positive_shapes: $false_positives,
             related_rules: $related,
+        }
+    };
+    (
+        $id:literal,
+        $name:literal,
+        $pillar:expr,
+        $kind:expr,
+        $default_severity:expr,
+        $confidence:expr,
+        $threshold:expr,
+        $description:literal,
+        options: $options:expr,
+        false_positives: $false_positives:expr,
+        related: $related:expr $(,)?
+    ) => {
+        RuleDefinition {
+            options: $options,
+            ..rule_definition!(
+                $id,
+                $name,
+                $pillar,
+                $kind,
+                $default_severity,
+                $confidence,
+                $threshold,
+                $description,
+                false_positives: $false_positives,
+                related: $related
+            )
         }
     };
 }

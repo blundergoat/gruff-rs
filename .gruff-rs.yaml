@@ -224,7 +224,7 @@ rules:
   # Flags public functions containing panic!/unwrap/expect without a # Panics rustdoc section.
   docs.missing-panics-section:
     enabled: true
-  # Flags public functions whose rustdoc lacks per-parameter documentation.
+  # Flags public functions whose rustdoc lacks per-parameter documentation; with `everyCallable`, also documented private and crate-visible functions and impl methods and closures bound to `const` or `static` items.
   docs.missing-param-doc:
     enabled: true
   # Flags public Rust API items without doc comments.
@@ -233,7 +233,7 @@ rules:
   # Flags projects without a root README file.
   docs.missing-readme:
     enabled: true
-  # Flags public functions returning a value whose rustdoc lacks a Returns description.
+  # Flags public functions returning a value whose rustdoc lacks a Returns description; with `everyCallable`, also documented private and crate-visible functions and impl methods and closures bound to `const` or `static` items, and a `Result`'s success value.
   docs.missing-return-doc:
     enabled: true
   # Flags public `unsafe fn` / `unsafe trait` items without a # Safety rustdoc section.

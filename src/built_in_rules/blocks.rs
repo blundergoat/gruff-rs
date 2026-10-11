@@ -76,12 +76,12 @@ fn analyse_block_documentation_rules(
         analyse_block_naming(file, block, config, findings);
     }
     if families.block_docs {
-        analyse_public_function_doc(file, block, findings);
+        analyse_public_function_doc(file, block, config, findings);
         analyse_missing_errors_section(file, block, findings);
         analyse_missing_panics_section(file, block, findings);
         analyse_missing_safety_section(file, block, findings);
-        analyse_missing_param_doc(file, block, findings);
-        analyse_missing_return_doc(file, block, findings);
+        analyse_missing_param_doc(file, block, config, findings);
+        analyse_missing_return_doc(file, block, config, findings);
     }
 }
 

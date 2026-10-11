@@ -103,6 +103,8 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 
 19. **three rules are off by default** — `ci.github-event-shell-interpolation`, `security.sql-dynamic-query` and `security.ssrf-candidate` were each wrong on all four judged findings, too few to delete on. Enable one with `rules.<id>.enabled: true`; `--include-rule` also turns one on, but narrows the run to the rules it names. A config written by an earlier `init` lists them as `enabled: true` and keeps them on. The decision is ADR-024.
 
+20. **unit and never returns stop asking for a description, and three documentation rules can widen** — `docs.missing-return-doc` no longer reports a function returning `()` or `!`, which removed 3 findings at the defaults on the 0.6.0 precision measurement's twelve Rust repositories. `docs.missing-param-doc` names every undocumented parameter in one message, and `docs.missing-public-doc` says what the rustdoc should cover. The `everyCallable` option is off by default; turning it on for the three rules there added 25,316 `docs.missing-public-doc`, 1,862 `docs.missing-param-doc` and 1,563 `docs.missing-return-doc` findings, taking the total from 25,460 to 54,201, a little over twice as many. The rest of this entry is in `CHANGELOG.md`.
+
 ## What may change in `0.5.x` with deprecation
 
 These can evolve inside `0.5.x` provided users get at least one minor release

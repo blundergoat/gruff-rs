@@ -621,3 +621,594 @@ impl Number {
         ]
     );
 }
+
+/// Project config that turns `everyCallable` on for the three scope-widened documentation rules.
+const EVERY_CALLABLE_ON: &str = "rules:
+  docs.missing-public-doc:
+    options:
+      everyCallable: true
+  docs.missing-param-doc:
+    options:
+      everyCallable: true
+  docs.missing-return-doc:
+    options:
+      everyCallable: true
+";
+
+/// Analyse one undocumented and one under-documented function at each visibility under `config`, and list
+/// the missing-public, missing-param and missing-return findings as sorted (rule id, symbol, severity,
+/// message) rows. `Combines both inputs.` names neither parameter nor the return value, so the param and
+/// return rules fire wherever they are in scope.
+fn every_callable_rows(config: &str) -> Vec<(String, String, String, String)> {
+    documentation_rule_rows(
+        r#"//! Visibility cases for the everyCallable switch.
+
+fn private_undocumented(left: u32) -> u32 {
+    left
+}
+
+pub(crate) fn crate_undocumented(left: u32) -> u32 {
+    left
+}
+
+pub fn public_undocumented(left: u32) -> u32 {
+    left
+}
+
+/// Combines both inputs.
+fn private_add(left: u32, right: u32) -> u32 {
+    left + right
+}
+
+/// Combines both inputs.
+pub(crate) fn crate_add(left: u32, right: u32) -> u32 {
+    left + right
+}
+
+/// Combines both inputs.
+pub fn public_add(left: u32, right: u32) -> u32 {
+    left + right
+}
+"#,
+        config,
+    )
+}
+
+/// Analyse `source` as the library file of a temporary project under `config`, and list the missing-public,
+/// missing-param and missing-return findings as sorted (rule id, symbol, severity, message) rows.
+fn documentation_rule_rows(source: &str, config: &str) -> Vec<(String, String, String, String)> {
+    let directory = tempdir().expect("tempdir");
+    baseline_with_lib(directory.path(), source);
+    write_config(directory.path(), config);
+    let report = run_project_analysis(
+        directory.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("everyCallable fixture analysis succeeds");
+    let scoped_rules = [
+        "docs.missing-param-doc",
+        "docs.missing-public-doc",
+        "docs.missing-return-doc",
+    ];
+    let mut rows: Vec<(String, String, String, String)> = report
+        .findings
+        .iter()
+        .filter(|finding| scoped_rules.iter().any(|rule| finding.rule_id == *rule))
+        .map(|finding| {
+            (
+                finding.rule_id.to_string(),
+                finding.symbol.clone().unwrap_or_default(),
+                format!("{:?}", finding.severity),
+                finding.message.clone(),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Control: with `everyCallable` unset, the documentation rules still see only public functions and still
+/// call them public.
+#[test]
+pub(crate) fn every_callable_off_keeps_documentation_rules_public_only() {
+    let _guard = analysis_lock();
+    let rows = every_callable_rows("");
+    let scoped: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.0.as_str(), row.1.as_str()))
+        .collect();
+
+    assert_eq!(
+        scoped,
+        [
+            ("docs.missing-param-doc", "public_add"),
+            ("docs.missing-public-doc", "public_undocumented"),
+            ("docs.missing-return-doc", "public_add"),
+        ],
+        "rows={rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.3.starts_with(&format!("Public function `{}` ", row.1))),
+        "rows={rows:?}"
+    );
+}
+
+/// With `everyCallable` on, private and crate-visible functions join the public ones in all three
+/// documentation rules, at the severity each rule gives its public finding.
+#[test]
+pub(crate) fn every_callable_brings_private_and_crate_functions_in_at_public_severity() {
+    let _guard = analysis_lock();
+    let rows = every_callable_rows(EVERY_CALLABLE_ON);
+    let scoped: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.0.as_str(), row.1.as_str()))
+        .collect();
+
+    assert_eq!(
+        scoped,
+        [
+            ("docs.missing-param-doc", "crate_add"),
+            ("docs.missing-param-doc", "private_add"),
+            ("docs.missing-param-doc", "public_add"),
+            ("docs.missing-public-doc", "crate_undocumented"),
+            ("docs.missing-public-doc", "private_undocumented"),
+            ("docs.missing-public-doc", "public_undocumented"),
+            ("docs.missing-return-doc", "crate_add"),
+            ("docs.missing-return-doc", "private_add"),
+            ("docs.missing-return-doc", "public_add"),
+        ],
+        "rows={rows:?}"
+    );
+    for row in &rows {
+        let public = rows
+            .iter()
+            .find(|other| other.0 == row.0 && other.1.starts_with("public_"))
+            .expect("each rule keeps its public control finding");
+        assert_eq!(row.2, public.2, "{row:?} must keep the public severity");
+    }
+}
+
+/// With `everyCallable` on, no message calls a private or crate-visible function public, while the public
+/// control keeps its `Public function` wording.
+#[test]
+pub(crate) fn every_callable_messages_do_not_call_private_functions_public() {
+    let _guard = analysis_lock();
+    let rows = every_callable_rows(EVERY_CALLABLE_ON);
+
+    assert!(
+        rows.iter().any(|row| !row.1.starts_with("public_")),
+        "the switch must bring non-public functions in; rows={rows:?}"
+    );
+    for (rule_id, symbol, _, message) in &rows {
+        if symbol.starts_with("public_") {
+            assert!(
+                message.starts_with(&format!("Public function `{symbol}` ")),
+                "{rule_id}: {message}"
+            );
+        } else {
+            assert!(
+                message.starts_with(&format!("Function `{symbol}` ")),
+                "{rule_id}: {message}"
+            );
+            assert!(
+                !message.to_lowercase().contains("public"),
+                "{rule_id}: {message}"
+            );
+        }
+    }
+}
+
+/// Analyse a public and a private `#[tauri::command]`, a `#[wasm_bindgen]` export and a plain public control
+/// under `config`, and list their documentation rule rows. Each rustdoc names neither parameter nor the return
+/// value, so the parameter and return rules fire on every function they check.
+fn bridge_rows(config: &str) -> Vec<(String, String, String, String)> {
+    documentation_rule_rows(
+        r#"//! Bridge cases for the everyCallable switch.
+
+/// Combines both inputs.
+#[tauri::command]
+pub fn public_command(left: u32, right: u32) -> u32 {
+    left + right
+}
+
+/// Combines both inputs.
+#[tauri::command]
+fn private_command(left: u32, right: u32) -> u32 {
+    left + right
+}
+
+/// Combines both inputs.
+#[wasm_bindgen]
+pub fn wasm_export(left: u32, right: u32) -> u32 {
+    left + right
+}
+
+/// Combines both inputs.
+pub fn public_add(left: u32, right: u32) -> u32 {
+    left + right
+}
+"#,
+        config,
+    )
+}
+
+/// Control: with `everyCallable` unset, the parameter and return rules still skip bridge functions, while
+/// the plain public function keeps both findings.
+#[test]
+pub(crate) fn every_callable_off_keeps_skipping_bridge_functions() {
+    let _guard = analysis_lock();
+    let rows = bridge_rows("");
+    let scoped: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.0.as_str(), row.1.as_str()))
+        .collect();
+
+    assert_eq!(
+        scoped,
+        [
+            ("docs.missing-param-doc", "public_add"),
+            ("docs.missing-return-doc", "public_add"),
+        ],
+        "rows={rows:?}"
+    );
+}
+
+/// With `everyCallable` on, bridge functions join the parameter and return rules at the severity those
+/// rules give the plain public function.
+#[test]
+pub(crate) fn every_callable_brings_bridge_functions_in_at_public_severity() {
+    let _guard = analysis_lock();
+    let rows = bridge_rows(EVERY_CALLABLE_ON);
+    let scoped: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.0.as_str(), row.1.as_str()))
+        .collect();
+
+    assert_eq!(
+        scoped,
+        [
+            ("docs.missing-param-doc", "private_command"),
+            ("docs.missing-param-doc", "public_add"),
+            ("docs.missing-param-doc", "public_command"),
+            ("docs.missing-param-doc", "wasm_export"),
+            ("docs.missing-return-doc", "private_command"),
+            ("docs.missing-return-doc", "public_add"),
+            ("docs.missing-return-doc", "public_command"),
+            ("docs.missing-return-doc", "wasm_export"),
+        ],
+        "rows={rows:?}"
+    );
+    for row in &rows {
+        let control = rows
+            .iter()
+            .find(|other| other.0 == row.0 && other.1 == "public_add")
+            .expect("each rule keeps its plain public control finding");
+        assert_eq!(row.2, control.2, "{row:?} must keep the public severity");
+    }
+}
+
+/// Analyse public functions returning a count, unit, never, a `Result` with a success value and a unit
+/// `Result` under `config`, each documented without describing a return value, and list the missing-return
+/// messages.
+fn messages_for_return_shapes(config: &str) -> Vec<String> {
+    documentation_rule_rows(
+        r#"//! Return shapes for the missing-return rule.
+
+/// Counts `items`.
+pub fn count_items(items: &[u32]) -> usize {
+    items.len()
+}
+
+/// Runs the job `count` times.
+pub fn unit_return(count: u32) -> () {
+    let _ = count;
+}
+
+/// Stops the process with exit `code`.
+pub fn never_return(code: i32) -> ! {
+    std::process::exit(code)
+}
+
+/// Loads the file at `path`.
+///
+/// # Errors
+///
+/// Fails when the file cannot be read.
+pub fn load_text(path: &str) -> Result<String, std::io::Error> {
+    std::fs::read_to_string(path)
+}
+
+/// Saves `text` to the output file.
+///
+/// # Errors
+///
+/// Fails when the file cannot be written.
+pub fn save_text(text: &str) -> Result<(), std::io::Error> {
+    std::fs::write("out.txt", text)
+}
+"#,
+        config,
+    )
+    .into_iter()
+    .filter(|(rule, ..)| rule == "docs.missing-return-doc")
+    .map(|(.., message)| message)
+    .collect()
+}
+
+const COUNT_ITEMS_RETURN: &str =
+    "Public function `count_items` returns a value; its rustdoc does not describe what the return value represents.";
+
+/// On by default: a fn declared `-> ()` or `-> !` hands back nothing, so the return rule leaves it alone.
+#[test]
+pub(crate) fn unit_and_never_returns_need_no_return_doc() {
+    let _guard = analysis_lock();
+    let messages = messages_for_return_shapes("");
+    assert!(
+        messages.iter().any(|message| message == COUNT_ITEMS_RETURN),
+        "{messages:?}"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("`unit_return`") || message.contains("`never_return`")),
+        "{messages:?}"
+    );
+}
+
+/// Control: with `everyCallable` unset, a function returning `Result` is still outside the return rule.
+#[test]
+pub(crate) fn every_callable_off_still_skips_result_returns() {
+    let _guard = analysis_lock();
+    assert_eq!(
+        messages_for_return_shapes(""),
+        vec![COUNT_ITEMS_RETURN.to_string()]
+    );
+}
+
+/// With `everyCallable` on, a `Result` with a non-unit success type is asked for its success value, and a
+/// `Result<(), E>` still returns nothing to describe.
+#[test]
+pub(crate) fn every_callable_asks_for_result_success_value() {
+    let _guard = analysis_lock();
+    assert_eq!(
+        messages_for_return_shapes(EVERY_CALLABLE_ON),
+        vec![
+            COUNT_ITEMS_RETURN.to_string(),
+            "Public function `load_text` returns a value; its rustdoc does not describe what the success value represents."
+                .to_string(),
+        ]
+    );
+}
+
+/// Analyse two one-parameter public functions whose rustdoc uses a contract keyword ("path", "name") without
+/// naming the parameter, plus a keyword-free control, under `config`, and list their (rule id, symbol,
+/// severity) rows. None returns a value, so only the parameter rule can fire.
+fn keyword_escape_rows(config: &str) -> Vec<(String, String, String)> {
+    documentation_rule_rows(
+        r#"//! Single-parameter keyword cases for the everyCallable switch.
+
+/// Opens the file at the given path.
+pub fn open_keyword(file_name: &str) {
+    let _ = file_name;
+}
+
+/// Takes the name.
+pub fn name_keyword(label_text: &str) {
+    let _ = label_text;
+}
+
+/// Opens the file.
+pub fn open_control(file_name: &str) {
+    let _ = file_name;
+}
+"#,
+        config,
+    )
+    .into_iter()
+    .map(|row| (row.0, row.1, row.2))
+    .collect()
+}
+
+/// Control: with `everyCallable` unset, a contract keyword still excuses a lone parameter the rustdoc never
+/// names, so only the keyword-free control is reported.
+#[test]
+pub(crate) fn every_callable_off_keeps_single_parameter_keyword_escape() {
+    let _guard = analysis_lock();
+    let rows = keyword_escape_rows("");
+    let symbols: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.0.as_str(), row.1.as_str()))
+        .collect();
+    assert_eq!(
+        symbols,
+        [("docs.missing-param-doc", "open_control")],
+        "rows={rows:?}"
+    );
+}
+
+/// With `everyCallable` on, a contract keyword no longer excuses a lone parameter: every function whose
+/// rustdoc does not name its parameter is reported, at the control's severity.
+#[test]
+pub(crate) fn every_callable_removes_single_parameter_keyword_escape() {
+    let _guard = analysis_lock();
+    let rows = keyword_escape_rows(EVERY_CALLABLE_ON);
+    let advisory = format!("{:?}", Severity::Advisory);
+    let expected: Vec<(String, String, String)> = ["name_keyword", "open_control", "open_keyword"]
+        .iter()
+        .map(|symbol| {
+            (
+                "docs.missing-param-doc".to_string(),
+                (*symbol).to_string(),
+                advisory.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(rows, expected);
+}
+
+/// Names every parameter the rustdoc leaves out at default settings, in signature order, and keeps the singular
+/// wording when only one is missing.
+#[test]
+pub(crate) fn missing_param_doc_message_names_every_missing_parameter() {
+    let _guard = analysis_lock();
+    let report = analyse_rustdoc_source(
+        r#"/// Combines the inputs; `scale` multiplies the sum.
+pub fn combine(left: usize, right: usize, scale: usize, offset: usize) -> usize {
+    (left + right) * scale + offset
+}
+
+/// Moves the cursor forward.
+pub fn advance(step: usize) {
+    let _ = step;
+}
+"#,
+    );
+
+    let mut messages: Vec<(String, String)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.missing-param-doc")
+        .map(|finding| {
+            (
+                finding.symbol.clone().unwrap_or_default(),
+                finding.message.clone(),
+            )
+        })
+        .collect();
+    messages.sort();
+    assert_eq!(
+        messages,
+        vec![
+            (
+                "advance".to_string(),
+                "Public function `advance` rustdoc does not mention parameter `step` by name.".to_string()
+            ),
+            (
+                "combine".to_string(),
+                "Public function `combine` rustdoc does not mention parameters `left`, `right` and `offset` by name."
+                    .to_string()
+            ),
+        ]
+    );
+}
+
+/// Rows for closures assigned to private `const` and `static` items, an undocumented private and public closure,
+/// and a public fn control whose parameter rustdoc is reported at default settings.
+fn closure_item_rows(config: &str) -> Vec<(String, String, String, String)> {
+    documentation_rule_rows(
+        r#"//! Closure items for the everyCallable switch.
+
+/// Applies the factor.
+const DOUBLE: fn(u32) -> u32 = |count| count * 2;
+
+/// Writes it out.
+static LOG: &(dyn Fn(&str) + Sync) = &|line| {
+    let _ = line;
+};
+
+const UNDOCUMENTED: fn() = || {};
+
+pub const PUBLIC_HOOK: fn() = || {};
+
+/// Opens the file.
+pub fn open_control(file_name: &str) {
+    let _ = file_name;
+}
+"#,
+        config,
+    )
+}
+
+/// Project closure-item rows to their rule and symbol.
+fn rule_symbol_pairs(rows: &[(String, String, String, String)]) -> Vec<(&str, &str)> {
+    rows.iter()
+        .map(|row| (row.0.as_str(), row.1.as_str()))
+        .collect()
+}
+
+#[test]
+pub(crate) fn every_callable_off_leaves_closure_items_unchecked() {
+    let _guard = analysis_lock();
+    let rows = closure_item_rows("");
+    assert_eq!(
+        rule_symbol_pairs(&rows),
+        [("docs.missing-param-doc", "open_control")],
+        "rows={rows:?}"
+    );
+}
+
+#[test]
+pub(crate) fn every_callable_checks_closures_assigned_to_const_and_static_items() {
+    let _guard = analysis_lock();
+    let rows = closure_item_rows(EVERY_CALLABLE_ON);
+    assert_eq!(
+        rule_symbol_pairs(&rows),
+        [
+            ("docs.missing-param-doc", "DOUBLE"),
+            ("docs.missing-param-doc", "LOG"),
+            ("docs.missing-param-doc", "open_control"),
+            ("docs.missing-public-doc", "PUBLIC_HOOK"),
+            ("docs.missing-public-doc", "UNDOCUMENTED"),
+            ("docs.missing-return-doc", "DOUBLE"),
+        ],
+        "rows={rows:?}"
+    );
+    let advisory = format!("{:?}", Severity::Advisory);
+    assert!(rows.iter().all(|row| row.2 == advisory), "rows={rows:?}");
+    let closure_messages: Vec<&str> = rows
+        .iter()
+        .filter(|row| ["DOUBLE", "LOG", "UNDOCUMENTED"].contains(&row.1.as_str()))
+        .map(|row| row.3.as_str())
+        .collect();
+    assert!(
+        closure_messages
+            .iter()
+            .all(|message| message.starts_with("Function `")),
+        "messages={closure_messages:?}"
+    );
+    assert!(closure_messages.contains(
+        &"Function `DOUBLE` returns a value; its rustdoc does not describe what the return value represents."
+    ));
+    assert!(closure_messages
+        .contains(&"Function `LOG` rustdoc does not mention parameter `line` by name."));
+}
+
+/// The missing-doc message asks only for what each fn has: its parameters by name, what it returns when it
+/// returns something other than `()`, and when it fails when it returns a `Result` (operator decision D3).
+#[test]
+fn missing_doc_message_asks_only_for_what_the_signature_has() {
+    let rows = documentation_rule_rows(
+        r#"//! Signature shapes for the missing-doc message.
+
+pub fn reset() {}
+
+pub fn scale(width: u32, _unused: u32) -> u32 {
+    width * 2
+}
+
+pub fn load_text(path: &str) -> Result<String, std::io::Error> {
+    std::fs::read_to_string(path)
+}
+"#,
+        "",
+    );
+    let messages: Vec<(&str, &str)> = rows
+        .iter()
+        .filter(|row| row.0 == "docs.missing-public-doc")
+        .map(|row| (row.1.as_str(), row.3.as_str()))
+        .collect();
+    let base = "needs a brief intent description above its signature (one plain-English line, not a restatement of the type signature).";
+    assert_eq!(
+        messages,
+        vec![
+            ("load_text", format!("Public function `load_text` {base} Also say what `path` is for, what it returns and when it returns an error.").as_str()),
+            ("reset", format!("Public function `reset` {base}").as_str()),
+            ("scale", format!("Public function `scale` {base} Also say what `width` is for and what it returns.").as_str()),
+        ]
+    );
+}

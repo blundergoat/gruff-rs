@@ -4,6 +4,13 @@
 
 use super::*;
 
+/// Default-off switch that widens a documentation rule from public functions to every callable.
+const EVERY_CALLABLE_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
+    name: "everyCallable",
+    description: "Check every callable, not only public functions; false by default.",
+    value_kind: OptionValueKind::Boolean,
+}];
+
 pub(crate) const ARCHITECTURE_RULES: &[RuleDefinition] = &[
     rule_definition!(
         "architecture.large-module",
@@ -201,7 +208,8 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::Medium,
         None,
-        "Flags public Rust API items without attached outer `///` or `/** */` rustdoc.",
+        "Flags public Rust API items without attached outer `///` or `/** */` rustdoc; with `everyCallable`, also private and crate-visible functions and impl methods, trait implementation methods included, and closures bound to `const` or `static` items, outside test code.",
+        options: EVERY_CALLABLE_OPTIONS,
         false_positives: &[
             FalsePositiveShape {
                 shape: "Public items generated for a bridge or macro contract whose user-facing documentation lives on the generating interface rather than the emitted declaration.",
@@ -302,7 +310,8 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::Medium,
         None,
-        "Flags public functions whose rustdoc lacks per-parameter documentation.",
+        "Flags public functions whose rustdoc lacks per-parameter documentation; with `everyCallable`, also documented private and crate-visible functions and impl methods and closures bound to `const` or `static` items.",
+        options: EVERY_CALLABLE_OPTIONS,
         false_positives: &[
             FalsePositiveShape {
                 shape: "Rustdoc explains several parameters collectively with domain terms but does not repeat each identifier as a complete word.",
@@ -319,7 +328,8 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::Medium,
         None,
-        "Flags public functions returning a value whose rustdoc lacks a Returns description.",
+        "Flags public functions returning a value whose rustdoc lacks a Returns description; with `everyCallable`, also documented private and crate-visible functions and impl methods and closures bound to `const` or `static` items, and a `Result`'s success value.",
+        options: EVERY_CALLABLE_OPTIONS,
         false_positives: &[
             FalsePositiveShape {
                 shape: "The summary implies the returned value through domain language without a `# Returns` heading, a return-value verb, an opening `Return`, `Create` or `Get` followed by the value it names, a `-> Self` signature, or a `&self` getter summary that names the fn's final word.",

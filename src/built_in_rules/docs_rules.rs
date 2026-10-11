@@ -9,18 +9,24 @@ pub(crate) static UNSAFE_FN_SIGNATURE_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) fn analyse_public_function_doc(
     file: &SourceFile,
     block: &FunctionBlock,
+    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
     let docs = function_doc_text(block);
+    let every_callable = is_every_callable(config, "docs.missing-public-doc");
 
-    // Public functions without supported attached rustdoc need an intent description.
-    if block.is_externally_public && !docs.is_present() {
+    // Public functions without supported attached rustdoc need an intent description; with
+    // `everyCallable` on, so does every other function outside test code.
+    let in_scope = block.is_externally_public || is_documentable_block(block, every_callable);
+    if in_scope && !docs.is_present() {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {
                 rule_id: "docs.missing-public-doc",
                 message: format!(
-                    "Public function `{}` needs a brief intent description above its signature (one plain-English line, not a restatement of the type signature).",
-                    block.name
+                    "{} `{}` needs a brief intent description above its signature (one plain-English line, not a restatement of the type signature).{}",
+                    callable_label(block),
+                    block.name,
+                    missing_doc_contract_request(block)
                 ),
                 file,
                 block,
@@ -179,14 +185,18 @@ pub(crate) fn analyse_missing_safety_section(
 }
 
 /// Public functions whose rustdoc does not mention each parameter by name
-/// produce a finding. Skips empty rustdoc, bridge-macro fns, and
-/// underscore-prefixed parameters.
+/// produce a finding; with `everyCallable` on, so does every other function
+/// outside test code, bridge-macro fns included. Skips empty rustdoc,
+/// underscore-prefixed parameters, and, with the switch off, bridge-macro fns
+/// and a lone parameter whose rustdoc uses a contract keyword such as "path".
 pub(crate) fn analyse_missing_param_doc(
     file: &SourceFile,
     block: &FunctionBlock,
+    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    if !is_documentable_block(block) || has_frontend_bridge_attr(&block.body) {
+    let every_callable = is_every_callable(config, "docs.missing-param-doc");
+    if !is_documentable_block(block, every_callable) || is_skipped_bridge(block, every_callable) {
         return;
     }
     if block.param_count == 0 {
@@ -196,19 +206,26 @@ pub(crate) fn analyse_missing_param_doc(
     if docs.is_empty() {
         return;
     }
-    let undocumented = collect_undocumented_params(&block.body, &docs);
+    let undocumented = collect_undocumented_params(&block.body, &docs, every_callable);
     if undocumented.is_empty() {
         return;
     }
     findings.push(missing_param_doc_finding(file, block, undocumented));
 }
 
-fn collect_undocumented_params(body: &str, docs: &DocCommentText) -> Vec<String> {
+/// List the non-underscore parameters the rustdoc never names. While the rule's `everyCallable` switch,
+/// carried by `every_callable`, is off, a lone parameter counts as documented when the rustdoc uses a
+/// contract keyword (`has_single_parameter_contract_prose`).
+fn collect_undocumented_params(
+    body: &str,
+    docs: &DocCommentText,
+    every_callable: bool,
+) -> Vec<String> {
     let params: Vec<String> = extract_param_names(body)
         .into_iter()
         .filter(|name| !name.starts_with('_'))
         .collect();
-    if params.len() == 1 && docs.has_single_parameter_contract_prose() {
+    if !every_callable && params.len() == 1 && docs.has_single_parameter_contract_prose() {
         return Vec::new();
     }
     params
@@ -222,13 +239,20 @@ fn missing_param_doc_finding(
     block: &FunctionBlock,
     undocumented: Vec<String>,
 ) -> Finding {
-    let first = undocumented[0].clone();
+    let noun = if undocumented.len() == 1 {
+        "parameter"
+    } else {
+        "parameters"
+    };
     block_finding_with_extras(
         BlockFindingDescriptor {
             rule_id: "docs.missing-param-doc",
             message: format!(
-                "Public function `{}` rustdoc does not mention parameter `{}` by name.",
-                block.name, first
+                "{} `{}` rustdoc does not mention {} {} by name.",
+                callable_label(block),
+                block.name,
+                noun,
+                backticked_name_list(&undocumented)
             ),
             file,
             block,
@@ -246,26 +270,82 @@ fn missing_param_doc_finding(
     )
 }
 
+/// The second sentence of the missing-doc message: what else the rustdoc should say, asked only for what the
+/// fn has. It names each non-underscore parameter, asks what it returns only when it returns something other
+/// than `()` or `!`, and asks when it fails only when it returns a `Result`. Empty when there is nothing more.
+fn missing_doc_contract_request(block: &FunctionBlock) -> String {
+    let params: Vec<String> = extract_param_names(&block.body)
+        .into_iter()
+        .filter(|name| !name.starts_with('_'))
+        .collect();
+    let signature = own_signature(&block.body);
+    let output = signature
+        .as_ref()
+        .and_then(|signature| match &signature.output {
+            syn::ReturnType::Type(_, output) => Some(output.as_ref().clone()),
+            syn::ReturnType::Default => None,
+        });
+    let gives_value = match &output {
+        Some(output) if block.returns_result => {
+            result_success_type(output).is_some_and(|success| !is_empty_type(success))
+        }
+        Some(output) => !is_empty_type(output),
+        None => false,
+    };
+    let mut wanted = Vec::new();
+    if !params.is_empty() {
+        let verb = if params.len() == 1 { "is" } else { "are" };
+        wanted.push(format!("what {} {verb} for", backticked_name_list(&params)));
+    }
+    if gives_value {
+        wanted.push("what it returns".to_string());
+    }
+    if block.returns_result {
+        wanted.push("when it returns an error".to_string());
+    }
+    match wanted.split_last() {
+        None => String::new(),
+        Some((last, [])) => format!(" Also say {last}."),
+        Some((last, rest)) => format!(" Also say {} and {last}.", rest.join(", ")),
+    }
+}
+
+/// Join `names` as code spans in an English list, such as "`a`, `b` and `c`".
+fn backticked_name_list(names: &[String]) -> String {
+    let quoted: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => quoted.concat(),
+    }
+}
+
 /// Public functions whose rustdoc does not describe their return value
-/// produce a finding. Skips Result-returning fns, bridge-macro fns, and
-/// empty rustdocs.
+/// produce a finding; with `everyCallable` on, so does every other function
+/// outside test code, bridge-macro fns included. Skips `-> ()` and `-> !`
+/// fns, empty rustdocs and, with the switch off, Result-returning and
+/// bridge-macro fns; with it on, a Result is checked for its success value.
 pub(crate) fn analyse_missing_return_doc(
     file: &SourceFile,
     block: &FunctionBlock,
+    config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    if !is_documentable_block(block) || has_frontend_bridge_attr(&block.body) {
+    let every_callable = is_every_callable(config, "docs.missing-return-doc");
+    if !is_documentable_block(block, every_callable) || is_skipped_bridge(block, every_callable) {
         return;
     }
-    if block.returns_result || !signature_has_return_type(&block.body) {
+    if !signature_has_return_type(&block.body) {
         return;
     }
     let docs = function_doc_text(block);
     if docs.is_empty() || docs.has_returns_section() {
         return;
     }
-    // A constructor or builder returns the type its summary already describes.
     let signature = own_signature(&block.body);
+    if is_skipped_return(block, signature.as_ref(), every_callable) {
+        return;
+    }
+    // A constructor or builder returns the type its summary already describes.
     if signature.as_ref().is_some_and(is_constructor_or_builder) {
         return;
     }
@@ -297,6 +377,56 @@ fn own_signature(body: &str) -> Option<syn::Signature> {
         .map(|item| item.sig)
         .or_else(|_| syn::parse_str::<syn::TraitItemFn>(&code).map(|item| item.sig))
         .ok()
+}
+
+/// Report whether the return rule skips a declared return that hands the caller nothing to describe:
+/// `-> ()` and `-> !` always, and a `Result` unless `every_callable` carries the rule's `everyCallable`
+/// switch and the Result's written success type is neither. The `# Errors` rule covers a Result's failures;
+/// a Result without a written success type (`fmt::Result`) or with an unparsed signature stays skipped.
+fn is_skipped_return(
+    block: &FunctionBlock,
+    signature: Option<&syn::Signature>,
+    every_callable: bool,
+) -> bool {
+    let returned = signature.and_then(|signature| match &signature.output {
+        syn::ReturnType::Type(_, returned) => Some(returned.as_ref()),
+        syn::ReturnType::Default => None,
+    });
+    if block.returns_result {
+        return !every_callable
+            || returned
+                .and_then(result_success_type)
+                .is_none_or(is_empty_type);
+    }
+    returned.is_some_and(is_empty_type)
+}
+
+/// The written success type of a `Result<T, ...>` return, such as `String` in `io::Result<String>`.
+fn result_success_type(returned: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(path) = returned else {
+        return None;
+    };
+    let segment = path
+        .path
+        .segments
+        .last()
+        .filter(|segment| segment.ident == "Result")?;
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    match arguments.args.first()? {
+        syn::GenericArgument::Type(success) => Some(success),
+        _ => None,
+    }
+}
+
+/// Report whether a type gives the caller nothing: unit `()` or never `!`.
+fn is_empty_type(returned: &syn::Type) -> bool {
+    match returned {
+        syn::Type::Never(_) => true,
+        syn::Type::Tuple(tuple) => tuple.elems.is_empty(),
+        _ => false,
+    }
 }
 
 /// Report whether a signature returns exactly the named type, such as `Self`; `&Self` is another type.
@@ -587,12 +717,20 @@ fn is_descriptive_summary(words: &[String], named_at: usize, is_bool_result: boo
 }
 
 fn missing_return_doc_finding(file: &SourceFile, block: &FunctionBlock) -> Finding {
+    // A Result reaches this rule only for its success value; the `# Errors` rule asks about its failures.
+    let described = if block.returns_result {
+        "the success value"
+    } else {
+        "the return value"
+    };
     block_finding_with_extras(
         BlockFindingDescriptor {
             rule_id: "docs.missing-return-doc",
             message: format!(
-                "Public function `{}` returns a value; its rustdoc does not describe what the return value represents.",
-                block.name
+                "{} `{}` returns a value; its rustdoc does not describe what {} represents.",
+                callable_label(block),
+                block.name,
+                described
             ),
             file,
             block,
@@ -610,8 +748,54 @@ fn missing_return_doc_finding(file: &SourceFile, block: &FunctionBlock) -> Findi
     )
 }
 
-fn is_documentable_block(block: &FunctionBlock) -> bool {
-    block.is_externally_public && !block.is_test && !block.test_context
+/// Check closures assigned to `const` and `static` items as callables, for each documentation rule whose
+/// `everyCallable` switch is on; with every switch off no closure is checked.
+pub(crate) fn analyse_closure_item_docs(
+    file: &SourceFile,
+    blocks: &[FunctionBlock],
+    config: &Config,
+    findings: &mut Vec<Finding>,
+) {
+    for block in blocks {
+        if is_every_callable(config, "docs.missing-public-doc") {
+            analyse_public_function_doc(file, block, config, findings);
+        }
+        if is_every_callable(config, "docs.missing-param-doc") {
+            analyse_missing_param_doc(file, block, config, findings);
+        }
+        if is_every_callable(config, "docs.missing-return-doc") {
+            analyse_missing_return_doc(file, block, config, findings);
+        }
+    }
+}
+
+/// Read `rules.<rule_id>.options.everyCallable`, the switch that widens a documentation rule past
+/// public functions; an unset switch reads as false.
+fn is_every_callable(config: &Config, rule_id: &str) -> bool {
+    config.is_rule_option_enabled(rule_id, "everyCallable")
+}
+
+/// Report whether a documentation rule checks this function: a public function outside test code, or any
+/// function outside test code when `every_callable` carries the rule's `everyCallable` switch.
+fn is_documentable_block(block: &FunctionBlock, every_callable: bool) -> bool {
+    (block.is_externally_public || every_callable) && !block.is_test && !block.test_context
+}
+
+/// Report whether the parameter and return rules skip this function as a frontend bridge
+/// (`#[tauri::command]`, `#[wasm_bindgen]` and the others [`has_frontend_bridge_attr`] matches). A bridge is
+/// skipped only while the rule's `everyCallable` switch, carried by `every_callable`, is off.
+fn is_skipped_bridge(block: &FunctionBlock, every_callable: bool) -> bool {
+    !every_callable && has_frontend_bridge_attr(&block.body)
+}
+
+/// Name a function in a documentation message. Only an externally public function is called public, so a
+/// private or crate-visible function that `everyCallable` brings into scope reads as a plain function.
+fn callable_label(block: &FunctionBlock) -> &'static str {
+    if block.is_externally_public {
+        "Public function"
+    } else {
+        "Function"
+    }
 }
 
 /// Return the parser-attached function rustdoc used by every documentation rule.
@@ -761,7 +945,8 @@ impl DocCommentText {
         )
     }
 
-    /// Accept concise single-parameter prose that still explains the caller's input contract.
+    /// Accept concise single-parameter prose that still explains the caller's input contract. The parameter
+    /// rule consults this only while its `everyCallable` switch is off.
     fn has_single_parameter_contract_prose(&self) -> bool {
         let normalized = normalized_contract_text(&self.text);
         contains_any_phrase(

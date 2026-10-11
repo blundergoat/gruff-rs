@@ -241,6 +241,14 @@ impl Config {
             .and_then(|setting| setting.detector_parameters.get(name).copied())
             .unwrap_or_else(|| rules::builtin_detector_parameter(rule_id, name))
     }
+
+    /// Return whether the user switched on a boolean rule option; an option left unset reads as false.
+    pub(crate) fn is_rule_option_enabled(&self, rule_id: &str, option: &str) -> bool {
+        self.rule_settings
+            .get(rule_id)
+            .and_then(|setting| setting.boolean_options.get(option).copied())
+            .unwrap_or(false)
+    }
 }
 
 fn rule_is_thresholded(rule_id: &str, registry: &rules::RuleRegistry) -> bool {
@@ -256,8 +264,7 @@ pub(crate) fn validate_optional_rule_options(
     setting: &mut RuleSetting,
 ) -> Result<(), String> {
     if let Some(options_value) = rule_object.get("options") {
-        let parsed = validate_rule_options(rule_id, options_value, registry)?;
-        setting.string_array_options = parsed;
+        validate_rule_options(rule_id, options_value, registry, setting)?;
     }
     Ok(())
 }
@@ -303,15 +310,15 @@ pub(crate) fn validate_rule_options(
     rule_id: &str,
     options_value: &Value,
     registry: &rules::RuleRegistry,
-) -> Result<HashMap<String, Vec<String>>, String> {
+    setting: &mut RuleSetting,
+) -> Result<(), String> {
     let options = options_value
         .as_object()
         .ok_or_else(|| format!("config key `rules.{rule_id}.options` must be an object"))?;
-    let mut string_arrays = HashMap::new();
     for (name, value) in options {
-        validate_rule_option_entry(rule_id, name, value, registry, &mut string_arrays)?;
+        validate_rule_option_entry(rule_id, name, value, registry, setting)?;
     }
-    Ok(string_arrays)
+    Ok(())
 }
 
 fn validate_rule_option_entry(
@@ -319,7 +326,7 @@ fn validate_rule_option_entry(
     name: &str,
     value: &Value,
     registry: &rules::RuleRegistry,
-    string_arrays: &mut HashMap<String, Vec<String>>,
+    setting: &mut RuleSetting,
 ) -> Result<(), String> {
     let kind = registry
         .option_value_kind(rule_id, name)
@@ -327,12 +334,15 @@ fn validate_rule_option_entry(
     match kind {
         rules::OptionValueKind::StringArray => {
             let parsed = string_array(value, &format!("rules.{rule_id}.options.{name}"))?;
-            string_arrays.insert(name.to_string(), parsed);
+            setting
+                .string_array_options
+                .insert(name.to_string(), parsed);
         }
         rules::OptionValueKind::Boolean => {
-            value.as_bool().ok_or_else(|| {
+            let enabled = value.as_bool().ok_or_else(|| {
                 format!("config key `rules.{rule_id}.options.{name}` must be a boolean")
             })?;
+            setting.boolean_options.insert(name.to_string(), enabled);
         }
     }
     Ok(())

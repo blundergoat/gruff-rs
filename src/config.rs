@@ -135,6 +135,8 @@ pub(crate) struct RuleSetting {
     pub(crate) threshold: Option<f64>,
     pub(crate) severity: Option<Severity>,
     pub(crate) string_array_options: HashMap<String, Vec<String>>,
+    /// Boolean options from `rules.<id>.options`; an option the user did not set is absent and reads as false.
+    pub(crate) boolean_options: HashMap<String, bool>,
     /// `Some(true)` keeps findings visible but removes their composite-score penalty.
     /// Missing and false values keep the normal scoring behavior defined by ADR-014.
     pub(crate) exclude_from_score: Option<bool>,

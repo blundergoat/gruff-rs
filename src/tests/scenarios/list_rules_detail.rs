@@ -399,3 +399,22 @@ pub(crate) fn a_flag_shaped_token_is_never_an_operand() {
         "an unregistered flag after the path was accepted as an operand"
     );
 }
+
+/// A boolean rule option is listed as `boolean`, not as a string list.
+#[test]
+pub(crate) fn detail_text_labels_a_boolean_option_as_boolean() {
+    let registry = rules::builtin_registry();
+    let detail = render_rule_detail(
+        "docs.missing-param-doc",
+        &registry,
+        &[],
+        RuleListFormat::Text,
+    )
+    .expect("known rule renders");
+
+    assert!(detail.contains("everyCallable  boolean  "), "{detail}");
+    assert!(
+        detail.contains("rules.docs.missing-param-doc.options.everyCallable"),
+        "{detail}"
+    );
+}

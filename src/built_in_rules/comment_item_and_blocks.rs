@@ -602,6 +602,190 @@ fn collect_const_closure_blocks(
     }
 }
 
+/// Collect closures assigned to `const` and `static` items, such as `const DOUBLE: fn(u32) -> u32 = |n| n * 2;`, as
+/// callables for the documentation rules, which check them only under a rule's `everyCallable` switch. Each block's
+/// body is the closure's signature written as a `fn`, so the rules read its parameters and return type as a fn's.
+pub(crate) fn rust_closure_item_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    for item in &ast.items {
+        collect_closure_item_blocks(item, &lines, false, &mut blocks);
+    }
+    blocks
+}
+
+/// Walk `const` and `static` items and inline modules for assigned closures, expression- or block-bodied,
+/// carrying a `#[cfg(test)]` module's test context down.
+fn collect_closure_item_blocks(
+    item: &Item,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    if let Item::Mod(item_mod) = item {
+        collect_module_closure_blocks(item_mod, lines, test_context, blocks);
+        return;
+    }
+    let (ident, visibility, attrs, item_type, expr) = match item {
+        Item::Const(item) => (&item.ident, &item.vis, &item.attrs, &item.ty, &item.expr),
+        Item::Static(item) => (&item.ident, &item.vis, &item.attrs, &item.ty, &item.expr),
+        _ => return,
+    };
+    let Some(closure) = assigned_closure(expr) else {
+        return;
+    };
+    let written_type = closure_return_type(closure, item_type);
+    let output = written_type.map_or(ReturnType::Default, |written| {
+        ReturnType::Type(Default::default(), Box::new(written.clone()))
+    });
+    let empty_body = syn::Block {
+        brace_token: Default::default(),
+        stmts: Vec::new(),
+    };
+    let mut block = function_block_from_parts(FunctionBlockParts {
+        lines,
+        name: ident.to_string(),
+        param_count: closure.inputs.len(),
+        visibility,
+        attrs,
+        test_context,
+        is_async: closure.asyncness.is_some(),
+        returns_bool: is_bool_return_type(&output),
+        is_trait_method: false,
+        returns_result: is_result_return_type(&output),
+        name_start: ident.span().start(),
+        block_end: expr.span().end(),
+        block: &empty_body,
+    });
+    block.body = closure_signature_text(&block.name, closure, written_type, lines);
+    blocks.push(block);
+}
+
+/// Walk an inline module's items for assigned closures; a `#[cfg(test)]` module marks everything inside it as test code.
+fn collect_module_closure_blocks(
+    item_mod: &syn::ItemMod,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    if let Some((_, items)) = &item_mod.content {
+        let nested_test_context = test_context || is_test_module(item_mod);
+        for nested in items {
+            collect_closure_item_blocks(nested, lines, nested_test_context, blocks);
+        }
+    }
+}
+
+/// The closure an item's value is, seen through `&` and parentheses (`static F: &dyn Fn() = &|| {};`).
+fn assigned_closure(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
+    match expr {
+        syn::Expr::Closure(closure) => Some(closure),
+        syn::Expr::Reference(reference) => assigned_closure(&reference.expr),
+        syn::Expr::Paren(paren) => assigned_closure(&paren.expr),
+        _ => None,
+    }
+}
+
+/// The closure's written return type, else the one its item type declares, such as `u32` in `fn(u32) -> u32` or
+/// `bool` in `&dyn Fn(&str) -> bool`; `None` when neither declares one.
+fn closure_return_type<'a>(
+    closure: &'a syn::ExprClosure,
+    item_type: &'a syn::Type,
+) -> Option<&'a syn::Type> {
+    written_return_type(&closure.output).or_else(|| callable_type_output(item_type))
+}
+
+/// The return type a fn-pointer or `Fn`-trait-object type declares, seen through `&` and parentheses.
+fn callable_type_output(item_type: &syn::Type) -> Option<&syn::Type> {
+    match item_type {
+        syn::Type::BareFn(function) => written_return_type(&function.output),
+        syn::Type::Reference(reference) => callable_type_output(&reference.elem),
+        syn::Type::Paren(paren) => callable_type_output(&paren.elem),
+        syn::Type::TraitObject(object) => trait_object_output(object).and_then(written_return_type),
+        _ => None,
+    }
+}
+
+/// The type an output writes after its arrow; None for an omitted output.
+fn written_return_type(output: &ReturnType) -> Option<&syn::Type> {
+    match output {
+        ReturnType::Type(_, returned) => Some(returned.as_ref()),
+        ReturnType::Default => None,
+    }
+}
+
+/// The output of the first bound written with parenthesized arguments, such as `Fn(&str) -> bool`.
+fn trait_object_output(object: &syn::TypeTraitObject) -> Option<&ReturnType> {
+    object.bounds.iter().find_map(|bound| {
+        let syn::TypeParamBound::Trait(bound) = bound else {
+            return None;
+        };
+        match &bound.path.segments.last()?.arguments {
+            syn::PathArguments::Parenthesized(arguments) => Some(&arguments.output),
+            _ => None,
+        }
+    })
+}
+
+/// Write the closure's signature as `fn NAME(count: _) -> u32 {}`: each named parameter as `name: _`, any other
+/// pattern as `_: _`, and the return type in its source text.
+fn closure_signature_text(
+    name: &str,
+    closure: &syn::ExprClosure,
+    returned: Option<&syn::Type>,
+    lines: &[&str],
+) -> String {
+    let params: Vec<String> = closure
+        .inputs
+        .iter()
+        .map(|input| format!("{}: _", closure_param_name(input)))
+        .collect();
+    let output = returned
+        .map(|returned| format!(" -> {}", span_source_text(lines, returned.span())))
+        .unwrap_or_default();
+    format!("fn {name}({}){output} {{}}", params.join(", "))
+}
+
+/// The name a closure parameter binds, or `_` for a destructuring or wildcard pattern.
+fn closure_param_name(input: &syn::Pat) -> String {
+    let pattern = match input {
+        syn::Pat::Type(typed) => typed.pat.as_ref(),
+        other => other,
+    };
+    match pattern {
+        syn::Pat::Ident(binding) => binding.ident.to_string(),
+        _ => "_".to_string(),
+    }
+}
+
+/// The source text a span covers, read from the file's lines; a multi-line span's lines are joined with spaces.
+fn span_source_text(lines: &[&str], span: proc_macro2::Span) -> String {
+    let (start, end) = (span.start(), span.end());
+    let mut parts = Vec::new();
+    for number in start.line..=end.line {
+        let Some(line) = number.checked_sub(1).and_then(|index| lines.get(index)) else {
+            continue;
+        };
+        let first_column = if number == start.line {
+            start.column
+        } else {
+            0
+        };
+        let end_column = if number == end.line {
+            end.column
+        } else {
+            usize::MAX
+        };
+        parts.push(
+            line.chars()
+                .skip(first_column)
+                .take(end_column.saturating_sub(first_column))
+                .collect::<String>(),
+        );
+    }
+    parts.join(" ")
+}
+
 pub(crate) fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
