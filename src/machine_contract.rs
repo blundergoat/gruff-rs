@@ -241,8 +241,12 @@ fn ignored_reason(detail: &IgnoredPath) -> &'static str {
 fn default_ignored_reason(pattern: Option<&str>) -> Option<&'static str> {
     match pattern {
         Some(".git" | ".hg" | ".svn") => Some("vcs"),
-        Some("node_modules" | "vendor") => Some("dependency"),
+        Some(
+            "node_modules" | "vendor" | "vendors" | "third_party" | "third-party"
+            | "bower_components",
+        ) => Some("dependency"),
         Some("build" | "coverage" | "dist" | "target") => Some("build-output"),
+        Some(crate::discovery::MINIFIED_FILE_PATTERN) => Some("generated"),
         Some(".fleet" | ".idea" | ".vscode") => Some("local-tooling"),
         _ => None,
     }

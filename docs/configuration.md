@@ -69,6 +69,13 @@ paths:
     - target/
 ```
 
+Directories named `vendor`, `vendors`, `third_party`, `third-party`,
+`bower_components` or `dist`, at any depth and in any letter case, and files with
+`.min.` directly before the final extension, such as `settings.min.json`, are
+skipped by default even when a `.gitignore` exists, and reported in
+`paths.details` with the reason `dependency`, `build-output` or `generated`.
+`--include-ignored` or an explicit file argument scans them.
+
 ## Allowlists
 
 `allowlists` accepts `acceptedAbbreviations`, a string array:

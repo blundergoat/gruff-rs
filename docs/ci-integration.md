@@ -109,7 +109,7 @@ mode** — directory walk, explicit file arguments, and every diff mode. A path
 matching `paths.ignore` produces no findings however it was supplied, so a
 coding-agent hook can pass the agent's changed files directly without surfacing
 out-of-scope findings. `--include-ignored` opts into git-ignored and built-in
-default-directory paths only; it never reveals a config-ignored path, and VCS
+default paths only; it never reveals a config-ignored path, and VCS
 internals stay blocked.
 
 Ignored paths are reported additively under `paths.details` (the

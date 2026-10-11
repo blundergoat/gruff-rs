@@ -617,3 +617,146 @@ pub(crate) fn include_ignored_still_honours_config_ignore() {
             .expect("config ignore authoritative even under include_ignored");
     assert_eq!(ignored.source, IgnoreSource::Config);
 }
+
+/// Write each relative path with a one-line Rust body, creating its directories.
+fn write_rust_files(root: &Path, paths: &[&str]) {
+    for path in paths {
+        let absolute = root.join(path);
+        fs::create_dir_all(absolute.parent().expect("fixture parent")).expect("fixture dir");
+        fs::write(absolute, "pub fn copied() {}\n").expect("fixture file");
+    }
+}
+
+/// Discover every source under `root` with the given `--include-ignored` setting and explicit paths.
+fn discover_paths(root: &Path, paths: &[&str], include_ignored: bool) -> DiscoveryResult {
+    discover_sources(
+        root,
+        &AnalysisOptions {
+            paths: paths.iter().map(PathBuf::from).collect(),
+            no_config: true,
+            no_baseline: true,
+            include_ignored,
+            ..default_test_options()
+        },
+        &Config::default(),
+    )
+}
+
+/// FAMILY-CONTRACT.md section 7 (precision-floor M04): copied, built and minified code is skipped at any depth and in any
+/// ASCII case even under a governing .gitignore, and each skip is listed with its lowercase pattern.
+#[test]
+pub(crate) fn third_party_classes_skip_whatever_the_gitignore_says() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join(".gitignore"), "*.log\n").expect("gitignore write");
+    write_rust_files(
+        dir.path(),
+        &[
+            "src/lib.rs",
+            "vendor/copied.rs",
+            "Vendors/copied.rs",
+            "pkg/THIRD_PARTY/copied.rs",
+            "pkg/third-party/copied.rs",
+            "web/bower_components/copied.rs",
+            "app/Dist/built.rs",
+        ],
+    );
+    fs::write(dir.path().join("src/settings.min.json"), "{}\n").expect("minified json");
+    fs::write(dir.path().join("src/jquery.min.js"), "var a=1;\n").expect("minified script");
+
+    let discovery = discover_paths(dir.path(), &["."], false);
+    let discovered: Vec<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+    let skipped: Vec<(&str, Option<&str>)> = discovery
+        .ignored_path_details
+        .iter()
+        .map(|ignored| (ignored.path.as_str(), ignored.pattern.as_deref()))
+        .collect();
+
+    assert_eq!(discovered, vec!["src/lib.rs"]);
+    // gruff-rs never scans .js, so the minified script is unsupported rather than listed as ignored.
+    assert_eq!(
+        skipped,
+        vec![
+            ("Vendors", Some("vendors")),
+            ("app/Dist", Some("dist")),
+            ("pkg/THIRD_PARTY", Some("third_party")),
+            ("pkg/third-party", Some("third-party")),
+            ("src/settings.min.json", Some("*.min.*")),
+            ("vendor", Some("vendor")),
+            ("web/bower_components", Some("bower_components")),
+        ]
+    );
+}
+
+/// `--include-ignored` and explicit files bring the section 7 classes back.
+#[test]
+pub(crate) fn include_ignored_and_explicit_files_bring_third_party_classes_back() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    write_rust_files(dir.path(), &["vendor/copied.rs", "dist/built.rs"]);
+    fs::write(dir.path().join("settings.min.json"), "{}\n").expect("minified json");
+
+    let included = discover_paths(dir.path(), &["."], true);
+    let explicit = discover_paths(
+        dir.path(),
+        &["vendor/copied.rs", "settings.min.json"],
+        false,
+    );
+    let paths = |result: &DiscoveryResult| {
+        result
+            .files
+            .iter()
+            .map(|file| file.display_path.clone())
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert_eq!(
+        paths(&included),
+        BTreeSet::from([
+            "dist/built.rs".to_string(),
+            "settings.min.json".to_string(),
+            "vendor/copied.rs".to_string()
+        ])
+    );
+    assert_eq!(
+        paths(&explicit),
+        BTreeSet::from([
+            "settings.min.json".to_string(),
+            "vendor/copied.rs".to_string()
+        ])
+    );
+}
+
+/// The control: names that only resemble the classes, and the build, external and lib directories, stay in scope.
+/// The root .gitignore turns off the no-gitignore fallback, which would otherwise prune build/.
+#[test]
+pub(crate) fn first_party_names_resembling_third_party_classes_stay_in_scope() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join(".gitignore"), "*.log\n").expect("gitignore write");
+    let controls = [
+        "build/scripts/release.rs",
+        "distro/x.rs",
+        "external/typings.rs",
+        "lib/helpers.rs",
+        "src/admin.mini.rs",
+        "src/dist.rs",
+        "src/vendor.rs",
+        "vendoring/x.rs",
+    ];
+    write_rust_files(dir.path(), &controls);
+
+    let discovery = discover_paths(dir.path(), &["."], false);
+    let discovered: BTreeSet<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+
+    assert_eq!(discovered, controls.into_iter().collect());
+    assert!(discovery.ignored_path_details.is_empty());
+}
