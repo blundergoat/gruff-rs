@@ -1131,6 +1131,8 @@ fn rule_symbol_pairs(rows: &[(String, String, String, String)]) -> Vec<(&str, &s
         .collect()
 }
 
+/// Control: with `everyCallable` unset, closures assigned to `const` and `static` items stay unchecked, so only
+/// the public fn control is reported.
 #[test]
 pub(crate) fn every_callable_off_leaves_closure_items_unchecked() {
     let _guard = analysis_lock();
@@ -1142,6 +1144,8 @@ pub(crate) fn every_callable_off_leaves_closure_items_unchecked() {
     );
 }
 
+/// With `everyCallable` on, closures assigned to `const` and `static` items join the three documentation rules
+/// at advisory severity, and a private closure's message calls it a plain `Function`.
 #[test]
 pub(crate) fn every_callable_checks_closures_assigned_to_const_and_static_items() {
     let _guard = analysis_lock();
@@ -1179,7 +1183,7 @@ pub(crate) fn every_callable_checks_closures_assigned_to_const_and_static_items(
 }
 
 /// The missing-doc message asks only for what each fn has: its parameters by name, what it returns when it
-/// returns something other than `()`, and when it fails when it returns a `Result` (operator decision D3).
+/// returns something other than `()`, and when it fails when it returns a `Result`.
 #[test]
 fn missing_doc_message_asks_only_for_what_the_signature_has() {
     let rows = documentation_rule_rows(

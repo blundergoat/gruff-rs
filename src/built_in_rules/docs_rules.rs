@@ -272,7 +272,8 @@ fn missing_param_doc_finding(
 
 /// The second sentence of the missing-doc message: what else the rustdoc should say, asked only for what the
 /// fn has. It names each non-underscore parameter, asks what it returns only when it returns something other
-/// than `()` or `!`, and asks when it fails only when it returns a `Result`. Empty when there is nothing more.
+/// than `()` or `!` (for a `Result`, only when its written success type is neither), and asks when it fails
+/// only when it returns a `Result`. Empty when there is nothing more.
 fn missing_doc_contract_request(block: &FunctionBlock) -> String {
     let params: Vec<String> = extract_param_names(&block.body)
         .into_iter()

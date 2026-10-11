@@ -26,8 +26,9 @@ pub(crate) struct ThresholdDefinition {
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Value shape for a configurable rule option. Recorded so config parsing can
-/// validate the JSON shape before the rule reads it: naming allowlists take a
-/// `stringArray`, and the documentation `everyCallable` switch takes a `boolean`.
+/// validate the JSON shape before the rule reads it: the naming rules' extra-name
+/// and prefix lists take a `stringArray`, and the documentation `everyCallable`
+/// switch takes a `boolean`.
 pub(crate) enum OptionValueKind {
     Boolean,
     StringArray,
