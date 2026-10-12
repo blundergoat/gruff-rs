@@ -781,7 +781,8 @@ fn literal_argument_array_bindings(
     literal_arrays
 }
 
-/// Report whether a binding is still in scope and unmentioned between its own end and the command line.
+/// Report whether a binding is still in scope, unmentioned between its own end and the command line, and named exactly
+/// once on the command line.
 fn is_binding_live_at_command(
     code_only_lines: &[&str],
     binding_index: usize,
@@ -868,11 +869,12 @@ fn process_command_risk_signals(
     if code_only_window.contains(".env(") || code_only_window.contains(".envs(") {
         signals.push("custom-environment");
     }
-    // A bare program name run without arguments or environment changes only where it runs. A relative path such as
-    // `./configure` would run whatever the chosen directory holds, so it keeps the working-directory signal.
+    // A bare program name is found through `PATH`, not the working directory, so with no arguments and no other risk
+    // signal `.current_dir(...)` changes only where a fixed program runs. A relative path such as `./configure` runs
+    // whatever the chosen directory holds, so it keeps the working-directory signal.
     if code_only_window.contains(".current_dir(")
         && !(signals.is_empty()
-            && is_bare_literal_program(literal_preserving_window, code_only_window))
+            && is_bare_program_without_arguments(literal_preserving_window, code_only_window))
     {
         signals.push("custom-working-directory");
     }
@@ -904,7 +906,10 @@ fn has_dynamic_process_arguments(
 }
 
 /// Report whether the command runs a bare program name, with no path separator, and has no `.arg` or `.args` call.
-fn is_bare_literal_program(literal_preserving_window: &str, code_only_window: &str) -> bool {
+fn is_bare_program_without_arguments(
+    literal_preserving_window: &str,
+    code_only_window: &str,
+) -> bool {
     static_regex(
         &PROCESS_LITERAL_PROGRAM_REGEX,
         r#"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"[^"\\/]*"\s*\)"#,

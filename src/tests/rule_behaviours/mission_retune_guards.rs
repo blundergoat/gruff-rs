@@ -219,10 +219,10 @@ pub fn make_client(insecure: bool) {
     );
 }
 
-/// A literal argument array and a lone working directory on a literal program run fixed commands (precision-floor
-/// M05); caller-chosen, rebound or extra arguments still report.
+/// A local literal argument array, and a lone working directory on a bare program name, run fixed commands;
+/// caller-chosen, rebound, out-of-scope or extra arguments and a relative program path still report.
 #[test]
-pub(crate) fn process_command_skips_literal_argument_arrays_and_lone_working_directory() {
+pub(crate) fn process_command_skips_literal_argument_arrays_and_bare_program_working_directory() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
