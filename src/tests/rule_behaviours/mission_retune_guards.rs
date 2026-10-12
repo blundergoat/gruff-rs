@@ -261,6 +261,35 @@ pub fn rebound(extra: &[&str]) {
 pub fn in_directory(root: &Path, file: &str) {
     let _ = Command::new("rustfmt").arg(file).current_dir(root).status();
 }
+
+/// Rebind the literal array through `if let` before one command.
+pub fn sync(custom: Option<Vec<String>>) {
+    let args = ["pull", "--ff-only"];
+    if let Some(args) = custom {
+        let _ = Command::new("git").args(args).status();
+    }
+}
+
+/// Use the caller's arguments after an inner literal binding's block has closed.
+pub fn scoped(extra: &[String], quick: bool) {
+    let args = extra;
+    if quick {
+        let args = &["status"];
+        let _ = args;
+    }
+    let _ = Command::new("git").args(args).status();
+}
+
+/// Rebind on the same line as the literal array.
+pub fn same_line(extra: &[&str]) {
+    let args = ["status"]; let args = extra;
+    let _ = Command::new("git").args(args).status();
+}
+
+/// Run a relative program in a chosen directory.
+pub fn configure(checkout: &Path) {
+    let _ = Command::new("./configure").current_dir(checkout).status();
+}
 "#,
     );
 
@@ -282,7 +311,7 @@ pub fn in_directory(root: &Path, file: &str) {
         .collect();
     assert_eq!(
         lines,
-        vec![Some(21), Some(28), Some(33)],
-        "only the forwarded, rebound and file-argument commands should report"
+        vec![Some(21), Some(28), Some(33), Some(40), Some(51), Some(57), Some(62)],
+        "the forwarded, rebound, out-of-scope, file-argument and relative-program commands should report"
     );
 }

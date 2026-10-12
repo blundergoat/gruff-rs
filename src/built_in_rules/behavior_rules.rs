@@ -211,11 +211,10 @@ pub(crate) fn analyse_process_commands(
     );
     let import_scopes = ProcessCommandImportScopes::from_ast(ast);
     let source_views = ProcessCommandSourceViews::from_source(source);
-    let literal_preserving_lines: Vec<&str> =
-        source_views.literal_preserving_code.lines().collect();
-    let code_only_lines: Vec<&str> = source_views.code_only.lines().collect();
+    let literal_lines: Vec<&str> = source_views.literal_preserving_code.lines().collect();
+    let code_lines: Vec<&str> = source_views.code_only.lines().collect();
     // Keep each finding anchored to the source line that constructs the process command.
-    for (line_index, line) in code_only_lines.iter().enumerate() {
+    for (line_index, line) in code_lines.iter().enumerate() {
         let line_number = line_index + 1;
         let imports = import_scopes.imports_at_line(line_number);
         let constructs_std_process_command = command_regex.captures_iter(line).any(|captures| {
@@ -228,23 +227,19 @@ pub(crate) fn analyse_process_commands(
         if !constructs_std_process_command {
             continue;
         }
-        let window_end = process_command_window_end(&code_only_lines, line_index);
-        let literal_preserving_window = literal_preserving_lines[line_index..window_end].join("\n");
-        let code_only_window = code_only_lines[line_index..window_end].join("\n");
+        let window_end = process_command_window_end(&code_lines, line_index);
+        let literal_window = literal_lines[line_index..window_end].join("\n");
+        let code_window = code_lines[line_index..window_end].join("\n");
         // Builder factories and fixed test cleanup lack the execution risk this rule reports.
-        if process_command_is_returned_builder(
-            &literal_preserving_lines,
-            line_index,
-            &literal_preserving_window,
-        ) || process_command_is_fixed_taskkill_cleanup(&literal_preserving_window)
+        if process_command_is_returned_builder(&literal_lines, line_index, &literal_window)
+            || process_command_is_fixed_taskkill_cleanup(&literal_window)
         {
             continue;
         }
-        let risk_signals = process_command_risk_signals(
-            &literal_preserving_window,
-            &code_only_window,
-            &literal_argument_array_bindings(&literal_preserving_lines, line_index),
-        );
+        let literal_arrays =
+            literal_argument_array_bindings(&literal_lines, &code_lines, line_index);
+        let risk_signals =
+            process_command_risk_signals(&literal_window, &code_window, &literal_arrays);
         // Fixed commands without a concrete risk shape do not warrant a security warning.
         if risk_signals.is_empty() {
             continue;
@@ -731,12 +726,16 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
-/// Name the locals an earlier statement of the same function binds to an array of plain string literals.
+/// Name the locals an earlier statement of the same function binds to an array of plain string literals that
+/// still holds at the command.
 ///
-/// Only the nearest `let` of each name counts, so a later rebinding hides an earlier literal array, and a
-/// `mut` binding never counts because its elements can be replaced before the command runs.
+/// The nearest `let` of each name decides, and a `mut` binding never counts because its elements can be replaced.
+/// A binding in a block that closed before the command is out of scope. Any other mention of the name between the
+/// binding and the command (an `if let`, `for`, match arm or closure parameter) may rebind it, so the name is dropped,
+/// as it is when the command line names it more than once.
 fn literal_argument_array_bindings(
     literal_preserving_lines: &[&str],
+    code_only_lines: &[&str],
     line_index: usize,
 ) -> HashSet<String> {
     let let_binding = static_regex(
@@ -750,14 +749,27 @@ fn literal_argument_array_bindings(
     let mut nearest_seen = HashSet::new();
     let mut literal_arrays = HashSet::new();
     // Walk back to the enclosing function's signature; bindings above it belong to other code.
-    for line in literal_preserving_lines[..line_index].iter().rev() {
-        for binding in let_binding.captures_iter(line) {
+    for (index, line) in literal_preserving_lines[..line_index]
+        .iter()
+        .enumerate()
+        .rev()
+    {
+        // Visit a line's bindings right to left, so the later of two on one line is the nearer.
+        let bindings: Vec<_> = let_binding.captures_iter(line).collect();
+        for binding in bindings.iter().rev() {
             let name = binding["name"].to_string();
-            let rest = &line[binding.get(0).map_or(0, |whole| whole.end())..];
-            // The nearest binding decides; a non-`mut` literal array is the only accepted value.
+            let binding_end = binding.get(0).map_or(0, |whole| whole.end());
+            // The nearest binding decides; a non-`mut` literal array still in scope and untouched is the only one accepted.
             if nearest_seen.insert(name.clone())
                 && binding.name("mutable").is_none()
-                && literal_array.is_match(rest)
+                && literal_array.is_match(&line[binding_end..])
+                && is_binding_live_at_command(
+                    code_only_lines,
+                    index,
+                    binding_end,
+                    line_index,
+                    &name,
+                )
             {
                 literal_arrays.insert(name);
             }
@@ -767,6 +779,56 @@ fn literal_argument_array_bindings(
         }
     }
     literal_arrays
+}
+
+/// Report whether a binding is still in scope and unmentioned between its own end and the command line.
+fn is_binding_live_at_command(
+    code_only_lines: &[&str],
+    binding_index: usize,
+    binding_end: usize,
+    command_index: usize,
+    name: &str,
+) -> bool {
+    let between = std::iter::once(
+        code_only_lines[binding_index]
+            .get(binding_end..)
+            .unwrap_or(""),
+    )
+    .chain(
+        code_only_lines[binding_index + 1..command_index]
+            .iter()
+            .copied(),
+    );
+    let mut depth = 0i32;
+    for text in between {
+        for character in text.chars() {
+            depth += match character {
+                '{' => 1,
+                '}' => -1,
+                _ => 0,
+            };
+            // A closing brace with no opening after the binding ends the binding's own block.
+            if depth < 0 {
+                return false;
+            }
+        }
+        if identifier_mentions(text, name) > 0 {
+            return false;
+        }
+    }
+    identifier_mentions(code_only_lines[command_index], name) == 1
+}
+
+/// Count whole-identifier mentions of a local name in code-only text, so `.args` and `path::args` do not count.
+fn identifier_mentions(text: &str, name: &str) -> usize {
+    text.match_indices(name)
+        .filter(|(start, _)| {
+            let before = text[..*start].chars().next_back();
+            let after = text[start + name.len()..].chars().next();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
+                && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+        .count()
 }
 
 fn process_command_risk_signals(
@@ -806,7 +868,8 @@ fn process_command_risk_signals(
     if code_only_window.contains(".env(") || code_only_window.contains(".envs(") {
         signals.push("custom-environment");
     }
-    // A literal program run without arguments or environment changes only where it runs, which injects nothing.
+    // A bare program name run without arguments or environment changes only where it runs. A relative path such as
+    // `./configure` would run whatever the chosen directory holds, so it keeps the working-directory signal.
     if code_only_window.contains(".current_dir(")
         && !(signals.is_empty()
             && is_bare_literal_program(literal_preserving_window, code_only_window))
@@ -817,7 +880,8 @@ fn process_command_risk_signals(
     signals
 }
 
-/// Report whether an `.arg` or `.args` call passes a value other than a local array of plain string literals.
+/// Report whether an `.arg` or `.args` call passes an identifier, or an array holding an identifier or `format!`,
+/// other than `.args(name)` over a local array of plain string literals.
 fn has_dynamic_process_arguments(
     code_only_window: &str,
     literal_argument_arrays: &HashSet<String>,
@@ -839,11 +903,11 @@ fn has_dynamic_process_arguments(
     })
 }
 
-/// Report whether the command runs a literal program with no `.arg` or `.args` call.
+/// Report whether the command runs a bare program name, with no path separator, and has no `.arg` or `.args` call.
 fn is_bare_literal_program(literal_preserving_window: &str, code_only_window: &str) -> bool {
     static_regex(
         &PROCESS_LITERAL_PROGRAM_REGEX,
-        r#"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"(?:[^"\\]|\\.)*"\s*\)"#,
+        r#"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"[^"\\/]*"\s*\)"#,
     )
     .is_match(literal_preserving_window)
         && !code_only_window.contains(".arg(")
