@@ -168,7 +168,6 @@ pub(crate) struct ItemSummary {
     /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
     /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
-    pub(crate) allow_dead_code: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +181,6 @@ pub(crate) struct ProjectItemContext {
     /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
     /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
-    pub(crate) allow_dead_code: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

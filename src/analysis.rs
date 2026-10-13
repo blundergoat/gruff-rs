@@ -517,7 +517,7 @@ fn collect_report_inputs(
         &mut diagnostics,
     )?;
     let (findings, summaries, suppressed_findings) =
-        apply_report_exclusions(findings, &config.exclusions, &config.sensitive_exclusions);
+        crate::inline_suppressions::apply_all_suppressions(findings, config, project_root);
     let inputs = ReportInputs {
         discovery,
         diagnostics,

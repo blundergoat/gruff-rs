@@ -166,7 +166,7 @@ impl LineRuleContext<'_> {
     ) {
         // A proved external test module is test code; other unwrap calls remain in the user's report.
         if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
-            && !expect_has_substantive_rationale(raw_line)
+            && !is_accepted_unwrap_line(raw_line, &self.file.display_path)
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
             && !self.external_test_module

@@ -185,7 +185,7 @@ pub(crate) fn block_finding_with_extras(
         rule_id: descriptor.rule_id.to_string(),
         message: descriptor.message,
         file_path: descriptor.file.display_path.clone(),
-        line: Some(descriptor.block.start_line),
+        line: Some(descriptor.block.declaration_line),
         severity: descriptor.severity,
         pillar: descriptor.pillar,
         confidence: extras.confidence,

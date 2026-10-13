@@ -315,3 +315,222 @@ pub fn configure(checkout: &Path) {
         "the forwarded, rebound, out-of-scope, file-argument and relative-program commands should report"
     );
 }
+
+/// Unwraps whose outcome the source fixes stay quiet: a Cargo-set variable read in a build script, and a constructor
+/// given one literal. A variable Cargo does not set, a library read of `OUT_DIR`, a constructor given
+/// a variable, and any other unwrap on the same line keep reporting.
+#[test]
+pub(crate) fn unwrap_expect_skips_cargo_build_variables_and_literal_constructors() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"use std::ffi::CString;
+use std::net::IpAddr;
+use std::str::FromStr;
+
+/// Build fixed values and one from input.
+pub fn values(input: &str) -> usize {
+    let empty = CString::new("").unwrap();
+    let address = IpAddr::from_str("198.51.100.1").expect("fixed address");
+    let parsed = IpAddr::from_str(input).unwrap();
+    let out = std::env::var("OUT_DIR").unwrap();
+    let both = CString::new("x").unwrap().into_string().unwrap();
+    empty.as_bytes().len() + usize::from(address.is_ipv4()) + usize::from(parsed.is_ipv4()) + out.len() + both.len()
+}
+"#,
+    );
+    std::fs::write(
+        dir.path().join("build.rs"),
+        "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let arch = std::env::var_os(\"CARGO_CFG_TARGET_ARCH\").unwrap();\n    let flag = std::env::var(\"MY_FEATURE_FLAG\").unwrap();\n    println!(\"{out} {arch:?} {flag}\");\n}\n",
+    )
+    .expect("write build script");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let mut lines: Vec<(&str, usize)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "waste.unwrap-expect")
+        .map(|finding| (finding.file_path.as_str(), finding.line.unwrap_or(0)))
+        .collect();
+    lines.sort_unstable();
+    assert_eq!(
+        lines,
+        [
+            ("build.rs", 4),
+            ("src/lib.rs", 9),
+            ("src/lib.rs", 10),
+            ("src/lib.rs", 11)
+        ],
+        "the flag Cargo does not set, the input address, the library OUT_DIR and the second unwrap report"
+    );
+}
+
+/// FAMILY-CONTRACT.md section 13c: an `allow` or `expect` attribute naming a lint that makes a rule's claim suppresses
+/// that rule's finding on the item, or on the members of an attributed impl, and counts it in one inline row; a lint
+/// group the table does not name, and an unattributed sibling, keep reporting.
+#[test]
+pub(crate) fn allow_and_expect_attributes_suppress_only_the_lints_they_name() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Allowed long function.
+#[allow(clippy::too_many_lines)]
+pub fn allowed() -> usize {
+    let first = 1;
+    let second = 2;
+    first + second
+}
+
+/// Expected long function, with a reason.
+#[expect(clippy::too_many_lines, reason = "the fixture keeps its steps linear")]
+pub fn expected() -> usize {
+    let first = 1;
+    let second = 2;
+    first + second
+}
+
+/// A clippy group section 13c does not name.
+#[allow(clippy::pedantic)]
+pub fn grouped() -> usize {
+    let first = 1;
+    let second = 2;
+    first + second
+}
+
+/// The unattributed sibling.
+pub fn reported() -> usize {
+    let first = 1;
+    let second = 2;
+    first + second
+}
+
+/// Holds a method covered by its impl's attribute.
+pub struct Holder;
+
+#[allow(clippy::too_many_lines)]
+impl Holder {
+    /// Covered by the impl's attribute.
+    pub fn method() -> usize {
+        let first = 1;
+        let second = 2;
+        first + second
+    }
+}
+"#,
+    );
+    write_config(
+        dir.path(),
+        "rules:\n  size.function-length:\n    threshold: 3\n    severity: warning\n",
+    );
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let reported: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "size.function-length")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    assert_eq!(
+        reported,
+        ["grouped", "reported"],
+        "only the unnamed group and the sibling report"
+    );
+    let inline: Vec<(&str, &str, usize)> = report
+        .suppressions
+        .iter()
+        .filter(|row| row.source == Some("inline"))
+        .map(|row| (row.rule.as_str(), row.paths[0].as_str(), row.suppressed))
+        .collect();
+    assert_eq!(inline, [("size.function-length", "src/lib.rs", 3)]);
+    assert!(report
+        .suppressions
+        .iter()
+        .filter(|row| row.source == Some("inline"))
+        .all(|row| row.reason == crate::inline_suppressions::INLINE_SUPPRESSION_REASON));
+
+    let sarif: serde_json::Value =
+        serde_json::from_str(&crate::render::render_report(&report, OutputFormat::Sarif))
+            .expect("sarif json");
+    let kinds: Vec<&str> = sarif["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .filter_map(|result| result["suppressions"][0]["kind"].as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["inSource", "inSource", "inSource"],
+        "each suppressed finding stays a SARIF result"
+    );
+}
+
+/// A file's own `#![allow(dead_code)]` suppresses both dead-code rules' findings there and counts each in an inline
+/// row, so allowed dead code is never hidden silently.
+#[test]
+pub(crate) fn file_level_allow_dead_code_is_counted_not_silent() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        "//! Fixture crate.\n\nmod helpers;\n\n/// Entry point.\npub fn run() {}\n",
+    );
+    std::fs::write(
+        dir.path().join("src/helpers.rs"),
+        "#![allow(dead_code)]\n//! Helpers kept for later.\n\nfn unused_helper() {}\n\nstruct UnusedHolder;\n",
+    )
+    .expect("write helpers");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id.starts_with("dead-code.")),
+        "allowed dead code must not report: {:?}",
+        report.findings
+    );
+    let inline: Vec<(&str, usize)> = report
+        .suppressions
+        .iter()
+        .filter(|row| row.source == Some("inline") && row.paths[0] == "src/helpers.rs")
+        .map(|row| (row.rule.as_str(), row.suppressed))
+        .collect();
+    // The item-candidate rule covers the function too, so it counts both items.
+    assert_eq!(
+        inline,
+        [
+            ("dead-code.unused-private-function", 1),
+            ("dead-code.unused-private-item-candidate", 2)
+        ]
+    );
+}

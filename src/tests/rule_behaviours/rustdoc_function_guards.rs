@@ -220,12 +220,14 @@ pub fn measured() -> usize {
         })
         .expect("measured function remains above the controlled threshold");
 
+    // A block finding is reported on its signature line, not its first rustdoc line. The
+    // line-sensitive legacy fingerprint moves with it; the line-free stable identity does not.
     assert_eq!(
         finding.line,
-        Some(1),
-        "the existing finding anchor must stay fixed"
+        Some(6),
+        "the finding is anchored on the `pub fn measured` line"
     );
-    assert_eq!(finding.fingerprint, "44b204f4b4481dd7");
+    assert_eq!(finding.fingerprint, "c4bd1257618b3e91");
     assert_eq!(finding.stable_identity, "30ce12daa68ddd0f");
     assert_eq!(
         finding.metadata["measured"],

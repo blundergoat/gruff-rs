@@ -320,7 +320,6 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
             left.test_context,
             left.trait_impl,
             left.exported_by_attr,
-            left.allow_dead_code,
         )
             .cmp(&(
                 right.file_path.as_str(),
@@ -333,7 +332,6 @@ pub(crate) fn sort_project_items(items: &mut [ItemSummary]) {
                 right.test_context,
                 right.trait_impl,
                 right.exported_by_attr,
-                right.allow_dead_code,
             ))
     });
 }

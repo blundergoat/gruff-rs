@@ -118,14 +118,14 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "80bf1a6b54a67ccf",
         ),
         (
-            // Line 24 is the `#[test]` attribute, the item's own first line. Before M07's anchor repair this
-            // pinned line 23, the blank separator belonging to the function above it.
+            // Line 25 is the `fn test_sleeps_without_assertion` signature, where the block finding is anchored;
+            // the line-sensitive fingerprint follows that line rather than the `#[test]` attribute on line 24.
             "test-quality.sleep-in-test",
             Severity::Advisory,
             "fixtures/sample.rs",
-            Some(24),
+            Some(25),
             Some("test_sleeps_without_assertion"),
-            "3da3d9f1b4bfed50",
+            "2fcdf01944169164",
         ),
     ];
 
@@ -189,7 +189,8 @@ fn third() {
         );
     }
 
-    // `second` carries a doc comment, so its block starts at the doc line, never at the blank line above it.
+    // `second` carries a doc comment, so its block starts at the doc line, but its findings land on the signature
+    // line below it, never on the blank line above.
     let second = report
         .findings
         .iter()
@@ -198,8 +199,8 @@ fn third() {
 
     assert_eq!(
         second.line,
-        Some(5),
-        "`second` must anchor on its doc line, not the blank line 4 above it"
+        Some(6),
+        "`second` must anchor on its `pub fn second` line, not its doc line 5 or the blank line 4"
     );
 }
 

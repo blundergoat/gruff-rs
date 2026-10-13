@@ -246,7 +246,8 @@ fn sarif_suppressed_result(
             "suppressions".to_string(),
             json!([
                 {
-                    "kind": "external",
+                    // A configured exclusion lives outside the source; another tool's attribute or comment is in it.
+                    "kind": if suppressed.suppression.source == Some("inline") { "inSource" } else { "external" },
                     "justification": &suppressed.suppression.reason,
                 },
             ]),

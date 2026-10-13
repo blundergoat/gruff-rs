@@ -9,8 +9,26 @@ pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) ->
     render_text_diagnostics(&mut output, report);
     render_text_findings(&mut output, report);
     render_text_suppressions(&mut output, report);
+    render_text_applied_baseline(&mut output, report);
     render_output_volume_hint(&mut output, report);
     output
+}
+
+/// Name an applied baseline and how it was chosen, so a run that hid accepted findings never reads as a clean scan,
+/// e.g. `Baseline: default gruff-baseline.json; suppressed 6 findings` (ADR-006).
+fn render_text_applied_baseline(output: &mut String, report: &AnalysisReport) {
+    let Some(baseline) = report
+        .baseline
+        .as_ref()
+        .filter(|baseline| !baseline.generated)
+    else {
+        return;
+    };
+    let _ = write!(
+        output,
+        "\nBaseline: {} {}; suppressed {} findings\n",
+        baseline.source, baseline.path, baseline.suppressed
+    );
 }
 
 // ADR-014 per-rule delta blocks. Rendered BEFORE the composite-score line
@@ -195,7 +213,7 @@ pub(crate) fn render_text_suppressions(output: &mut String, report: &AnalysisRep
         .iter()
         .filter(|summary| summary.suppressed > 0)
         .map(|summary| {
-            // A built-in row names the file it skipped, because it has no configured entry to point at.
+            // A built-in or inline row names the file it covers, because it has no configured entry to point at.
             let scope = match summary.source {
                 Some(_) => summary.paths.first().cloned().unwrap_or_default(),
                 None => summary.index.to_string(),

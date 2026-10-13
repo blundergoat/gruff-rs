@@ -103,6 +103,7 @@ Performance rules are narrow source-pattern checks for `Regex::new`, `format!`, 
 `test-quality.unwrap-in-test` allows a direct call result unwrapped inside an assertion expression when that call is the subject under test. It still reports setup/local unwraps that feed assertions because those can hide fixture failures behind a panic.
 
 `waste.unwrap-expect` stays quiet in external `tests.rs` when a complete project scan proves its parent has a test-only `mod tests;` gate.
+It also stays quiet when every unwrap or expect on the line follows a call whose outcome the source fixes: a Cargo-set variable such as `OUT_DIR` or `CARGO_CFG_TARGET_ARCH` read with `env::var` or `env::var_os` in a `build.rs`, or `CString::new`, `Regex::new`, `Url::parse` or an address `from_str` given one string literal, which succeeds or fails the same way on every run. A `CString::new` literal containing a NUL escape (`\0`, `\x00` or `\u{0}`) keeps reporting. Another variable, the same read outside a build script, a constructor given a variable, and any other unwrap on the line keep reporting.
 Both `#[cfg(test)]` and `#[cfg(all(test, feature = "web"))]` are supported.
 A scan of that file alone, a production declaration, or a path override keeps the warning because test-only ownership is unproved.
 

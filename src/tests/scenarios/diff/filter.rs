@@ -460,6 +460,7 @@ fn function_block(
         name: name.to_string(),
         param_count: 0,
         start_line,
+        declaration_line: start_line,
         line_count,
         executable_line_count: line_count,
         body: String::new(),

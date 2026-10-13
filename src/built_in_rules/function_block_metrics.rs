@@ -11,7 +11,11 @@ use super::*;
 pub(crate) struct FunctionBlock {
     pub(crate) name: String,
     pub(crate) param_count: usize,
+    /// First line of the block, its attached docs and attributes included; body offsets count from here.
     pub(crate) start_line: usize,
+    /// Line of the function's name, where a block finding is reported, so the report names the signature a
+    /// developer edits rather than its first doc or attribute line.
+    pub(crate) declaration_line: usize,
     pub(crate) line_count: usize,
     pub(crate) executable_line_count: usize,
     pub(crate) body: String,
@@ -87,6 +91,7 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         name: parts.name,
         param_count: parts.param_count,
         start_line: start + 1,
+        declaration_line: function_index + 1,
         line_count: end.saturating_sub(start) + 1,
         executable_line_count: declaration_code_line_count(
             &body,

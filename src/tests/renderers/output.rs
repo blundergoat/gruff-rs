@@ -257,6 +257,9 @@ pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
     assert!(baseline_summary.contains("baseline: 2 new, 1 unchanged, 3 resolved"));
     assert!(baseline_summary.contains("gruff-rs analyse --no-baseline"));
     assert!(!baseline_summary.contains("gruff-rs analyse --generate-baseline"));
+    // ADR-006: `analyse` text names an applied baseline and how it was chosen, so hidden findings never read as clean.
+    let analyse_text = render_report(&report, OutputFormat::Text);
+    assert!(analyse_text.contains("Baseline: default gruff-baseline.json; suppressed 1 findings"));
 }
 
 #[test]

@@ -186,6 +186,25 @@ entry index and the offending key (exit code 2):
 An entry that matches no finding is not an error. It reports `suppressed: 0`, so
 fixing the underlying problem never breaks a build.
 
+An `allow` or `expect` attribute naming a lint that makes a gruff-rs rule's claim
+also suppresses that finding where it was written (FAMILY-CONTRACT.md section
+13c): `clippy::too_many_lines` for `size.function-length`,
+`clippy::too_many_arguments` for `size.parameter-count`,
+`clippy::cognitive_complexity` for `complexity.cognitive`, `dead_code` or `unused`
+for `dead-code.unused-private-function` and
+`dead-code.unused-private-item-candidate`, and `clippy::disallowed_names` for
+`naming.placeholder-identifier`. The attribute counts on the item, on an impl,
+trait or inline module enclosing it, or as the file's own `#![allow(...)]`; an
+attribute inherited from another file, such as a crate root's `#![allow]`, is not
+read yet. A clippy group such as `clippy::pedantic` is not one of these lints. In a
+workflow file, zizmor's `# zizmor: ignore[unpinned-uses]` or
+`ignore[dangerous-triggers]` on the reported line or alone above it suppresses the
+matching workflow finding. Each suppression adds one row per file and rule after
+the built-in rows, numbered on from them, with `source: "inline"`, the reason
+"Another tool's suppression comment names this check, so the finding is suppressed
+where it was written." and the text label `inline[<path>]`; SARIF keeps the finding
+as a result with an `inSource` suppression.
+
 Every entry publishes one row in the report's `suppressions` array
 (`{index, rule, paths, reason, suppressed}` plus `symbol` when present) and contributes to the
 `Suppressed findings: N via …` line on the `analyse` and `summary` text output,

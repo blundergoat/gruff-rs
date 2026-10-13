@@ -18,10 +18,6 @@ pub(crate) fn collect_project_rust_index(
         module_path,
         cfg_context: false,
         test_context: false,
-        // A crate- or module-level `#![allow(dead_code)]` lives on the file's inner
-        // attributes, so honour it for every item in the file (generated/plugin
-        // modules keep intentionally-unused items on purpose).
-        allow_dead_code_context: has_allow_dead_code_attr(&ast.attrs),
     };
     collect_project_items(scope, &ast.items, builders.modules, builders.items);
     collect_call_names(file, source, builders.call_names);
@@ -44,7 +40,6 @@ pub(crate) struct ProjectItemScope<'a> {
     pub(crate) module_path: &'a str,
     pub(crate) cfg_context: bool,
     pub(crate) test_context: bool,
-    pub(crate) allow_dead_code_context: bool,
 }
 
 pub(crate) fn collect_project_item(
@@ -88,8 +83,6 @@ pub(crate) fn collect_project_function(
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_fn.attrs)
                 || is_reached_without_rust_reference(&item_fn.attrs, &item_fn.sig, &item_fn.block),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_fn.attrs),
         },
     ));
 }
@@ -112,8 +105,6 @@ pub(crate) fn collect_project_struct(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_struct.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_struct.attrs),
         },
     ));
 }
@@ -136,8 +127,6 @@ pub(crate) fn collect_project_enum(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_enum.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_enum.attrs),
         },
     ));
 }
@@ -160,8 +149,6 @@ pub(crate) fn collect_project_trait(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_trait.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_trait.attrs),
         },
     ));
 }
@@ -184,8 +171,6 @@ pub(crate) fn collect_project_const(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_const.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_const.attrs),
         },
     ));
 }
@@ -208,8 +193,6 @@ pub(crate) fn collect_project_static(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_static.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_static.attrs),
         },
     ));
 }
@@ -232,8 +215,6 @@ pub(crate) fn collect_project_type_alias(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_type.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_type.attrs),
         },
     ));
 }
@@ -276,9 +257,6 @@ pub(crate) fn collect_project_method(
             trait_impl: item_impl.trait_.is_some(),
             exported_by_attr: has_export_attr(&method.attrs)
                 || is_reached_without_rust_reference(&method.attrs, &method.sig, &method.block),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_impl.attrs)
-                || has_allow_dead_code_attr(&method.attrs),
         },
     ));
 }
@@ -292,8 +270,6 @@ pub(crate) fn collect_project_module(
     let current_module = module_name(scope.module_path, &item_mod.ident.to_string());
     let module_cfg_gated = scope.cfg_context || has_cfg_attr(&item_mod.attrs);
     let module_test_context = scope.test_context || is_test_module(item_mod);
-    let module_allow_dead_code =
-        scope.allow_dead_code_context || has_allow_dead_code_attr(&item_mod.attrs);
     modules.push(ModuleSummary {
         file_path: scope.file.display_path.clone(),
         module_path: current_module.clone(),
@@ -308,7 +284,6 @@ pub(crate) fn collect_project_module(
             module_path: &current_module,
             cfg_context: module_cfg_gated,
             test_context: module_test_context,
-            allow_dead_code_context: module_allow_dead_code,
         };
         collect_project_items(nested_scope, nested, modules, items);
     }
@@ -334,7 +309,6 @@ pub(crate) fn project_item(
         test_context: context.test_context,
         trait_impl: context.trait_impl,
         exported_by_attr: context.exported_by_attr,
-        allow_dead_code: context.allow_dead_code,
     }
 }
 
@@ -360,18 +334,6 @@ pub(crate) fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
 
 fn attr_ident_is_export(ident: &syn::Ident) -> bool {
     ident == "no_mangle" || ident == "export_name" || ident == "pymodule" || ident == "pyfunction"
-}
-
-fn has_allow_dead_code_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if !attr.path().is_ident("allow") {
-            return false;
-        }
-        let syn::Meta::List(list) = &attr.meta else {
-            return false;
-        };
-        list.tokens.to_string().contains("dead_code")
-    })
 }
 
 fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {

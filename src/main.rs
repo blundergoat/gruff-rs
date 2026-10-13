@@ -44,6 +44,7 @@ mod hook;
 mod html_report;
 mod ignore_policy;
 mod init;
+mod inline_suppressions;
 mod machine_contract;
 mod migrate_config;
 mod parser;
