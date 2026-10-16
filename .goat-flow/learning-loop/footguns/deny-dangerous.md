@@ -1,6 +1,6 @@
 ---
 category: hooks
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-16
 ---
 
 ## Footgun: Interpreter Heredoc Bodies Bypass The Shell-Only Deny Guard
@@ -35,6 +35,6 @@ last_reviewed: 2026-10-03
 
 **Why it happened:** The goat-flow 1.15.1 launcher ran a text-only containment check on the raw argument before the resolved one. It compared `process.cwd()`, which Node reports as the physical path, against the hook path spelled the way the host passed it, so a project named through a symlink produced a relative path leading with `..` and the guard rejected it before the realpath-based check could run.
 
-**Resolution:** goat-flow 1.17.0 resolves both operands first: `.goat-flow/hooks/run-with-bash.mjs` (search: `Existing paths are compared by physical identity`) applies `realpathSync` to the project root and the hook path before the escape test. Reproduced on 2026-10-03 from the physical checkout with the hook path spelled through a symlink: the committed 1.15.1 launcher exited 2 with `hook script path escaped the project root`, while the 1.17.0 launcher allowed `ls -la` and blocked `rm -rf /` with its ordinary policy message.
+**Resolution:** the launcher resolves both operands first: `.goat-flow/hooks/run-with-bash.mjs` (search: `hookScriptContainmentFailure`) applies `realpathSync` to the project root and the hook path before the escape test. Reproduced on 2026-10-03 from the physical checkout with the hook path spelled through a symlink: the committed 1.15.1 launcher exited 2 with `hook script path escaped the project root`, while the 1.17.0 launcher allowed `ls -la` and blocked `rm -rf /` with its ordinary policy message.
 
 **Prevention:** If the symptom returns after an upgrade, confirm the failing spelling with `realpath` against the path the agent host reports, then check that the containment function still resolves both operands before its escape test. The outcome is fail-closed, so diagnosing it costs no safety.
