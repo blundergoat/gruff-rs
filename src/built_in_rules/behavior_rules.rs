@@ -1,4 +1,10 @@
+//! Line rules turn Rust source into safety and maintainability findings.
+//!
+//! A developer sees these warnings during project and single-file scans.
+//! Selected-parent evidence can silence a test-only unwrap without changing production warnings.
+
 use super::*;
+use std::collections::HashSet;
 
 #[path = "safety_rationale.rs"]
 mod safety_rationale;
@@ -12,14 +18,21 @@ static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_BARE_ARGS_IDENTIFIER_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LITERAL_ARRAY_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LITERAL_PROGRAM_REGEX: OnceLock<Regex> = OnceLock::new();
 static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// Check each source line for unsafe and waste patterns in the user's scan.
+/// A proved external test module affects only `waste.unwrap-expect`.
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
     source: &str,
     blocks: &[FunctionBlock],
+    external_test_module: bool,
     findings: &mut Vec<Finding>,
 ) {
     let source_lines: Vec<&str> = source.lines().collect();
@@ -38,21 +51,25 @@ pub(crate) fn analyse_line_rules(
         raw_lines: &raw_lines,
         code_only_lines: &code_only_lines,
         test_context_ranges: &test_context_ranges,
+        external_test_module,
     };
 
     for line_index in 0..raw_lines.len() {
         context.analyse_line(line_index, findings);
     }
-
-    analyse_unreachable(file, &code_only_source, findings);
 }
 
+/// Source and test-context facts used while producing line-level findings.
+///
+/// The external-module fact comes from another selected parsed file.
+/// A developer scanning only this file receives no parent-module exception.
 pub(crate) struct LineRuleContext<'a> {
     file: &'a SourceFile,
     source_lines: &'a [&'a str],
     raw_lines: &'a [&'a str],
     code_only_lines: &'a [&'a str],
     test_context_ranges: &'a [(usize, usize)],
+    external_test_module: bool,
 }
 
 impl LineRuleContext<'_> {
@@ -106,14 +123,18 @@ impl LineRuleContext<'_> {
             return;
         }
         match find_nearby_safety_rationale(self.raw_lines, line_index) {
-            None => findings.push(finding(SimpleFindingDescriptor {
-                rule_id: "security.unsafe-block",
-                message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
-                file: self.file,
-                line: Some(line_number),
-                severity: Severity::Warning,
-                pillar: Pillar::Security,
-            })),
+            None => {
+                let mut result = finding(SimpleFindingDescriptor {
+                    rule_id: "security.unsafe-block",
+                    message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
+                    file: self.file,
+                    line: Some(line_number),
+                    severity: Severity::Warning,
+                    pillar: Pillar::Security,
+                });
+                result.remediation = Some("Keep the unsafe block as small as possible and add a `// SAFETY:` comment stating the invariant that makes it sound.".to_string());
+                findings.push(result);
+            }
             Some(rationale) if is_weak_safety_rationale(&rationale) => {
                 findings.push(Finding::new(FindingDescriptor {
                         rule_id: "docs.weak-safety-rationale".to_string(),
@@ -145,19 +166,23 @@ impl LineRuleContext<'_> {
         line_number: usize,
         findings: &mut Vec<Finding>,
     ) {
+        // A proved external test module is test code; other unwrap calls remain in the user's report.
         if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
-            && !expect_has_substantive_rationale(raw_line)
+            && !is_accepted_unwrap_line(raw_line, &self.file.display_path)
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
+            && !self.external_test_module
         {
-            findings.push(finding(SimpleFindingDescriptor {
+            let mut result = finding(SimpleFindingDescriptor {
                 rule_id: "waste.unwrap-expect",
                 message: "unwrap()/expect() can turn recoverable errors into panics.".into(),
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
                 pillar: Pillar::Maintainability,
-            }));
+            });
+            result.remediation = Some("Propagate the error with `?` or handle the None/Err case explicitly; if failure is impossible, document the invariant that rules it out.".to_string());
+            findings.push(result);
         }
 
         if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
@@ -165,14 +190,16 @@ impl LineRuleContext<'_> {
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
         {
-            findings.push(finding(SimpleFindingDescriptor {
+            let mut result = finding(SimpleFindingDescriptor {
                 rule_id: "waste.unnecessary-clone-candidate",
                 message: "clone() call may be avoidable; confirm ownership requires it.".into(),
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
                 pillar: Pillar::Maintainability,
-            }));
+            });
+            result.remediation = Some("Remove the clone and borrow or move the value if it is not used again after this point.".to_string());
+            findings.push(result);
         }
     }
 }
@@ -190,11 +217,10 @@ pub(crate) fn analyse_process_commands(
     );
     let import_scopes = ProcessCommandImportScopes::from_ast(ast);
     let source_views = ProcessCommandSourceViews::from_source(source);
-    let literal_preserving_lines: Vec<&str> =
-        source_views.literal_preserving_code.lines().collect();
-    let code_only_lines: Vec<&str> = source_views.code_only.lines().collect();
+    let literal_lines: Vec<&str> = source_views.literal_preserving_code.lines().collect();
+    let code_lines: Vec<&str> = source_views.code_only.lines().collect();
     // Keep each finding anchored to the source line that constructs the process command.
-    for (line_index, line) in code_only_lines.iter().enumerate() {
+    for (line_index, line) in code_lines.iter().enumerate() {
         let line_number = line_index + 1;
         let imports = import_scopes.imports_at_line(line_number);
         let constructs_std_process_command = command_regex.captures_iter(line).any(|captures| {
@@ -207,20 +233,19 @@ pub(crate) fn analyse_process_commands(
         if !constructs_std_process_command {
             continue;
         }
-        let window_end = process_command_window_end(&code_only_lines, line_index);
-        let literal_preserving_window = literal_preserving_lines[line_index..window_end].join("\n");
-        let code_only_window = code_only_lines[line_index..window_end].join("\n");
+        let window_end = process_command_window_end(&code_lines, line_index);
+        let literal_window = literal_lines[line_index..window_end].join("\n");
+        let code_window = code_lines[line_index..window_end].join("\n");
         // Builder factories and fixed test cleanup lack the execution risk this rule reports.
-        if process_command_is_returned_builder(
-            &literal_preserving_lines,
-            line_index,
-            &literal_preserving_window,
-        ) || process_command_is_fixed_taskkill_cleanup(&literal_preserving_window)
+        if process_command_is_returned_builder(&literal_lines, line_index, &literal_window)
+            || process_command_is_fixed_taskkill_cleanup(&literal_window)
         {
             continue;
         }
+        let literal_arrays =
+            literal_argument_array_bindings(&literal_lines, &code_lines, line_index);
         let risk_signals =
-            process_command_risk_signals(&literal_preserving_window, &code_only_window);
+            process_command_risk_signals(&literal_window, &code_window, &literal_arrays);
         // Fixed commands without a concrete risk shape do not warrant a security warning.
         if risk_signals.is_empty() {
             continue;
@@ -601,7 +626,7 @@ fn insecure_rng_for_secrets_finding(
         confidence: Confidence::Medium,
         symbol: Some(block.name.clone()),
         remediation: Some(
-            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords. If the call is in a test fixture that intentionally uses a seeded RNG, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords."
                 .to_string(),
         ),
         metadata: json!({ "function": block.name, "call": format!("rand::{call}") }),
@@ -689,7 +714,7 @@ impl WeakCryptoReporter<'_, '_> {
             confidence: Confidence::Medium,
             symbol: Some(primitive.to_string()),
             remediation: Some(
-                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses. If the legacy primitive is required for interoperability with an existing artefact, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses. If interoperability with an existing artefact requires the legacy primitive, keep it out of security decisions and say why in a comment."
                     .to_string(),
             ),
             metadata: json!({ "primitive": primitive }),
@@ -707,9 +732,116 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
+/// Name the locals an earlier statement of the same function binds to an array of plain string literals that
+/// still holds at the command.
+///
+/// The nearest `let` of each name decides, and a `mut` binding never counts because its elements can be replaced.
+/// A binding in a block that closed before the command is out of scope. Any other mention of the name between the
+/// binding and the command (an `if let`, `for`, match arm or closure parameter) may rebind it, so the name is dropped,
+/// as it is when the command line names it more than once.
+fn literal_argument_array_bindings(
+    literal_preserving_lines: &[&str],
+    code_only_lines: &[&str],
+    line_index: usize,
+) -> HashSet<String> {
+    let let_binding = static_regex(
+        &PROCESS_LET_BINDING_REGEX,
+        r"\blet\s+(?P<mutable>mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+    );
+    let literal_array = static_regex(
+        &PROCESS_LITERAL_ARRAY_BINDING_REGEX,
+        r#"^\s*(?::[^=]*)?=\s*&?\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*(?:"(?:[^"\\]|\\.)*"\s*,?\s*)?\]\s*;"#,
+    );
+    let mut nearest_seen = HashSet::new();
+    let mut literal_arrays = HashSet::new();
+    // Walk back to the enclosing function's signature; bindings above it belong to other code.
+    for (index, line) in literal_preserving_lines[..line_index]
+        .iter()
+        .enumerate()
+        .rev()
+    {
+        // Visit a line's bindings right to left, so the later of two on one line is the nearer.
+        let bindings: Vec<_> = let_binding.captures_iter(line).collect();
+        for binding in bindings.iter().rev() {
+            let name = binding["name"].to_string();
+            let binding_end = binding.get(0).map_or(0, |whole| whole.end());
+            // The nearest binding decides; a non-`mut` literal array still in scope and untouched is the only one accepted.
+            if nearest_seen.insert(name.clone())
+                && binding.name("mutable").is_none()
+                && literal_array.is_match(&line[binding_end..])
+                && is_binding_live_at_command(
+                    code_only_lines,
+                    index,
+                    binding_end,
+                    line_index,
+                    &name,
+                )
+            {
+                literal_arrays.insert(name);
+            }
+        }
+        if line.contains("fn ") {
+            break;
+        }
+    }
+    literal_arrays
+}
+
+/// Report whether a binding is still in scope, unmentioned between its own end and the command line, and named exactly
+/// once on the command line.
+fn is_binding_live_at_command(
+    code_only_lines: &[&str],
+    binding_index: usize,
+    binding_end: usize,
+    command_index: usize,
+    name: &str,
+) -> bool {
+    let between = std::iter::once(
+        code_only_lines[binding_index]
+            .get(binding_end..)
+            .unwrap_or(""),
+    )
+    .chain(
+        code_only_lines[binding_index + 1..command_index]
+            .iter()
+            .copied(),
+    );
+    let mut depth = 0i32;
+    for text in between {
+        for character in text.chars() {
+            depth += match character {
+                '{' => 1,
+                '}' => -1,
+                _ => 0,
+            };
+            // A closing brace with no opening after the binding ends the binding's own block.
+            if depth < 0 {
+                return false;
+            }
+        }
+        if identifier_mentions(text, name) > 0 {
+            return false;
+        }
+    }
+    identifier_mentions(code_only_lines[command_index], name) == 1
+}
+
+/// Count whole-identifier mentions of a local name in code-only text, so `.args` and `path::args` do not count.
+fn identifier_mentions(text: &str, name: &str) -> usize {
+    text.match_indices(name)
+        .filter(|(start, _)| {
+            let before = text[..*start].chars().next_back();
+            let after = text[start + name.len()..].chars().next();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
+                && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+        .count()
+}
+
 fn process_command_risk_signals(
     literal_preserving_window: &str,
     code_only_window: &str,
+    literal_argument_arrays: &HashSet<String>,
 ) -> Vec<&'static str> {
     let mut signals = Vec::new();
 
@@ -737,22 +869,60 @@ fn process_command_risk_signals(
     {
         signals.push("dynamic-executable");
     }
-    if static_regex(
-        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
-        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
-    )
-    .is_match(code_only_window)
-    {
+    if has_dynamic_process_arguments(code_only_window, literal_argument_arrays) {
         signals.push("dynamic-arguments");
     }
     if code_only_window.contains(".env(") || code_only_window.contains(".envs(") {
         signals.push("custom-environment");
     }
-    if code_only_window.contains(".current_dir(") {
+    // A bare program name is found through `PATH`, not the working directory, so with no arguments and no other risk
+    // signal `.current_dir(...)` changes only where a fixed program runs. A relative path such as `./configure` runs
+    // whatever the chosen directory holds, so it keeps the working-directory signal.
+    if code_only_window.contains(".current_dir(")
+        && !(signals.is_empty()
+            && is_bare_program_without_arguments(literal_preserving_window, code_only_window))
+    {
         signals.push("custom-working-directory");
     }
 
     signals
+}
+
+/// Report whether an `.arg` or `.args` call passes an identifier, or an array holding an identifier or `format!`,
+/// other than `.args(name)` over a local array of plain string literals.
+fn has_dynamic_process_arguments(
+    code_only_window: &str,
+    literal_argument_arrays: &HashSet<String>,
+) -> bool {
+    let bare_args_identifier = static_regex(
+        &PROCESS_BARE_ARGS_IDENTIFIER_REGEX,
+        r"^\.args\s*\(\s*&?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)",
+    );
+    // `.args(name)` over a local array of plain string literals passes fixed arguments, not dynamic ones.
+    static_regex(
+        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
+        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
+    )
+    .find_iter(code_only_window)
+    .any(|argument| {
+        !bare_args_identifier
+            .captures(&code_only_window[argument.start()..])
+            .is_some_and(|bare| literal_argument_arrays.contains(&bare["name"]))
+    })
+}
+
+/// Report whether the command runs a bare program name, with no path separator, and has no `.arg` or `.args` call.
+fn is_bare_program_without_arguments(
+    literal_preserving_window: &str,
+    code_only_window: &str,
+) -> bool {
+    static_regex(
+        &PROCESS_LITERAL_PROGRAM_REGEX,
+        r#"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"[^"\\/]*"\s*\)"#,
+    )
+    .is_match(literal_preserving_window)
+        && !code_only_window.contains(".arg(")
+        && !code_only_window.contains(".args(")
 }
 
 /// End one bounded process-builder statement before risk evidence can leak from its neighbour.
@@ -861,7 +1031,7 @@ fn push_process_command_finding(
         confidence: Confidence::High,
         symbol: None,
         remediation: Some(
-            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs. If the command construction is in a test fixture or build script, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs."
                 .to_string(),
         ),
         metadata: json!({ "riskSignals": risk_signals }),

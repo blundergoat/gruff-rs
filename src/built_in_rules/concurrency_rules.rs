@@ -15,35 +15,6 @@ pub(crate) fn analyse_concurrency_block(
         analyse_async_blocking_calls(file, block, searchable_body, findings);
         analyse_lock_across_await(unit, block, searchable_body, findings);
     }
-
-    if static_regex(
-            &UNBOUNDED_CHANNEL_REGEX,
-            r"\b(std::sync::mpsc::channel|mpsc::unbounded_channel|unbounded_channel)(?:\s*::\s*<[^>]+>)?\s*\(",
-        )
-            .is_match(searchable_body)
-        {
-            findings.push(block_finding_with_extras(
-                BlockFindingDescriptor {
-                    rule_id: "concurrency.unbounded-channel",
-                    message: format!(
-                        "Function `{}` creates an unbounded channel.",
-                        block.name
-                    ),
-                    file,
-                    block,
-                    severity: Severity::Advisory,
-                    pillar: Pillar::Maintainability,
-                },
-                BlockFindingExtras {
-                    confidence: Confidence::Medium,
-                    remediation: Some(
-                        "Prefer a bounded channel or document the producer/consumer backpressure policy. If the unbounded channel is in a test harness, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
-                            .to_string(),
-                    ),
-                    metadata: json!({ "pattern": "unbounded-channel" }),
-                },
-            ));
-        }
 }
 
 pub(crate) fn analyse_async_blocking_calls(

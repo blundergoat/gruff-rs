@@ -1,6 +1,6 @@
 ---
 category: naming
-last_reviewed: 2026-05-31
+last_reviewed: 2026-10-03
 ---
 
 ## Lesson: Never Name Files or Folders After Milestones (M33, M35, etc.)
@@ -21,7 +21,7 @@ Do not encode milestone identifiers (`M01`, `M33`, `M37`, etc.) — or any task/
 - Acceptable names describe the domain: `false_positive_guards.rs`, `dead_code_recovery.rs`, `selector_parsing.rs`.
 - Unacceptable names encode time/process: `m33_*.rs`, `pr_142_fixes.rs`, `sprint_3_cleanup.rs`, `march_refactor.rs`.
 - The same rule applies inside files: don't put `// M33 added this` markers in code where a `// SAFETY:` or `// Why:` comment is what the reader actually needs. Git blame already records when something was added.
-- Milestone IDs belong in the milestone file (`.goat-flow/tasks/<version>/M33-*.md`) and in PR descriptions — not in the codebase itself.
+- Milestone IDs belong in the milestone file (`.goat-flow/plans/<version>/M33-*.md`) and in PR descriptions — not in the codebase itself.
 - Test *function* names can keep a `m33_` prefix when they prove a specific regression scenario tied to a documented incident (and the regression scenario itself is what matters, not the milestone). The file containing them should still be named for the *class of behavior under test*.
 
 **Why:** Encoding sequence identifiers in code paths creates dead context that future readers must decode before they can act, and traps new work into either misnamed homes or fragmented files.

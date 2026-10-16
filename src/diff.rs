@@ -305,7 +305,9 @@ pub(crate) fn apply_changed_region_filter(
     // Under a diff, align the pre-baseline summary with the filtered set so
     // `gate.scope: all` gates over the changed region too (ADR-003 addendum).
     report.all_findings_summary = Some(report.summary);
-    report.score = score_report(&report.findings, config);
+    // Rescoring the changed region keeps the run's own denominator, so the delta measures the
+    // findings the diff selected rather than the difference between two project sizes.
+    report.score = score_report(&report.findings, config, report.score.evaluated_files);
     report.per_rule_deltas = (!deltas.is_empty()).then_some(deltas);
     report.suppressed_count = Some(suppressed_findings);
     push_patch_filter_diagnostic(
@@ -423,6 +425,7 @@ fn push_patch_filter_diagnostic(
         ),
         file_path: None,
         line: None,
+        invalidates_run: None,
     });
 }
 
@@ -434,7 +437,11 @@ pub(crate) fn recount_suppressions(
         summary.suppressed = 0;
     }
     for suppressed in suppressed_findings {
-        if let Some(summary) = summaries.get_mut(suppressed.suppression.index) {
+        // Entry indexes are section-local, so a row is identified by its config key and index together.
+        if let Some(summary) = summaries.iter_mut().find(|summary| {
+            summary.config_key == suppressed.suppression.config_key
+                && summary.index == suppressed.suppression.index
+        }) {
             summary.suppressed += 1;
         }
     }

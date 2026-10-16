@@ -1,0 +1,312 @@
+{
+  "tool": {
+    "name": "gruff-rs",
+    "version": "0.5.0"
+  },
+  "git": {
+    "commit": "3b531f68a4f243f6787b0a322cd3b6c88d0dc5a0",
+    "dirty": true
+  },
+  "machine": {
+    "platform": "linux-x86_64",
+    "uname": "Linux 6.6.87.2-microsoft-standard-WSL2 x86_64",
+    "cpu": "Intel(R) Core(TM) Ultra 9 275HX",
+    "host_tag": ""
+  },
+  "source": {
+    "runtimeSource": {
+      "includedPaths": [
+        "src",
+        "Cargo.toml",
+        "Cargo.lock"
+      ],
+      "fileCount": 138,
+      "digest": "5bdd2bc46fea9ce8a26c1ae2a23c2005c9e4c586027e8beb6f252b932309ed2e"
+    },
+    "artifact": {
+      "kind": "fresh-binary",
+      "sha256": "c3f042e027a998a5b22ee97778ae4f50afddb59cf55e90f60617b4cea5af06f3"
+    },
+    "harnessSha256": "b66cd93ad809ddf6c1c57e978dcd2c51e8293a567a9123ecdadbb2278fd4278e"
+  },
+  "build": {
+    "profile": "release",
+    "locked": true,
+    "build_seconds": 8.307
+  },
+  "iters": 5,
+  "discarded_warmup": 1,
+  "generated_at": "2026-08-22T05:46:27Z",
+  "scenarios": [
+    {
+      "name": "fixtures.text",
+      "command": "gruff-rs analyse fixtures --format text --fail-on none --no-baseline",
+      "iterations": [
+        {
+          "wall_seconds": 0.006262,
+          "peak_rss_bytes": 7610368
+        },
+        {
+          "wall_seconds": 0.005919,
+          "peak_rss_bytes": 7610368
+        },
+        {
+          "wall_seconds": 0.006360,
+          "peak_rss_bytes": 7606272
+        },
+        {
+          "wall_seconds": 0.005906,
+          "peak_rss_bytes": 7606272
+        }
+      ],
+      "median_seconds": 0.006091,
+      "min_seconds": 0.005906,
+      "max_seconds": 0.006360,
+      "stddev_seconds": 0.000234,
+      "peak_rss_bytes": 7608320
+    },
+    {
+      "name": "fixtures.json",
+      "command": "gruff-rs analyse fixtures --format json --fail-on none --no-baseline",
+      "iterations": [
+        {
+          "wall_seconds": 0.006615,
+          "peak_rss_bytes": 7610368
+        },
+        {
+          "wall_seconds": 0.006441,
+          "peak_rss_bytes": 7610368
+        },
+        {
+          "wall_seconds": 0.005835,
+          "peak_rss_bytes": 7806976
+        },
+        {
+          "wall_seconds": 0.005929,
+          "peak_rss_bytes": 7606272
+        }
+      ],
+      "median_seconds": 0.006185,
+      "min_seconds": 0.005835,
+      "max_seconds": 0.006615,
+      "stddev_seconds": 0.000382,
+      "peak_rss_bytes": 7610368
+    },
+    {
+      "name": "fixtures.sarif",
+      "command": "gruff-rs analyse fixtures --format sarif --fail-on none --no-baseline",
+      "iterations": [
+        {
+          "wall_seconds": 0.006305,
+          "peak_rss_bytes": 8200192
+        },
+        {
+          "wall_seconds": 0.006017,
+          "peak_rss_bytes": 8200192
+        },
+        {
+          "wall_seconds": 0.007107,
+          "peak_rss_bytes": 8200192
+        },
+        {
+          "wall_seconds": 0.006369,
+          "peak_rss_bytes": 8396800
+        }
+      ],
+      "median_seconds": 0.006337,
+      "min_seconds": 0.006017,
+      "max_seconds": 0.007107,
+      "stddev_seconds": 0.000464,
+      "peak_rss_bytes": 8200192
+    },
+    {
+      "name": "fixtures.html",
+      "command": "gruff-rs analyse fixtures --format html --fail-on none --no-baseline",
+      "iterations": [
+        {
+          "wall_seconds": 0.005651,
+          "peak_rss_bytes": 7610368
+        },
+        {
+          "wall_seconds": 0.006341,
+          "peak_rss_bytes": 7606272
+        },
+        {
+          "wall_seconds": 0.006336,
+          "peak_rss_bytes": 7606272
+        },
+        {
+          "wall_seconds": 0.006245,
+          "peak_rss_bytes": 7610368
+        }
+      ],
+      "median_seconds": 0.006290,
+      "min_seconds": 0.005651,
+      "max_seconds": 0.006341,
+      "stddev_seconds": 0.000331,
+      "peak_rss_bytes": 7608320
+    },
+    {
+      "name": "src.json",
+      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline",
+      "iterations": [
+        {
+          "wall_seconds": 0.621817,
+          "peak_rss_bytes": 91238400
+        },
+        {
+          "wall_seconds": 0.580288,
+          "peak_rss_bytes": 90824704
+        },
+        {
+          "wall_seconds": 0.593935,
+          "peak_rss_bytes": 91242496
+        },
+        {
+          "wall_seconds": 0.568679,
+          "peak_rss_bytes": 91217920
+        }
+      ],
+      "median_seconds": 0.587112,
+      "min_seconds": 0.568679,
+      "max_seconds": 0.621817,
+      "stddev_seconds": 0.022885,
+      "peak_rss_bytes": 91228160
+    },
+    {
+      "name": "src.exact-rust-item",
+      "command": "gruff-rs analyse src --format json --fail-on none --config /home/devgoat/projects/gruff-workspace/gruff-rs/target/perf/scratch-exact-rust-rule.yaml --no-baseline",
+      "iterations": [
+        {
+          "wall_seconds": 0.160209,
+          "peak_rss_bytes": 62889984
+        },
+        {
+          "wall_seconds": 0.149447,
+          "peak_rss_bytes": 63082496
+        },
+        {
+          "wall_seconds": 0.173763,
+          "peak_rss_bytes": 63082496
+        },
+        {
+          "wall_seconds": 0.142917,
+          "peak_rss_bytes": 63082496
+        }
+      ],
+      "median_seconds": 0.154828,
+      "min_seconds": 0.142917,
+      "max_seconds": 0.173763,
+      "stddev_seconds": 0.013491,
+      "peak_rss_bytes": 63082496
+    },
+    {
+      "name": "src.with-baseline",
+      "command": "gruff-rs analyse src --format json --fail-on none --baseline /home/devgoat/projects/gruff-workspace/gruff-rs/target/perf/scratch-baseline.json",
+      "iterations": [
+        {
+          "wall_seconds": 0.548422,
+          "peak_rss_bytes": 91205632
+        },
+        {
+          "wall_seconds": 0.542110,
+          "peak_rss_bytes": 91111424
+        },
+        {
+          "wall_seconds": 0.562622,
+          "peak_rss_bytes": 91283456
+        },
+        {
+          "wall_seconds": 0.570515,
+          "peak_rss_bytes": 91222016
+        }
+      ],
+      "median_seconds": 0.555522,
+      "min_seconds": 0.542110,
+      "max_seconds": 0.570515,
+      "stddev_seconds": 0.012973,
+      "peak_rss_bytes": 91213824
+    },
+    {
+      "name": "src.with-history",
+      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline --history-file /home/devgoat/projects/gruff-workspace/gruff-rs/target/perf/scratch-history.json",
+      "iterations": [
+        {
+          "wall_seconds": 0.559346,
+          "peak_rss_bytes": 91336704
+        },
+        {
+          "wall_seconds": 0.556178,
+          "peak_rss_bytes": 91213824
+        },
+        {
+          "wall_seconds": 0.579256,
+          "peak_rss_bytes": 91017216
+        },
+        {
+          "wall_seconds": 0.601127,
+          "peak_rss_bytes": 91213824
+        }
+      ],
+      "median_seconds": 0.569301,
+      "min_seconds": 0.556178,
+      "max_seconds": 0.601127,
+      "stddev_seconds": 0.020783,
+      "peak_rss_bytes": 91213824
+    },
+    {
+      "name": "src.diff-empty",
+      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline --diff-patch /home/devgoat/projects/gruff-workspace/gruff-rs/target/perf/scratch-empty.patch",
+      "iterations": [
+        {
+          "wall_seconds": 0.035890,
+          "peak_rss_bytes": 19001344
+        },
+        {
+          "wall_seconds": 0.040091,
+          "peak_rss_bytes": 19025920
+        },
+        {
+          "wall_seconds": 0.048670,
+          "peak_rss_bytes": 18960384
+        },
+        {
+          "wall_seconds": 0.038130,
+          "peak_rss_bytes": 18997248
+        }
+      ],
+      "median_seconds": 0.039110,
+      "min_seconds": 0.035890,
+      "max_seconds": 0.048670,
+      "stddev_seconds": 0.005587,
+      "peak_rss_bytes": 18999296
+    },
+    {
+      "name": "list-rules.json",
+      "command": "gruff-rs list-rules --format json",
+      "iterations": [
+        {
+          "wall_seconds": 0.004392,
+          "peak_rss_bytes": 7036928
+        },
+        {
+          "wall_seconds": 0.004061,
+          "peak_rss_bytes": 7032832
+        },
+        {
+          "wall_seconds": 0.004536,
+          "peak_rss_bytes": 7036928
+        },
+        {
+          "wall_seconds": 0.004763,
+          "peak_rss_bytes": 7036928
+        }
+      ],
+      "median_seconds": 0.004464,
+      "min_seconds": 0.004061,
+      "max_seconds": 0.004763,
+      "stddev_seconds": 0.000294,
+      "peak_rss_bytes": 7036928
+    }
+  ]
+}

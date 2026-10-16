@@ -3,11 +3,9 @@ use super::*;
 #[path = "safety_rationale_guards.rs"]
 mod safety_rationale_guards;
 
-/// Calibration guard: `naming.boolean-prefix` accepts idiomatic Rust
-/// predicate names (subject-predicate form, common predicate verbs) while
-/// keeping passive shapes like `triggered_by` flagged.
+/// Retired boolean naming stays silent for the historical idiom and passive-name fixtures.
 #[test]
-pub(crate) fn boolean_prefix_accepts_idioms_and_flags_passive() {
+pub(crate) fn retired_boolean_prefix_stays_silent_for_historical_names() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -47,32 +45,7 @@ pub fn triggered_by() -> bool { true }
         .iter()
         .filter(|finding| finding.rule_id == "naming.boolean-prefix")
         .collect();
-    let triggered_by_count = predicate_findings
-        .iter()
-        .filter(|finding| finding.symbol.as_deref() == Some("triggered_by"))
-        .count();
-    assert_eq!(
-        triggered_by_count, 1,
-        "triggered_by must still be flagged; findings={predicate_findings:?}"
-    );
-    for accepted in [
-        "visibility_is_public",
-        "path_is_project_ignored",
-        "line_in_ranges",
-        "path_matches",
-        "starts_with_prefix",
-        "ends_with_suffix",
-        "matches",
-        "contains",
-    ] {
-        let still_flagged = predicate_findings
-            .iter()
-            .any(|finding| finding.symbol.as_deref() == Some(accepted));
-        assert!(
-                !still_flagged,
-                "{accepted} must be accepted by the idiom-aware predicate rule; findings={predicate_findings:?}"
-            );
-    }
+    assert!(predicate_findings.is_empty(), "{predicate_findings:?}");
 }
 
 /// Regression guard: documented unsafe blocks stay silent across accepted comment shapes.
@@ -181,9 +154,7 @@ pub fn block_documented() {}
     assert_missing_rule(&report, "security.unsafe-block");
 }
 
-/// Config round-trip guard: the three naming options
-/// (`predicatePrefixes`, `extraPlaceholders`, `extraGenericNames`) plumb
-/// through the typed-option config and influence rule dispatch. Wrong
+/// Config round-trip guard: `extraPlaceholders` reaches rule dispatch. Wrong
 /// shapes (a non-array value) are rejected with the expected error
 /// format.
 #[test]
@@ -200,18 +171,10 @@ pub(crate) fn naming_options_round_trip_through_config() {
         dir.path(),
         r##"
 rules:
-  naming.boolean-prefix:
-    enabled: true
-    options:
-      predicatePrefixes: ["requires_"]
   naming.placeholder-identifier:
     enabled: true
     options:
       extraPlaceholders: ["tmp"]
-  naming.generic-function:
-    enabled: true
-    options:
-      extraGenericNames: ["do_stuff"]
 "##,
     );
 
@@ -225,20 +188,6 @@ rules:
         },
     )
     .expect("analysis succeeds");
-
-    // Custom predicate prefixes extend the built-in boolean-name allowlist.
-    assert!(
-        !report.findings.iter().any(|finding| {
-            finding.rule_id == "naming.boolean-prefix"
-                && finding.symbol.as_deref() == Some("requires_init")
-        }),
-        "predicatePrefixes must silence requires_init; findings={:?}",
-        report
-            .findings
-            .iter()
-            .map(|f| (&f.rule_id, &f.symbol))
-            .collect::<Vec<_>>()
-    );
 
     // Extra placeholders are additive, so project-local throwaway names can fail.
     assert!(
@@ -254,34 +203,20 @@ rules:
             .collect::<Vec<_>>()
     );
 
-    // Extra generic names are additive, so project-local vague verbs can fail.
-    assert!(
-        report.findings.iter().any(|finding| {
-            finding.rule_id == "naming.generic-function"
-                && finding.symbol.as_deref() == Some("do_stuff")
-        }),
-        "extraGenericNames must flag `do_stuff`; findings={:?}",
-        report
-            .findings
-            .iter()
-            .map(|f| (&f.rule_id, &f.symbol))
-            .collect::<Vec<_>>()
-    );
-
     // Typed options reject scalar values before rule dispatch reads them.
     write_config(
         dir.path(),
         r##"
 rules:
-  naming.boolean-prefix:
+  naming.placeholder-identifier:
     options:
-      predicatePrefixes: 7
+      extraPlaceholders: 7
 "##,
     );
     let error = load_config(dir.path(), &default_test_options())
         .expect_err("non-array option value must be rejected");
     assert!(
-        error.contains("`rules.naming.boolean-prefix.options.predicatePrefixes`")
+        error.contains("`rules.naming.placeholder-identifier.options.extraPlaceholders`")
             && error.to_lowercase().contains("array"),
         "unexpected error: {error}"
     );

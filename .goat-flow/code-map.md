@@ -18,7 +18,7 @@
 `src/` = Rust source directory.
 `src/main.rs` = Entry point and command dispatch: `main`, `run_summary`, `run_report`, `options_from_analyse`/`options_from_report`, the `analyse_source` rule-dispatch shim, scan-timing instrumentation (`Instant::now()` around `run_analysis`), and a few orchestration helpers (`changed_files`, etc.). Most subsystem responsibilities live in dedicated modules below.
 `src/cli/` = Clap argument structs (`AnalyseArgs`, `ReportArgs`, `SummaryArgs`, `DashboardArgs`, `ListRulesArgs`, `CheckIgnoreArgs`, `CompletionArgs`, `InitArgs`) in `args.rs`; CLI enum, `GlobalOptions`, `OutputWriter`, and `RunOutcome::classify` in `mod.rs`. Owns the `--help` template and the `paths` positional whose default is the current directory.
-`src/analysis.rs` = `run_analysis` entry point: builds `AnalysisOptions`, drives discovery + per-source analysis + project-wide analysis, assembles the final `AnalysisReport` (schema `gruff.analysis.v2`).
+`src/analysis.rs` = `run_analysis` entry point: builds `AnalysisOptions`, drives discovery + per-source analysis + project-wide analysis, assembles the final `AnalysisReport` (schema `gruff.analysis.v3`).
 `src/discovery.rs` = Git-ignore-aware source discovery; `resolve_input_paths` defaults empty paths to `["."]` and routes through the `ignore` crate's `WalkBuilder`.
 `src/source.rs` = `SourceFile` and `SourceUnit` types plus parser invocation.
 `src/parser/` = Rust file parsing via `syn` (`mod.rs`) and comment/string masking (`comments.rs`); emits `parse-error` diagnostics on failure while preserving text-only rule coverage.
@@ -32,7 +32,8 @@
 `src/baseline.rs` = `gruff-baseline.json` read/write and finding match logic.
 `src/report.rs` = Public report types: `AnalysisReport`, `Finding`, `Summary`, `PathSummary`, `RunInfo`, `ToolInfo`, `ScoreReport`, `RunDiagnostic`, `BaselineReport`, and finding fingerprinting.
 `src/scoring.rs` = Composite scoring, per-pillar scoring, grade-letter mapping, and top-offenders selection.
-`src/summary.rs` = `gruff-rs summary` digest renderer: text scan card + per-pillar / top-rules / top-files digest, and `gruff.summary.v2` JSON.
+`src/summary.rs` = `gruff-rs summary` digest renderer: text scan card + per-pillar / top-rules / top-files digest; `--format json` delegates to `src/machine_contract.rs` for the findings-free `gruff.summary.v3` envelope.
+`src/machine_contract.rs` = Serializers for the family-contracted machine envelopes: `render_analysis`/`serialize_analysis` emit `gruff.analysis.v3` and `render_summary` emits `gruff.summary.v3`.
 `src/render/` = Output formatters: `text.rs` (scan-card header + findings + diagnostics + suppressions), `markdown.rs`, `github.rs` (Actions annotations), `hotspot.rs` (top-offenders JSON), `sarif.rs` (SARIF v2.1.0 emitter and helpers). `mod.rs` dispatches by `OutputFormat` and threads `Option<u128>` scan duration into text only.
 `src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, and `/health` routes, a plain-text 404 fallback, and the form/iframe shell.
@@ -76,6 +77,7 @@
 `.goat-flow/architecture.md` = Current system architecture and trust boundaries.
 `.goat-flow/code-map.md` = This repository map.
 `.goat-flow/glossary.md` = Project-specific terms.
+`.goat-flow/security-policy.md` = Repo-local security policy that `goat-security` reads first; each entry names where its decision is recorded.
 `.goat-flow/learning-loop/footguns/` = Durable codebase traps with evidence.
 `.goat-flow/learning-loop/lessons/` = Durable agent-behavior lessons.
 `.goat-flow/learning-loop/patterns/` = Reusable successful approaches.

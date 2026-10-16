@@ -205,7 +205,7 @@ fn sql_dynamic_query_finding(file: &SourceFile, line: usize, method: &str) -> Fi
         confidence: Confidence::High,
         symbol: Some(method.to_string()),
         remediation: Some(
-            "Review this SQL-shaped formatted value, then prefer static SQL with bind parameters. If the named sink is a reviewed non-SQL wrapper or non-production fixture, rename it or add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Review this SQL-shaped formatted value, then prefer static SQL with bind parameters. If the named sink is a reviewed non-SQL wrapper, rename it so it does not read as a SQL sink."
                 .to_string(),
         ),
         metadata: json!({ "method": method }),

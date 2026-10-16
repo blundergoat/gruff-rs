@@ -300,11 +300,12 @@ pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_reg
         "pub fn run(cmd: &str) { let _ = std::process::Command::new(cmd).spawn(); }\n",
     )
     .expect("source write");
+    enable_builtin_rule(dir.path(), "security.process-command");
     run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             generate_baseline: Some(PathBuf::from("gruff-baseline.json")),
             ..default_test_options()
         },
@@ -312,7 +313,7 @@ pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_reg
     .expect("baseline generation succeeds");
     write_config(
         dir.path(),
-        "gate:\n  scope: all\n  severity:\n    warning: 0\n",
+        "gate:\n  scope: all\n  severity:\n    warning: 0\nrules:\n  security.process-command:\n    enabled: true\n",
     );
     let patch_path = dir.path().join("change.patch");
     fs::write(
@@ -347,7 +348,7 @@ pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_reg
             .baseline
             .as_ref()
             .map(|baseline| baseline.unchanged_count),
-        Some(4),
+        Some(3),
         "baseline should classify the current findings as unchanged"
     );
     assert!(
@@ -375,6 +376,7 @@ pub(crate) fn diff_patch_diagnostics_are_sarif_notifications_without_failed_exec
                 message: "Patch filter kept 0 of 0 findings; suppressed 0 outside changed new-side lines. All patch files were analysed.".to_string(),
                 file_path: None,
                 line: None,
+                invalidates_run: None,
             }],
         );
 
@@ -459,6 +461,7 @@ fn function_block(
         name: name.to_string(),
         param_count: 0,
         start_line,
+        declaration_line: start_line,
         line_count,
         executable_line_count: line_count,
         body: String::new(),
@@ -467,9 +470,9 @@ fn function_block(
         is_test: false,
         test_context: false,
         is_async: false,
-        returns_bool: false,
         returns_result: false,
         ignore_without_reason: false,
         body_is_declarative_literal: false,
+        complexity: crate::built_in_rules::SyntaxComplexity::default(),
     }
 }

@@ -74,9 +74,15 @@ pub(crate) fn run_check_ignore(
 /// edit; an unignored path still returns an entry, carrying `ignored: false`.
 fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> CheckIgnoreEntry {
     let absolute = absolutize(project_root, path);
+    let explicit_file = absolute.is_file();
     // Config ignores win, and they already carry the matching pattern, so the operator is told which `.gruff-rs.yaml` entry
     // to change rather than being sent to Git.
-    if let Some(ignored) = classify_ignored_path(project_root, &absolute, config, false) {
+    let policy_decision = if explicit_file {
+        crate::discovery::classify_explicit_file(project_root, &absolute, config)
+    } else {
+        classify_ignored_path(project_root, &absolute, config, false)
+    };
+    if let Some(ignored) = policy_decision {
         return CheckIgnoreEntry {
             path: ignored.path,
             ignored: true,
@@ -85,6 +91,14 @@ fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> Chec
         };
     }
     let relative = display_path(project_root, &absolute);
+    if explicit_file {
+        return CheckIgnoreEntry {
+            path: relative,
+            ignored: false,
+            source: None,
+            pattern: None,
+        };
+    }
     let gitignore = gitignore_for_path(project_root, &absolute);
     // No config rule claimed it, so Git's own ignore hierarchy decides, and the reported pattern is the `.gitignore` line
     // to change.

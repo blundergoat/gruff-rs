@@ -4,6 +4,9 @@
 
 use super::super::*;
 
+#[path = "github_metadata_rules/event_guards.rs"]
+mod event_guards;
+
 /// Find direct event-context interpolation in understood GitHub shell steps.
 pub(super) fn analyse_ci_github_event_shell_interpolation(
     unit: &SourceUnit<'_>,
@@ -188,7 +191,14 @@ pub(super) fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut
     let Some(metadata_kind) = github_metadata_kind(unit.file) else {
         return;
     };
-    let mut scan_state = GithubMetadataScanState::default();
+    let mut scan_state = GithubMetadataScanState {
+        workflow_permissions: WorkflowPermissionsState {
+            single_concrete_job: metadata_kind == GithubMetadataKind::Workflow
+                && workflow_has_one_concrete_job(unit.source),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     // Shared step syntax is inspected line by line while workflow state stays separately gated.
     for (line_index, line) in unit.source.lines().enumerate() {
@@ -208,6 +218,25 @@ pub(super) fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut
     }
 }
 
+/// A scoped workflow grant reaches no wider than one concrete, non-matrix job.
+/// Reusable workflows, unknown YAML and expanded jobs retain the conservative warning.
+fn workflow_has_one_concrete_job(source: &str) -> bool {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(source) else {
+        return false;
+    };
+    let Some(jobs) = value.get("jobs").and_then(serde_yaml::Value::as_mapping) else {
+        return false;
+    };
+    jobs.len() == 1
+        && jobs.iter().all(|(name, job)| {
+            name.as_str()
+                .is_some_and(|name| !name.is_empty() && name != "<<")
+                && job.get("steps").is_some_and(serde_yaml::Value::is_sequence)
+                && job.get("uses").is_none()
+                && job.get("strategy").is_none()
+        })
+}
+
 /// Mutable state shared while one GitHub metadata file is scanned.
 /// Step tracking applies to workflows and actions; permission and event state
 /// is populated only for workflows before findings enter the user report.
@@ -225,7 +254,6 @@ struct GithubMetadataScanState {
 #[derive(Default)]
 struct WorkflowSecuritySummary {
     triggers: WorkflowTriggerState,
-    pull_request_line: Option<usize>,
     pull_request_target_line: Option<usize>,
     secret_lines: Vec<usize>,
 }
@@ -238,20 +266,13 @@ impl WorkflowSecuritySummary {
             Some(WorkflowEvent::PullRequestTarget) => {
                 self.pull_request_target_line.get_or_insert(line_number);
             }
-            Some(WorkflowEvent::PullRequest) => {
-                self.pull_request_line.get_or_insert(line_number);
-            }
-            None => {}
+            // A plain pull_request run gets no secrets from a fork, so it exposes none to untrusted code.
+            Some(WorkflowEvent::PullRequest) | None => {}
         }
         // Secret lines are retained until the completed workflow trigger is known.
         if line_has_secret_expression(trimmed) {
             self.secret_lines.push(line_number);
         }
-    }
-
-    /// Whether either supported pull-request event was present in the workflow.
-    fn has_pull_request_event(&self) -> bool {
-        self.pull_request_line.is_some() || self.pull_request_target_line.is_some()
     }
 }
 
@@ -339,15 +360,19 @@ fn push_github_actions_summary_findings(
             json!({ "event": "pull_request_target" }),
         );
     }
-    // Secrets are actionable only when a pull-request trigger can reach them.
-    if summary.has_pull_request_event() {
+    // Secrets are exposed only when pull_request_target runs pull-request code with the repository's secrets.
+    if summary.pull_request_target_line.is_some() {
+        let unreachable = event_guards::unreachable_secret_lines(unit.source);
         // Each referenced secret keeps its own source line for human review.
         for line in summary.secret_lines {
+            if unreachable.contains(&line) {
+                continue;
+            }
             push_workflow_finding(
                 unit,
                 findings,
                 "security.github-actions-secrets-in-pr",
-                "Workflow exposes repository secrets during a pull request event.",
+                "pull_request_target workflow references a repository secret.",
                 line,
                 json!({}),
             );
@@ -619,6 +644,12 @@ fn maybe_push_unpinned_action(
         }
         return;
     }
+    // GitHub's own `actions/*` and `github/*` actions are first-party, not the third-party dependency this rule
+    // reports; gruff-ts exempts the same two owners.
+    let owner = action.split(['/', '@']).next().unwrap_or_default();
+    if owner == "actions" || owner == "github" {
+        return;
+    }
     // A third-party action without any ref is unpinned for either metadata kind.
     let Some((name, reference)) = action.rsplit_once('@') else {
         push_unpinned_action(unit, findings, metadata_kind, line, action, None);
@@ -691,10 +722,11 @@ fn push_unpinned_action(
 }
 
 /// State for one workflow `permissions:` mapping while lines are streamed.
-/// Workflow-level scoped writes affect every job and are broad; job-scoped
-/// mappings are bounded, while `write-all` remains broad at any indentation.
+/// Workflow-level scoped writes are broad unless confined to one concrete job.
+/// Job mappings stay bounded; `write-all` remains broad at any indentation.
 #[derive(Default)]
 struct WorkflowPermissionsState {
+    single_concrete_job: bool,
     in_permissions_block: bool,
     permissions_indent: usize,
 }
@@ -723,6 +755,7 @@ impl WorkflowPermissionsState {
             return value == "write-all";
         }
         self.in_permissions_block
+            && !self.single_concrete_job
             && self.permissions_indent == 0
             && line_is_write_permission(trimmed)
     }
@@ -983,8 +1016,9 @@ fn workflow_event_in_scalar(value: &str) -> Option<WorkflowEvent> {
 
 /// Recognise a pull-request event named by one entry inside the `on:` mapping.
 fn workflow_event_in_entry(trimmed: &str) -> Option<WorkflowEvent> {
-    // A list item names its event directly; a mapping key carries that event's filters.
-    let entry = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+    // A list item names its event directly; a mapping key carries that event's filters. A trailing
+    // comment, such as `- pull_request_target  # label bot`, is not part of the event name.
+    let entry = strip_inline_comment(trimmed.strip_prefix("- ").unwrap_or(trimmed));
     let name = match entry.split_once(':') {
         Some((key, _)) => key,
         None => entry,
@@ -1003,9 +1037,20 @@ fn workflow_event_from_name(name: &str) -> Option<WorkflowEvent> {
 
 /// Recognise a repository secret expression, including the optional interior
 /// whitespace GitHub accepts, so `${{secrets.X}}` reads the same as `${{ secrets.X }}`.
+/// `secrets.GITHUB_TOKEN` is the token GitHub mints for each run, scoped by the job's
+/// `permissions:`, so it is not a repository secret.
 fn line_has_secret_expression(trimmed: &str) -> bool {
     static SECRET_EXPRESSION_REGEX: OnceLock<Regex> = OnceLock::new();
-    static_regex(&SECRET_EXPRESSION_REGEX, r"\$\{\{\s*secrets\.").is_match(trimmed)
+    static_regex(
+        &SECRET_EXPRESSION_REGEX,
+        r"\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)",
+    )
+    .captures_iter(trimmed)
+    .any(|captures| {
+        captures
+            .get(1)
+            .is_some_and(|name| name.as_str() != "GITHUB_TOKEN")
+    })
 }
 
 /// Emit one workflow-only security finding through the normal report contract.
@@ -1052,7 +1097,7 @@ fn push_shared_github_metadata_finding(
     metadata_kind: GithubMetadataKind,
     finding: GithubStepFinding<'_>,
 ) {
-    // Existing workflow findings keep their public wording and remediation unchanged.
+    // Metadata kind selects the message; remote-shell findings have script-specific advice.
     let (message, remediation) = if metadata_kind == GithubMetadataKind::Workflow {
         (
             finding.workflow_message,
@@ -1063,6 +1108,11 @@ fn push_shared_github_metadata_finding(
             finding.action_message,
             "Pin third-party actions, verify downloaded installers, and pass untrusted context through validated inputs.",
         )
+    };
+    let remediation = if finding.rule_id == "security.github-actions-remote-shell" {
+        "Download the remote script to a file, verify it against a pinned checksum or signature, then run that file instead of piping a download into a shell."
+    } else {
+        remediation
     };
     findings.push(Finding::new(FindingDescriptor {
         rule_id: finding.rule_id.to_string(),

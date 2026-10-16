@@ -518,9 +518,9 @@ fn live_release_paths_are_pinned_and_least_privilege() {
     validate_tool_and_target_pins().expect("release tools and targets must stay exact");
 }
 
-/// Prove Codex denies every env-file suffix while keeping the reviewed sample editable.
+/// Prove Codex uses supported env denies while keeping the reviewed sample editable.
 #[test]
-fn codex_env_permissions_cover_nonstandard_variants() {
+fn codex_env_permissions_use_supported_access_modes() {
     let config_text = read_workspace_text(".codex/config.toml");
     let config: toml::Value =
         toml::from_str(&config_text).expect("Codex project config must remain valid TOML");
@@ -532,20 +532,41 @@ fn codex_env_permissions_cover_nonstandard_variants() {
         .and_then(toml::Value::as_table)
         .expect("Codex project config must define workspace filesystem rules");
 
-    assert_eq!(
-        workspace_rules
-            .get("**/.env*")
-            .and_then(toml::Value::as_str),
-        Some("deny"),
-        "one broad deny must cover standard and nonstandard env filenames"
+    const REQUIRED_ENV_DENIES: &[&str] = &[
+        "**/.env",
+        "**/.env.local",
+        "**/.env.development",
+        "**/.env.production",
+        "**/.env.staging",
+        "**/.env.test",
+        "**/.envrc",
+        "**/.env.*.local",
+    ];
+    for pattern in REQUIRED_ENV_DENIES {
+        assert_eq!(
+            workspace_rules.get(*pattern).and_then(toml::Value::as_str),
+            Some("deny"),
+            "Codex config must deny the supported env pattern {pattern}"
+        );
+    }
+
+    assert!(
+        !workspace_rules.contains_key("**/.env*"),
+        "a broad env deny would also shadow the reviewed sample"
     );
-    assert_eq!(
-        workspace_rules
-            .get("**/.env.example")
-            .and_then(toml::Value::as_str),
-        Some("write"),
-        "the non-secret sample must retain normal workspace editing access"
+    assert!(
+        !workspace_rules.contains_key("**/.env.example"),
+        "the non-secret sample must inherit normal workspace editing access"
     );
+    for (pattern, access) in workspace_rules {
+        let access = access
+            .as_str()
+            .expect("Codex workspace access values must be strings");
+        assert!(
+            access == "deny" || !pattern.contains('*') || pattern.ends_with("/**"),
+            "Codex filename glob {pattern} cannot grant {access} access"
+        );
+    }
 }
 
 /// Prove a familiar moving checkout tag fails with an actionable repair message.

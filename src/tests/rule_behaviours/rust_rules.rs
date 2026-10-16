@@ -4,6 +4,50 @@
 
 use super::*;
 
+/// Retired boolean naming stays silent for trait methods and inherent or free predicates.
+#[test]
+pub(crate) fn retired_boolean_naming_stays_silent_for_trait_and_free_methods() {
+    let _guard = analysis_lock();
+    let project = tempdir().expect("tempdir");
+    baseline_with_lib(
+        project.path(),
+        r##"struct Item;
+struct MySql;
+trait Type<T> { fn compatible(&self) -> bool; }
+impl Type<MySql> for Item { fn compatible(&self) -> bool { true } }
+impl PartialEq<str> for Item { fn eq(&self, _other: &str) -> bool { true } }
+impl Item {
+    fn eq(&self) -> bool { true }
+    fn compatible(&self) -> bool { true }
+}
+fn compatible() -> bool { true }
+fn table_exists() -> bool { true }
+fn exists() -> bool { true }
+fn existential() -> bool { true }
+"##,
+    );
+
+    let report = run_project_analysis(
+        project.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    let mut reported_names: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "naming.boolean-prefix")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    reported_names.sort_unstable();
+    assert!(reported_names.is_empty(), "{reported_names:?}");
+}
+
 #[test]
 pub(crate) fn error_handling_rules_flag_production_hazards_and_skip_tests() {
     let _guard = analysis_lock();
@@ -56,21 +100,7 @@ fn private_unwrap(input: &str) -> usize {
     .expect("error-handling positive analysis succeeds");
     assert_has_rule(&positive, "error-handling.production-panic");
     assert_has_rule(&positive, "error-handling.unimplemented-placeholder");
-    assert_has_rule(&positive, "error-handling.public-unwrap");
     assert_has_rule(&positive, "waste.unwrap-expect");
-
-    let public_unwrap = positive
-        .findings
-        .iter()
-        .find(|finding| finding.rule_id == "error-handling.public-unwrap")
-        .expect("public unwrap finding");
-    assert_eq!(public_unwrap.symbol.as_deref(), Some("parse_public"));
-    assert_eq!(public_unwrap.severity, Severity::Warning);
-    assert!(matches!(public_unwrap.confidence, Confidence::High));
-    assert!(public_unwrap
-        .remediation
-        .as_deref()
-        .is_some_and(|message| message.contains("Result")));
 
     let panic = positive
         .findings
@@ -133,7 +163,56 @@ mod tests {
     .expect("error-handling negative analysis succeeds");
     assert_missing_rule(&negative, "error-handling.production-panic");
     assert_missing_rule(&negative, "error-handling.unimplemented-placeholder");
-    assert_missing_rule(&negative, "error-handling.public-unwrap");
+}
+
+/// `unimplemented-placeholder` reports a placeholder a production fn would run: a helper under `tests/`, a
+/// macro named in a comment, and one quoted into a `quote!` stream stay silent, while `todo!()` in `src/`
+/// still fires and names only the macro it found.
+#[test]
+pub(crate) fn unimplemented_placeholder_reads_production_code_only() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    fs::create_dir_all(dir.path().join("tests/support")).expect("tests dir");
+    fs::write(
+        dir.path().join("tests/support/helpers.rs"),
+        "/// Probe.\npub fn helper() -> i32 {\n    todo!()\n}\n",
+    )
+    .expect("helper write");
+    fs::write(
+        dir.path().join("src/prose.rs"),
+        "/// Probe.\npub fn prose() -> i32 {\n    // Replace the todo!() stub once the parser lands.\n    1\n}\n",
+    )
+    .expect("prose write");
+    fs::write(
+        dir.path().join("src/generated.rs"),
+        "/// Probe.\npub fn generated() -> TokenStream {\n    quote! { fn stub() { unimplemented!() } }\n}\n",
+    )
+    .expect("generated write");
+    fs::write(
+        dir.path().join("src/live.rs"),
+        // The masking ends at the stream's closing brace, so a placeholder after it still counts.
+        "/// Probe.\npub fn live() -> i32 {\n    let _stream = quote! { fn stub() {} };\n    todo!()\n}\n",
+    )
+    .expect("live write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("placeholder analysis succeeds");
+    let placeholders: Vec<(&str, &Value)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "error-handling.unimplemented-placeholder")
+        .map(|finding| (finding.file_path.as_str(), &finding.metadata["macros"]))
+        .collect();
+    assert_eq!(placeholders, vec![("src/live.rs", &json!(["todo!"]))]);
 }
 
 #[test]
@@ -186,7 +265,7 @@ async fn async_step() {}
     .expect("concurrency positive analysis succeeds");
     assert_has_rule(&positive, "concurrency.blocking-call-in-async");
     assert_has_rule(&positive, "concurrency.lock-across-await");
-    assert_has_rule(&positive, "concurrency.unbounded-channel");
+    assert_missing_rule(&positive, "concurrency.unbounded-channel");
 
     let blocking = positive
         .findings
@@ -490,8 +569,8 @@ license = "MIT"
     )
     .expect("performance positive analysis succeeds");
     assert_has_rule(&positive, "performance.regex-in-loop");
-    assert_has_rule(&positive, "performance.format-in-loop");
-    assert_has_rule(&positive, "performance.clone-in-loop");
+    assert_missing_rule(&positive, "performance.format-in-loop");
+    assert_missing_rule(&positive, "performance.clone-in-loop");
 
     let regex = positive
         .findings
@@ -510,8 +589,8 @@ license = "MIT"
         .find(|pillar| pillar.pillar == Pillar::Maintainability)
         .expect("waste score");
     assert!(
-        waste.findings >= 3,
-        "expected performance findings in waste: {waste:?}"
+        waste.findings >= 1,
+        "expected retained regex finding in waste: {waste:?}"
     );
 
     let negative_dir = tempdir().expect("tempdir");
@@ -572,7 +651,7 @@ pub(crate) fn rule_fixtures_prove_complexity_and_naming_rules() {
     )]);
 
     assert_has_rule(&positive, "complexity.nesting-depth");
-    assert_has_rule(&positive, "naming.boolean-prefix");
+    assert_missing_rule(&positive, "naming.boolean-prefix");
     assert_has_rule(&positive, "naming.placeholder-identifier");
 
     assert_missing_rule(&negative, "complexity.nesting-depth");
@@ -583,12 +662,10 @@ pub(crate) fn rule_fixtures_prove_complexity_and_naming_rules() {
 #[test]
 pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     let _guard = analysis_lock();
-    let security_positive = analyse_test_paths(vec![PathBuf::from(
-        "tests/fixtures/rules/security_sensitive_positive.rs",
-    )]);
-    let security_negative = analyse_test_paths(vec![PathBuf::from(
-        "tests/fixtures/rules/security_sensitive_negative.rs",
-    )]);
+    let security_positive =
+        analyse_fixture_as_production_code("tests/fixtures/rules/security_sensitive_positive.rs");
+    let security_negative =
+        analyse_fixture_as_production_code("tests/fixtures/rules/security_sensitive_negative.rs");
     let test_positive = analyse_test_paths(vec![PathBuf::from(
         "tests/fixtures/rules/test_quality_positive.rs",
     )]);
@@ -597,11 +674,9 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     )]);
 
     assert_has_rule(&security_positive, "security.unsafe-block");
-    assert_has_rule(&security_positive, "sensitive-data.hardcoded-env-value");
     assert_has_rule(&security_positive, "sensitive-data.high-entropy-string");
 
     assert_missing_rule(&security_negative, "security.unsafe-block");
-    assert_missing_rule(&security_negative, "sensitive-data.hardcoded-env-value");
     assert_missing_rule(&security_negative, "sensitive-data.high-entropy-string");
 
     assert_has_rule(&test_positive, "test-quality.ignored-without-reason");
@@ -614,4 +689,98 @@ pub(crate) fn rule_fixtures_prove_security_sensitive_and_test_quality_rules() {
     assert_missing_rule(&test_negative, "test-quality.sleep-in-test");
     assert_missing_rule(&test_negative, "test-quality.conditional-logic");
     assert_missing_rule(&test_negative, "test-quality.unwrap-in-test");
+}
+
+/// Sensitive-data and security findings in test code must be skipped and counted, one `builtInTestPath` row per file and rule.
+///
+/// The same source under `src/` keeps reporting both pillars, each skipped row carries its pillar's reason, and the
+/// rows sort by path bytes (FAMILY-CONTRACT.md section 13a).
+#[test]
+pub(crate) fn sensitive_data_rules_skip_test_paths_and_count_each_skip() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = fs::read_to_string("tests/fixtures/rules/security_sensitive_positive.rs")
+        .expect("sensitive fixture read");
+    let relative_paths = [
+        "src/sensitive.rs",
+        "tests/sensitive.rs",
+        "tests/calibration/sensitive.rs",
+    ];
+
+    for relative_path in relative_paths {
+        let destination = dir.path().join(relative_path);
+        fs::create_dir_all(destination.parent().expect("sensitive fixture parent"))
+            .expect("sensitive fixture directory");
+        fs::write(destination, &source).expect("sensitive fixture write");
+    }
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: relative_paths.into_iter().map(PathBuf::from).collect(),
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("sensitive path analysis succeeds");
+    let sensitive_rule_ids = |relative_path: &str| {
+        report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.file_path == relative_path
+                    && (finding.rule_id.starts_with("sensitive-data.")
+                        || finding.rule_id.starts_with("security."))
+            })
+            .map(|finding| finding.rule_id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let production_rule_ids = sensitive_rule_ids("src/sensitive.rs");
+    assert!(
+        production_rule_ids
+            .iter()
+            .any(|rule_id| rule_id.starts_with("security.")),
+        "the fixture must exercise a security rule in production code: {production_rule_ids:?}"
+    );
+    for row in report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath")
+    {
+        let expected_reason = if row.rule.starts_with("security.") {
+            "Test, fixture and example files exercise insecure calls on purpose, so security rules skip them by path."
+        } else {
+            "Test, fixture and example files hold sample credentials, so sensitive-data rules skip them by path."
+        };
+        assert_eq!(row.reason, expected_reason, "row {row:?}");
+    }
+    let skipped_rule_ids = |relative_path: &str| {
+        report
+            .suppressions
+            .iter()
+            .filter(|row| row.config_key == "builtInTestPath" && row.paths == [relative_path])
+            .map(|row| row.rule.clone())
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert!(production_rule_ids.contains("sensitive-data.high-entropy-string"));
+    assert!(sensitive_rule_ids("tests/sensitive.rs").is_empty());
+    assert!(sensitive_rule_ids("tests/calibration/sensitive.rs").is_empty());
+    assert_eq!(skipped_rule_ids("tests/sensitive.rs"), production_rule_ids);
+    assert_eq!(
+        skipped_rule_ids("tests/calibration/sensitive.rs"),
+        production_rule_ids
+    );
+    let test_path_rows = report
+        .suppressions
+        .iter()
+        .filter(|row| row.config_key == "builtInTestPath")
+        .map(|row| (row.index, row.paths[0].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(test_path_rows.first().map(|row| row.0), Some(0));
+    assert_eq!(
+        test_path_rows.first().map(|row| row.1.as_str()),
+        Some("tests/calibration/sensitive.rs")
+    );
 }

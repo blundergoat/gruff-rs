@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty() {
-    // The canonical `gruff.summary.v2` pillar exposes 9 fields (cross-port contract).
-    // `penalty` is the raw unclamped value subtracted from 100 before clamping, so a
-    // saturated pillar still surfaces the underlying penalty for worst-pillar ranking.
+    // The Rust projection supplies the four native fields accepted by the shared v3
+    // score-pillar contract. `penalty` is the raw unclamped value subtracted from 100
+    // before clamping, so a saturated pillar still surfaces the underlying penalty.
     let mut findings: Vec<Finding> = (0..200)
         .map(|index| {
             test_finding(
@@ -27,8 +27,10 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
     let decoded: Value =
         serde_json::from_str(&crate::summary::render(&report, 5, SummaryFormat::Json, 1))
             .expect("summary json");
-    assert_eq!(decoded["schemaVersion"], "gruff.summary.v2");
-    let pillars = decoded["pillars"].as_array().expect("pillars array");
+    assert_eq!(decoded["schemaVersion"], "gruff.summary.v3");
+    let pillars = decoded["score"]["pillars"]
+        .as_array()
+        .expect("pillars array");
     let find_pillar = |slug: &'static str| {
         pillars
             .iter()
@@ -44,38 +46,32 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
         .map(String::as_str)
         .collect();
     let expected: BTreeSet<&str> = [
-        "advisory",
         "applicable",
-        "error",
         "findings",
         "grade",
         "penalty",
         "pillar",
         "score",
-        "warning",
     ]
     .into_iter()
     .collect();
     assert_eq!(
         fields, expected,
-        "JSON pillar must expose 9 canonical fields"
+        "JSON pillar must expose the native v3 score fields"
     );
 
-    // Documentation: 200 advisory * (1.5 * 1.0) = 300.0 unclamped; score clamps to 0.
-    assert_eq!(documentation["score"].as_f64(), Some(0.0));
-    assert_eq!(documentation["penalty"].as_f64(), Some(300.0));
-    assert_eq!(documentation["grade"], "F");
-    assert!(documentation["applicable"].is_boolean());
-    // Complexity: 1 error * (8.0 * 1.0) = 8.0; score 92.0.
+    // Documentation: 200 advisory * (1.0 * 1.0) = 200.0 weight over ten evaluated files, so the
+    // ratified curve settles just above the floor at 50.25 rather than clamping to zero.
+    assert_eq!(documentation["score"].as_f64(), Some(50.25));
+    assert_eq!(documentation["penalty"].as_f64(), Some(200.0));
+    // Complexity: 1 error * (12.0 * 1.0) = 12.0 weight, density 1.20, score 53.85.
     let complexity = find_pillar("complexity");
-    assert_eq!(complexity["penalty"].as_f64(), Some(8.0));
-    assert_eq!(complexity["score"].as_f64(), Some(92.0));
-    assert!(complexity["applicable"].is_boolean());
+    assert_eq!(complexity["penalty"].as_f64(), Some(12.0));
+    assert_eq!(complexity["score"].as_f64(), Some(53.85));
     // Empty pillar still carries `penalty: 0.0` (no negative-zero leak).
     let security = find_pillar("security");
     assert_eq!(security["penalty"].as_f64(), Some(0.0));
     assert_eq!(security["score"].as_f64(), Some(100.0));
-    assert!(security["applicable"].is_boolean());
 }
 
 #[test]
@@ -94,19 +90,20 @@ pub(crate) fn non_score_pillars_are_inapplicable_and_excluded_from_composite() {
 
     // Composite must ignore Waste's 8.0 penalty: every SCORE_PILLARS pillar is 100.0,
     // and Waste is filtered out before averaging.
-    assert_eq!(report.score.composite, 100.0);
+    assert_eq!(report.score.composite, Some(100.0));
 
     let decoded: Value =
         serde_json::from_str(&crate::summary::render(&report, 5, SummaryFormat::Json, 1))
             .expect("summary json");
-    let waste_pillar = decoded["pillars"]
+    let waste_pillar = decoded["score"]["pillars"]
         .as_array()
         .expect("pillars array")
         .iter()
         .find(|pillar| pillar["pillar"] == "waste")
         .expect("waste pillar present");
-    assert_eq!(waste_pillar["applicable"], false);
-    assert_eq!(waste_pillar["penalty"].as_f64(), Some(8.0));
+    assert_eq!(waste_pillar["findings"], 1);
+    assert_eq!(waste_pillar["penalty"].as_f64(), Some(12.0));
+    assert_eq!(waste_pillar["score"].as_f64(), Some(53.85));
 }
 
 #[test]
@@ -270,12 +267,14 @@ pub(crate) fn html_pillars_section_matches_canonical_contract() {
         "documentation (2 findings) should come before naming (1)"
     );
 
-    // Score must render with two decimal places (canonical contract). Spot-check that
-    // the score cell carries a ".NN<" suffix for at least one pillar (complexity 86.50
-    // when the fixture seeds three findings: 1 advisory, 1 warning, 1 error).
+    // Score must render with two decimal places (canonical contract). Spot-check that the score
+    // cell carries a ".NN<" suffix for at least one pillar: the fixture's three complexity findings
+    // (1 advisory, 1 warning, 1 error) sit on one symbol, so the ratified contract bills them as one
+    // correlated concept at max(12.00) / 3 each - 12.00 in total, not 17.00 - and over ten evaluated
+    // files the curve scores 53.85.
     assert!(
-        html.contains(">86.50<"),
-        "expected complexity score 86.50 in HTML, html = {html}"
+        html.contains(">53.85<"),
+        "expected complexity score 53.85 in HTML, html = {html}"
     );
 
     // Per-severity cells use the tier class only when count > 0; zero stays neutral.
@@ -367,11 +366,11 @@ pub(crate) fn markdown_pillars_section_matches_canonical_contract() {
         "missing canonical pillar table separator in markdown:\n{markdown}"
     );
 
-    // Score must render with two decimals. The complexity row composite from the fixture is
-    // 86.50 (1 advisory + 1 warning + 1 error).
+    // Score must render with two decimals. The fixture's three complexity findings share one symbol,
+    // so clustering bills them once at 12.00 rather than 17.00, scoring 53.85 over ten evaluated files.
     assert!(
-        markdown.contains(" 86.50 "),
-        "expected complexity score 86.50 in markdown:\n{markdown}"
+        markdown.contains(" 53.85 "),
+        "expected complexity score 53.85 in markdown:\n{markdown}"
     );
 
     // Sort contract: findings DESC, then pillar ASC. Complexity (3 findings) before
@@ -411,12 +410,12 @@ pub(crate) fn markdown_pillars_section_matches_canonical_contract() {
 
     // Per-severity counts: complexity has advisory=1, warning=1, error=1.
     assert!(
-        markdown.contains("| complexity | B | 86.50 | 3 | 1 | 1 | 1 |"),
+        markdown.contains("| complexity | F | 53.85 | 3 | 1 | 1 | 1 |"),
         "complexity row should expose the 7 canonical cells exactly:\n{markdown}"
     );
     // Naming has advisory=1, warning=0, error=0 — zero cells must render literally as `0`.
     assert!(
-        markdown.contains("| naming | A | 98.50 | 1 | 1 | 0 | 0 |"),
+        markdown.contains("| naming | C | 75.00 | 1 | 1 | 0 | 0 |"),
         "naming row should carry zero counts for warning and error:\n{markdown}"
     );
 }
