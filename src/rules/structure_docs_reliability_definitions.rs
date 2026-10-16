@@ -229,16 +229,6 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         "Flags projects without a root README file.",
     ),
     rule_definition!(
-        "docs.stale-todo",
-        "Stale TODO marker",
-        Pillar::Documentation,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags TODO/FIXME/HACK/XXX comments without an owner, issue reference, or reason.",
-    ),
-    rule_definition!(
         "docs.commented-out-code",
         "Commented-out code",
         Pillar::Documentation,

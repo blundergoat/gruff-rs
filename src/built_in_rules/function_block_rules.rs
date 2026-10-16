@@ -168,32 +168,12 @@ pub(crate) struct PerformanceCheck {
     pub(crate) remediation: &'static str,
 }
 
-pub(crate) const PERFORMANCE_CHECKS: &[PerformanceCheck] = &[
-    PerformanceCheck {
-        rule_id: "performance.regex-in-loop",
-        regex: &PERF_REGEX_IN_LOOP_REGEX,
-        pattern: r"\bRegex::new\s*\(",
-        severity: Severity::Warning,
-        confidence: Confidence::High,
-        label: "Regex::new",
-        remediation: "Move regex construction out of the loop or cache the compiled regex.",
-    },
-    PerformanceCheck {
-        rule_id: "performance.format-in-loop",
-        regex: &PERF_FORMAT_IN_LOOP_REGEX,
-        pattern: r"\bformat!\s*\(",
-        severity: Severity::Advisory,
-        confidence: Confidence::Medium,
-        label: "format!",
-        remediation: "Reuse buffers or move formatting out of the loop when allocation matters.",
-    },
-    PerformanceCheck {
-        rule_id: "performance.clone-in-loop",
-        regex: &PERF_CLONE_IN_LOOP_REGEX,
-        pattern: r"\.clone\s*\(",
-        severity: Severity::Advisory,
-        confidence: Confidence::Medium,
-        label: "clone()",
-        remediation: "Clone outside the loop or borrow values when ownership permits.",
-    },
-];
+pub(crate) const PERFORMANCE_CHECKS: &[PerformanceCheck] = &[PerformanceCheck {
+    rule_id: "performance.regex-in-loop",
+    regex: &PERF_REGEX_IN_LOOP_REGEX,
+    pattern: r"\bRegex::new\s*\(",
+    severity: Severity::Warning,
+    confidence: Confidence::High,
+    label: "Regex::new",
+    remediation: "Move regex construction out of the loop or cache the compiled regex.",
+}];

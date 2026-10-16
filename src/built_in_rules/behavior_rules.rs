@@ -57,8 +57,6 @@ pub(crate) fn analyse_line_rules(
     for line_index in 0..raw_lines.len() {
         context.analyse_line(line_index, findings);
     }
-
-    analyse_unreachable(file, &code_only_source, findings);
 }
 
 /// Source and test-context facts used while producing line-level findings.

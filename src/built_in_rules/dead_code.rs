@@ -215,26 +215,3 @@ pub(crate) fn function_reference_count(source: &str, name: &str) -> usize {
         .count()
         .saturating_sub(definition_regex.find_iter(source).count())
 }
-
-pub(crate) fn analyse_unreachable(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
-    let terminator = static_regex(
-        &UNREACHABLE_TERMINATOR_REGEX,
-        r"\b(return|panic!|todo!|unimplemented!)",
-    );
-    let useful = static_regex(&NON_WHITESPACE_REGEX, r"\S");
-    let mut previous_terminated = false;
-    for (line_index, line) in source.lines().enumerate() {
-        let trimmed = line.trim();
-        if previous_terminated && useful.is_match(trimmed) && !trimmed.starts_with('}') {
-            findings.push(finding(SimpleFindingDescriptor {
-                rule_id: "waste.unreachable-code",
-                message: "Statement appears after a terminating statement.".into(),
-                file,
-                line: Some(line_index + 1),
-                severity: Severity::Warning,
-                pillar: Pillar::DeadCode,
-            }));
-        }
-        previous_terminated = terminator.is_match(trimmed) && trimmed.ends_with(';');
-    }
-}

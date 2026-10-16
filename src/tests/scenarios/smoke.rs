@@ -41,7 +41,7 @@ fn test_no_assert() {
         .collect();
     assert!(rule_ids.contains("security.process-command"));
     assert!(rule_ids.contains("size.parameter-count"));
-    assert!(rule_ids.contains("test-quality.sleep-in-test"));
+    assert!(!rule_ids.contains("test-quality.sleep-in-test"));
 }
 
 #[test]
@@ -59,7 +59,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             .iter()
             .filter(|finding| finding.file_path == "fixtures/sample.rs")
             .count(),
-        6
+        4
     );
     let skipped_rules: Vec<(&str, usize)> = report
         .suppressions
@@ -93,14 +93,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             "44dc31cc3f2fddf6",
         ),
         (
-            "naming.generic-function",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(7),
-            Some("process"),
-            "c3694de68d5ae921",
-        ),
-        (
             // Eight parameters against the limit of 7 sit under one and a half times it: a lower-band notice.
             "size.parameter-count",
             Severity::Advisory,
@@ -116,16 +108,6 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
             Some(11),
             None,
             "80bf1a6b54a67ccf",
-        ),
-        (
-            // Line 25 is the `fn test_sleeps_without_assertion` signature, where the block finding is anchored;
-            // the line-sensitive fingerprint follows that line rather than the `#[test]` attribute on line 24.
-            "test-quality.sleep-in-test",
-            Severity::Advisory,
-            "fixtures/sample.rs",
-            Some(25),
-            Some("test_sleeps_without_assertion"),
-            "2fcdf01944169164",
         ),
     ];
 

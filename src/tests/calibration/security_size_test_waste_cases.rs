@@ -537,21 +537,6 @@ pub fn entry() {
         ),
         // ----- test quality -----
         case(
-            "test-quality.conditional-logic",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let value = 1;\n        if value > 0 { assert_eq!(value, 1); } else { assert_eq!(value, 0); }\n    }\n}\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2 + 2, 4); }\n}\n",
-                    )
-            }),
-        ),
-        case(
             "test-quality.ignored-without-reason",
             Box::new(|root| {
                 baseline_with_lib(
@@ -583,21 +568,6 @@ pub fn entry() {
                 baseline_with_lib(
                         root,
                         "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn quick() { assert_eq!(2 + 2, 4); }\n}\n",
-                    )
-            }),
-        ),
-        case(
-            "test-quality.sleep-in-test",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        std::thread::sleep(std::time::Duration::from_millis(1));\n        assert_eq!(1, 1);\n    }\n}\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2, 2); }\n}\n",
                     )
             }),
         ),
@@ -648,16 +618,6 @@ pub fn entry() {
             }),
         ),
         case(
-            "waste.unreachable-code",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() -> i32 {\n    return 1;\n    let _ignored = 2;\n    3\n}\n",
-                    )
-            }),
-            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 1 }\n")),
-        ),
-        case(
             "waste.unwrap-expect",
             Box::new(|root| {
                 baseline_with_lib(
@@ -671,6 +631,52 @@ pub fn entry() {
                     "/// Probe.\nfn entry(value: Option<i32>) -> Option<i32> { value }\n",
                 )
             }),
+        ),
+    ]
+}
+
+/// Preserve the historical positive and negative fixtures as native retirement guards.
+pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
+    vec![
+        case(
+            "test-quality.conditional-logic",
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let value = 1;\n        if value > 0 { assert_eq!(value, 1); } else { assert_eq!(value, 0); }\n    }\n}\n",
+                    )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2 + 2, 4); }\n}\n",
+                    )
+            }),
+        ),
+        case(
+            "test-quality.sleep-in-test",
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        std::thread::sleep(std::time::Duration::from_millis(1));\n        assert_eq!(1, 1);\n    }\n}\n",
+                    )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2, 2); }\n}\n",
+                    )
+            }),
+        ),
+        case(
+            "waste.unreachable-code",
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> i32 {\n    return 1;\n    let _ignored = 2;\n    3\n}\n",
+                    )
+            }),
+            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 1 }\n")),
         ),
     ]
 }

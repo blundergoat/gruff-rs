@@ -347,7 +347,7 @@ pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_reg
             .baseline
             .as_ref()
             .map(|baseline| baseline.unchanged_count),
-        Some(4),
+        Some(3),
         "baseline should classify the current findings as unchanged"
     );
     assert!(
@@ -469,8 +469,6 @@ fn function_block(
         is_test: false,
         test_context: false,
         is_async: false,
-        returns_bool: false,
-        is_trait_method: false,
         returns_result: false,
         ignore_without_reason: false,
         body_is_declarative_literal: false,

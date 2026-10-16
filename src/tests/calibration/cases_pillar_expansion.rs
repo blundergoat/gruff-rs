@@ -4,21 +4,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- modernisation batch -----
         case(
-            "modernisation.manual-is-empty",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.len() == 0 }\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.is_empty() }\n",
-                )
-            }),
-        ),
-        case(
             "modernisation.manual-contains",
             Box::new(|root| {
                 baseline_with_lib(
@@ -211,4 +196,23 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
         ),
     ]
+}
+
+/// Preserve the historical positive and negative fixtures as native retirement guards.
+pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
+    vec![case(
+        "modernisation.manual-is-empty",
+        Box::new(|root| {
+            baseline_with_lib(
+                root,
+                "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.len() == 0 }\n",
+            )
+        }),
+        Box::new(|root| {
+            baseline_with_lib(
+                root,
+                "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.is_empty() }\n",
+            )
+        }),
+    )]
 }

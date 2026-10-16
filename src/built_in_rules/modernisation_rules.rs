@@ -1,6 +1,5 @@
 use super::*;
 
-pub(crate) static MANUAL_IS_EMPTY_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static MANUAL_CONTAINS_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static MANUAL_STRIP_PREFIX_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static MANUAL_UNWRAP_OR_DEFAULT_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -17,35 +16,10 @@ pub(crate) fn analyse_modernisation_rules(
     findings: &mut Vec<Finding>,
 ) {
     let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
-    analyse_manual_is_empty(file, &searchable, findings);
     analyse_manual_contains(file, &searchable, findings);
     analyse_manual_strip_prefix(file, &searchable, findings);
     analyse_manual_unwrap_or_default(file, &searchable, findings);
     analyse_question_mark_candidate(file, &searchable, findings);
-}
-
-/// `coll.len() == 0`, `coll.len() != 0`, and the swapped forms should
-/// use `is_empty()`. Stays silent for non-zero comparisons.
-pub(crate) fn analyse_manual_is_empty(
-    file: &SourceFile,
-    searchable: &str,
-    findings: &mut Vec<Finding>,
-) {
-    let regex = static_regex(
-        &MANUAL_IS_EMPTY_REGEX,
-        r"(?:\.len\s*\(\s*\)\s*(?:==|!=)\s*0\b|\b0\s*(?:==|!=)\s*[A-Za-z_][\w\.]*\.len\s*\(\s*\))",
-    );
-    for (line_index, line) in searchable.lines().enumerate() {
-        if regex.is_match(line) {
-            push_modernisation_finding(
-                file,
-                line_index + 1,
-                "modernisation.manual-is-empty",
-                "Use `.is_empty()` instead of comparing `.len()` against zero.",
-                findings,
-            );
-        }
-    }
 }
 
 /// `iter().any(|x| *x == y)` and `iter().any(|x| x == &y)` should use

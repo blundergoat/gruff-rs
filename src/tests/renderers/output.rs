@@ -293,8 +293,9 @@ pub(crate) fn report_json_keeps_deterministic_finding_order() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
-    fs::write(dir.path().join("b.rs"), "pub fn process() {}\n").expect("b write");
-    fs::write(dir.path().join("a.rs"), "pub fn process() {}\n").expect("a write");
+    let source = "pub fn process() { let foo = 1; let _ = foo; }\n";
+    fs::write(dir.path().join("b.rs"), source).expect("b write");
+    fs::write(dir.path().join("a.rs"), source).expect("a write");
 
     let report = run_project_analysis(
         dir.path(),

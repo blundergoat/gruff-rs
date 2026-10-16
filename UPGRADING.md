@@ -267,9 +267,22 @@ without edits. The new surface is opt-in:
    `exclude`, per-rule threshold override, `excludeFromScore` for visibility
    without scoring penalty) over disabling broadly.
 
-## Retired channel rule in `0.6.0`
+## Retired M02 rules in `0.6.0`
 
-**`concurrency.unbounded-channel` is retired** - Remove its `rules:` block and any selector or exclusion entry naming it. Unbounded channel constructors no longer emit findings; old baseline entries resolve.
+The following rules are retired. Remove their `rules:` blocks and any configured selector or exclusion entries naming them; configuration rejects retired IDs. CLI include/exclude selectors naming them select no retired rule, and their old baseline entries resolve.
+
+- `concurrency.unbounded-channel`
+- `docs.stale-todo`
+- `modernisation.manual-is-empty`
+- `naming.boolean-prefix`
+- `naming.generic-function`
+- `performance.clone-in-loop`
+- `performance.format-in-loop`
+- `test-quality.conditional-logic`
+- `test-quality.sleep-in-test`
+- `waste.unreachable-code`
+
+These removals land in the coordinated 0.6.0 break because the accepted precision measurements put each rule below the deletion line. The conditional-logic rule was already off by default; explicit activation is now removed too.
 
 ## Reporting compatibility regressions
 

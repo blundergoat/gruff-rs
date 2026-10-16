@@ -24,7 +24,7 @@ pub(crate) fn detail_text_renders_all_sections_for_an_enriched_rule() {
     assert!(detail.contains("paths.ignore"));
     assert!(detail.contains("Common false-positive shapes:"));
     assert!(detail.contains("Related rules:"));
-    assert!(detail.contains("- naming.generic-function"));
+    assert!(!detail.contains("- naming.generic-function"));
 }
 
 #[test]
@@ -98,7 +98,7 @@ pub(crate) fn flat_catalogue_exports_only_nonempty_false_positive_guidance() {
         .iter()
         .filter(|value| matches!(value["confidence"].as_str(), Some("medium" | "low")))
         .collect();
-    assert_eq!(heuristic_rules.len(), 28);
+    assert_eq!(heuristic_rules.len(), 26);
     assert!(heuristic_rules
         .iter()
         .all(|value| value["falsePositiveShapes"]

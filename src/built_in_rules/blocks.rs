@@ -358,51 +358,5 @@ pub(crate) fn analyse_block_naming(
     config: &Config,
     findings: &mut Vec<Finding>,
 ) {
-    let extra_generic = config.string_array_option("naming.generic-function", "extraGenericNames");
-    if is_generic_name(&block.name) || extra_generic.contains(&block.name) {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id: "naming.generic-function",
-            message: format!(
-                "Function `{}` is too generic to explain intent.",
-                block.name
-            ),
-            file,
-            block,
-            severity: Severity::Advisory,
-            pillar: Pillar::Naming,
-        }));
-    }
-    analyse_boolean_block_name(file, block, config, findings);
     analyse_placeholder_block_name(file, block, config, findings);
-}
-
-/// Report a boolean name only when the user can rename it without breaking a Rust trait contract.
-pub(crate) fn analyse_boolean_block_name(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    config: &Config,
-    findings: &mut Vec<Finding>,
-) {
-    let extra_prefixes = config.string_array_option("naming.boolean-prefix", "predicatePrefixes");
-    let accepts_extra = extra_prefixes
-        .iter()
-        .any(|prefix| block.name.starts_with(prefix.as_str()));
-    // Trait implementations inherit method names; only independently named boolean functions need this warning.
-    if block.returns_bool
-        && !block.is_trait_method
-        && !is_boolean_predicate_name(&block.name)
-        && !accepts_extra
-    {
-        findings.push(block_finding(BlockFindingDescriptor {
-            rule_id: "naming.boolean-prefix",
-            message: format!(
-                "Boolean function `{}` should read like a predicate.",
-                block.name
-            ),
-            file,
-            block,
-            severity: Severity::Advisory,
-            pillar: Pillar::Naming,
-        }));
-    }
 }

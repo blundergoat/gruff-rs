@@ -117,10 +117,11 @@ over adding bulky local tables to an already near-threshold function.
 ## Lesson: Calibration Fixes Must Update Fixture Contracts
 
 **Created:** 2026-05-16
-**Decision changed:** When a rule becomes opt-in, enable it through the fixture configuration in direct analysis tests, then run the full suite before diagnosing shared-lock follow-on failures.
+**Decision changed:** After a default change or retirement, preserve the fixture's intended contract and run the full suite before diagnosing shared-lock follow-on failures.
 **Trigger phase:** ACT
 **Caught at:** VERIFY
-**Latest occurrence:** 2026-10-10
+**Latest occurrence:** 2026-10-16
+**Incident count:** 3
 
 **Prevention:** Keep each positive detector fixture explicitly enabled; a default change must not erase the case the assertion proves.
 
@@ -132,7 +133,9 @@ so later failures look unrelated.
 After fixing the first semantic mismatch, rerun the full suite before diagnosing
 the lock-poison follow-on failures.
 
-**Recurrence 2026-10-10:** M15 made conditional-logic opt-in. Its branch-regression test supplied an execution selector to direct `run_project_analysis`, but still returned no findings against five required policy branches. The remaining failures reported a poisoned analysis lock. The fixture now supplies `rules.test-quality.conditional-logic.enabled: true` and permits configuration loading. Evidence: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `conditional_test_logic_proves_each_branch_independently`), `src/main.rs` (search: `fn analyse_run_config`) and `src/tests/mod.rs` (search: `analysis lock`).
+**Recurrence 2026-10-10:** M15 made conditional-logic opt-in. Its branch-regression test supplied an execution selector to direct `run_project_analysis`, but still returned no findings against five required policy branches. The remaining failures reported a poisoned analysis lock. The fixture now supplies `rules.test-quality.conditional-logic.enabled: true` and permits configuration loading. Evidence: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `retired_conditional_logic_rejects_config_and_stays_silent`; M02 now preserves those branch fixtures as retirement guards), `src/main.rs` (search: `fn analyse_run_config`) and `src/tests/mod.rs` (search: `analysis lock`).
+
+**Recurrence 2026-10-16:** M02's remaining nine retirements removed implicit generic-name findings from renderer ordering and diff-baseline fixtures. The first full run reported 282 passes and 190 failures, but only the ordering mismatch was independent; the later failures were analysis-lock poisoning. Preserve the ordering contract with a retained placeholder-identifier finding, change the diff fixture's unchanged finding census from four to three, and rerun the full suite before diagnosing poisoned followers. The corrected run reports 472 native tests passed. Evidence: `src/tests/renderers/output.rs` (search: `report_json_keeps_deterministic_finding_order`), `src/tests/scenarios/diff/filter.rs` (search: `diff_patch_scope_all_gate_counts_baselined_findings_in_changed_region`), and `src/tests/calibration/mod.rs` (search: `m02_retired_rules_have_no_native_emitters`).
 
 ## Lesson: Negative Performance Experiments Must Be Reverted
 

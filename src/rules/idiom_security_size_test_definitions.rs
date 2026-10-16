@@ -7,16 +7,6 @@ use super::*;
 
 pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
     rule_definition!(
-        "modernisation.manual-is-empty",
-        "Manual is_empty check",
-        Pillar::Modernisation,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags `len() == 0` and `len() != 0` comparisons that should use `is_empty()`.",
-    ),
-    rule_definition!(
         "modernisation.manual-contains",
         "Manual contains check",
         Pillar::Modernisation,
@@ -86,18 +76,6 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
     ),
 ];
 
-const NAMING_GENERIC_FUNCTION_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
-    name: "extraGenericNames",
-    description: "Additional generic function names rejected by naming.generic-function.",
-    value_kind: OptionValueKind::StringArray,
-}];
-
-const NAMING_BOOLEAN_PREFIX_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
-    name: "predicatePrefixes",
-    description: "Additional predicate prefixes accepted by naming.boolean-prefix.",
-    value_kind: OptionValueKind::StringArray,
-}];
-
 const NAMING_PLACEHOLDER_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
     name: "extraPlaceholders",
     description: "Additional placeholder identifiers rejected by naming.placeholder-identifier.",
@@ -105,50 +83,6 @@ const NAMING_PLACEHOLDER_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
 }];
 
 pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
-    RuleDefinition {
-        id: "naming.generic-function",
-        name: "Generic function name",
-        pillar: Pillar::Naming,
-        tier: "v0.1",
-        kind: RuleKind::Rust,
-        default_severity: Severity::Advisory,
-        confidence: Confidence::High,
-        threshold: None,
-        options: NAMING_GENERIC_FUNCTION_OPTIONS,
-        default_enabled: true,
-        description: "Flags function names that are too generic to explain intent.",
-        false_positive_shapes: &[
-            FalsePositiveShape {
-                shape: "Bridge functions whose name is dictated by an external macro (`#[wasm_bindgen]`, FFI signatures, JSON-RPC handlers).",
-                mitigation: "Add the host path to `paths.ignore` in `.gruff-rs.yaml`, or set `rules.naming.generic-function.enabled: false` on the affected scope (`extraGenericNames` extends the blocklist, not the allow-list).",
-            },
-        ],
-        related_rules: &[
-            "naming.boolean-prefix",
-            "naming.placeholder-identifier",
-            "naming.short-variable",
-        ],
-    },
-    RuleDefinition {
-        id: "naming.boolean-prefix",
-        name: "Boolean predicate prefix",
-        pillar: Pillar::Naming,
-        tier: "v0.1",
-        kind: RuleKind::Rust,
-        default_severity: Severity::Advisory,
-        confidence: Confidence::High,
-        threshold: None,
-        options: NAMING_BOOLEAN_PREFIX_OPTIONS,
-        default_enabled: true,
-        description: "Flags bool-returning functions whose names do not read like predicates.",
-        false_positive_shapes: &[
-            FalsePositiveShape {
-                shape: "Domain verbs that are inherently truthful (e.g. `validate`, `assert_`, `ensure_`).",
-                mitigation: "Add the prefix to `rules.naming.boolean-prefix.options.predicatePrefixes` in `.gruff-rs.yaml`.",
-            },
-        ],
-        related_rules: &["naming.generic-function", "naming.placeholder-identifier"],
-    },
     RuleDefinition {
         id: "naming.placeholder-identifier",
         name: "Placeholder identifier",
@@ -167,7 +101,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
                 mitigation: "Add the host path to `paths.ignore` in `.gruff-rs.yaml` (`extraPlaceholders` extends the blocklist, not the allow-list).",
             },
         ],
-        related_rules: &["naming.generic-function", "naming.short-variable"],
+        related_rules: &["naming.short-variable"],
     },
     rule_definition!(
         "naming.short-variable",
@@ -184,7 +118,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
                 mitigation: "Append the token to `allowlists.acceptedAbbreviations` in `.gruff-rs.yaml`.",
             },
         ],
-        related: &["naming.generic-function", "naming.placeholder-identifier"],
+        related: &["naming.placeholder-identifier"],
     ),
     rule_definition!(
         "naming.identifier-shadow",
@@ -288,40 +222,6 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             FalsePositiveShape {
                 shape: "An internally controlled action or reusable workflow intentionally follows a governed mutable tag that the source-only rule cannot distinguish from an untrusted third party.",
                 mitigation: "Pin the immutable commit SHA whenever possible; otherwise document ownership and update controls in an exact workflow exclusion.",
-            },
-        ],
-        related: &[],
-    ),
-    rule_definition!(
-        "performance.clone-in-loop",
-        "Clone in loop",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        None,
-        "Flags clone calls inside loop bodies as allocation hot spot candidates.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "Each iteration must transfer a distinct owned value to an API or collection, so borrowing or hoisting the clone would change ownership or lifetime semantics.",
-                mitigation: "Prefer borrowing or moving when possible; if ownership genuinely requires the clone, document the constraint and exclude only that reviewed path.",
-            },
-        ],
-        related: &[],
-    ),
-    rule_definition!(
-        "performance.format-in-loop",
-        "Format in loop",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        None,
-        "Flags format! calls inside loop bodies as allocation hot spot candidates.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "The loop intentionally produces a distinct dynamic string per element for collection, serialization, or an external owned-string API.",
-                mitigation: "Reuse a buffer or stream with `write!` when practical; otherwise document the per-item ownership need and exclude only that path.",
             },
         ],
         related: &[],
@@ -683,19 +583,6 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
-    RuleDefinition {
-        default_enabled: false,
-        ..rule_definition!(
-            "test-quality.conditional-logic",
-            "Conditional logic in test",
-            Pillar::TestQuality,
-            RuleKind::Rust,
-            Severity::Advisory,
-            Confidence::High,
-            None,
-            "Flags tests that contain conditional logic.",
-        )
-    },
     rule_definition!(
         "test-quality.ignored-without-reason",
         "Ignored test without reason",
@@ -715,16 +602,6 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         TEST_LONG_THRESHOLD,
         "Flags long test functions that are harder to scan and maintain.",
-    ),
-    rule_definition!(
-        "test-quality.sleep-in-test",
-        "Sleep in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags tests that sleep instead of synchronizing on behavior.",
     ),
     rule_definition!(
         "test-quality.trivial-assertion",

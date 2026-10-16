@@ -1,34 +1,17 @@
 use super::*;
-use syn::visit::{self, Visit};
 
 static TEST_ASSERTION_REGEX: OnceLock<Regex> = OnceLock::new();
-static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
-static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
 static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const TEST_ASSERTION_PATTERN: &str = r"(?:\b(?:assert!|assert_eq!|assert_ne!|matches!|panic!)|\bassert_[A-Za-z0-9_]*!\s*|\bassert_[A-Za-z0-9_]*(?:\s*::\s*<[^;\n()]+>)?)\s*\(|\.\s*expect\s*\(";
 
-const TEST_CHECKS: &[RegexRule] = &[
-    RegexRule {
-        rule_id: "test-quality.sleep-in-test",
-        regex: &SLEEP_IN_TEST_REGEX,
-        pattern: r"(std::thread::sleep|tokio::time::sleep)",
-        message: "Test sleeps instead of synchronising on behaviour.",
-    },
-    RegexRule {
-        rule_id: "test-quality.conditional-logic",
-        regex: &CONDITIONAL_LOGIC_REGEX,
-        pattern: r"\b(if|match)\b",
-        message: "Test contains conditional logic.",
-    },
-    RegexRule {
-        rule_id: "test-quality.unwrap-in-test",
-        regex: &UNWRAP_IN_TEST_REGEX,
-        pattern: r"\.unwrap\(\)",
-        message: "Test uses unwrap(), which can hide setup intent.",
-    },
-];
+const TEST_CHECKS: &[RegexRule] = &[RegexRule {
+    rule_id: "test-quality.unwrap-in-test",
+    regex: &UNWRAP_IN_TEST_REGEX,
+    pattern: r"\.unwrap\(\)",
+    message: "Test uses unwrap(), which can hide setup intent.",
+}];
 
 pub(crate) fn analyse_test_block(
     file: &SourceFile,
@@ -43,8 +26,7 @@ pub(crate) fn analyse_test_block(
     analyse_test_size(file, block, config, findings);
     analyse_should_panic_without_expected(file, block, findings);
     // Mask both string/char literals and comments so every per-test regex
-    // check (assertions, sleep, conditional, unwrap) sees real code only - a
-    // commented-out `sleep`/`if`/`.unwrap()`/`assert_eq!` must not fire.
+    // check (assertions and unwrap) sees real code only; commented-out calls must not fire.
     let searchable_body =
         strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
     analyse_test_assertions(file, block, &searchable_body, findings);
@@ -303,7 +285,7 @@ pub(crate) fn analyse_test_regex_checks(
         if !static_regex(rule.regex, rule.pattern).is_match(searchable_body) {
             continue;
         }
-        if is_test_rule_exempt(rule.rule_id, searchable_body, &block.body) {
+        if is_test_rule_exempt(rule.rule_id, searchable_body) {
             continue;
         }
         findings.push(block_finding(BlockFindingDescriptor {
@@ -317,106 +299,11 @@ pub(crate) fn analyse_test_regex_checks(
     }
 }
 
-/// Returns true when a per-test regex rule should stay silent because
-/// the matched pattern is a recognised idiom. `conditional-logic` skips
-/// assertion-pattern guards, assertion-only matches and `cfg!(...)` platform branches; `unwrap-in-test` skips unwraps that
-/// are directly inside assertion macro calls, where the unwrapped value
-/// is the subject under test rather than hidden setup.
-fn is_test_rule_exempt(rule_id: &str, body: &str, code: &str) -> bool {
+fn is_test_rule_exempt(rule_id: &str, body: &str) -> bool {
     match rule_id {
-        "test-quality.conditional-logic" => conditional_has_only_verification_branches(code),
         "test-quality.unwrap-in-test" => body_contains_only_assertion_subject_unwraps(body),
         _ => false,
     }
-}
-
-/// Require every visible branch to be a platform gate or a match whose arms only verify outcomes.
-/// Assertion macros are parsed too, so a procedural branch hidden in an assertion block still reports.
-fn conditional_has_only_verification_branches(code: &str) -> bool {
-    let Ok(item) = syn::parse_str::<syn::ItemFn>(&body_without_doc_comments(code)) else {
-        return false;
-    };
-    let mut branches = TestPolicyBranches::default();
-    branches.visit_block(&item.block);
-    !branches.has_policy_branch
-}
-
-/// Records unproved control flow without expanding fixture or assertion macros.
-#[derive(Default)]
-struct TestPolicyBranches {
-    has_policy_branch: bool,
-}
-
-impl<'ast> Visit<'ast> for TestPolicyBranches {
-    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
-        self.has_policy_branch |= !matches!(node.cond.as_ref(), syn::Expr::Macro(expression) if expression.mac.path.is_ident("cfg"));
-        visit::visit_expr_if(self, node);
-    }
-
-    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
-        self.has_policy_branch |= node.arms.is_empty()
-            || !node
-                .arms
-                .iter()
-                .all(|arm| is_assertion_only_expression(&arm.body));
-        visit::visit_expr_match(self, node);
-    }
-
-    fn visit_macro(&mut self, node: &'ast syn::Macro) {
-        // A pattern guard inside matches! is a predicate, not a branch choosing test behaviour.
-        if node.path.is_ident("matches") || node.path.is_ident("assert_matches") {
-            return;
-        }
-        if is_assertion_macro(&node.path) {
-            if let Ok(arguments) = node.parse_body_with(
-                syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated,
-            ) {
-                for argument in &arguments {
-                    self.visit_expr(argument);
-                }
-                return;
-            }
-        }
-        // Unknown macro syntax supplies no exemption; quoted strings are literal tokens, never keywords.
-        self.has_policy_branch |= macro_has_conditional_keyword(node.tokens.clone());
-    }
-}
-
-/// Recognize assertion names already accepted by the test-quality assertion rules.
-fn is_assertion_macro(path: &syn::Path) -> bool {
-    path.segments.last().is_some_and(|segment| {
-        let name = segment.ident.to_string();
-        name == "assert" || name.starts_with("assert_")
-    })
-}
-
-/// An arm may group several assertions, but cannot bind values, mutate state or choose another branch.
-fn is_assertion_only_expression(expression: &syn::Expr) -> bool {
-    match expression {
-        syn::Expr::Macro(expression) => is_assertion_macro(&expression.mac.path),
-        syn::Expr::Block(expression) => {
-            !expression.block.stmts.is_empty()
-                && expression
-                    .block
-                    .stmts
-                    .iter()
-                    .all(|statement| match statement {
-                        syn::Stmt::Expr(expression, _) => is_assertion_only_expression(expression),
-                        syn::Stmt::Macro(statement) => is_assertion_macro(&statement.mac.path),
-                        _ => false,
-                    })
-        }
-        _ => false,
-    }
-}
-
-/// Find unparsed branch keywords while ignoring strings and other literal tokens.
-fn macro_has_conditional_keyword(tokens: proc_macro2::TokenStream) -> bool {
-    tokens.into_iter().any(|token| match token {
-        proc_macro2::TokenTree::Ident(identifier) => identifier == "if" || identifier == "match",
-        proc_macro2::TokenTree::Group(group) => macro_has_conditional_keyword(group.stream()),
-        _ => false,
-    })
 }
 
 fn body_contains_only_assertion_subject_unwraps(body: &str) -> bool {

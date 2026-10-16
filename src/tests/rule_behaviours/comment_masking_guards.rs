@@ -7,9 +7,9 @@ use super::*;
 #[path = "rustdoc_function_guards.rs"]
 mod rustdoc_function_guards;
 
-/// A scan accepts an assigned removal condition and still reports markers that a developer cannot act on.
+/// Retired stale-marker advice stays silent for all historical comment shapes.
 #[test]
-pub(crate) fn stale_todo_requires_a_complete_owner_and_removal_condition() {
+pub(crate) fn retired_stale_todo_stays_silent_for_historical_comment_shapes() {
     let _guard = analysis_lock();
     let project = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -40,10 +40,7 @@ pub fn entry() {}
         .filter(|finding| finding.rule_id == "docs.stale-todo")
         .map(|finding| finding.line)
         .collect();
-    assert_eq!(
-        reported_lines,
-        [Some(2), Some(3), Some(4), Some(5), Some(6)]
-    );
+    assert!(reported_lines.is_empty(), "{reported_lines:?}");
 }
 
 #[test]

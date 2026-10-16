@@ -47,7 +47,21 @@ review record as `retired` (workspace ADR-010).
 
 The operator accepted M02 row rs-002 for `concurrency.unbounded-channel`: 15 of 33 judged findings were right, below the deletion line, with one unresolved finding. The accepted table showed nine currently emitting findings previously labelled right that retirement would remove; another six historical right IDs were already absent. These are table-time counts, not a new corpus measurement.
 
-The detector and catalogue record are removed. The existing native concurrency fixture now asserts that its unbounded constructor emits no retired finding while the blocking-call and lock-across-await controls still emit. Workspace ADR-010 preserves the historical review record as retired and binds the native catalogue transition. The other nine M02 Rust retirements remain separate unfinished work.
+The detector and catalogue record are removed. The existing native concurrency fixture now asserts that its unbounded constructor emits no retired finding while the blocking-call and lock-across-await controls still emit. Workspace ADR-010 preserves the historical review record as retired and binds the native catalogue transition. The remaining nine accepted rows are retired in the same M02 line:
+
+- `docs.stale-todo`
+- `modernisation.manual-is-empty`
+- `naming.boolean-prefix`
+- `naming.generic-function`
+- `performance.clone-in-loop`
+- `performance.format-in-loop`
+- `test-quality.conditional-logic`
+- `test-quality.sleep-in-test`
+- `waste.unreachable-code`
+
+Their detectors, unique helpers, catalogue entries and dogfood settings are removed. The eighteen historical positive and negative calibration fixtures remain in `retired_cases`; `m02_retired_rules_have_no_native_emitters` runs them at the native source-analysis boundary with every retired ID explicitly enabled. This prevents catalogue removal or default-off status from concealing an old emitter. It also checks that user configuration rejects every retired ID. The active calibration matrix covers only the seventy retained rules; retained regex, naming, documentation and test-quality controls stay active.
+
+The accepted table disclosed twenty-four currently emitting right-labelled findings across these nine rows; twenty-six historical right IDs were already absent. These remain table-time projections until the source-bound before/after comparison and recall replay finish. The workspace roadmap preserves observed wrong shapes for a measured rebuild.
 
 ## Failure Mode Comparison
 

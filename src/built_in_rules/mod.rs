@@ -34,11 +34,7 @@ pub(crate) static UNSAFE_BLOCK_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static CLONE_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static PERF_CLONE_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LOCK_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static UNREACHABLE_TERMINATOR_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static NON_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static TRIVIAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static SAME_LITERAL_ASSERT_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LITERAL_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -91,22 +87,8 @@ impl EnabledBuiltinFamilies {
                     "complexity.nesting-depth",
                 ],
             ),
-            block_performance: any_rule_is_enabled(
-                config,
-                &[
-                    "performance.clone-in-loop",
-                    "performance.format-in-loop",
-                    "performance.regex-in-loop",
-                ],
-            ),
-            block_naming: any_rule_is_enabled(
-                config,
-                &[
-                    "naming.boolean-prefix",
-                    "naming.generic-function",
-                    "naming.placeholder-identifier",
-                ],
-            ),
+            block_performance: any_rule_is_enabled(config, &["performance.regex-in-loop"]),
+            block_naming: any_rule_is_enabled(config, &["naming.placeholder-identifier"]),
             block_docs: any_rule_is_enabled(
                 config,
                 &[
@@ -136,11 +118,9 @@ impl EnabledBuiltinFamilies {
             block_test_quality: any_rule_is_enabled(
                 config,
                 &[
-                    "test-quality.conditional-logic",
                     "test-quality.ignored-without-reason",
                     "test-quality.long-test",
                     "test-quality.should-panic-without-expected",
-                    "test-quality.sleep-in-test",
                     "test-quality.trivial-assertion",
                     "test-quality.unwrap-in-test",
                 ],
@@ -163,7 +143,6 @@ impl EnabledBuiltinFamilies {
                 config,
                 &[
                     "modernisation.manual-contains",
-                    "modernisation.manual-is-empty",
                     "modernisation.manual-strip-prefix",
                     "modernisation.manual-unwrap-or-default",
                     "modernisation.question-mark-candidate",
@@ -175,13 +154,12 @@ impl EnabledBuiltinFamilies {
                     "docs.weak-safety-rationale",
                     "security.unsafe-block",
                     "waste.unnecessary-clone-candidate",
-                    "waste.unreachable-code",
                     "waste.unwrap-expect",
                 ],
             ),
             item_rules: config.is_rule_enabled("docs.missing-public-doc"),
             dead_code: config.is_rule_enabled("dead-code.unused-private-function"),
-            comments: any_rule_is_enabled(config, &["docs.commented-out-code", "docs.stale-todo"]),
+            comments: config.is_rule_enabled("docs.commented-out-code"),
             naming_patterns: any_rule_is_enabled(
                 config,
                 &[

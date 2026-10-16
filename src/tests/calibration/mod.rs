@@ -252,3 +252,70 @@ pub(crate) fn rule_calibration_matrix_covers_every_rule() {
             "calibration mismatches: under-strict={missing_positive:?}, over-strict={leaked_negative:?}"
         );
 }
+#[test]
+pub(crate) fn m02_retired_rules_have_no_native_emitters() {
+    let retired = [
+        "docs.stale-todo",
+        "modernisation.manual-is-empty",
+        "naming.boolean-prefix",
+        "naming.generic-function",
+        "performance.clone-in-loop",
+        "performance.format-in-loop",
+        "test-quality.conditional-logic",
+        "test-quality.sleep-in-test",
+        "waste.unreachable-code",
+    ];
+    let mut config = Config::default();
+    for rule_id in retired {
+        config.rule_settings.insert(
+            rule_id.to_string(),
+            crate::config::RuleSetting {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+    }
+    let mut cases = documentation_error_idiom_cases::retired_cases();
+    cases.extend(cases_pillar_expansion::retired_cases());
+    cases.extend(security_size_test_waste_cases::retired_cases());
+    assert!(cases.iter().all(|case| retired.contains(&case.rule_id)));
+    assert_eq!(cases.len(), retired.len());
+    let mut emitted = Vec::new();
+    for case in cases {
+        for (label, setup) in [("positive", case.positive), ("negative", case.negative)] {
+            let dir = tempdir().expect("retired rule fixture");
+            setup(dir.path());
+            assert!(!crate::rules::builtin_registry_cached().contains(case.rule_id));
+            write_calibration_config(dir.path(), case.rule_id);
+            let error = load_config(dir.path(), &default_test_options())
+                .expect_err("retired rule config must be rejected");
+            assert!(error.contains(case.rule_id), "{error}");
+            let source = fs::read_to_string(dir.path().join("src/lib.rs")).expect("fixture source");
+            let parsed = crate::source::ParsedSource {
+                file: crate::source::SourceFile {
+                    absolute_path: dir.path().join("src/lib.rs"),
+                    display_path: "src/lib.rs".to_string(),
+                    is_rust: true,
+                    origin: crate::source::SourceOrigin::ExplicitFile,
+                },
+                rust_ast: Some(syn::parse_file(&source).expect("fixture parses")),
+                source,
+                bounded_deep_scan: false,
+                diagnostics: Vec::new(),
+                line_starts: OnceLock::new(),
+            };
+            // Explicit toggles keep removed catalogue entries from concealing an old emitter.
+            let findings = crate::analyse_source(&parsed.as_source_unit(false), &config);
+            if findings
+                .iter()
+                .any(|finding| finding.rule_id == case.rule_id)
+            {
+                emitted.push(format!("{}:{label}", case.rule_id));
+            }
+        }
+    }
+    assert!(
+        emitted.is_empty(),
+        "retired native emitters remain: {emitted:?}"
+    );
+}

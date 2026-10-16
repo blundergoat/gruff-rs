@@ -24,8 +24,6 @@ pub(crate) struct FunctionBlock {
     pub(crate) is_test: bool,
     pub(crate) test_context: bool,
     pub(crate) is_async: bool,
-    pub(crate) returns_bool: bool,
-    pub(crate) is_trait_method: bool,
     pub(crate) returns_result: bool,
     pub(crate) ignore_without_reason: bool,
     pub(crate) body_is_declarative_literal: bool,
@@ -57,7 +55,6 @@ pub(crate) fn collect_module_function_blocks(
 
 /// Raw parser facts used to build one function record before the user's rules run.
 /// A scan reaches these facts after Rust source parses successfully.
-/// Trait ownership stays private while report locations still come from the declaration.
 pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) lines: &'a [&'a str],
     pub(crate) name: String,
@@ -66,8 +63,6 @@ pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) attrs: &'a [syn::Attribute],
     pub(crate) test_context: bool,
     pub(crate) is_async: bool,
-    pub(crate) returns_bool: bool,
-    pub(crate) is_trait_method: bool,
     pub(crate) returns_result: bool,
     pub(crate) name_start: LineColumn,
     pub(crate) block_end: LineColumn,
@@ -103,8 +98,6 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         is_test,
         test_context,
         is_async: parts.is_async,
-        returns_bool: parts.returns_bool,
-        is_trait_method: parts.is_trait_method,
         returns_result: parts.returns_result,
         ignore_without_reason: has_ignore_without_reason(parts.attrs),
         body_is_declarative_literal: is_declarative_literal_body(parts.block),
@@ -176,16 +169,6 @@ pub(crate) fn count_params(
         .count()
 }
 
-pub(crate) fn is_bool_return_type(output: &ReturnType) -> bool {
-    let ReturnType::Type(_, return_type) = output else {
-        return false;
-    };
-    let Type::Path(path) = return_type.as_ref() else {
-        return false;
-    };
-    path.path.is_ident("bool")
-}
-
 /// True iff the function signature returns a syntactic `Result<...>` or
 /// `std::result::Result<...>`. Type aliases (`Result<T>` defined as
 /// `type Result<T> = std::result::Result<T, MyError>`) cannot be detected
@@ -206,10 +189,7 @@ pub(crate) fn is_result_return_type(output: &ReturnType) -> bool {
 }
 
 /// Counts occurrences of `pattern` that appear inside a loop body in
-/// `source`. `count_line` lets callers skip structurally exempt lines
-/// (struct-field clones, owned API arguments) so the performance rules
-/// fire only on real per-tick waste, not on idiomatic per-iteration
-/// owned-value construction.
+/// `source`. `count_line` selects the source lines eligible for the caller's pattern.
 pub(crate) fn loop_pattern_count_filtered<F>(source: &str, pattern: &Regex, count_line: F) -> usize
 where
     F: Fn(&str) -> bool,

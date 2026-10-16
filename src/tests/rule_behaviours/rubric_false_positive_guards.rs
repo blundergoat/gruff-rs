@@ -6,8 +6,8 @@
 use super::*;
 
 #[test]
-/// Assertion predicates and per-outcome checks stay quiet beside procedural test policy.
-pub(crate) fn conditional_test_logic_proves_each_branch_independently() {
+/// Retired conditional policy rejects old configuration and emits nothing for historical test shapes.
+pub(crate) fn retired_conditional_logic_rejects_config_and_stays_silent() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -60,33 +60,21 @@ mod tests {
         format!("schemaVersion: {SCHEMA_VERSION}\nrules:\n  test-quality.conditional-logic:\n    enabled: true\n"),
     )
     .expect("conditional-logic fixture config");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("retired conditional rule must be rejected");
+    assert!(error.contains("test-quality.conditional-logic"), "{error}");
+
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from("src/lib.rs")],
-            no_config: false,
+            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
     )
     .expect("analysis succeeds");
-    let mut symbols: Vec<_> = report
-        .findings
-        .iter()
-        .filter(|finding| finding.rule_id == "test-quality.conditional-logic")
-        .filter_map(|finding| finding.symbol.as_deref())
-        .collect();
-    symbols.sort_unstable();
-    assert_eq!(
-        symbols,
-        vec![
-            "assertion_block_cannot_hide_policy",
-            "empty_match_arm",
-            "mutating_match_arm",
-            "platform_gate_cannot_hide_policy",
-            "unknown_macro_supplies_no_proof",
-        ]
-    );
+    assert_missing_rule(&report, "test-quality.conditional-logic");
 }
 
 #[test]
@@ -464,8 +452,8 @@ pub fn forge_cancel(current_distro: Option<String>) -> Option<String> {
 }
 
 #[test]
-/// Keep static probe and report construction quiet while repeated user-work formatting remains visible.
-pub(crate) fn format_in_loop_skips_static_probe_and_report_message_construction() {
+/// Retired formatting advice stays silent for static, report and dynamic output fixtures.
+pub(crate) fn retired_format_in_loop_stays_silent_for_historical_shapes() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -523,33 +511,7 @@ pub fn dynamic_format_loop(values: &[String]) -> Vec<String> {
     )
     .expect("analysis succeeds");
 
-    // Both static-probe and report-message functions must remain outside these performance findings.
-    for symbol in ["build_wsl_batch_probe_script", "scan_security_groups"] {
-        assert!(
-            !report.findings.iter().any(|finding| {
-                finding.rule_id == "performance.format-in-loop"
-                    && finding.symbol.as_deref() == Some(symbol)
-            }),
-            "bounded static probes and report message construction must stay silent for `{symbol}`; findings={:?}",
-            report
-                .findings
-                .iter()
-                .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
-                .collect::<Vec<_>>()
-        );
-    }
-    assert!(
-        report.findings.iter().any(|finding| {
-            finding.rule_id == "performance.format-in-loop"
-                && finding.symbol.as_deref() == Some("dynamic_format_loop")
-        }),
-        "dynamic same-line push(format!(...)) loops must still be reported; findings={:?}",
-        report
-            .findings
-            .iter()
-            .map(|finding| (&finding.rule_id, finding.symbol.as_deref(), finding.line))
-            .collect::<Vec<_>>()
-    );
+    assert_missing_rule(&report, "performance.format-in-loop");
 }
 
 #[test]

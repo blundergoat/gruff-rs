@@ -253,14 +253,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
     )
     .expect("selector json preview");
     let ids: Vec<String> = serde_json::from_str(&json_output).expect("selector json");
-    assert_eq!(
-        ids,
-        vec![
-            "performance.clone-in-loop",
-            "performance.format-in-loop",
-            "performance.regex-in-loop"
-        ]
-    );
+    assert_eq!(ids, vec!["performance.regex-in-loop"]);
 }
 
 #[test]

@@ -4,9 +4,9 @@
 
 use super::*;
 
-/// A scan keeps names required by Rust traits and existence predicates quiet while still reporting unrelated boolean names.
+/// Retired boolean naming stays silent for trait methods and inherent or free predicates.
 #[test]
-pub(crate) fn boolean_naming_respects_trait_methods_and_existence_predicates() {
+pub(crate) fn retired_boolean_naming_stays_silent_for_trait_and_free_methods() {
     let _guard = analysis_lock();
     let project = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -45,10 +45,7 @@ fn existential() -> bool { true }
         .filter_map(|finding| finding.symbol.as_deref())
         .collect();
     reported_names.sort_unstable();
-    assert_eq!(
-        reported_names,
-        ["compatible", "compatible", "eq", "existential"]
-    );
+    assert!(reported_names.is_empty(), "{reported_names:?}");
 }
 
 #[test]
@@ -572,8 +569,8 @@ license = "MIT"
     )
     .expect("performance positive analysis succeeds");
     assert_has_rule(&positive, "performance.regex-in-loop");
-    assert_has_rule(&positive, "performance.format-in-loop");
-    assert_has_rule(&positive, "performance.clone-in-loop");
+    assert_missing_rule(&positive, "performance.format-in-loop");
+    assert_missing_rule(&positive, "performance.clone-in-loop");
 
     let regex = positive
         .findings
@@ -592,8 +589,8 @@ license = "MIT"
         .find(|pillar| pillar.pillar == Pillar::Maintainability)
         .expect("waste score");
     assert!(
-        waste.findings >= 3,
-        "expected performance findings in waste: {waste:?}"
+        waste.findings >= 1,
+        "expected retained regex finding in waste: {waste:?}"
     );
 
     let negative_dir = tempdir().expect("tempdir");
@@ -654,7 +651,7 @@ pub(crate) fn rule_fixtures_prove_complexity_and_naming_rules() {
     )]);
 
     assert_has_rule(&positive, "complexity.nesting-depth");
-    assert_has_rule(&positive, "naming.boolean-prefix");
+    assert_missing_rule(&positive, "naming.boolean-prefix");
     assert_has_rule(&positive, "naming.placeholder-identifier");
 
     assert_missing_rule(&negative, "complexity.nesting-depth");

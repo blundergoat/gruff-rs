@@ -2,7 +2,7 @@
 
 ## v0.6.0 - Unreleased
 
-- **BREAKING: `concurrency.unbounded-channel` is retired** - Unbounded channel construction no longer emits a finding. Remove that rule from configuration and selectors; the coordinated 0.6.0 break carries this removal after it measured right on 15 of 33 judged findings.
+- **BREAKING: ten rules are retired** - Remove configuration and selectors naming `concurrency.unbounded-channel`, `docs.stale-todo`, `modernisation.manual-is-empty`, `naming.boolean-prefix`, `naming.generic-function`, `performance.clone-in-loop`, `performance.format-in-loop`, `test-quality.conditional-logic`, `test-quality.sleep-in-test` or `waste.unreachable-code`; they no longer emit findings, including when explicitly enabled, and their baseline entries resolve. The coordinated 0.6.0 break carries the removals after their accepted precision measurements fell below the deletion line.
 
 - **`analyse` text names an applied baseline** - A run that applied a baseline now ends with `Baseline: default gruff-baseline.json; suppressed N findings` (or `explicit` for one passed with `--baseline`), so hidden findings never read as a clean scan (ADR-006).
 - **Lint attributes suppress the matching finding, and the suppression is counted** - An `allow` or `expect` attribute naming `clippy::too_many_lines`, `clippy::too_many_arguments`, `clippy::cognitive_complexity`, `dead_code`, `unused` or `clippy::disallowed_names` suppresses the gruff-rs finding making the same claim on the item, an enclosing impl, trait or inline module, or the whole file, and zizmor `ignore[unpinned-uses]` and `ignore[dangerous-triggers]` comments do the same in workflow files. Each suppression is counted in `suppressions` as an `inline` row and in the text `Suppressed findings` line, and SARIF keeps it as an `inSource` suppressed result. `#[allow(dead_code)]` items, which the dead-code rules used to skip silently, are now counted the same way (FAMILY-CONTRACT.md section 13c).
@@ -17,10 +17,6 @@
 - **No return description is asked of `-> ()` or `-> !`** - `docs.missing-return-doc` no longer reports a function returning unit or never, which hands the caller nothing to describe.
 - **Missing-doc messages say what the rustdoc should cover** - `docs.missing-public-doc` adds "Also say ..." naming each parameter, what the function returns and when it returns an error, each asked only when the signature has it.
 - **`everyCallable` widens three documentation rules, off by default** - With `rules.<id>.options.everyCallable: true`, `docs.missing-public-doc`, `docs.missing-param-doc` and `docs.missing-return-doc` also check private and crate-visible functions, bridge-macro functions, and closures assigned to `const` and `static` items. The return rule then asks for a `Result`'s success value, and the parameter rule stops accepting a contract word such as "path" in place of the parameter's name. Nothing changes until a configuration turns it on.
-
-- **BREAKING: `test-quality.conditional-logic` is opt-in** - After repair it was worth acting on in 6 of 25 judged findings, below the 0.70 floor. Enable it with `rules.test-quality.conditional-logic.enabled: true` or `--include-rule test-quality.conditional-logic`; existing explicit settings remain effective.
-
-- **Assertion syntax no longer reads as test policy** - `test-quality.conditional-logic` accepts guards inside assertion-pattern macros and a `match` whose every arm contains only assertions. Each branch is checked independently, so a platform gate cannot hide a separate policy branch; mutation and empty match arms still report.
 
 - **BREAKING: `complexity.cyclomatic` is off by default** - At one and a half times its limit or more it was worth acting on 23 times
   in 45, under the 0.60 floor, and no bounded repair fits its not-worth findings. `complexity.cognitive` covers the same
@@ -47,8 +43,6 @@
   Production modules and scans without the selected parent still report.
 - **Finite enum labels no longer trigger an HTML warning** - `security.template-injection-xss` skips a direct Axum handler that prints only a same-file, payload-free enum through derived `Debug`.
   Payload variants, custom or unknown formatting, and mixed dynamic output still report.
-- **Rust trait methods and existence checks keep their required names** - `naming.boolean-prefix` no longer warns on boolean methods inside `impl Trait for Type` or names ending in `exists`. Free and inherent boolean functions without predicate names still report.
-- **Owned FIXMEs with a removal condition stay quiet** - `docs.stale-todo` accepts a parenthesized owner followed by `, remove this after` and a stated condition. Bare owners and unfinished reasons still report.
 
 - **Rust return descriptions in getter and conversion summaries stay quiet** - `docs.missing-return-doc` accepts `Direction of the search` for a `direction(&self)` getter
 and `Converts an i128 to a Number` when the parsed result is `Number` or `Option<Number>`. Unrelated prose and mismatched destinations still report.

@@ -30,9 +30,9 @@ pub(crate) fn calibration_naming_short_variable_ignores_underscore_binding() {
     );
 }
 
-/// Proves that `performance.clone-in-loop` catches single-line loop bodies.
+/// Retired clone advice stays silent for the historical single-line loop.
 #[test]
-pub(crate) fn calibration_performance_loop_rules_catch_single_line_loops() {
+pub(crate) fn retired_clone_rule_stays_silent_for_single_line_loops() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(
@@ -49,7 +49,7 @@ pub(crate) fn calibration_performance_loop_rules_catch_single_line_loops() {
         },
     )
     .expect("analysis succeeds");
-    assert_has_rule(&report, "performance.clone-in-loop");
+    assert_missing_rule(&report, "performance.clone-in-loop");
 }
 
 /// Proves that `dead-code.unused-private-function` reports an unused private function whether or
