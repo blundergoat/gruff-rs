@@ -267,6 +267,10 @@ without edits. The new surface is opt-in:
    `exclude`, per-rule threshold override, `excludeFromScore` for visibility
    without scoring penalty) over disabling broadly.
 
+## Retired channel rule in `0.6.0`
+
+**`concurrency.unbounded-channel` is retired** - Remove its `rules:` block and any selector or exclusion entry naming it. Unbounded channel constructors no longer emit findings; old baseline entries resolve.
+
 ## Reporting compatibility regressions
 
 If a `0.5.x` upgrade silently changes a rule id, fingerprint input, exit code,

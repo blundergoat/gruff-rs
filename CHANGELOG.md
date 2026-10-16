@@ -2,6 +2,8 @@
 
 ## v0.6.0 - Unreleased
 
+- **BREAKING: `concurrency.unbounded-channel` is retired** - Unbounded channel construction no longer emits a finding. Remove that rule from configuration and selectors; the coordinated 0.6.0 break carries this removal after it measured right on 15 of 33 judged findings.
+
 - **`analyse` text names an applied baseline** - A run that applied a baseline now ends with `Baseline: default gruff-baseline.json; suppressed N findings` (or `explicit` for one passed with `--baseline`), so hidden findings never read as a clean scan (ADR-006).
 - **Lint attributes suppress the matching finding, and the suppression is counted** - An `allow` or `expect` attribute naming `clippy::too_many_lines`, `clippy::too_many_arguments`, `clippy::cognitive_complexity`, `dead_code`, `unused` or `clippy::disallowed_names` suppresses the gruff-rs finding making the same claim on the item, an enclosing impl, trait or inline module, or the whole file, and zizmor `ignore[unpinned-uses]` and `ignore[dangerous-triggers]` comments do the same in workflow files. Each suppression is counted in `suppressions` as an `inline` row and in the text `Suppressed findings` line, and SARIF keeps it as an `inSource` suppressed result. `#[allow(dead_code)]` items, which the dead-code rules used to skip silently, are now counted the same way (FAMILY-CONTRACT.md section 13c).
 - **Function findings are reported on the signature line** - A finding about a function is now anchored on its `fn` line rather than its first doc-comment or attribute line, so `line` names what a developer edits. Baselines are unaffected, because the baseline identity carries no line; the line-sensitive `fingerprint` field moves with the anchor.

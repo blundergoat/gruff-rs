@@ -268,7 +268,7 @@ async fn async_step() {}
     .expect("concurrency positive analysis succeeds");
     assert_has_rule(&positive, "concurrency.blocking-call-in-async");
     assert_has_rule(&positive, "concurrency.lock-across-await");
-    assert_has_rule(&positive, "concurrency.unbounded-channel");
+    assert_missing_rule(&positive, "concurrency.unbounded-channel");
 
     let blocking = positive
         .findings

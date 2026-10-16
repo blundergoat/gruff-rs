@@ -189,9 +189,6 @@ rules:
   # Flags lock guard bindings that appear to live across an await point.
   concurrency.lock-across-await:
     enabled: true
-  # Flags unbounded channel constructors in production code.
-  concurrency.unbounded-channel:
-    enabled: true
   # Flags private functions with no same-file call sites.
   dead-code.unused-private-function:
     enabled: true

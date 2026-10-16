@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-05
+**Updated:** 2026-10-16
 **Author(s):** Claude, user direction
 **Ticket/Context:** precision-floor M19 under family lock M82. The operator ruled on 2026-10-04 that a rule right less than
 half the time is deleted, and accepted the gruff-rs table with "Accept all (Recommended)". The same decision is gruff-go
@@ -41,6 +42,12 @@ sensitive-data rules still parses Rust and keeps that proof.
 
 The family specification records the retirements as a catalogue transition with no successor, and keeps each rule's
 review record as `retired` (workspace ADR-010).
+
+## M02 retirement, 2026-10-16
+
+The operator accepted M02 row rs-002 for `concurrency.unbounded-channel`: 15 of 33 judged findings were right, below the deletion line, with one unresolved finding. The accepted table showed nine currently emitting findings previously labelled right that retirement would remove; another six historical right IDs were already absent. These are table-time counts, not a new corpus measurement.
+
+The detector and catalogue record are removed. The existing native concurrency fixture now asserts that its unbounded constructor emits no retired finding while the blocking-call and lock-across-await controls still emit. Workspace ADR-010 preserves the historical review record as retired and binds the native catalogue transition. The other nine M02 Rust retirements remain separate unfinished work.
 
 ## Failure Mode Comparison
 

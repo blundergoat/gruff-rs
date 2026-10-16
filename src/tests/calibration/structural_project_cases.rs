@@ -212,21 +212,6 @@ async fn other() {}
                 )
             }),
         ),
-        case(
-            "concurrency.unbounded-channel",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn make_channel() { let (_tx, _rx) = std::sync::mpsc::channel::<i32>(); }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn make_channel() { let (_tx, _rx) = std::sync::mpsc::sync_channel::<i32>(16); }\n",
-                    )
-            }),
-        ),
         // ----- dead code -----
         case(
             "dead-code.unused-private-function",

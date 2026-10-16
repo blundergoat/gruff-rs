@@ -36,7 +36,6 @@ pub(crate) static LOOP_START_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_REGEX_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_FORMAT_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static PERF_CLONE_IN_LOOP_REGEX: OnceLock<Regex> = OnceLock::new();
-pub(crate) static UNBOUNDED_CHANNEL_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static LOCK_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static UNREACHABLE_TERMINATOR_REGEX: OnceLock<Regex> = OnceLock::new();
 pub(crate) static NON_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -131,7 +130,6 @@ impl EnabledBuiltinFamilies {
                 &[
                     "concurrency.blocking-call-in-async",
                     "concurrency.lock-across-await",
-                    "concurrency.unbounded-channel",
                 ],
             ),
             block_security: config.is_rule_enabled("security.insecure-rng-for-secrets"),

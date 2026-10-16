@@ -377,24 +377,7 @@ pub(crate) const CONCURRENCY_RULES: &[RuleDefinition] = &[
                 mitigation: "Keep the extraction chained on the lock expression or explicitly drop the guard before awaiting; the rule only tracks bindings that still represent the guard.",
             },
         ],
-        related: &["concurrency.blocking-call-in-async", "concurrency.unbounded-channel"],
-    ),
-    rule_definition!(
-        "concurrency.unbounded-channel",
-        "Unbounded channel",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        None,
-        "Flags unbounded channel constructors in production code.",
-        false_positives: &[
-            FalsePositiveShape {
-                shape: "A deliberately unbounded channel has a small, externally bounded producer set or is required by a framework API the syntax-only rule cannot model.",
-                mitigation: "Prefer a bounded channel; otherwise document the producer, lifetime, and backpressure argument and exclude only the reviewed host path.",
-            },
-        ],
-        related: &[],
+        related: &["concurrency.blocking-call-in-async"],
     ),
 ];
 
