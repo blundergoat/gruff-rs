@@ -210,6 +210,9 @@ pub(crate) fn report_level_exclusions_hide_findings_without_skipping_discovery()
     write_config(
         dir.path(),
         r#"
+rules:
+  security.process-command:
+    enabled: true
 exclude:
   - rule: security.process-command
     paths: ["tests/**"]

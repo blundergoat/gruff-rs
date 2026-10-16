@@ -148,7 +148,10 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
         )
     },
-    rule_definition!(
+    // M02's blind repair measured 1/1 right, but fewer than ten findings; keep opt-in.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.github-actions-broad-permissions",
         "GitHub Actions broad permissions",
         Pillar::Security,
@@ -164,7 +167,8 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             },
         ],
         related: &[],
-    ),
+        )
+    },
     rule_definition!(
         "security.github-actions-pull-request-target",
         "GitHub Actions pull_request_target",
@@ -236,7 +240,9 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         None,
         "Flags Regex::new calls inside loop bodies.",
     ),
-    rule_definition!(
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.process-command",
         "Process command execution",
         Pillar::Security,
@@ -255,7 +261,8 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             "security.insecure-rng-for-secrets",
             "sensitive-data.api-key-pattern",
         ],
-    ),
+    )
+    },
     rule_definition!(
         "security.insecure-rng-for-secrets",
         "Insecure RNG for secret material",
@@ -382,7 +389,10 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         }],
         related: &[],
     ),
-    rule_definition!(
+    // M02's blind repair measured 9/9 right, but fewer than ten findings; keep opt-in.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.hardcoded-bind-all-interfaces",
         "Hardcoded bind to all interfaces",
         Pillar::Security,
@@ -396,8 +406,11 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             mitigation: "Prefer loopback for same-host tests; otherwise add a documented `exclude:` entry limited to the harness path and bind-all message.",
         }],
         related: &[],
-    ),
-    rule_definition!(
+        )
+    },
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.unsafe-deserialization",
         "Unsafe deserialization candidate",
         Pillar::Security,
@@ -411,7 +424,8 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             mitigation: "Read the trusted fixture directly with `include_bytes!` or otherwise keep its fixed provenance visible; if indirection is required, add an exact path-and-message `exclude:` entry.",
         }],
         related: &["security.xxe-candidate"],
-    ),
+    )
+    },
     rule_definition!(
         "security.xxe-candidate",
         "XXE candidate",

@@ -2,6 +2,14 @@
 
 ## v0.6.0 - Unreleased
 
+- **BREAKING: repaired permissions and listener checks are opt-in** - Enable `security.github-actions-broad-permissions` or `security.hardcoded-bind-all-interfaces` with `rules.<id>.enabled: true` or an explicit selector. Their single blind comparisons judged the surviving one and nine findings right, with all seven audit labels agreeing, but both populations are too small to establish the floor. They remain available pending adequate evidence; a severity override alone keeps them off.
+
+- **Security checks distinguish bounded uses** - Scoped workflow permissions confined to one concrete, non-matrix job stay quiet; multiple jobs, reusable workflows, unknown job structure and `write-all` retain warnings. The all-interfaces check stops treating CIDR comparisons, string-prefix checks and proven client-only address bindings as listeners, while listener and unknown uses retain warnings.
+
+- **Findings give rule-specific advice** - Modernisation findings name the matching Rust method or `?` rewrite; unsafe, clone and unwrap findings explain the safety or ownership check. Remote-shell findings ask for a downloaded file verified against a pinned checksum or signature, and XML findings ask to disable DTD and external-entity resolution.
+
+- **BREAKING: process-command and deserialization checks are opt-in** - Enable `security.process-command` or `security.unsafe-deserialization` with `rules.<id>.enabled: true` or `--include-rule <id>` to retain them; a severity override alone keeps them off. Their accepted M02 samples leave input provenance unresolved, so the coordinated 0.6.0 break turns off their defaults while preserving both detectors.
+
 - **BREAKING: ten rules are retired** - Remove configuration and selectors naming `concurrency.unbounded-channel`, `docs.stale-todo`, `modernisation.manual-is-empty`, `naming.boolean-prefix`, `naming.generic-function`, `performance.clone-in-loop`, `performance.format-in-loop`, `test-quality.conditional-logic`, `test-quality.sleep-in-test` or `waste.unreachable-code`; they no longer emit findings, including when explicitly enabled, and their baseline entries resolve. The coordinated 0.6.0 break carries the removals after their accepted precision measurements fell below the deletion line.
 
 - **`analyse` text names an applied baseline** - A run that applied a baseline now ends with `Baseline: default gruff-baseline.json; suppressed N findings` (or `explicit` for one passed with `--baseline`), so hidden findings never read as a clean scan (ADR-006).

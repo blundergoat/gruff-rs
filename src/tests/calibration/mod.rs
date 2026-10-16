@@ -142,6 +142,7 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
         },
     )
     .expect("calibration positive analysis succeeds");
+    assert_m02_advice(case.rule_id, &positive_report);
     let positive_fired = positive_report
         .findings
         .iter()
@@ -166,6 +167,39 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
         .any(|finding| finding.rule_id == case.rule_id);
 
     (positive_fired, negative_fired)
+}
+
+/// Keep M02 advice actionable without changing the calibration detection controls.
+fn assert_m02_advice(rule_id: &str, report: &AnalysisReport) {
+    let advice_terms: &[&str] = match rule_id {
+        "modernisation.manual-contains" => &["contains"],
+        "modernisation.manual-strip-prefix" => &["strip_prefix", "prefix"],
+        "modernisation.manual-unwrap-or-default" => &["unwrap_or_default"],
+        "modernisation.question-mark-candidate" => &["?", "error"],
+        "security.github-actions-remote-shell" => &["file", "checksum", "signature"],
+        "security.unsafe-block" => &["SAFETY", "invariant"],
+        "security.xxe-candidate" => &["DTD", "external-entity", "disabled"],
+        "waste.unnecessary-clone-candidate" => &["borrow", "move", "not used again"],
+        "waste.unwrap-expect" => &["?", "None/Err", "invariant"],
+        _ => &[],
+    };
+    if !advice_terms.is_empty() {
+        for finding in report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == rule_id)
+        {
+            let advice = finding.remediation.as_deref().unwrap_or("");
+            for term in advice_terms {
+                assert!(
+                    advice.contains(term),
+                    "{} advice lacks {term:?}: {advice:?}",
+                    rule_id
+                );
+            }
+            assert!(!advice.contains("paths.ignore") && !advice.contains("raise the limit"));
+        }
+    }
 }
 
 fn write_calibration_config(root: &Path, rule_id: &str) {

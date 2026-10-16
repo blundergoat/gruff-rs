@@ -284,6 +284,12 @@ The following rules are retired. Remove their `rules:` blocks and any configured
 
 These removals land in the coordinated 0.6.0 break because the accepted precision measurements put each rule below the deletion line. The conditional-logic rule was already off by default; explicit activation is now removed too.
 
+## Opt-in security checks in `0.6.0`
+
+`security.github-actions-broad-permissions` and `security.hardcoded-bind-all-interfaces` also require explicit opt-in after their bounded repairs. Their blind comparisons retained one and nine findings, all judged right, but fewer than ten is too little evidence to establish the floor. Enable each with `rules.<id>.enabled: true` or `--include-rule <id>` to retain its findings; a severity override alone does not enable it. Detector identities and existing suppression and baseline behavior are unchanged.
+
+`security.process-command` and `security.unsafe-deserialization` no longer run by default because the accepted M02 measurement leaves input provenance unresolved. To retain either check, set `rules.<id>.enabled: true` in your configuration or pass `--include-rule <id>`. A severity setting alone keeps the rule off; `--include-rule` also narrows the scan to selected rules. Both detectors and their IDs remain available. Cyclomatic complexity remains opt-in under its earlier decision.
+
 ## Reporting compatibility regressions
 
 If a `0.5.x` upgrade silently changes a rule id, fingerprint input, exit code,

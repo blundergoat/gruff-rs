@@ -11,43 +11,47 @@ pub(crate) static BIND_ALL_INTERFACES_REGEX: OnceLock<Regex> = OnceLock::new();
 /// literals that bind to every network interface, optionally followed
 /// by a port, in production and executable test source.
 pub(crate) fn analyse_hardcoded_bind_all_interfaces(
-    file: &SourceFile,
-    source: &str,
+    unit: &SourceUnit<'_>,
+    ast: &syn::File,
     findings: &mut Vec<Finding>,
 ) {
-    let lines: Vec<&str> = source.lines().collect();
-    let starts = line_starts(source);
+    let lines: Vec<&str> = unit.source.lines().collect();
+    let non_listeners = non_listener_literals::ranges(ast, unit.source);
     // Each all-interface literal becomes one reviewable exposure in the user's report.
-    for capture in bind_all_interfaces_regex().captures_iter(source) {
-        record_bind_capture(file, &capture, &lines, &starts, findings);
+    for capture in bind_all_interfaces_regex().captures_iter(unit.source) {
+        record_bind_capture(unit, &capture, &lines, &non_listeners, findings);
     }
 }
 
 fn record_bind_capture(
-    file: &SourceFile,
+    unit: &SourceUnit<'_>,
     capture: &regex::Captures<'_>,
     lines: &[&str],
-    starts: &[usize],
+    non_listeners: &[std::ops::Range<usize>],
     findings: &mut Vec<Finding>,
 ) {
     let Some(full) = capture.get(0) else {
         return;
     };
-    let line = byte_line_from_starts(starts, full.start());
-    if line_is_doc_or_comment(lines, line) {
+    let line = byte_line_from_starts(unit.line_starts(), full.start());
+    if line_is_doc_or_comment(lines, line)
+        || non_listeners
+            .iter()
+            .any(|range| range.start <= full.start() && full.end() <= range.end)
+    {
         return;
     }
     let addr = capture.name("addr").map_or("", |matched| matched.as_str());
     if addr.is_empty() {
         return;
     }
-    findings.push(bind_all_interfaces_finding(file, line, addr));
+    findings.push(bind_all_interfaces_finding(unit.file, line, addr));
 }
 
 fn bind_all_interfaces_regex() -> &'static Regex {
     static_regex(
         &BIND_ALL_INTERFACES_REGEX,
-        r#""(?P<addr>0\.0\.0\.0|\[::\]|::0)(?::\d+|/\d+)?""#,
+        r#""(?P<addr>0\.0\.0\.0|\[::\]|::0)(?::\d+)?""#,
     )
 }
 
@@ -80,6 +84,205 @@ fn bind_all_interfaces_finding(file: &SourceFile, line: usize, addr: &str) -> Fi
         ),
         metadata: json!({ "address": addr }),
     })
+}
+
+/// Syntax evidence that a matched literal is client data or a string comparison.
+/// Unknown uses and opaque macro reads retain the listener warning.
+mod non_listener_literals {
+    use super::*;
+    use syn::parse::Parser;
+    use syn::visit::Visit;
+
+    pub(super) fn ranges(ast: &syn::File, source: &str) -> Vec<std::ops::Range<usize>> {
+        let mut collector = NonListenerLiterals {
+            source,
+            ranges: Vec::new(),
+        };
+        collector.visit_file(ast);
+        collector.ranges
+    }
+
+    struct NonListenerLiterals<'a> {
+        source: &'a str,
+        ranges: Vec<std::ops::Range<usize>>,
+    }
+
+    impl<'ast> Visit<'ast> for NonListenerLiterals<'_> {
+        fn visit_block(&mut self, block: &'ast syn::Block) {
+            for (index, statement) in block.stmts.iter().enumerate() {
+                let syn::Stmt::Local(local) = statement else {
+                    continue;
+                };
+                let (syn::Pat::Ident(binding), Some(init)) = (&local.pat, &local.init) else {
+                    continue;
+                };
+                if binding.mutability.is_some()
+                    || binding.by_ref.is_some()
+                    || binding.subpat.is_some()
+                {
+                    continue;
+                }
+                let mut candidates = Vec::new();
+                value_literals(&init.expr, self.source, &mut candidates);
+                if candidates.is_empty() {
+                    continue;
+                }
+                let mut uses = ClientAddressUses {
+                    binding: &binding.ident,
+                    total: 0,
+                    client: 0,
+                };
+                for statement in &block.stmts[index + 1..] {
+                    uses.visit_stmt(statement);
+                }
+                if uses.total == 1 && uses.client == 1 {
+                    self.ranges.extend(candidates);
+                }
+            }
+            syn::visit::visit_block(self, block);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            if call.method == "starts_with" {
+                if let Some(syn::Expr::Lit(literal)) = call.args.first() {
+                    if let syn::Lit::Str(value) = &literal.lit {
+                        self.ranges.push(value.span().byte_range());
+                    }
+                }
+            }
+            if is_tls_client_connect(call) {
+                if let Some(argument) = call.args.first() {
+                    value_literals(argument, self.source, &mut self.ranges);
+                }
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if is_endpoint_client(call) {
+                if let Some(argument) = call.args.first() {
+                    value_literals(argument, self.source, &mut self.ranges);
+                }
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            if mac.path.is_ident("assert") {
+                let parser =
+                    syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+                if let Ok(arguments) = parser.parse2(mac.tokens.clone()) {
+                    if let Some(condition) = arguments.first() {
+                        self.visit_expr(condition);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Follow only value-preserving address conversions and match-arm values.
+    fn value_literals(expr: &syn::Expr, source: &str, ranges: &mut Vec<std::ops::Range<usize>>) {
+        match expr {
+            syn::Expr::Lit(literal) => {
+                if let syn::Lit::Str(value) = &literal.lit {
+                    let range = value.span().byte_range();
+                    if source
+                        .get(range.clone())
+                        .is_some_and(|text| bind_all_interfaces_regex().is_match(text))
+                    {
+                        ranges.push(range);
+                    }
+                }
+            }
+            syn::Expr::MethodCall(call)
+                if matches!(
+                    call.method.to_string().as_str(),
+                    "parse" | "try_into" | "unwrap" | "expect"
+                ) =>
+            {
+                value_literals(&call.receiver, source, ranges);
+            }
+            syn::Expr::Match(branch) => {
+                for arm in &branch.arms {
+                    value_literals(&arm.body, source, ranges);
+                }
+            }
+            syn::Expr::Paren(group) => value_literals(&group.expr, source, ranges),
+            syn::Expr::Group(group) => value_literals(&group.expr, source, ranges),
+            syn::Expr::Try(attempt) => value_literals(&attempt.expr, source, ranges),
+            _ => {}
+        }
+    }
+
+    struct ClientAddressUses<'a> {
+        binding: &'a syn::Ident,
+        total: usize,
+        client: usize,
+    }
+
+    impl<'ast> Visit<'ast> for ClientAddressUses<'_> {
+        fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+            if path.qself.is_none() && path.path.is_ident(self.binding) {
+                self.total += 1;
+            }
+            syn::visit::visit_expr_path(self, path);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if is_endpoint_client(call) && argument_is_binding(call.args.first(), self.binding) {
+                self.client += 1;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            if is_tls_client_connect(call) && argument_is_binding(call.args.first(), self.binding) {
+                self.client += 1;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            if tokens_mention_binding(mac.tokens.clone(), self.binding) {
+                self.total += 1;
+            }
+        }
+    }
+
+    fn argument_is_binding(argument: Option<&syn::Expr>, binding: &syn::Ident) -> bool {
+        matches!(argument, Some(syn::Expr::Path(path)) if path.qself.is_none() && path.path.is_ident(binding))
+    }
+
+    fn is_endpoint_client(call: &syn::ExprCall) -> bool {
+        matches!(call.func.as_ref(), syn::Expr::Path(path) if path_ends_with(&path.path, "Endpoint", "client"))
+            && call.args.len() == 1
+    }
+
+    fn is_tls_client_connect(call: &syn::ExprMethodCall) -> bool {
+        call.method == "connect"
+            && call.args.len() == 1
+            && matches!(call.receiver.as_ref(), syn::Expr::Call(receiver)
+                if matches!(receiver.func.as_ref(), syn::Expr::Path(path)
+                    if path_ends_with(&path.path, "Arc", "new")))
+    }
+
+    fn path_ends_with(path: &syn::Path, owner: &str, method: &str) -> bool {
+        let mut segments = path.segments.iter().rev();
+        segments
+            .next()
+            .is_some_and(|segment| segment.ident == method)
+            && segments
+                .next()
+                .is_some_and(|segment| segment.ident == owner)
+    }
+
+    fn tokens_mention_binding(tokens: proc_macro2::TokenStream, binding: &syn::Ident) -> bool {
+        tokens.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(ident) => ident == *binding,
+            proc_macro2::TokenTree::Group(group) => tokens_mention_binding(group.stream(), binding),
+            _ => false,
+        })
+    }
 }
 
 /// Flag caller-derived request URLs even when the executable path belongs to a test or CI helper.
@@ -142,13 +345,15 @@ pub(crate) fn analyse_xxe_candidate(file: &SourceFile, source: &str, findings: &
             || line.contains("ParserOption::DTDLOAD")
             || line.contains(".resolve_entities(true)")
         {
-            findings.push(network_candidate_finding(
+            let mut result = network_candidate_finding(
                 file,
                 "security.xxe-candidate",
                 "XML parser configuration enables external entity or DTD resolution.",
                 line_index + 1,
                 "xml-parser",
-            ));
+            );
+            result.remediation = Some("Parse untrusted XML with DTD processing and external-entity resolution disabled, and validate the input at the boundary before it reaches the parser.".to_string());
+            findings.push(result);
         }
     }
 }

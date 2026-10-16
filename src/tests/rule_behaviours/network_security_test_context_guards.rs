@@ -87,6 +87,7 @@ pub(crate) fn unsafe_deserialization_reports_turbofish_sinks() {
             "pub fn parse_manifest(body: &str) { let _ = serde_yaml::from_str::<Vec<String>>(body); }\n",
         ),
     );
+    enable_builtin_rule(dir.path(), "security.unsafe-deserialization");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -137,8 +138,11 @@ pub(crate) fn network_security_test_context_policy_matrix() {
         EXECUTABLE_RISK_SOURCE,
     );
 
-    // `security.ssrf-candidate` is off by default (ADR-024), so the matrix enables it the way a project would.
-    enable_builtin_rule(dir.path(), "security.ssrf-candidate");
+    // Keep all opt-in detectors active while testing the shared path policy.
+    write_config(
+        dir.path(),
+        "rules:\n  security.ssrf-candidate:\n    enabled: true\n  security.unsafe-deserialization:\n    enabled: true\n  security.hardcoded-bind-all-interfaces:\n    enabled: true\n",
+    );
 
     let report = run_project_analysis(
         dir.path(),
@@ -345,4 +349,79 @@ pub(crate) fn template_html_keeps_external_formatter_module_reportable() {
         }),
         "an uninspected external formatter must keep the HTML warning"
     );
+}
+
+const BIND_LITERAL_CONTEXT_CASES: &[(&str, &str, &[&str])] = &[
+    (
+        "quic-client",
+        r#"fn probe(local_addr: Option<IpAddr>) { let socket_addr = match local_addr { Some(ip) => SocketAddr::new(ip, 0), None => "[::]:0".parse::<SocketAddr>().unwrap() }; let _ = Endpoint::client(socket_addr); }"#,
+        &[],
+    ),
+    (
+        "tls-client",
+        r#"fn probe(config: ClientConfig, port: u16) { let server_name = "0.0.0.0".try_into().unwrap(); let _ = Arc::new(config).connect(server_name); let _ = TcpStream::connect(format!("[::]:{port}")); }"#,
+        &[],
+    ),
+    (
+        "cidr-comparison",
+        r#"fn probe(ranges: Vec<Range>) { let _ = ranges.iter().any(|r| r.cidr_ip() == Some("0.0.0.0/0")); }"#,
+        &[],
+    ),
+    (
+        "unicode-same-line-listener",
+        r#"fn probe(body: String) { let label = "λ"; assert!(body.starts_with("0.0.0.0:1337")); let _ = TcpListener::bind("[::]:9090"); }"#,
+        &["[::]"],
+    ),
+    (
+        "client-and-listener",
+        r#"fn probe() { let addr = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); let _ = TcpListener::bind(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "opaque-macro-use",
+        r#"fn probe() { let addr = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); bind_address!(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "nested-shadow",
+        r#"fn probe() { let addr = "0.0.0.0:8080".parse().unwrap(); { let addr = "127.0.0.1:0".parse().unwrap(); let _ = Endpoint::client(addr); } let _ = TcpListener::bind(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "parenthesized-binding",
+        r#"fn probe() { let (addr) = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "mutable-binding",
+        r#"fn probe() { let mut addr = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); }"#,
+        &["0.0.0.0"],
+    ),
+];
+
+/// Keep proven client/comparison literals quiet while preserving listener and unknown uses.
+#[test]
+pub(crate) fn bind_all_interfaces_preserves_listeners_and_excludes_non_listener_literals() {
+    let _guard = analysis_lock();
+
+    for (name, source, expected) in BIND_LITERAL_CONTEXT_CASES {
+        let dir = tempdir().expect("bind-context fixture");
+        baseline_with_lib(dir.path(), source);
+        enable_builtin_rule(dir.path(), "security.hardcoded-bind-all-interfaces");
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                no_config: false,
+                ..default_test_options()
+            },
+        )
+        .expect("bind-context analysis");
+        let addresses: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "security.hardcoded-bind-all-interfaces")
+            .map(|finding| finding.metadata["address"].as_str().expect("bind address"))
+            .collect();
+        assert_eq!(&addresses, expected, "{name}");
+    }
 }

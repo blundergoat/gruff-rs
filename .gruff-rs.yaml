@@ -272,7 +272,7 @@ rules:
     enabled: true
   # Flags workflow-level scoped writes and permissions: write-all grants.
   security.github-actions-broad-permissions:
-    enabled: true
+    enabled: false
   # Flags pull_request_target workflows for manual secret and checkout review.
   security.github-actions-pull-request-target:
     enabled: true
@@ -287,13 +287,13 @@ rules:
     enabled: true
   # Flags all-interface listener literals in executable Rust, including tests and CI helpers.
   security.hardcoded-bind-all-interfaces:
-    enabled: true
+    enabled: false
   # Flags non-cryptographic rand calls inside secret-like generation functions.
   security.insecure-rng-for-secrets:
     enabled: true
   # Flags process command construction for manual argument validation.
   security.process-command:
-    enabled: true
+    enabled: false
   # Flags direct dynamic SQL query arguments such as query(format!(...)).
   security.sql-dynamic-query:
     enabled: false
@@ -311,7 +311,7 @@ rules:
     enabled: true
   # Flags YAML or binary deserialization of data derived from local input.
   security.unsafe-deserialization:
-    enabled: true
+    enabled: false
   # Flags explicit weak cryptographic primitive imports or constructors for review.
   security.weak-crypto:
     enabled: true

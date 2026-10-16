@@ -39,6 +39,7 @@ pub(crate) fn analyse_manual_contains(
         is_valid: manual_contains_match_is_valid,
         rule_id: "modernisation.manual-contains",
         message: "Use `.contains(&value)` instead of `.iter().any(|x| x == &value)`.",
+        remediation: "Replace the manual membership check with the collection's `contains` method.",
     };
     scan_modernisation_matches(&check, searchable, file, findings);
 }
@@ -67,6 +68,7 @@ pub(crate) fn analyse_manual_strip_prefix(
         is_valid: manual_strip_prefix_match_is_valid,
         rule_id: "modernisation.manual-strip-prefix",
         message: "Use `strip_prefix` instead of slicing after `starts_with`.",
+        remediation: "Replace the `starts_with` check and manual slice with `strip_prefix`, which returns the remainder only when the prefix matches.",
     };
     scan_modernisation_matches(&check, searchable, file, findings);
 }
@@ -98,6 +100,7 @@ pub(crate) fn analyse_manual_unwrap_or_default(
         rule_id: "modernisation.manual-unwrap-or-default",
         message:
             "Use `.unwrap_or_default()` instead of a manual `match` with `Default::default()`.",
+        remediation: "Replace the manual match or `unwrap_or` with `unwrap_or_default()`.",
     };
     scan_modernisation_matches(&check, searchable, file, findings);
 }
@@ -198,6 +201,7 @@ fn scan_question_mark(
             line,
             "modernisation.question-mark-candidate",
             "Use `?` instead of a manual `match` / `if let Err` that returns the same error.",
+            "Replace the manual match that returns the error or None with the `?` operator.",
             findings,
         );
     }
@@ -208,6 +212,7 @@ struct ModernisationCheck {
     is_valid: fn(&regex::Captures<'_>) -> bool,
     rule_id: &'static str,
     message: &'static str,
+    remediation: &'static str,
 }
 
 fn scan_modernisation_matches(
@@ -225,7 +230,14 @@ fn scan_modernisation_matches(
             continue;
         };
         let line = byte_line_from_starts(&starts, full.start());
-        push_modernisation_finding(file, line, check.rule_id, check.message, findings);
+        push_modernisation_finding(
+            file,
+            line,
+            check.rule_id,
+            check.message,
+            check.remediation,
+            findings,
+        );
     }
 }
 
@@ -238,14 +250,17 @@ fn push_modernisation_finding(
     line: usize,
     rule_id: &'static str,
     message: &'static str,
+    remediation: &'static str,
     findings: &mut Vec<Finding>,
 ) {
-    findings.push(finding(SimpleFindingDescriptor {
+    let mut result = finding(SimpleFindingDescriptor {
         rule_id,
         message: message.into(),
         file,
         line: Some(line),
         severity: Severity::Advisory,
         pillar: Pillar::Modernisation,
-    }));
+    });
+    result.remediation = Some(remediation.to_string());
+    findings.push(result);
 }

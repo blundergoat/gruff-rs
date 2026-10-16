@@ -31,6 +31,11 @@ pub(crate) fn default_disabled_rules_need_explicit_opt_in() {
     for rule_id in [
         "test-quality.unwrap-in-test",
         "waste.unnecessary-clone-candidate",
+        "complexity.cyclomatic",
+        "security.process-command",
+        "security.unsafe-deserialization",
+        "security.github-actions-broad-permissions",
+        "security.hardcoded-bind-all-interfaces",
     ] {
         let default_config = Config::default();
         assert!(
@@ -75,7 +80,7 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("empty selector accepted");
-    assert!(config.is_rule_enabled("security.process-command"));
+    assert!(!config.is_rule_enabled("security.process-command"));
     assert!(config.is_rule_enabled("docs.missing-readme"));
 
     write_config(

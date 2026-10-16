@@ -191,7 +191,14 @@ pub(super) fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut
     let Some(metadata_kind) = github_metadata_kind(unit.file) else {
         return;
     };
-    let mut scan_state = GithubMetadataScanState::default();
+    let mut scan_state = GithubMetadataScanState {
+        workflow_permissions: WorkflowPermissionsState {
+            single_concrete_job: metadata_kind == GithubMetadataKind::Workflow
+                && workflow_has_one_concrete_job(unit.source),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
 
     // Shared step syntax is inspected line by line while workflow state stays separately gated.
     for (line_index, line) in unit.source.lines().enumerate() {
@@ -209,6 +216,25 @@ pub(super) fn analyse_github_actions_rules(unit: &SourceUnit<'_>, findings: &mut
     if metadata_kind == GithubMetadataKind::Workflow {
         push_github_actions_summary_findings(unit, findings, scan_state.workflow_summary);
     }
+}
+
+/// A scoped workflow grant reaches no wider than one concrete, non-matrix job.
+/// Reusable workflows, unknown YAML and expanded jobs retain the conservative warning.
+fn workflow_has_one_concrete_job(source: &str) -> bool {
+    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(source) else {
+        return false;
+    };
+    let Some(jobs) = value.get("jobs").and_then(serde_yaml::Value::as_mapping) else {
+        return false;
+    };
+    jobs.len() == 1
+        && jobs.iter().all(|(name, job)| {
+            name.as_str()
+                .is_some_and(|name| !name.is_empty() && name != "<<")
+                && job.get("steps").is_some_and(serde_yaml::Value::is_sequence)
+                && job.get("uses").is_none()
+                && job.get("strategy").is_none()
+        })
 }
 
 /// Mutable state shared while one GitHub metadata file is scanned.
@@ -696,10 +722,11 @@ fn push_unpinned_action(
 }
 
 /// State for one workflow `permissions:` mapping while lines are streamed.
-/// Workflow-level scoped writes affect every job and are broad; job-scoped
-/// mappings are bounded, while `write-all` remains broad at any indentation.
+/// Workflow-level scoped writes are broad unless confined to one concrete job.
+/// Job mappings stay bounded; `write-all` remains broad at any indentation.
 #[derive(Default)]
 struct WorkflowPermissionsState {
+    single_concrete_job: bool,
     in_permissions_block: bool,
     permissions_indent: usize,
 }
@@ -728,6 +755,7 @@ impl WorkflowPermissionsState {
             return value == "write-all";
         }
         self.in_permissions_block
+            && !self.single_concrete_job
             && self.permissions_indent == 0
             && line_is_write_permission(trimmed)
     }
@@ -1069,7 +1097,7 @@ fn push_shared_github_metadata_finding(
     metadata_kind: GithubMetadataKind,
     finding: GithubStepFinding<'_>,
 ) {
-    // Existing workflow findings keep their public wording and remediation unchanged.
+    // Metadata kind selects the message; remote-shell findings have script-specific advice.
     let (message, remediation) = if metadata_kind == GithubMetadataKind::Workflow {
         (
             finding.workflow_message,
@@ -1080,6 +1108,11 @@ fn push_shared_github_metadata_finding(
             finding.action_message,
             "Pin third-party actions, verify downloaded installers, and pass untrusted context through validated inputs.",
         )
+    };
+    let remediation = if finding.rule_id == "security.github-actions-remote-shell" {
+        "Download the remote script to a file, verify it against a pinned checksum or signature, then run that file instead of piping a download into a shell."
+    } else {
+        remediation
     };
     findings.push(Finding::new(FindingDescriptor {
         rule_id: finding.rule_id.to_string(),

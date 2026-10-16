@@ -327,7 +327,7 @@ fn analyse_rust_source_rules(
         analyse_weak_crypto(unit.file, unit.source, findings);
     }
     if families.bind_all_interfaces {
-        analyse_hardcoded_bind_all_interfaces(unit.file, unit.source, findings);
+        analyse_hardcoded_bind_all_interfaces(unit, ast, findings);
     }
     if families.xxe_candidate {
         analyse_xxe_candidate(unit.file, unit.source, findings);

@@ -123,14 +123,18 @@ impl LineRuleContext<'_> {
             return;
         }
         match find_nearby_safety_rationale(self.raw_lines, line_index) {
-            None => findings.push(finding(SimpleFindingDescriptor {
-                rule_id: "security.unsafe-block",
-                message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
-                file: self.file,
-                line: Some(line_number),
-                severity: Severity::Warning,
-                pillar: Pillar::Security,
-            })),
+            None => {
+                let mut result = finding(SimpleFindingDescriptor {
+                    rule_id: "security.unsafe-block",
+                    message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
+                    file: self.file,
+                    line: Some(line_number),
+                    severity: Severity::Warning,
+                    pillar: Pillar::Security,
+                });
+                result.remediation = Some("Keep the unsafe block as small as possible and add a `// SAFETY:` comment stating the invariant that makes it sound.".to_string());
+                findings.push(result);
+            }
             Some(rationale) if is_weak_safety_rationale(&rationale) => {
                 findings.push(Finding::new(FindingDescriptor {
                         rule_id: "docs.weak-safety-rationale".to_string(),
@@ -169,14 +173,16 @@ impl LineRuleContext<'_> {
             && !self.line_is_in_test_context(line_number)
             && !self.external_test_module
         {
-            findings.push(finding(SimpleFindingDescriptor {
+            let mut result = finding(SimpleFindingDescriptor {
                 rule_id: "waste.unwrap-expect",
                 message: "unwrap()/expect() can turn recoverable errors into panics.".into(),
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
                 pillar: Pillar::Maintainability,
-            }));
+            });
+            result.remediation = Some("Propagate the error with `?` or handle the None/Err case explicitly; if failure is impossible, document the invariant that rules it out.".to_string());
+            findings.push(result);
         }
 
         if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
@@ -184,14 +190,16 @@ impl LineRuleContext<'_> {
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
         {
-            findings.push(finding(SimpleFindingDescriptor {
+            let mut result = finding(SimpleFindingDescriptor {
                 rule_id: "waste.unnecessary-clone-candidate",
                 message: "clone() call may be avoidable; confirm ownership requires it.".into(),
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
                 pillar: Pillar::Maintainability,
-            }));
+            });
+            result.remediation = Some("Remove the clone and borrow or move the value if it is not used again after this point.".to_string());
+            findings.push(result);
         }
     }
 }

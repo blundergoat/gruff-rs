@@ -18,7 +18,7 @@ The native rule catalogue is the single source for reviewed false-positive guida
 | Documentation | Public Rust API documentation, root README presence, package metadata presence, comments whose payload looks like disabled Rust code, weak `SAFETY:` rationales near unsafe blocks, externally public `Result`-returning functions missing an error contract, public panic-capable functions missing a panic contract, public `unsafe fn` items missing a `# Safety` section, and public functions whose rustdoc fails to describe parameters or return values. Function checks accept attached outer `///` and `/** */` rustdoc; inner or ordinary comments do not count. `# Errors`, `# Panics`, and `# Returns` headings are accepted, but concise contract prose is enough when it conveys the same behaviour. |
 
 | Modernisation | Three `manual-*` idiom rules covering `iter().any(|x| x == y)` (use `contains`), `if s.starts_with(p) { &s[p.len()..] }` (use `strip_prefix`), and `match opt { Some(v) => v, None => Default::default() }` (use `unwrap_or_default`); and `question-mark-candidate` covering manual `match`/`if let Err` Result-propagation shapes that should use `?`. |
-| Security | Process command uses with concrete risk signals, dynamic SQL query arguments (off by default), explicit TLS verification bypasses, weak cryptographic primitive review signals, non-cryptographic RNG use inside secret-like generation functions, unsafe blocks without a nearby `SAFETY:` rationale, SSRF candidates (off by default), template/deserialization/XXE candidates, hardcoded `0.0.0.0`/`[::]` listener binds in executable Rust, local-only dependency posture checks for git sources, unpinned git revisions, wildcard requirements, and duplicate lockfile versions, plus GitHub Actions workflow and explicit composite-action metadata checks described below. |
+| Security | Opt-in process command checks with concrete risk signals, dynamic SQL query arguments (off by default), explicit TLS verification bypasses, weak cryptographic primitive review signals, non-cryptographic RNG use inside secret-like generation functions, unsafe blocks without a nearby `SAFETY:` rationale, SSRF candidates (off by default), template and XXE candidates plus opt-in deserialization checks, opt-in hardcoded `0.0.0.0`/`[::]` listener binds in executable Rust, local-only dependency posture checks for git sources, unpinned git revisions, wildcard requirements, and duplicate lockfile versions, plus GitHub Actions workflow and explicit composite-action metadata checks described below. |
 | Sensitive data | Common API keys, AWS keys, JWT-looking tokens, HTTP(S) URLs with embedded credentials, private-key blocks, GCP service-account keys, PHI-like identifiers, and high-entropy string literals. The high-entropy rule skips package integrity prefixes, base64 alphabet tables, separator-bearing word slugs, and model/provider identifiers, but still reports zero-separator mixed-case identifiers and unknown digest/signature fields; only a `sensitiveExclusions` entry suppresses them. The common API-key pattern includes provider-prefixed tokens such as GitHub, GitLab, npm, Slack, Stripe, SendGrid, Hugging Face, Linear, Discord webhooks, Google, Anthropic-style, and common cloud connection strings. A separate `pii-test-fixture` rule flags realistic emails, SSN-shaped strings, and US phone numbers in committed fixture or sample files (skips obvious placeholders such as `@example.com`, 555-prefix phones, 000-prefix SSNs). |
 | Test quality | Unwrap/expect that hides setup or fixture failures, ignored tests without reasons, long test bodies, trivial assertions, and `#[should_panic]` attributes without an `expected = "..."` clause. |
 | Design | Project-level module fan-out, large-module, and public API surface checks. |
@@ -44,6 +44,10 @@ Security rules are deliberately narrow static signals. `security.process-command
 `security.template-injection-xss` skips a direct Axum `Html(format!(...))` handler when its sole parameter is a same-file enum with only unit variants and derived `Debug`.
 The format literal may print only that enum's `:?` label, by captured name or one explicit argument. Payloads, custom formatters, unknown types and other dynamic output remain reportable.
 
+The all-interfaces check leaves CIDR values out of listener addresses. Parsed source also excludes direct string-prefix comparisons and immutable address bindings used exactly once by `Endpoint::client` or `Arc::new(...).connect`. Additional reads, macro uses, mutable or unsupported bindings and unknown consumers retain the warning; direct listener binds remain in scope.
+
+The repaired broad-permissions and all-interfaces checks are opt-in: `security.github-actions-broad-permissions` retained one finding and `security.hardcoded-bind-all-interfaces` retained nine, all judged right in their blind comparisons with seven agreeing audit labels. Both remain too small to establish their precision floor. Set `rules.<id>.enabled: true` or use `--include-rule <id>` to run them; severity alone does not enable them.
+
 GitHub Actions text rules classify root `.github/workflows/*.yml`/`*.yaml`
 paths as workflows. A file named exactly `action.yml` or `action.yaml` is
 composite-action metadata only when supplied explicitly; directory discovery
@@ -67,9 +71,11 @@ permission contract. Pull-request gating reads the top-level `on` mapping only,
 so a `with:` input or matrix key named `pull_request` is not a trigger, while a
 quoted `"on":` key or quoted event name still is; secret expressions match with
 or without interior whitespace. The permissions rule reports workflow-level
-scoped writes and `permissions: write-all` at any level outside a step, where
-that key is an action input rather than a grant; a bounded job-scoped mapping
-such as release-only `contents: write` stays silent.
+scoped writes unless a valid workflow confines them to one concrete job with
+steps, no matrix and no reusable-workflow call. `permissions: write-all` still
+reports at any level outside a step, where that key is an action input rather
+than a grant; a bounded job-scoped mapping such as release-only `contents: write`
+stays silent. Unknown job structure retains the warning.
 
 An own job or step `if:` guard can silence a secret reference when exact `github.event_name` comparisons prove that scope unreachable for the detected PR event. Comparisons ignore case and support a whole expression wrapper, parentheses, negation, AND and OR. Unknown, malformed or unsupported guards and ambiguous YAML ownership retain warnings; a step guard cannot cover job/workflow env or siblings.
 
@@ -104,6 +110,8 @@ Both `#[cfg(test)]` and `#[cfg(all(test, feature = "web"))]` are supported.
 A scan of that file alone, a production declaration, or a path override keeps the warning because test-only ownership is unproved.
 
 `test-quality.long-test` counts code lines from the first assertion onward, so fixture setup before the first assertion does not trigger the rule; a test with no assertion is counted whole. Blank lines, comments, doc comments and attributes do not count. `waste.unnecessary-clone-candidate` is opt-in because ownership-preserving clones can be the more readable and verifiable choice.
+
+`security.process-command` and `security.unsafe-deserialization` are off by default after M02's accepted table. The process sample has 18 unresolved provenance cases and 8 of 14 judged findings right, below its 0.80 floor; the deserialization sample has one unresolved finding and no judged result. Both detectors remain available with `rules.<id>.enabled: true` or `--include-rule <id>`. A severity override alone does not enable either rule.
 
 `ci.github-event-shell-interpolation`, `security.sql-dynamic-query`, and `security.ssrf-candidate` are off by default too: each was wrong on
 all four judged findings in the 0.6.0 precision measurement, too few to delete on (ADR-024). Enable one with `rules.<id>.enabled: true`, or

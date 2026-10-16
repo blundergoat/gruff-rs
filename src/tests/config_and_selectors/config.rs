@@ -371,6 +371,7 @@ pub(crate) fn standalone_severity_override_changes_security_finding() {
         r#"
 rules:
   security.process-command:
+    enabled: true
     severity: error
 "#,
     );

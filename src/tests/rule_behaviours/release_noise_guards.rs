@@ -89,11 +89,12 @@ pub fn run_shell(command: &str) {
 "#,
     );
 
+    enable_builtin_rule(dir.path(), "security.process-command");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -177,11 +178,12 @@ pub(crate) fn process_command_requires_std_import_provenance() {
             .expect("write Rust case");
     }
 
+    enable_builtin_rule(dir.path(), "security.process-command");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -261,11 +263,12 @@ pub fn print_message() {
 "#,
     );
 
+    enable_builtin_rule(dir.path(), "security.process-command");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -372,7 +375,7 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
     );
 
     // Off by default (ADR-024): enable it so the count proves the rule ran.
-    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
+    write_config(dir.path(), "rules:\n  ci.github-event-shell-interpolation:\n    enabled: true\n  security.github-actions-broad-permissions:\n    enabled: true\n");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -669,30 +672,45 @@ pub(crate) fn github_actions_broad_permissions_ignores_step_inputs() {
         "name: workflow grant\non: push\npermissions: write-all\njobs:\n  build:\n    steps:\n      - run: echo ready\n",
     );
 
+    for (name, source) in [
+        ("single-job-scoped", "permissions:\n  pull-requests: write\njobs:\n  comment:\n    steps:\n      - run: gh pr comment 1 --body ready\n"),
+        ("multi-job-scoped", "permissions:\n  contents: write\njobs:\n  release:\n    steps:\n      - run: echo release\n  test:\n    steps:\n      - run: echo test\n"),
+        ("ambiguous-jobs", "permissions:\n  contents: write\njobs: unknown\n"),
+        ("reusable-job", "permissions:\n  contents: write\njobs:\n  release:\n    uses: acme/workflows/.github/workflows/release.yml@main\n"),
+        ("matrix-job", "permissions:\n  contents: write\njobs:\n  test:\n    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-latest]\n    steps:\n      - run: echo ready\n"),
+    ] {
+        write_github_metadata(dir.path(), &format!(".github/workflows/{name}.yml"), source);
+    }
+
+    enable_builtin_rule(dir.path(), "security.github-actions-broad-permissions");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
     )
     .expect("analysis succeeds");
 
-    let permission_findings: Vec<&Finding> = report
+    let mut permission_paths: Vec<&str> = report
         .findings
         .iter()
         .filter(|finding| finding.rule_id == "security.github-actions-broad-permissions")
+        .map(|finding| finding.file_path.as_str())
         .collect();
+    permission_paths.sort_unstable();
     assert_eq!(
-        permission_findings.len(),
-        1,
-        "only the workflow-level grant is a permission; findings={permission_findings:?}"
-    );
-    assert_eq!(
-        permission_findings[0].file_path,
-        ".github/workflows/workflow-permissions.yml"
+        permission_paths,
+        vec![
+            ".github/workflows/ambiguous-jobs.yml",
+            ".github/workflows/matrix-job.yml",
+            ".github/workflows/multi-job-scoped.yml",
+            ".github/workflows/reusable-job.yml",
+            ".github/workflows/workflow-permissions.yml",
+        ],
+        "step inputs and a scoped grant confined to one concrete job are quiet"
     );
 }
 
@@ -785,7 +803,7 @@ pub(crate) fn github_actions_retained_pypa_action_is_a_silent_negative() {
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
     write_github_metadata(dir.path(), "action.yml", RETAINED_PYPA_ACTION);
 
-    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
+    write_config(dir.path(), "rules:\n  ci.github-event-shell-interpolation:\n    enabled: true\n  security.github-actions-broad-permissions:\n    enabled: true\n");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {

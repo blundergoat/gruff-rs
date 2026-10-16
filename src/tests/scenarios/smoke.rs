@@ -39,7 +39,7 @@ fn test_no_assert() {
         .iter()
         .map(|finding| finding.rule_id.as_str())
         .collect();
-    assert!(rule_ids.contains("security.process-command"));
+    assert!(!rule_ids.contains("security.process-command"));
     assert!(rule_ids.contains("size.parameter-count"));
     assert!(!rule_ids.contains("test-quality.sleep-in-test"));
 }
@@ -51,8 +51,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
 
     assert_only_partial_context_diagnostic(&report);
     assert_eq!(report.summary.total, report.findings.len());
-    // `fixtures/` is a test path, so its sample secret and its deliberate shell call are counted as `builtInTestPath`
-    // rows, not reported.
+    // The fixture secret is counted as skipped; the opt-in process rule stays disabled.
     assert_eq!(
         report
             .findings
@@ -67,13 +66,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
         .filter(|row| row.config_key == "builtInTestPath" && row.paths == ["fixtures/sample.rs"])
         .map(|row| (row.rule.as_str(), row.suppressed))
         .collect();
-    assert_eq!(
-        skipped_rules,
-        vec![
-            ("security.process-command", 1),
-            ("sensitive-data.aws-access-key", 1)
-        ]
-    );
+    assert_eq!(skipped_rules, vec![("sensitive-data.aws-access-key", 1)]);
 
     let expected = [
         (
@@ -633,6 +626,13 @@ pub(crate) fn bounded_rust_source_keeps_text_safety_and_drops_deep_analysis() {
         ..default_test_options()
     };
     let mut config = Config::default();
+    config.rule_settings.insert(
+        "security.process-command".to_string(),
+        RuleSetting {
+            enabled: Some(true),
+            ..RuleSetting::default()
+        },
+    );
     config.deep_scan_budget = DeepScanBudget {
         enabled: true,
         max_lines: 1,
@@ -696,6 +696,13 @@ pub(crate) fn deep_scan_budget_honours_both_boundaries_disable_and_source_classi
     };
 
     let mut equal = Config::default();
+    equal.rule_settings.insert(
+        "security.process-command".to_string(),
+        RuleSetting {
+            enabled: Some(true),
+            ..RuleSetting::default()
+        },
+    );
     equal.deep_scan_budget = DeepScanBudget {
         enabled: true,
         max_lines: rust_source.bytes().filter(|byte| *byte == b'\n').count() + 1,

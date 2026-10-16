@@ -300,11 +300,12 @@ pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_reg
         "pub fn run(cmd: &str) { let _ = std::process::Command::new(cmd).spawn(); }\n",
     )
     .expect("source write");
+    enable_builtin_rule(dir.path(), "security.process-command");
     run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             generate_baseline: Some(PathBuf::from("gruff-baseline.json")),
             ..default_test_options()
         },
@@ -312,7 +313,7 @@ pub(crate) fn diff_patch_scope_all_gate_counts_baselined_findings_in_changed_reg
     .expect("baseline generation succeeds");
     write_config(
         dir.path(),
-        "gate:\n  scope: all\n  severity:\n    warning: 0\n",
+        "gate:\n  scope: all\n  severity:\n    warning: 0\nrules:\n  security.process-command:\n    enabled: true\n",
     );
     let patch_path = dir.path().join("change.patch");
     fs::write(
