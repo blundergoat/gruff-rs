@@ -501,14 +501,8 @@ fn collect_report_inputs(
     diff_filter: Option<&ResolvedDiffFilter>,
 ) -> Result<ReportInputs, String> {
     let analysed_paths = analysed_display_paths(&discovery.files);
-    let (mut findings, all_findings, function_blocks_by_file) = analysed_findings(
-        project_root,
-        config,
-        &discovery,
-        coverage,
-        has_symbol_scope_diff(diff_filter),
-        &mut diagnostics,
-    );
+    let (mut findings, all_findings, function_blocks_by_file) =
+        analysed_findings(project_root, config, &discovery, coverage, &mut diagnostics);
     let (baseline_report, per_rule_deltas, all_findings_summary) = resolve_run_baseline(
         project_root,
         options,
@@ -551,7 +545,6 @@ fn analysed_findings(
     config: &Config,
     discovery: &DiscoveryResult,
     coverage: ProjectCoverage,
-    has_symbol_scope: bool,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> (
     Vec<Finding>,
@@ -566,7 +559,9 @@ fn analysed_findings(
         &discovery.files,
         config,
         coverage,
-        has_symbol_scope,
+        // Every run keeps the parsed functions: the baseline identity names a finding by the function it sits
+        // on and counts every same-named function, which an empty map would reduce to ranking findings by line.
+        true,
         diagnostics,
     );
     sort_and_dedupe_findings(&mut findings);
@@ -583,7 +578,10 @@ fn analysed_findings(
 /// keeps `None` and is published without a fingerprint rather than with a guessed one.
 fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>) {
     let declaration_position = declaration_position_from_blocks(blocks_by_file);
-    let Ok(identities) = finding_identities(findings, &declaration_position) else {
+    let same_named = same_named_lines_from_blocks(blocks_by_file);
+    let Ok(identities) =
+        finding_identities_with_inventory(findings, &declaration_position, Some(&same_named))
+    else {
         return;
     };
     for (finding, named) in findings.iter_mut().zip(identities) {
@@ -595,10 +593,6 @@ fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec
         finding.baseline_identity = identity;
         finding.baseline_subject = subject;
     }
-}
-
-fn has_symbol_scope_diff(diff_filter: Option<&ResolvedDiffFilter>) -> bool {
-    diff_filter.is_some_and(|filter| filter.scope == ChangedScope::Symbol)
 }
 
 fn report_suppressions(

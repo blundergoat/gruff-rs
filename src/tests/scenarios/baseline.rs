@@ -184,6 +184,84 @@ pub(crate) fn a_symbol_carrying_the_separator_stays_visible_beside_a_reviewed_ne
     assert_eq!(findings[0].baseline_status.as_deref(), Some("notEligible"));
 }
 
+/// Keep a stored review on its own method when a clean same-named method above it starts warning.
+///
+/// Ranking only the findings gave the reviewed `B::process` ordinal 1 while `A::process` was documented; when `A`
+/// lost its doc comment it took ordinal 1 and the review, and the reviewed method came back as new.
+#[test]
+pub(crate) fn an_earlier_same_named_method_that_starts_warning_does_not_inherit_the_review() {
+    let dir = tempdir().expect("tempdir");
+    let source = |first_doc: &str| {
+        format!(
+            "//! Two same-named methods.\n\n/// First holder.\npub struct A;\n\n/// Second holder.\npub struct B;\n\nimpl A {{\n{first_doc}\n    pub fn process(&self) -> u8 {{\n        1\n    }}\n}}\n\nimpl B {{\n    pub fn process(&self) -> u8 {{\n        2\n    }}\n}}\n"
+        )
+    };
+    fs::write(
+        dir.path().join("sample.rs"),
+        source("    /// Returns the first value."),
+    )
+    .expect("source write");
+    run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            generate_baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            ..default_test_options()
+        },
+    )
+    .expect("baseline generation succeeds");
+    fs::write(dir.path().join("sample.rs"), source("")).expect("source rewrite");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from("sample.rs")],
+            baseline: Some(PathBuf::from("baseline.json")),
+            no_config: true,
+            no_baseline: false,
+            ..default_test_options()
+        },
+    )
+    .expect("baseline analysis succeeds");
+
+    let visible: Vec<Option<usize>> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.missing-public-doc")
+        .map(|finding| finding.line)
+        .collect();
+    assert_eq!(
+        visible,
+        vec![Some(11)],
+        "the newly undocumented A::process is reported"
+    );
+}
+
+/// Give two findings inside one function that function's ordinal, and the next same-named function the next one.
+///
+/// A finding is ranked by the start line of the function it sits in, not by its own line, so two rules on one
+/// function share one declaration instead of taking two ordinals.
+#[test]
+pub(crate) fn two_findings_inside_one_function_share_its_ordinal() {
+    let findings = [
+        baseline_test_finding("docs.missing-public-doc", "src/lib.rs", 4, Some("process")),
+        baseline_test_finding("naming.short-variable", "src/lib.rs", 5, Some("process")),
+        baseline_test_finding("docs.missing-public-doc", "src/lib.rs", 12, Some("process")),
+    ];
+    let function_start = |finding: &Finding| if finding.line < Some(10) { 3 } else { 11 };
+    let same_named = |_: &Finding| vec![3, 11];
+
+    let subjects: Vec<String> =
+        finding_identities_with_inventory(&findings, &function_start, Some(&same_named))
+            .expect("identities")
+            .into_iter()
+            .map(|identity| identity.expect("eligible").subject)
+            .collect();
+
+    assert_eq!(subjects, vec!["process#1", "process#1", "process#2"]);
+}
+
 #[test]
 pub(crate) fn a_line_shifted_finding_stays_hidden_and_a_new_sibling_does_not() {
     let dir = tempdir().expect("tempdir");

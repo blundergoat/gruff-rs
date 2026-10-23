@@ -2,6 +2,8 @@
 
 ## v0.6.0 - Unreleased
 
+- **A baseline names each finding by its function, and a newly warning method no longer inherits a same-named method's review** - Every analysis now ranks a finding's ordinal by the function it sits in and counts every same-named function in the file. Before, an ordinary run ranked only the findings, by line: when the first of two `process` methods lost its doc comment it took the reviewed second method's review and was hidden, and two findings inside one function could take different ordinals. A baseline written by an earlier 0.6.0 prerelease can name the wrong function: regenerate it with `analyse --generate-baseline` and review the result; the old file is left untouched.
+
 - **BREAKING: repaired permissions and listener checks are opt-in** - Enable `security.github-actions-broad-permissions` or `security.hardcoded-bind-all-interfaces` with `rules.<id>.enabled: true` or an explicit selector. Their single blind comparisons judged the surviving one and nine findings right, with all seven audit labels agreeing, but both populations are too small to establish the floor. They remain available pending adequate evidence; a severity override alone keeps them off.
 
 - **Security checks distinguish bounded uses** - Scoped workflow permissions confined to one concrete, non-matrix job stay quiet; multiple jobs, reusable workflows, unknown job structure and `write-all` retain warnings. The all-interfaces check stops treating CIDR comparisons, string-prefix checks and proven client-only address bindings as listeners, while listener and unknown uses retain warnings.

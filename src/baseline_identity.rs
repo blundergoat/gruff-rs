@@ -159,7 +159,25 @@ pub(crate) fn finding_identities(
     findings: &[Finding],
     declaration_position: &dyn Fn(&Finding) -> usize,
 ) -> Result<Vec<Option<FindingIdentity>>, String> {
-    let ordinals = symbol_ordinals(findings, declaration_position);
+    finding_identities_with_inventory(findings, declaration_position, None)
+}
+
+/// Lists the start line of every parsed function in a finding's file that shares its symbol; see
+/// [`same_named_lines_from_blocks`].
+pub(crate) type SameNamedLines<'a> = &'a dyn Fn(&Finding) -> Vec<usize>;
+
+/// Name every eligible finding like [`finding_identities`], also giving a slot to every same-named declaration
+/// `same_named` lists, whether or not it has a finding this run.
+///
+/// Without the inventory a clean earlier declaration takes no slot, so the day it first warns it takes the later
+/// declaration's ordinal and its stored review. A finding the analysis already named keeps that identity, so a
+/// later consumer handed a filtered subset never re-ranks it.
+pub(crate) fn finding_identities_with_inventory(
+    findings: &[Finding],
+    declaration_position: &dyn Fn(&Finding) -> usize,
+    same_named: Option<SameNamedLines<'_>>,
+) -> Result<Vec<Option<FindingIdentity>>, String> {
+    let ordinals = symbol_ordinals(findings, declaration_position, same_named);
     let mut identities = Vec::with_capacity(findings.len());
 
     for (index, finding) in findings.iter().enumerate() {
@@ -167,6 +185,21 @@ pub(crate) fn finding_identities(
         // carrying the separator is skipped beside it, so one unnameable finding costs the run nothing else.
         if !is_baseline_eligible(finding) || has_separator_in_symbol(finding) {
             identities.push(None);
+            continue;
+        }
+        if let (Some(identity), Some(subject)) =
+            (&finding.baseline_identity, &finding.baseline_subject)
+        {
+            // Two findings carrying one stored subject sit on one declaration, so they share a key and are counted.
+            let declaration_key = match named_symbol(finding) {
+                Some(_) => format!("declaration:subject:{subject}"),
+                None => "declaration:file".to_string(),
+            };
+            identities.push(Some(FindingIdentity {
+                identity: identity.clone(),
+                subject: subject.clone(),
+                declaration_key,
+            }));
             continue;
         }
         let subject = baseline_subject(finding, ordinals[index])?;
@@ -192,15 +225,20 @@ pub(crate) fn finding_identities(
 fn symbol_ordinals(
     findings: &[Finding],
     declaration_position: &dyn Fn(&Finding) -> usize,
+    same_named: Option<SameNamedLines<'_>>,
 ) -> Vec<usize> {
     // Symbols are ranked by their identity spelling, so `r#match` and `match` count as one name.
     let mut positions_by_symbol: BTreeMap<(&str, String), BTreeSet<usize>> = BTreeMap::new();
     for finding in findings {
         if let Some(symbol) = named_symbol(finding) {
-            positions_by_symbol
+            let positions = positions_by_symbol
                 .entry((finding.file_path.as_str(), identity_symbol(symbol)))
-                .or_default()
-                .insert(declaration_position(finding));
+                .or_default();
+            positions.insert(declaration_position(finding));
+            // Every same-named declaration the parser saw takes a slot, whether or not it warned this run.
+            if let Some(same_named) = same_named {
+                positions.extend(same_named(finding));
+            }
         }
     }
 
@@ -269,6 +307,35 @@ pub(crate) fn declaration_position_from_blocks(
                 })
             })
             .map_or(line, |block| block.start_line)
+    }
+}
+
+/// Build the inventory that lists, for a finding, the start line of every parsed function in its file that shares
+/// its symbol.
+///
+/// A qualified symbol such as `Widget::process` returns nothing: blocks carry only the short name, so counting every
+/// `process` in the file would merge two types' methods into one sequence. A raw identifier matches its plain name.
+pub(crate) fn same_named_lines_from_blocks(
+    blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+) -> impl Fn(&Finding) -> Vec<usize> + '_ {
+    move |finding: &Finding| {
+        let Some(symbol) = named_symbol(finding) else {
+            return Vec::new();
+        };
+        if symbol.contains("::") {
+            return Vec::new();
+        }
+        let wanted = identity_symbol(symbol);
+        blocks_by_file
+            .get(&finding.file_path)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| identity_symbol(&block.name) == wanted)
+                    .map(|block| block.start_line)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
