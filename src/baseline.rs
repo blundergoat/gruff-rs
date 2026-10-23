@@ -215,7 +215,12 @@ fn validate_rows(path: &Path, raw: &str, entries: &[BaselineEntry]) -> Result<()
     let raw_rows: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
     for (index, entry) in entries.iter().enumerate() {
         // An identity that is not the ratified digest shape cannot have come from a generator.
-        if entry.identity.len() != 16 || !entry.identity.chars().all(|c| c.is_ascii_hexdigit()) {
+        if entry.identity.len() != 16
+            || !entry
+                .identity
+                .chars()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+        {
             return Err(format!(
                 "baseline {} occurrences[{index}].identity must be 16 lowercase hex characters",
                 path.display()

@@ -438,6 +438,53 @@ pub(crate) fn a_row_that_could_expire_or_leak_fails_the_file() {
     );
 }
 
+/// Load a stored identity only when it is sixteen lowercase hex characters, the shape every generator writes.
+///
+/// Matching compares identities byte for byte, so an uppercase or mixed-case digest could never match a generated
+/// one; refusing it names the hand edit instead of silently reporting every reviewed finding as new.
+#[test]
+pub(crate) fn only_a_sixteen_character_lowercase_hex_identity_loads() {
+    let cases = [
+        ("0123456789abcdef", true),
+        ("0123456789ABCDEF", false),
+        ("0123456789abcdeF", false),
+        ("0123456789abcde", false),
+        ("0123456789abcdef0", false),
+        ("0123456789abcdeg", false),
+    ];
+    for (identity, should_load) in cases {
+        let dir = tempdir().expect("tempdir");
+        let baseline_path = dir.path().join("baseline.json");
+        fs::write(
+            &baseline_path,
+            json!({
+                "schemaVersion": "gruff.baseline.v3",
+                "toolLanguage": "rs",
+                "occurrences": [{"identity": identity, "count": 1}],
+            })
+            .to_string(),
+        )
+        .expect("baseline write");
+
+        let result = apply_baseline(
+            &baseline_path,
+            &mut Vec::new(),
+            &declaration_position_by_line,
+        );
+
+        match result {
+            Ok(_) => assert!(should_load, "identity {identity} loaded"),
+            Err(error) => {
+                assert!(!should_load, "identity {identity} was refused: {error}");
+                assert!(
+                    error.contains("identity must be 16 lowercase hex characters"),
+                    "identity {identity} error was {error}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 pub(crate) fn a_0_5_baseline_fails_closed_and_names_the_migration_command() {
     let dir = tempdir().expect("tempdir");

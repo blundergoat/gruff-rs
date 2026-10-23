@@ -330,7 +330,7 @@ custom_rules:
     pattern: '(?m)^[ \t]*//[ \t]*HACK\b'
 ```
 
-Custom rules are intentionally regex-only in `0.5.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
+Custom rules are intentionally regex-only in `0.6.x`; AST patterns, plugins, scripts, external runtimes, and Semgrep-style metavariables are out of scope.
 
 ## Baselines And Changed-Code Scans
 
@@ -375,7 +375,7 @@ Top 5 regressed: +4 modernisation.semver-pin, +2 naming.identifier-quality, ...
 
 The JSON output exposes the same data at `extensions.rs.topLevel.perRuleDeltas`, an array of `{ruleId, introduced, removed, net}`. Both surfaces stay omitted on full-tree scans so the schema remains byte-identical for non-comparison runs.
 
-**Coding-agent hook.** Coding agents can run gruff-rs after each edit so they only see findings on the code they just changed, not unrelated debt in the same file. The goat-flow project ships a PostToolUse hook (`gruff-code-quality.sh`) that runs `gruff-rs analyse <file> --format json --fail-on none` on the edited file and filters the JSON to the changed line ranges (from the agent's tool payload or `git diff --unified=0`), reporting a suppressed count for pre-existing same-file findings; see its `gruff-code-quality.md` playbook for setup and triage. gruff-rs's side of the contract is the stable per-file JSON (`file`, `line`, `severity`, `ruleId`) under `gruff.analysis.v3`; the `--diff-patch` / `--diff <mode>` flags above are the in-binary change-scoping equivalent for CI or single-binary use.
+**Coding-agent hook.** Coding agents can run gruff-rs after each edit so they only see findings on the code they just changed, not unrelated debt in the same file. `gruff-rs hook` serves that use: it emits `gruff.hook.v2` JSON, `--changed-ranges` keeps only findings on the changed lines and the functions that contain them, `--diff <REF>` drops findings the base revision already had, `--baseline` hides reviewed debt, `--fail-on-new` fails the run on findings that baseline does not cover, and `hook --capabilities` reports the contract version and supported flags before a run. The goat-flow project ships a PostToolUse hook (`gruff-code-quality.sh`) that calls `gruff-rs hook` once `hook --capabilities` reports `gruff.hook.v2`; see its `gruff-code-quality.md` playbook for setup and triage. On `analyse`, the `--diff-patch` / `--diff <mode>` flags above are the in-binary change-scoping equivalent for CI or single-binary use.
 
 Config `paths.ignore` is authoritative in every invocation mode (walk, explicit file args, and all diff modes), so a hook can pass an ignored file and gruff-rs emits no findings for it — `--include-ignored` opts into git/default ignores only and never overrides `paths.ignore`. Ignored paths are reported under `paths.details` with their `source` and `pattern`. The `check-ignore` command lets a hook query the same decision per path without analysing (`gruff-rs check-ignore --format json <path>...` → `[{path, ignored, source, pattern}]`, `git check-ignore` exit codes). See [CI Integration](docs/ci-integration.md) and ADR-018.
 
