@@ -9,8 +9,26 @@ pub(super) fn render_text(report: &AnalysisReport, duration_ms: Option<u128>) ->
     render_text_diagnostics(&mut output, report);
     render_text_findings(&mut output, report);
     render_text_suppressions(&mut output, report);
+    render_text_applied_baseline(&mut output, report);
     render_output_volume_hint(&mut output, report);
     output
+}
+
+/// Name an applied baseline and how it was chosen, so a run that hid accepted findings never reads as a clean scan,
+/// e.g. `Baseline: default gruff-baseline.json; suppressed 6 findings` (ADR-006).
+fn render_text_applied_baseline(output: &mut String, report: &AnalysisReport) {
+    let Some(baseline) = report
+        .baseline
+        .as_ref()
+        .filter(|baseline| !baseline.generated)
+    else {
+        return;
+    };
+    let _ = write!(
+        output,
+        "\nBaseline: {} {}; suppressed {} findings\n",
+        baseline.source, baseline.path, baseline.suppressed
+    );
 }
 
 // ADR-014 per-rule delta blocks. Rendered BEFORE the composite-score line
@@ -71,10 +89,12 @@ fn render_output_volume_hint(output: &mut String, report: &AnalysisReport) {
 }
 
 fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms: Option<u128>) {
-    // Cross-port canonical masthead: first line is exactly
-    // `gruff-rs <version> analyse`. The scan-card detail that used to share the
-    // masthead (project root, file count, duration) drops onto following lines.
+    // FAMILY-CONTRACT section 1: the masthead and the two-line composite block are the first three
+    // lines of the view, in that order, and every port-local extension sits below them. The scan card
+    // (project root, file count, duration) used to sit between the masthead and the composite, which
+    // put a reader three lines further from the number they came for than the contract allows.
     let _ = writeln!(output, "gruff-rs {} analyse", report.tool.version);
+    crate::render_composite_block(output, report);
     let _ = writeln!(
         output,
         "Path: {}",
@@ -89,13 +109,8 @@ fn render_text_header(output: &mut String, report: &AnalysisReport, duration_ms:
     if let Some(ms) = duration_ms {
         let _ = writeln!(output, "Duration: {}", format_duration(ms));
     }
-    // ADR-014: per-rule delta blocks sit between the header detail and the
-    // composite-score line.
+    // ADR-014: per-rule delta blocks sit below the canonical block with the rest of the scan card.
     render_rule_delta_blocks(output, report);
-
-    // Canonical composite block, shared verbatim with `summary` so the two
-    // surfaces no longer diverge on separator/order/decimals.
-    crate::render_composite_block(output, report);
     render_ignored_guidance(output, report);
 }
 
@@ -185,7 +200,10 @@ fn render_text_findings(output: &mut String, report: &AnalysisReport) {
     }
 }
 
-fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
+// FAMILY-CONTRACT.md section 13a: a surface that applies a suppression must
+// report its count on that same surface. `summary` filters too, so it renders
+// this exact line through this function rather than restating the wording.
+pub(crate) fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
     let suppressed = total_suppressed_findings(&report.suppressions);
     if suppressed == 0 {
         return;
@@ -195,9 +213,14 @@ fn render_text_suppressions(output: &mut String, report: &AnalysisReport) {
         .iter()
         .filter(|summary| summary.suppressed > 0)
         .map(|summary| {
+            // A built-in or inline row names the file it covers, because it has no configured entry to point at.
+            let scope = match summary.source {
+                Some(_) => summary.paths.first().cloned().unwrap_or_default(),
+                None => summary.index.to_string(),
+            };
             format!(
-                "exclude[{}] {}: {} ({})",
-                summary.index, summary.rule, summary.suppressed, summary.reason
+                "{}[{}] {}: {} ({})",
+                summary.config_key, scope, summary.rule, summary.suppressed, summary.reason
             )
         })
         .collect::<Vec<_>>()

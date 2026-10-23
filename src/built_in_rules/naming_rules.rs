@@ -183,10 +183,7 @@ fn placeholder_identifier_finding(file_path: &str, name: &str, line: usize) -> F
         pillar: Pillar::Naming,
         confidence: Confidence::Medium,
         symbol: Some(name.to_string()),
-        remediation: Some(
-            "Use a name that describes the domain role. If the placeholder is intentional (test fixture, generated code), add the path to `paths.ignore` in `.gruff-rs.yaml`."
-                .to_string(),
-        ),
+        remediation: Some("Use a name that describes the domain role.".to_string()),
         metadata: json!({}),
     })
 }

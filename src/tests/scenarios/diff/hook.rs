@@ -5,22 +5,63 @@
 use super::*;
 
 #[test]
-pub(crate) fn hook_capabilities_advertise_gruff_hook_v1() {
+pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_config() {
+    // A scope the run could not read carries one family type on every surface (FAMILY-CONTRACT.md section 6).
+    for message in [
+        "invalid changed range `=abc`: line numbers must be integers",
+        "--changed-ranges must include at least one line or range",
+    ] {
+        let value: Value = serde_json::from_str(&crate::hook::render_run_failure(message))
+            .expect("run failure json");
+
+        assert_eq!(
+            value["diagnostics"][0]["type"], "changed-region",
+            "{message}"
+        );
+        assert_eq!(value["diagnostics"][0]["severity"], "fatal", "{message}");
+        assert_eq!(value["findings"].as_array().expect("findings").len(), 0);
+    }
+
+    // A configuration the loader refused keeps the payload's own config block, which points at the right file.
+    let refused: Value = serde_json::from_str(&crate::hook::render_run_failure(
+        "config schema is not recognised",
+    ))
+    .expect("config failure json");
+
+    assert_eq!(refused["diagnostics"][0]["type"], "config");
+    assert_eq!(refused["config"]["schemaOk"], false);
+}
+
+#[test]
+pub(crate) fn hook_capabilities_advertise_gruff_hook_v2() {
     let value: Value =
         serde_json::from_str(&crate::hook::render_capabilities()).expect("capabilities json");
 
-    assert_eq!(value["contractVersion"], "gruff.hook.v1");
+    assert_eq!(value["contractVersion"], "gruff.hook.v2");
     assert_eq!(value["analyzer"]["name"], "gruff-rs");
-    assert_eq!(value["supports"]["changedRanges"], true);
-    assert_eq!(value["supports"]["baseline"], true);
-    assert_eq!(value["supports"]["scopeField"], true);
-    assert_eq!(value["supports"]["metadata"], true);
-    assert_eq!(value["supports"]["stableIdentity"], true);
-    assert_eq!(value["supports"]["ignoreReport"], true);
-    assert_eq!(value["supports"]["newOnly"], true);
-    assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
-    assert_eq!(value["flags"]["diff"], "--diff");
+    // v2's twelve advertisements, each of which must be true of this port rather than merely present.
+    for capability in [
+        "baseline",
+        "baselineV3",
+        "changedRanges",
+        "confidenceGate",
+        "deepScanBudget",
+        "diagnostics",
+        "diff",
+        "ignoreReport",
+        "metadata",
+        "newOnly",
+        "scopeField",
+        "stableIdentity",
+    ] {
+        assert_eq!(value["supports"][capability], true, "{capability}");
+    }
     assert_eq!(value["flags"]["baseline"], "--baseline");
+    assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
+    assert_eq!(value["flags"]["deepScanBudget"], "--deep-scan-budget");
+    assert_eq!(value["flags"]["diff"], "--diff");
+    assert_eq!(value["flags"]["failOnDiagnostics"], "--fail-on-diagnostics");
+    assert_eq!(value["flags"]["minConfidence"], "--min-confidence");
     assert_eq!(value["flagOrder"], "any");
 }
 
@@ -91,7 +132,7 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
 
     let secret = finding_by_rule(findings, "sensitive-data.aws-access-key");
     assert_eq!(secret["scope"], "line");
-    assert_eq!(secret["severity"], "error");
+    assert_eq!(secret["severity"], "warning");
     assert!(secret["remediation"]
         .as_str()
         .is_some_and(|text| !text.is_empty()));

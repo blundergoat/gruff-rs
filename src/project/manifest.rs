@@ -32,6 +32,7 @@ pub(crate) fn read_manifest_raw(
                 message: format!("Unable to read Cargo.toml: {error}"),
                 file_path: Some("Cargo.toml".to_string()),
                 line: Some(1),
+                invalidates_run: None,
             });
             return None;
         }
@@ -52,6 +53,7 @@ pub(crate) fn parse_manifest_value(
                         .to_string(),
                 file_path: Some("Cargo.toml".to_string()),
                 line: Some(1),
+                invalidates_run: None,
             });
             return None;
         }
@@ -137,7 +139,7 @@ fn build_dependency_summary(
     dependency: &toml::Value,
     dependency_lines: &HashMap<(String, String), usize>,
 ) -> DependencySummary {
-    let (requirement, path, git, rev) = dependency_source_fields(dependency);
+    let (requirement, git, rev) = dependency_source_fields(dependency);
     DependencySummary {
         name: name.to_string(),
         section: section.to_string(),
@@ -146,7 +148,6 @@ fn build_dependency_summary(
             .copied()
             .unwrap_or(1),
         requirement,
-        path,
         git,
         rev,
     }
@@ -154,21 +155,15 @@ fn build_dependency_summary(
 
 fn dependency_source_fields(
     dependency: &toml::Value,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+) -> (Option<String>, Option<String>, Option<String>) {
     if let Some(requirement) = dependency.as_str() {
-        return (Some(requirement.to_string()), None, None, None);
+        return (Some(requirement.to_string()), None, None);
     }
     let Some(table) = dependency.as_table() else {
-        return (None, None, None, None);
+        return (None, None, None);
     };
     (
         table_str_field(table, "version"),
-        table_str_field(table, "path"),
         table_str_field(table, "git"),
         table_str_field(table, "rev"),
     )

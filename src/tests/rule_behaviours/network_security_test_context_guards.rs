@@ -1,6 +1,7 @@
 //! Test-context policy guards for executable network and security behavior.
-//! Temporary production, test, and fixture sources model paths a CLI user
-//! scans, keeping real CI risks visible while preserving semantic negatives.
+//!
+//! Temporary production, test, and fixture sources model paths a CLI user scans.
+//! Real CI risks remain visible while semantic negatives stay quiet.
 
 use super::*;
 
@@ -86,6 +87,7 @@ pub(crate) fn unsafe_deserialization_reports_turbofish_sinks() {
             "pub fn parse_manifest(body: &str) { let _ = serde_yaml::from_str::<Vec<String>>(body); }\n",
         ),
     );
+    enable_builtin_rule(dir.path(), "security.unsafe-deserialization");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -108,7 +110,8 @@ pub(crate) fn unsafe_deserialization_reports_turbofish_sinks() {
     );
 }
 
-/// Prove executable risks stay visible across source contexts while semantic negatives stay quiet.
+/// Prove executable risks stay visible in production code, are skipped and counted in test and fixture code, and
+/// semantic negatives stay quiet.
 #[test]
 pub(crate) fn network_security_test_context_policy_matrix() {
     let _guard = analysis_lock();
@@ -135,25 +138,42 @@ pub(crate) fn network_security_test_context_policy_matrix() {
         EXECUTABLE_RISK_SOURCE,
     );
 
+    // Keep all opt-in detectors active while testing the shared path policy.
+    write_config(
+        dir.path(),
+        "rules:\n  security.ssrf-candidate:\n    enabled: true\n  security.unsafe-deserialization:\n    enabled: true\n  security.hardcoded-bind-all-interfaces:\n    enabled: true\n",
+    );
+
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
     )
     .expect("analysis succeeds");
-    let expected_paths = vec![
-        "fixtures/network_security_matrix.rs",
-        "src/lib.rs",
-        "tests/network_security_matrix.rs",
-    ];
+    // Security rules skip test, fixture and example paths and count each skip (FAMILY-CONTRACT.md section 13a).
+    let expected_paths = vec!["src/lib.rs"];
     let registry = crate::rules::builtin_registry();
 
-    // Every detector must expose the same executable risk in production, tests, and Rust fixtures.
+    // Every detector must expose the executable risk in production and count it, not report it, in tests and Rust fixtures.
     for rule_id in NETWORK_SECURITY_RULES {
+        let skipped_paths: BTreeSet<&str> = report
+            .suppressions
+            .iter()
+            .filter(|row| row.config_key == "builtInTestPath" && row.rule == rule_id)
+            .map(|row| row.paths[0].as_str())
+            .collect();
+        assert_eq!(
+            skipped_paths,
+            BTreeSet::from([
+                "fixtures/network_security_matrix.rs",
+                "tests/network_security_matrix.rs"
+            ]),
+            "{rule_id} must count its skipped test and fixture findings"
+        );
         let rule_findings: Vec<(&str, Option<usize>, Option<&str>)> = report
             .findings
             .iter()
@@ -181,12 +201,227 @@ pub(crate) fn network_security_test_context_policy_matrix() {
             .get(rule_id)
             .expect("network security rule metadata");
         assert!(
-            definition.description.contains("test"),
-            "{rule_id} must state that executable test source remains in scope"
+            !definition.description.contains("test"),
+            "{rule_id} must not claim test source stays in scope, since the test-path class skips it"
         );
         assert!(
             !definition.false_positive_shapes.is_empty(),
             "{rule_id} must provide a specific mitigation for intentional test behavior"
         );
+    }
+}
+
+/// A scanned handler may print a finite enum in HTML without printing request text.
+/// Keep warnings when the same handler shape can carry a payload or another dynamic value.
+#[test]
+pub(crate) fn template_html_distinguishes_derived_unit_enum_from_dynamic_output() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    let source = r##"
+use axum::response::Html;
+#[derive(Debug)]
+enum Version { V1, V2 }
+#[derive(Debug)]
+enum PayloadVersion { V1(String), V2 }
+#[derive(Debug)]
+enum RecordVersion { V1 { text: String }, V2 }
+#[derive(Debug)]
+enum CustomVersion { V1, V2 }
+impl std::fmt::Display for CustomVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&std::env::var("CUSTOM_VERSION").unwrap_or_default())
+    }
+}
+
+#[derive(Debug)]
+enum CustomDebugVersion { V1, V2 }
+#[cfg(feature = "custom-debug")]
+impl std::fmt::Debug for CustomDebugVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("custom")
+    }
+}
+#[derive(Debug)]
+struct UnknownVersion(String);
+
+fn render_version(version: Version) -> Html<String> { Html(format!("version {version:?}")) }
+fn render_raw_version(version: Version) -> Html<String> { Html(format!(r#"version {version:?}"#)) }
+fn render_payload(payload: PayloadVersion) -> Html<String> { Html(format!("payload {payload:?}")) }
+fn render_record(record: RecordVersion) -> Html<String> { Html(format!("record {record:?}")) }
+fn render_custom(custom: CustomVersion) -> Html<String> { Html(format!("custom {custom}")) }
+fn render_custom_debug(custom_debug: CustomDebugVersion) -> Html<String> { Html(format!("custom debug {custom_debug:?}")) }
+fn render_unknown(unknown: UnknownVersion) -> Html<String> { Html(format!("unknown {unknown:?}")) }
+fn render_mixed(version: Version, user: String) -> Html<String> { Html(format!("mixed {version:?} {user}")) }
+fn render_explicit(version: Version) -> Html<String> { Html(format!("explicit {:?}", version)) }
+fn render_indexed(version: Version) -> Html<String> { Html(format!("indexed {0:?}", version)) }
+"##;
+    baseline_with_lib(dir.path(), source);
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let reported_lines: Vec<usize> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "security.template-injection-xss")
+        .filter_map(|finding| finding.line)
+        .collect();
+    let expected_reported_functions = [
+        "render_payload",
+        "render_record",
+        "render_custom",
+        "render_custom_debug",
+        "render_unknown",
+        "render_mixed",
+    ];
+    // Each unsafe neighbor has a separate line, so a missing warning points to its user-visible handler.
+    for function_name in expected_reported_functions {
+        let function_line = source
+            .lines()
+            .position(|line| line.contains(&format!("fn {function_name}(")))
+            .expect("handler in source")
+            + 1;
+        assert!(
+            reported_lines.contains(&function_line),
+            "{function_name} must remain reportable; lines={reported_lines:?}"
+        );
+    }
+    // The unit-only handlers are the precise false-positive cases a user sees in the report.
+    for function_name in [
+        "render_version",
+        "render_raw_version",
+        "render_explicit",
+        "render_indexed",
+    ] {
+        let function_line = source
+            .lines()
+            .position(|line| line.contains(&format!("fn {function_name}(")))
+            .expect("handler in source")
+            + 1;
+        assert!(
+            !reported_lines.contains(&function_line),
+            "{function_name} prints only a finite enum; lines={reported_lines:?}"
+        );
+    }
+}
+
+/// A scanned project can declare another module that changes how its enum is printed.
+/// Keep the HTML warning until the formatter's behavior is proven from that source.
+#[test]
+pub(crate) fn template_html_keeps_external_formatter_module_reportable() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        concat!(
+            "use axum::response::Html;\n",
+            "mod formatter;\n",
+            "#[derive(Debug)] enum Version { V1 }\n",
+            "fn render_version(version: Version) -> Html<String> { Html(format!(\"{version:?}\")) }\n",
+        ),
+    );
+    write_policy_source(
+        dir.path(),
+        "src/formatter.rs",
+        "#[cfg(feature = \"custom-debug\")] impl std::fmt::Debug for super::Version { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(\"dynamic\") } }\n",
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    assert!(
+        report.findings.iter().any(|finding| {
+            finding.rule_id == "security.template-injection-xss"
+                && finding.file_path == "src/lib.rs"
+                && finding.line == Some(4)
+        }),
+        "an uninspected external formatter must keep the HTML warning"
+    );
+}
+
+const BIND_LITERAL_CONTEXT_CASES: &[(&str, &str, &[&str])] = &[
+    (
+        "quic-client",
+        r#"fn probe(local_addr: Option<IpAddr>) { let socket_addr = match local_addr { Some(ip) => SocketAddr::new(ip, 0), None => "[::]:0".parse::<SocketAddr>().unwrap() }; let _ = Endpoint::client(socket_addr); }"#,
+        &[],
+    ),
+    (
+        "tls-client",
+        r#"fn probe(config: ClientConfig, port: u16) { let server_name = "0.0.0.0".try_into().unwrap(); let _ = Arc::new(config).connect(server_name); let _ = TcpStream::connect(format!("[::]:{port}")); }"#,
+        &[],
+    ),
+    (
+        "cidr-comparison",
+        r#"fn probe(ranges: Vec<Range>) { let _ = ranges.iter().any(|r| r.cidr_ip() == Some("0.0.0.0/0")); }"#,
+        &[],
+    ),
+    (
+        "unicode-same-line-listener",
+        r#"fn probe(body: String) { let label = "λ"; assert!(body.starts_with("0.0.0.0:1337")); let _ = TcpListener::bind("[::]:9090"); }"#,
+        &["[::]"],
+    ),
+    (
+        "client-and-listener",
+        r#"fn probe() { let addr = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); let _ = TcpListener::bind(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "opaque-macro-use",
+        r#"fn probe() { let addr = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); bind_address!(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "nested-shadow",
+        r#"fn probe() { let addr = "0.0.0.0:8080".parse().unwrap(); { let addr = "127.0.0.1:0".parse().unwrap(); let _ = Endpoint::client(addr); } let _ = TcpListener::bind(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "parenthesized-binding",
+        r#"fn probe() { let (addr) = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); }"#,
+        &["0.0.0.0"],
+    ),
+    (
+        "mutable-binding",
+        r#"fn probe() { let mut addr = "0.0.0.0:8080".parse().unwrap(); let _ = Endpoint::client(addr); }"#,
+        &["0.0.0.0"],
+    ),
+];
+
+/// Keep proven client/comparison literals quiet while preserving listener and unknown uses.
+#[test]
+pub(crate) fn bind_all_interfaces_preserves_listeners_and_excludes_non_listener_literals() {
+    let _guard = analysis_lock();
+
+    for (name, source, expected) in BIND_LITERAL_CONTEXT_CASES {
+        let dir = tempdir().expect("bind-context fixture");
+        baseline_with_lib(dir.path(), source);
+        enable_builtin_rule(dir.path(), "security.hardcoded-bind-all-interfaces");
+        let report = run_project_analysis(
+            dir.path(),
+            AnalysisOptions {
+                no_config: false,
+                ..default_test_options()
+            },
+        )
+        .expect("bind-context analysis");
+        let addresses: Vec<&str> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == "security.hardcoded-bind-all-interfaces")
+            .map(|finding| finding.metadata["address"].as_str().expect("bind address"))
+            .collect();
+        assert_eq!(&addresses, expected, "{name}");
     }
 }

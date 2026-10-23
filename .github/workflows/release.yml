@@ -41,6 +41,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
         with:
           toolchain: ${{ env.RELEASE_RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
 
       - name: Install verification tools
         run: bash scripts/dependency-install.sh

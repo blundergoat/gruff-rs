@@ -1,35 +1,17 @@
 use super::*;
 
 static TEST_ASSERTION_REGEX: OnceLock<Regex> = OnceLock::new();
-static SLEEP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
-static CONDITIONAL_LOGIC_REGEX: OnceLock<Regex> = OnceLock::new();
 static UNWRAP_IN_TEST_REGEX: OnceLock<Regex> = OnceLock::new();
 static ASSERTION_MACRO_START_REGEX: OnceLock<Regex> = OnceLock::new();
-static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
-static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
 
 const TEST_ASSERTION_PATTERN: &str = r"(?:\b(?:assert!|assert_eq!|assert_ne!|matches!|panic!)|\bassert_[A-Za-z0-9_]*!\s*|\bassert_[A-Za-z0-9_]*(?:\s*::\s*<[^;\n()]+>)?)\s*\(|\.\s*expect\s*\(";
 
-const TEST_CHECKS: &[RegexRule] = &[
-    RegexRule {
-        rule_id: "test-quality.sleep-in-test",
-        regex: &SLEEP_IN_TEST_REGEX,
-        pattern: r"(std::thread::sleep|tokio::time::sleep)",
-        message: "Test sleeps instead of synchronising on behaviour.",
-    },
-    RegexRule {
-        rule_id: "test-quality.conditional-logic",
-        regex: &CONDITIONAL_LOGIC_REGEX,
-        pattern: r"\b(if|match)\b",
-        message: "Test contains conditional logic.",
-    },
-    RegexRule {
-        rule_id: "test-quality.unwrap-in-test",
-        regex: &UNWRAP_IN_TEST_REGEX,
-        pattern: r"\.unwrap\(\)",
-        message: "Test uses unwrap(), which can hide setup intent.",
-    },
-];
+const TEST_CHECKS: &[RegexRule] = &[RegexRule {
+    rule_id: "test-quality.unwrap-in-test",
+    regex: &UNWRAP_IN_TEST_REGEX,
+    pattern: r"\.unwrap\(\)",
+    message: "Test uses unwrap(), which can hide setup intent.",
+}];
 
 pub(crate) fn analyse_test_block(
     file: &SourceFile,
@@ -44,8 +26,7 @@ pub(crate) fn analyse_test_block(
     analyse_test_size(file, block, config, findings);
     analyse_should_panic_without_expected(file, block, findings);
     // Mask both string/char literals and comments so every per-test regex
-    // check (assertions, sleep, conditional, unwrap) sees real code only - a
-    // commented-out `sleep`/`if`/`.unwrap()`/`assert_eq!` must not fire.
+    // check (assertions and unwrap) sees real code only; commented-out calls must not fire.
     let searchable_body =
         strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
     analyse_test_assertions(file, block, &searchable_body, findings);
@@ -56,6 +37,111 @@ pub(crate) fn analyse_test_block(
 /// distinguish the intended panic from an unrelated panic that masks a
 /// real bug. Fires only when the attribute appears without any
 /// `expected` arg.
+/// Report whether the test fn's own `#[should_panic]` leaves its message unpinned while the fn runs in a test
+/// build. Only the fn's own attributes are read, so an attribute quoted in a string or written on a nested
+/// item never counts; code syn cannot parse falls back to reading the attribute text.
+fn has_unpinned_should_panic(code: &str) -> bool {
+    let Ok(item) = syn::parse_str::<syn::ItemFn>(code) else {
+        return has_unpinned_should_panic_text(code);
+    };
+    let Some(attr) = item
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("should_panic"))
+    else {
+        return false;
+    };
+    !has_pinned_panic_message(&attr.meta) && !is_excluded_from_test_builds(&item)
+}
+
+/// `#[should_panic = "msg"]` is the shorthand for `expected = "msg"` and pins the message just as well. An
+/// empty message matches every panic, so it pins nothing.
+fn has_pinned_panic_message(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::NameValue(pair) => is_non_empty_string(&pair.value),
+        syn::Meta::List(list) => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|pairs| {
+                pairs
+                    .iter()
+                    .any(|pair| pair.path.is_ident("expected") && is_non_empty_string(&pair.value))
+            }),
+        syn::Meta::Path(_) => false,
+    }
+}
+
+/// Report whether an attribute value is a non-empty string literal.
+fn is_non_empty_string(value: &syn::Expr) -> bool {
+    matches!(value, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) if !text.value().is_empty())
+}
+
+/// Text fallback for a test fn syn cannot parse: a `#[should_panic]` with no non-empty pinned message.
+fn has_unpinned_should_panic_text(code: &str) -> bool {
+    static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
+    static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
+    static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(code)
+        && !static_regex(
+            &SHOULD_PANIC_EXPECTED_REGEX,
+            r##"#\s*\[\s*should_panic\s*(?:=|\([^)]*\bexpected\s*=)\s*r?#*"[^"]"##,
+        )
+        .is_match(code)
+}
+
+/// Report whether the test fn's own `#[cfg(...)]` attributes are false in every test build, so it is never
+/// compiled as a test and never runs: `not(test)`, `all(..)` holding such a predicate, or `any(..)` whose every
+/// branch is one. A member of a `#[cfg(not(test))] mod` is not caught, because the module's attributes are not
+/// the fn's; the rule's catalogue entry lists that shape.
+fn is_excluded_from_test_builds(item: &syn::ItemFn) -> bool {
+    item.attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .filter_map(|attr| attr.parse_args::<syn::Meta>().ok())
+        .any(|predicate| is_false_under_test(&predicate))
+}
+
+/// Report whether a cfg predicate is false in every test build.
+fn is_false_under_test(predicate: &syn::Meta) -> bool {
+    let Some((operator, arguments)) = cfg_combinator(predicate) else {
+        return false;
+    };
+    match operator.as_str() {
+        "not" => arguments.len() == 1 && arguments.iter().all(is_true_under_test),
+        "all" => arguments.iter().any(is_false_under_test),
+        "any" => !arguments.is_empty() && arguments.iter().all(is_false_under_test),
+        _ => false,
+    }
+}
+
+/// Report whether a cfg predicate is true in every test build: `test` itself, or a combination forcing it.
+fn is_true_under_test(predicate: &syn::Meta) -> bool {
+    if let syn::Meta::Path(path) = predicate {
+        return path.is_ident("test");
+    }
+    let Some((operator, arguments)) = cfg_combinator(predicate) else {
+        return false;
+    };
+    match operator.as_str() {
+        "not" => arguments.len() == 1 && arguments.iter().all(is_false_under_test),
+        "all" => !arguments.is_empty() && arguments.iter().all(is_true_under_test),
+        "any" => arguments.iter().any(is_true_under_test),
+        _ => false,
+    }
+}
+
+/// Split a `not(..)`, `all(..)` or `any(..)` cfg predicate into its operator and arguments.
+fn cfg_combinator(predicate: &syn::Meta) -> Option<(String, Vec<syn::Meta>)> {
+    let syn::Meta::List(list) = predicate else {
+        return None;
+    };
+    let operator = list.path.get_ident()?.to_string();
+    let arguments = list
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+        .ok()?;
+    Some((operator, arguments.into_iter().collect()))
+}
+
 pub(crate) fn analyse_should_panic_without_expected(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -64,18 +150,7 @@ pub(crate) fn analyse_should_panic_without_expected(
     if !block.is_test {
         return;
     }
-    let code = body_without_doc_comments(&block.body);
-    let has_should_panic =
-        static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(&code);
-    if !has_should_panic {
-        return;
-    }
-    let has_expected = static_regex(
-        &SHOULD_PANIC_EXPECTED_REGEX,
-        r"#\s*\[\s*should_panic\s*\([^)]*\bexpected\s*=",
-    )
-    .is_match(&code);
-    if has_expected {
+    if !has_unpinned_should_panic(&body_without_doc_comments(&block.body)) {
         return;
     }
     findings.push(block_finding_with_extras(
@@ -158,16 +233,21 @@ pub(crate) fn analyse_test_size(
     }
 }
 
+/// Count the test's code lines from its first assertion onward, or across the whole test when it asserts nothing;
+/// blank, comment, doc-comment and attribute lines are free (FAMILY-CONTRACT section 12, search `Code lines in every
+/// line count`).
 fn long_test_effective_line_count(block: &FunctionBlock) -> usize {
     let searchable =
         strip_rust_comments_after_string_mask(&strip_rust_string_literals(&block.body));
-    let Some(first_assertion) = searchable
+    let first_assertion = searchable
         .lines()
         .position(|line| test_assertion_regex().is_match(line))
-    else {
-        return block.line_count;
-    };
-    block.body.lines().count().saturating_sub(first_assertion)
+        .unwrap_or(0);
+    rust_code_line_flags(&block.body)
+        .into_iter()
+        .skip(first_assertion)
+        .filter(|is_code| *is_code)
+        .count()
 }
 
 pub(crate) fn analyse_test_assertions(
@@ -219,23 +299,11 @@ pub(crate) fn analyse_test_regex_checks(
     }
 }
 
-/// Returns true when a per-test regex rule should stay silent because
-/// the matched pattern is a recognised idiom. `conditional-logic` skips
-/// `cfg!(...)` platform branches; `unwrap-in-test` skips unwraps that
-/// are directly inside assertion macro calls, where the unwrapped value
-/// is the subject under test rather than hidden setup.
 fn is_test_rule_exempt(rule_id: &str, body: &str) -> bool {
     match rule_id {
-        "test-quality.conditional-logic" => conditional_is_platform_gate(body),
         "test-quality.unwrap-in-test" => body_contains_only_assertion_subject_unwraps(body),
         _ => false,
     }
-}
-
-fn conditional_is_platform_gate(body: &str) -> bool {
-    static CFG_GATE_REGEX: OnceLock<Regex> = OnceLock::new();
-    let cfg_gate = static_regex(&CFG_GATE_REGEX, r"\bif\s+cfg!\s*\(");
-    cfg_gate.is_match(body)
 }
 
 fn body_contains_only_assertion_subject_unwraps(body: &str) -> bool {

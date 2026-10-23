@@ -1,113 +1,191 @@
+//! Comment and item parsing supplies source facts to Rust's documentation and function rules.
+//! A user reaches this layer when a scan reads repair comments or parsed functions in a source file.
+//! It keeps the original report locations while carrying private context needed for precise checks.
+
 use super::*;
 
 pub(crate) fn analyse_comment_rules(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
     let masked = strip_rust_string_literals(source);
     let comments = extract_rust_comments(&masked);
-    for comment in &comments {
-        analyse_stale_todo_comment(file, comment, findings);
-        analyse_commented_out_code_comment(file, comment, findings);
+    if !is_ui_test_source(&masked) {
+        analyse_commented_out_code(file, &comments, findings);
     }
 }
 
-pub(crate) fn analyse_stale_todo_comment(
+/// Report non-doc comments holding disabled Rust code, one finding per line. A line must look like code by
+/// [`is_disabled_rust_code`] and belong to a snippet that parses: its whole comment run, trimmed of prose
+/// before the first code-looking line and after the last line that ends the way code does, or a window of
+/// lines starting at it. A trailing `//` comment inside the disabled code is not part of it. A
+/// Markdown-fenced example is documentation and placeholder pseudocode such as `if .. { insert }` is prose, so
+/// neither is reported; the caller skips a clippy UI test file.
+pub(crate) fn analyse_commented_out_code(
     file: &SourceFile,
-    comment: &RustComment,
+    comments: &[RustComment],
     findings: &mut Vec<Finding>,
 ) {
-    const MARKERS: &[&str] = &["TODO", "FIXME", "HACK", "XXX"];
-    for marker in MARKERS {
-        let Some((after, found_marker)) = find_marker(&comment.text, marker) else {
-            continue;
-        };
-        if !has_durable_reference(after) {
-            findings.push(stale_todo_finding(file, comment, &found_marker));
+    for block in contiguous_comment_blocks(comments) {
+        let code: Vec<&str> = block
+            .iter()
+            .map(|comment| without_trailing_comment(&comment.text))
+            .collect();
+        let first_code = code
+            .iter()
+            .position(|line| is_disabled_rust_code(line))
+            .unwrap_or(0);
+        let last_code = code
+            .iter()
+            .rposition(|line| line.ends_with([';', '{', '}', ',', ')', ']']))
+            .map_or(code.len(), |index| index + 1)
+            .max(first_code + 1);
+        let is_whole_snippet = is_snippet(&code[first_code..last_code]);
+        for (index, comment) in block.iter().enumerate() {
+            let is_in_whole = is_whole_snippet && (first_code..last_code).contains(&index);
+            if is_disabled_rust_code(code[index]) && (is_in_whole || is_snippet_start(&code, index))
+            {
+                analyse_commented_out_code_comment(file, comment, findings);
+            }
         }
-        return;
     }
 }
 
-fn stale_todo_finding(file: &SourceFile, comment: &RustComment, found_marker: &str) -> Finding {
-    Finding::new(FindingDescriptor {
-        rule_id: "docs.stale-todo".to_string(),
-        message: format!("{found_marker} comment lacks an owner, issue reference, or reason."),
-        file_path: file.display_path.clone(),
-        line: Some(comment.line),
-        severity: Severity::Advisory,
-        pillar: Pillar::Documentation,
-        confidence: Confidence::High,
-        symbol: None,
-        remediation: Some(
-            "Add an owner (@name), issue (#123 or URL), or a colon-prefixed reason.".to_string(),
-        ),
-        metadata: json!({ "marker": found_marker, "missingReference": true }),
+/// Report whether lines form disabled code: they parse as Rust and hold no pseudocode placeholder. Comment text
+/// is untrusted, so text the parser could recurse through too deeply is never parsed: a snippet longer than
+/// 16 KiB, or holding more than 256 tokens that can open a nested expression (a bracket, a prefix operator, a
+/// closure bar, or `return`, `break`, `yield`, `move` or `box`), counts as prose. A comment such as
+/// `// let x = ((((…1))));` nested thousands deep would otherwise overflow the stack and abort the run.
+fn is_snippet(lines: &[&str]) -> bool {
+    const MAX_SNIPPET_BYTES: usize = 16 * 1024;
+    const MAX_NESTING_TOKENS: usize = 256;
+    let text = lines.join("\n");
+    if text.len() > MAX_SNIPPET_BYTES {
+        return false;
+    }
+    let nesting_marks = text
+        .chars()
+        .filter(|character| {
+            matches!(
+                character,
+                '(' | '[' | '{' | '<' | '|' | '-' | '!' | '*' | '&'
+            )
+        })
+        .count();
+    let nesting_words = text
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|word| matches!(*word, "return" | "break" | "yield" | "move" | "box"))
+        .count();
+    nesting_marks + nesting_words <= MAX_NESTING_TOKENS
+        && !has_code_placeholder(&text)
+        && is_parseable_rust(&text)
+}
+
+/// Report whether a snippet that parses starts at `start`, trying the shortest window first, so prose after it
+/// in the same comment run does not hide it. A snippet ends where code does, so only a window whose last line
+/// ends in `;`, `}`, `)` or `]` is parsed; a run of `{`-ending lines costs no parse at all.
+fn is_snippet_start(code: &[&str], start: usize) -> bool {
+    const WINDOW_LINES: usize = 24;
+    (start + 1..=code.len().min(start + WINDOW_LINES))
+        .filter(|&end| code[end - 1].ends_with([';', '}', ')', ']']))
+        .any(|end| is_snippet(&code[start..end]))
+}
+
+/// Report whether a file is a clippy or rustc UI test: some line's own first comment is an annotation such as
+/// `//~^ ERROR` or `//~v lint_name`. A `//~` mentioned inside another comment, a doc comment or a block comment,
+/// and a `//~~~~` or `//~ Helpers` banner, do not count.
+fn is_ui_test_source(masked: &str) -> bool {
+    static UI_ANNOTATION_REGEX: OnceLock<Regex> = OnceLock::new();
+    let annotation = static_regex(
+        &UI_ANNOTATION_REGEX,
+        r"^//~(?:\^+|v+|\|)?\s*(?:ERROR|WARN|WARNING|NOTE|HELP|SUGGESTION|[a-z][a-z0-9_:]*)\b",
+    );
+    masked.lines().any(|line| {
+        line.find("//").is_some_and(|position| {
+            !line[..position].contains("/*") && annotation.is_match(&line[position..])
+        })
     })
 }
 
-pub(crate) fn find_marker<'a>(text: &'a str, marker: &str) -> Option<(&'a str, String)> {
-    let mut search_from = 0usize;
-    while let Some(rel) = text[search_from..].find(marker) {
-        let pos = search_from + rel;
-        let before_ok = pos == 0 || {
-            let byte = text.as_bytes()[pos - 1];
-            !byte.is_ascii_alphanumeric() && byte != b'_'
-        };
-        let after_pos = pos + marker.len();
-        let after_ok = match text.as_bytes().get(after_pos) {
-            None => true,
-            Some(byte) => !byte.is_ascii_alphanumeric() && *byte != b'_',
-        };
-        if before_ok && after_ok {
-            return Some((&text[after_pos..], marker.to_string()));
+/// Split non-doc comments into runs on consecutive lines, leaving out Markdown-fenced lines, so each run
+/// can be judged as one snippet. A fence never reaches past the end of its run.
+fn contiguous_comment_blocks(comments: &[RustComment]) -> Vec<Vec<&RustComment>> {
+    let mut blocks: Vec<Vec<&RustComment>> = Vec::new();
+    let mut in_fence = false;
+    let mut previous_line: Option<usize> = None;
+    for comment in comments.iter().filter(|comment| !comment.is_doc) {
+        if previous_line.is_none_or(|line| comment.line != line + 1) {
+            in_fence = false;
+            blocks.push(Vec::new());
         }
-        search_from = pos + marker.len();
+        previous_line = Some(comment.line);
+        if comment.text.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if let Some(block) = blocks.last_mut().filter(|_| !in_fence) {
+            block.push(comment);
+        }
     }
-    None
+    // A run made only of a fenced example keeps no line, and an empty run holds nothing to judge.
+    blocks.retain(|block| !block.is_empty());
+    blocks
 }
 
-pub(crate) fn has_durable_reference(after_marker: &str) -> bool {
-    let trimmed = after_marker.trim_start();
-    if let Some(rest) = trimmed.strip_prefix('(') {
-        return paren_reference_is_durable(rest);
-    }
-    if let Some(rest) = trimmed.strip_prefix('[') {
-        return bracket_reference_is_durable(rest);
-    }
-    if let Some(rest) = trimmed.strip_prefix(':') {
-        return rest.trim().len() >= 5;
-    }
-    false
+/// Report whether text parses as Rust items or as statements inside a block.
+fn is_parseable_rust(text: &str) -> bool {
+    syn::parse_str::<syn::File>(text).is_ok()
+        || syn::parse_str::<syn::Block>(&format!("{{\n{text}\n}}")).is_ok()
 }
 
-fn paren_reference_is_durable(after_open_paren: &str) -> bool {
-    let Some(end) = after_open_paren.find(')') else {
+/// Report a placeholder that marks pseudocode outside string literals: `...`, `…`, or a bare `..` standing
+/// for an elided expression.
+fn has_code_placeholder(text: &str) -> bool {
+    let code = crate::strip_rust_string_literals(text);
+    code.contains("...")
+        || code.contains('…')
+        || code
+            .match_indices("..")
+            .any(|(index, _)| is_elided_expression(&code, index))
+}
+
+/// A `..` stands for an elided expression when spaces surround it and what precedes it is a keyword, an
+/// operator or the line start, as in `if .. {` or `x = ..;`. A spaced range (`0 .. n`, `start .. end`), a rest
+/// pattern (`Some(..)`, `{ x, .. }`, `(first, ..)`), a slice (`[..]`) and a struct update
+/// (`..Default::default()`) are code.
+fn is_elided_expression(code: &str, index: usize) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "if", "match", "while", "for", "in", "return", "else", "let", "loop",
+    ];
+    let before = &code[..index];
+    let after = &code[index + 2..];
+    let is_spaced_before = before.is_empty() || before.ends_with(char::is_whitespace);
+    let is_spaced_after =
+        after.is_empty() || after.starts_with(char::is_whitespace) || after.starts_with(';');
+    if !is_spaced_before || !is_spaced_after {
         return false;
-    };
-    let inner = &after_open_paren[..end];
-    inner.contains('#')
-        || inner.contains('@')
-        || inner.starts_with("GH-")
-        || inner.contains("://")
-        || (inner.contains(':') && inner.trim().len() >= 3)
+    }
+    let previous = before.trim_end();
+    // Step back by the separator's own width: a Rust identifier such as `café` may end in a multi-byte letter.
+    let word_start = previous
+        .char_indices()
+        .rev()
+        .find(|(_, character)| !character.is_alphanumeric() && *character != '_')
+        .map_or(0, |(position, character)| position + character.len_utf8());
+    let previous_word = &previous[word_start..];
+    if previous_word.is_empty() {
+        return !matches!(
+            previous.chars().last(),
+            Some(',' | '(' | '[' | '{' | ')' | ']')
+        );
+    }
+    KEYWORDS.contains(&previous_word)
 }
 
-fn bracket_reference_is_durable(after_open_bracket: &str) -> bool {
-    let Some(end) = after_open_bracket.find(']') else {
-        return false;
-    };
-    let inner = &after_open_bracket[..end];
-    inner.contains('#') || inner.contains('@') || inner.starts_with("GH-") || inner.contains("://")
-}
-
+/// Emit one commented-out-code finding for a comment the caller has judged to be disabled code.
 pub(crate) fn analyse_commented_out_code_comment(
     file: &SourceFile,
     comment: &RustComment,
     findings: &mut Vec<Finding>,
 ) {
-    if comment.is_doc {
-        return;
-    }
-    if is_disabled_rust_code(&comment.text) {
-        findings.push(Finding::new(FindingDescriptor {
+    findings.push(Finding::new(FindingDescriptor {
                 rule_id: "docs.commented-out-code".to_string(),
                 message: "Comment payload looks like disabled Rust code; remove or document intent.".to_string(),
                 file_path: file.display_path.clone(),
@@ -122,7 +200,6 @@ pub(crate) fn analyse_commented_out_code_comment(
                 ),
                 metadata: json!({}),
             }));
-    }
 }
 
 pub(crate) fn is_disabled_rust_code(text: &str) -> bool {
@@ -280,6 +357,297 @@ pub(crate) fn push_missing_public_item_doc(
     }));
 }
 
+/// Collect trait methods that carry a default body, for the size and complexity rules only.
+pub(crate) fn rust_trait_default_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    for item in &ast.items {
+        collect_trait_default_blocks(item, &lines, false, &mut blocks);
+    }
+    blocks
+}
+
+/// Walk traits and inline modules for default method bodies, carrying a `#[cfg(test)]` module's test context down.
+fn collect_trait_default_blocks(
+    item: &Item,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    match item {
+        Item::Trait(item_trait) => {
+            for trait_item in &item_trait.items {
+                // A required method has no body to measure.
+                if let syn::TraitItem::Fn(syn::TraitItemFn {
+                    attrs,
+                    sig,
+                    default: Some(body),
+                    ..
+                }) = trait_item
+                {
+                    blocks.push(function_block_from_parts(FunctionBlockParts {
+                        lines,
+                        name: sig.ident.to_string(),
+                        param_count: count_params(&sig.inputs),
+                        visibility: &item_trait.vis,
+                        attrs,
+                        test_context,
+                        is_async: sig.asyncness.is_some(),
+                        returns_result: is_result_return_type(&sig.output),
+                        name_start: sig.ident.span().start(),
+                        block_end: body.span().end(),
+                        block: body,
+                    }));
+                }
+            }
+        }
+        Item::Mod(item_mod) => {
+            if let Some((_, items)) = &item_mod.content {
+                let nested_test_context = test_context || is_test_module(item_mod);
+                for nested in items {
+                    collect_trait_default_blocks(nested, lines, nested_test_context, blocks);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect closures assigned to `const` items, such as `const AREA: fn() -> u32 = || { ... };`, which the size and
+/// complexity rules measure like functions (FAMILY-CONTRACT section 12, search `closure assigned to a const item`).
+pub(crate) fn rust_const_closure_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    for item in &ast.items {
+        collect_const_closure_blocks(item, &lines, false, &mut blocks);
+    }
+    blocks
+}
+
+/// Walk `const` items and inline modules for closures with a block body, carrying a `#[cfg(test)]` module's test
+/// context down; an expression-bodied closure has no body block to measure.
+fn collect_const_closure_blocks(
+    item: &Item,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    match item {
+        Item::Const(item_const) => {
+            let syn::Expr::Closure(closure) = item_const.expr.as_ref() else {
+                return;
+            };
+            let syn::Expr::Block(body) = closure.body.as_ref() else {
+                return;
+            };
+            blocks.push(function_block_from_parts(FunctionBlockParts {
+                lines,
+                name: item_const.ident.to_string(),
+                param_count: closure.inputs.len(),
+                visibility: &item_const.vis,
+                attrs: &item_const.attrs,
+                test_context,
+                is_async: closure.asyncness.is_some(),
+                returns_result: is_result_return_type(&closure.output),
+                name_start: item_const.ident.span().start(),
+                block_end: body.span().end(),
+                block: &body.block,
+            }));
+        }
+        Item::Mod(item_mod) => {
+            if let Some((_, items)) = &item_mod.content {
+                let nested_test_context = test_context || is_test_module(item_mod);
+                for nested in items {
+                    collect_const_closure_blocks(nested, lines, nested_test_context, blocks);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect closures assigned to `const` and `static` items, such as `const DOUBLE: fn(u32) -> u32 = |n| n * 2;`, as
+/// callables for the documentation rules, which check them only under a rule's `everyCallable` switch. Each block's
+/// body is the closure's signature written as a `fn`, so the rules read its parameters and return type as a fn's.
+pub(crate) fn rust_closure_item_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    for item in &ast.items {
+        collect_closure_item_blocks(item, &lines, false, &mut blocks);
+    }
+    blocks
+}
+
+/// Walk `const` and `static` items and inline modules for assigned closures, expression- or block-bodied,
+/// carrying a `#[cfg(test)]` module's test context down.
+fn collect_closure_item_blocks(
+    item: &Item,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    if let Item::Mod(item_mod) = item {
+        collect_module_closure_blocks(item_mod, lines, test_context, blocks);
+        return;
+    }
+    let (ident, visibility, attrs, item_type, expr) = match item {
+        Item::Const(item) => (&item.ident, &item.vis, &item.attrs, &item.ty, &item.expr),
+        Item::Static(item) => (&item.ident, &item.vis, &item.attrs, &item.ty, &item.expr),
+        _ => return,
+    };
+    let Some(closure) = assigned_closure(expr) else {
+        return;
+    };
+    let written_type = closure_return_type(closure, item_type);
+    let output = written_type.map_or(ReturnType::Default, |written| {
+        ReturnType::Type(Default::default(), Box::new(written.clone()))
+    });
+    let empty_body = syn::Block {
+        brace_token: Default::default(),
+        stmts: Vec::new(),
+    };
+    let mut block = function_block_from_parts(FunctionBlockParts {
+        lines,
+        name: ident.to_string(),
+        param_count: closure.inputs.len(),
+        visibility,
+        attrs,
+        test_context,
+        is_async: closure.asyncness.is_some(),
+        returns_result: is_result_return_type(&output),
+        name_start: ident.span().start(),
+        block_end: expr.span().end(),
+        block: &empty_body,
+    });
+    block.body = closure_signature_text(&block.name, closure, written_type, lines);
+    blocks.push(block);
+}
+
+/// Walk an inline module's items for assigned closures; a `#[cfg(test)]` module marks everything inside it as test code.
+fn collect_module_closure_blocks(
+    item_mod: &syn::ItemMod,
+    lines: &[&str],
+    test_context: bool,
+    blocks: &mut Vec<FunctionBlock>,
+) {
+    if let Some((_, items)) = &item_mod.content {
+        let nested_test_context = test_context || is_test_module(item_mod);
+        for nested in items {
+            collect_closure_item_blocks(nested, lines, nested_test_context, blocks);
+        }
+    }
+}
+
+/// The closure an item's value is, seen through `&` and parentheses (`static F: &dyn Fn() = &|| {};`).
+fn assigned_closure(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
+    match expr {
+        syn::Expr::Closure(closure) => Some(closure),
+        syn::Expr::Reference(reference) => assigned_closure(&reference.expr),
+        syn::Expr::Paren(paren) => assigned_closure(&paren.expr),
+        _ => None,
+    }
+}
+
+/// The closure's written return type, else the one its item type declares, such as `u32` in `fn(u32) -> u32` or
+/// `bool` in `&dyn Fn(&str) -> bool`; `None` when neither declares one.
+fn closure_return_type<'a>(
+    closure: &'a syn::ExprClosure,
+    item_type: &'a syn::Type,
+) -> Option<&'a syn::Type> {
+    written_return_type(&closure.output).or_else(|| callable_type_output(item_type))
+}
+
+/// The return type a fn-pointer or `Fn`-trait-object type declares, seen through `&` and parentheses.
+fn callable_type_output(item_type: &syn::Type) -> Option<&syn::Type> {
+    match item_type {
+        syn::Type::BareFn(function) => written_return_type(&function.output),
+        syn::Type::Reference(reference) => callable_type_output(&reference.elem),
+        syn::Type::Paren(paren) => callable_type_output(&paren.elem),
+        syn::Type::TraitObject(object) => trait_object_output(object).and_then(written_return_type),
+        _ => None,
+    }
+}
+
+/// The type an output writes after its arrow; None for an omitted output.
+fn written_return_type(output: &ReturnType) -> Option<&syn::Type> {
+    match output {
+        ReturnType::Type(_, returned) => Some(returned.as_ref()),
+        ReturnType::Default => None,
+    }
+}
+
+/// The output of the first bound written with parenthesized arguments, such as `Fn(&str) -> bool`.
+fn trait_object_output(object: &syn::TypeTraitObject) -> Option<&ReturnType> {
+    object.bounds.iter().find_map(|bound| {
+        let syn::TypeParamBound::Trait(bound) = bound else {
+            return None;
+        };
+        match &bound.path.segments.last()?.arguments {
+            syn::PathArguments::Parenthesized(arguments) => Some(&arguments.output),
+            _ => None,
+        }
+    })
+}
+
+/// Write the closure's signature as `fn NAME(count: _) -> u32 {}`: each named parameter as `name: _`, any other
+/// pattern as `_: _`, and the return type in its source text.
+fn closure_signature_text(
+    name: &str,
+    closure: &syn::ExprClosure,
+    returned: Option<&syn::Type>,
+    lines: &[&str],
+) -> String {
+    let params: Vec<String> = closure
+        .inputs
+        .iter()
+        .map(|input| format!("{}: _", closure_param_name(input)))
+        .collect();
+    let output = returned
+        .map(|returned| format!(" -> {}", span_source_text(lines, returned.span())))
+        .unwrap_or_default();
+    format!("fn {name}({}){output} {{}}", params.join(", "))
+}
+
+/// The name a closure parameter binds, or `_` for a destructuring or wildcard pattern.
+fn closure_param_name(input: &syn::Pat) -> String {
+    let pattern = match input {
+        syn::Pat::Type(typed) => typed.pat.as_ref(),
+        other => other,
+    };
+    match pattern {
+        syn::Pat::Ident(binding) => binding.ident.to_string(),
+        _ => "_".to_string(),
+    }
+}
+
+/// The source text a span covers, read from the file's lines; a multi-line span's lines are joined with spaces.
+fn span_source_text(lines: &[&str], span: proc_macro2::Span) -> String {
+    let (start, end) = (span.start(), span.end());
+    let mut parts = Vec::new();
+    for number in start.line..=end.line {
+        let Some(line) = number.checked_sub(1).and_then(|index| lines.get(index)) else {
+            continue;
+        };
+        let first_column = if number == start.line {
+            start.column
+        } else {
+            0
+        };
+        let end_column = if number == end.line {
+            end.column
+        } else {
+            usize::MAX
+        };
+        parts.push(
+            line.chars()
+                .skip(first_column)
+                .take(end_column.saturating_sub(first_column))
+                .collect::<String>(),
+        );
+    }
+    parts.join(" ")
+}
+
 pub(crate) fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
@@ -307,6 +675,7 @@ pub(crate) fn collect_function_blocks(
     }
 }
 
+/// Build a standalone function record so the user's findings point to that function's declaration.
 pub(crate) fn push_item_function_block(
     item_fn: &syn::ItemFn,
     lines: &[&str],
@@ -321,7 +690,6 @@ pub(crate) fn push_item_function_block(
         attrs: &item_fn.attrs,
         test_context,
         is_async: item_fn.sig.asyncness.is_some(),
-        returns_bool: is_bool_return_type(&item_fn.sig.output),
         returns_result: is_result_return_type(&item_fn.sig.output),
         name_start: item_fn.sig.ident.span().start(),
         block_end: item_fn.block.span().end(),
@@ -329,6 +697,7 @@ pub(crate) fn push_item_function_block(
     }));
 }
 
+/// Collect implementation methods before the user's function-level checks run.
 pub(crate) fn push_impl_function_blocks(
     item_impl: &syn::ItemImpl,
     lines: &[&str],
@@ -338,12 +707,14 @@ pub(crate) fn push_impl_function_blocks(
     let impl_test_context =
         test_context || has_test_attr(&item_impl.attrs) || has_cfg_test_attr(&item_impl.attrs);
     for impl_item in &item_impl.items {
+        // Only parsed method bodies enter function-level naming checks.
         if let ImplItem::Fn(method) = impl_item {
             push_impl_method_function_block(method, lines, impl_test_context, blocks);
         }
     }
 }
 
+/// Build a method record while preserving its declaration as the report anchor.
 pub(crate) fn push_impl_method_function_block(
     method: &syn::ImplItemFn,
     lines: &[&str],
@@ -358,7 +729,6 @@ pub(crate) fn push_impl_method_function_block(
         attrs: &method.attrs,
         test_context,
         is_async: method.sig.asyncness.is_some(),
-        returns_bool: is_bool_return_type(&method.sig.output),
         returns_result: is_result_return_type(&method.sig.output),
         name_start: method.sig.ident.span().start(),
         block_end: method.block.span().end(),

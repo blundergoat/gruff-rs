@@ -4,21 +4,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- modernisation batch -----
         case(
-            "modernisation.manual-is-empty",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.len() == 0 }\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.is_empty() }\n",
-                )
-            }),
-        ),
-        case(
             "modernisation.manual-contains",
             Box::new(|root| {
                 baseline_with_lib(
@@ -124,22 +109,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 )
             }),
         ),
-        // ----- security batch -----
-        case(
-            "security.path-traversal-candidate",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn open(input: &str) {\n    let _ = std::path::Path::new(input);\n}\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn open() {\n    let _ = std::path::Path::new(\"/etc/static-fixture\");\n}\n",
-                )
-            }),
-        ),
         // ----- test-quality batch -----
         case(
             "test-quality.should-panic-without-expected",
@@ -153,6 +122,22 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic(expected = \"boom\")]\n    fn panics() { panic!(\"boom\"); }\n}\n",
+                )
+            }),
+        ),
+        // The `= "msg"` shorthand pins the message as `expected = "msg"` does.
+        case(
+            "test-quality.should-panic-without-expected",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic]\n    fn panics() { panic!(\"boom\"); }\n}\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    #[should_panic = \"boom\"]\n    fn panics() { panic!(\"boom\"); }\n}\n",
                 )
             }),
         ),
@@ -211,4 +196,23 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
         ),
     ]
+}
+
+/// Preserve the historical positive and negative fixtures as native retirement guards.
+pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
+    vec![case(
+        "modernisation.manual-is-empty",
+        Box::new(|root| {
+            baseline_with_lib(
+                root,
+                "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.len() == 0 }\n",
+            )
+        }),
+        Box::new(|root| {
+            baseline_with_lib(
+                root,
+                "/// Probe.\npub fn check(values: &Vec<i32>) -> bool { values.is_empty() }\n",
+            )
+        }),
+    )]
 }

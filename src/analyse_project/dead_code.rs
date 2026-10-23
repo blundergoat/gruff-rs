@@ -50,6 +50,7 @@ fn partial_context_rule_diagnostic(rule_id: &str) -> RunDiagnostic {
         ),
         file_path: None,
         line: None,
+        invalidates_run: None,
     }
 }
 
@@ -59,7 +60,6 @@ fn is_private_item_candidate(item: &ItemSummary) -> bool {
         && !item.test_context
         && !item.trait_impl
         && !item.exported_by_attr
-        && !item.allow_dead_code
         && matches!(
             item.kind.as_str(),
             "function" | "struct" | "enum" | "trait" | "const" | "static" | "type alias"

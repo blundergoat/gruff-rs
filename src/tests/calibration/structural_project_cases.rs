@@ -212,21 +212,6 @@ async fn other() {}
                 )
             }),
         ),
-        case(
-            "concurrency.unbounded-channel",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn make_channel() { let (_tx, _rx) = std::sync::mpsc::channel::<i32>(); }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn make_channel() { let (_tx, _rx) = std::sync::mpsc::sync_channel::<i32>(16); }\n",
-                    )
-            }),
-        ),
         // ----- dead code -----
         case(
             "dead-code.unused-private-function",
@@ -328,28 +313,6 @@ edition = "2021"
                 .expect("bare manifest");
                 fs::write(root.join("Cargo.lock"), CALIBRATION_BASELINE_LOCKFILE)
                     .expect("lockfile");
-                write_lib(root, "/// Probe.\npub fn entry() {}\n");
-            }),
-            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
-        ),
-        case(
-            "dependency.path-source",
-            Box::new(|root| {
-                calibration_baseline(root);
-                fs::write(
-                    root.join("Cargo.toml"),
-                    r#"[package]
-name = "calibration-fixture"
-version = "0.1.0"
-edition = "2021"
-description = "path source fixture"
-license = "MIT"
-
-[dependencies]
-helper = { path = "../helper" }
-"#,
-                )
-                .expect("path manifest");
                 write_lib(root, "/// Probe.\npub fn entry() {}\n");
             }),
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
