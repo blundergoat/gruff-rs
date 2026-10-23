@@ -169,33 +169,38 @@ pub(crate) fn analyse_duplicate_tests(
     }
     groups.sort_by_key(|group| (group[0].line, group[0].column));
     for group in groups {
-        let first = &group[0];
-        let members: Vec<_> = group
-            .iter()
-            .map(|member| {
-                json!({
-                    "name": member.qualified_name, "file": unit.file.display_path,
-                    "line": member.line, "column": member.column,
-                })
-            })
-            .collect();
-        let locations = group
-            .iter()
-            .map(|member| {
-                format!(
-                    "{} ({}:{})",
-                    member.qualified_name, unit.file.display_path, member.line
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        findings.push(Finding::new(FindingDescriptor {
-            rule_id: RULE.to_string(),
-            message: format!("{} tests share a body shape: {locations}. Consider a table-driven case loop with a descriptive label per row.", group.len()),
-            file_path: unit.file.display_path.clone(), line: Some(first.line),
-            severity: Severity::Advisory, pillar: Pillar::TestQuality, confidence: Confidence::Medium,
-            symbol: Some(first.name.clone()), remediation: None,
-            metadata: json!({"members": members, "groupSize": group.len()}),
-        }));
+        findings.push(duplicate_group_finding(unit.file, &group));
     }
+}
+
+/// Build one finding with the complete group so every member is available to the reviewer.
+fn duplicate_group_finding(file: &SourceFile, group: &[TestMember]) -> Finding {
+    let first = &group[0];
+    let members: Vec<_> = group
+        .iter()
+        .map(|member| {
+            json!({
+                "name": member.qualified_name, "file": file.display_path,
+                "line": member.line, "column": member.column,
+            })
+        })
+        .collect();
+    let locations = group
+        .iter()
+        .map(|member| {
+            format!(
+                "{} ({}:{})",
+                member.qualified_name, file.display_path, member.line
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Finding::new(FindingDescriptor {
+        rule_id: RULE.to_string(),
+        message: format!("{} tests share a body shape: {locations}. Consider a table-driven case loop with a descriptive label per row.", group.len()),
+        file_path: file.display_path.clone(), line: Some(first.line),
+        severity: Severity::Advisory, pillar: Pillar::TestQuality, confidence: Confidence::Medium,
+        symbol: Some(first.name.clone()), remediation: None,
+        metadata: json!({"members": members, "groupSize": group.len()}),
+    })
 }
