@@ -4,9 +4,6 @@
 
 use super::*;
 
-#[path = "duplicate_tests.rs"]
-mod duplicate_tests;
-
 /// Retired boolean naming stays silent for trait methods and inherent or free predicates.
 #[test]
 pub(crate) fn retired_boolean_naming_stays_silent_for_trait_and_free_methods() {

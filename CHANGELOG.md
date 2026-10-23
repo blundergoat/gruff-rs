@@ -2,7 +2,7 @@
 
 ## v0.6.0 - Unreleased
 
-- **Duplicate test groups are available for measurement** - The new, default-off `test-quality.duplicate-test-body` rule reports one finding for three or more same-file tests with matching bodies after typed literal values are normalized. It lists every member and suggests a table-driven case loop with descriptive labels. Names, calls, assertions, operators and delimiters remain significant; comments and formatting do not. The separate `includePairs` option defaults to false and remains unmeasured.
+- **Experimental duplicate-test groups withdrawn** - The opt-in `test-quality.duplicate-test-body` prototype is no longer listed or run after its precision review. Remove configuration and selectors naming that rule, including its `includePairs` option.
 
 - **A baseline row with an uppercase identity is refused** - A stored identity now loads only as sixteen lowercase hex characters, the shape every port generates; a file holding an uppercase or mixed-case one fails with the existing `identity must be 16 lowercase hex characters` message. Such a row could never match a generated identity, so the finding it named was already reported as new; generated baselines load unchanged.
 

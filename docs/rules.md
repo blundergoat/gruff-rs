@@ -111,10 +111,6 @@ A scan of that file alone, a production declaration, or a path override keeps th
 
 `test-quality.long-test` counts code lines from the first assertion onward, so fixture setup before the first assertion does not trigger the rule; a test with no assertion is counted whole. Blank lines, comments, doc comments and attributes do not count. `waste.unnecessary-clone-candidate` is opt-in because ownership-preserving clones can be the more readable and verifiable choice.
 
-`test-quality.duplicate-test-body` is off by default while its precision is measured. Enable it with `rules.test-quality.duplicate-test-body.enabled: true` to find groups of three or more tests in one file whose bodies differ only in literal values. It preserves names, calls, assertions, operators, numeric suffixes and token delimiters, ignores comments and formatting, and compares across inline modules. Each group produces one finding at its first test, listing every member and suggesting a table-driven case loop with descriptive labels. Tests with case attributes or a `for` loop are excluded. Literal payloads and module-local helpers can encode distinct contracts, so review the members before folding them.
-
-The boolean `rules.test-quality.duplicate-test-body.options.includePairs` defaults to `false`. Setting it to `true` also reports groups of exactly two; it never splits a larger group. Pair detection remains opt-in and unmeasured throughout 0.6.0.
-
 `security.process-command` and `security.unsafe-deserialization` are off by default after M02's accepted table. The process sample has 18 unresolved provenance cases and 8 of 14 judged findings right, below its 0.80 floor; the deserialization sample has one unresolved finding and no judged result. Both detectors remain available with `rules.<id>.enabled: true` or `--include-rule <id>`. A severity override alone does not enable either rule.
 
 `ci.github-event-shell-interpolation`, `security.sql-dynamic-query`, and `security.ssrf-candidate` are off by default too: each was wrong on
