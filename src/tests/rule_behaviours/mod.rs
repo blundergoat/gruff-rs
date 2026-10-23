@@ -1,6 +1,7 @@
 pub(crate) use super::*;
 
 mod comment_masking_guards;
+mod duplicate_tests;
 mod false_positive_guards;
 mod idiomatic_handling;
 mod mission_retune_guards;

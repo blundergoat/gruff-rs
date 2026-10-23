@@ -597,6 +597,29 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "test-quality.duplicate-test-body",
+            "Duplicate test body",
+            Pillar::TestQuality,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            None,
+            "Suggests a labelled table-driven case loop for three or more same-file tests whose bodies differ only in typed literal values. Off by default pending group measurement; includePairs is separately opt-in and unmeasured.",
+            options: &[OptionDefinition {
+                name: "includePairs",
+                description: "Also suggest groups of exactly two tests; false by default and unmeasured throughout 0.6.0.",
+                value_kind: OptionValueKind::Boolean,
+            }],
+            false_positives: &[FalsePositiveShape {
+                shape: "Tests with the same syntax exercise distinct contracts encoded in literal payloads or module-local helpers.",
+                mitigation: "Keep separate tests when their intent is clearer; otherwise fold them into labelled table rows. Review all listed members before consolidating.",
+            }],
+            related: &[],
+        )
+    },
     rule_definition!(
         "test-quality.ignored-without-reason",
         "Ignored test without reason",

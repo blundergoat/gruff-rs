@@ -26,7 +26,7 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 | Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
-| Rule catalogue | 70 rules across 11 pillars |
+| Rule catalogue | 71 rules across 11 pillars |
 | Primary config | `.gruff-rs.yaml` (requires `schemaVersion: gruff-rs.config.v1`) |
 | Analysis schema | `gruff.analysis.v3` |
 | Baseline schema | `gruff.baseline.v3` |
@@ -290,7 +290,7 @@ Unknown `failOn:` keys are rejected with a useful error: setting `failOn.summary
 
 <!-- gruff-docs:begin rule-catalogue -->
 
-The catalogue contains 70 rules:
+The catalogue contains 71 rules:
 
 | Pillar | Rules |
 | --- | ---: |
@@ -304,7 +304,7 @@ The catalogue contains 70 rules:
 | `security` | 21 |
 | `sensitive-data` | 9 |
 | `size` | 3 |
-| `test-quality` | 5 |
+| `test-quality` | 6 |
 
 <!-- gruff-docs:end rule-catalogue -->
 

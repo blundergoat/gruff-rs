@@ -2,6 +2,8 @@
 
 ## v0.6.0 - Unreleased
 
+- **Duplicate test groups are available for measurement** - The new, default-off `test-quality.duplicate-test-body` rule reports one finding for three or more same-file tests with matching bodies after typed literal values are normalized. It lists every member and suggests a table-driven case loop with descriptive labels. Names, calls, assertions, operators and delimiters remain significant; comments and formatting do not. The separate `includePairs` option defaults to false and remains unmeasured.
+
 - **A baseline row with an uppercase identity is refused** - A stored identity now loads only as sixteen lowercase hex characters, the shape every port generates; a file holding an uppercase or mixed-case one fails with the existing `identity must be 16 lowercase hex characters` message. Such a row could never match a generated identity, so the finding it named was already reported as new; generated baselines load unchanged.
 
 - **A baseline names each finding by its function, and a newly warning method no longer inherits a same-named method's review** - Every analysis now ranks a finding's ordinal by the function it sits in and counts every same-named function in the file. Before, an ordinary run ranked only the findings, by line: when the first of two `process` methods lost its doc comment it took the reviewed second method's review and was hidden, and two findings inside one function could take different ordinals. A baseline written by an earlier 0.6.0 prerelease can name the wrong function: regenerate it with `analyse --generate-baseline` and review the result; the old file is left untouched.

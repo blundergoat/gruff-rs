@@ -57,6 +57,7 @@ pub(crate) struct EnabledBuiltinFamilies {
     pub(crate) block_concurrency: bool,
     pub(crate) block_security: bool,
     pub(crate) block_test_quality: bool,
+    pub(crate) duplicate_tests: bool,
     pub(crate) process_commands: bool,
     pub(crate) sql_dynamic_query: bool,
     pub(crate) tls_verification: bool,
@@ -126,6 +127,7 @@ impl EnabledBuiltinFamilies {
                 ],
             ),
             process_commands: config.is_rule_enabled("security.process-command"),
+            duplicate_tests: config.is_rule_enabled("test-quality.duplicate-test-body"),
             sql_dynamic_query: config.is_rule_enabled("security.sql-dynamic-query"),
             tls_verification: config.is_rule_enabled("security.tls-verification-disabled"),
             weak_crypto: config.is_rule_enabled("security.weak-crypto"),
@@ -344,6 +346,9 @@ fn analyse_rust_ast_rules(
     families: EnabledBuiltinFamilies,
     findings: &mut Vec<Finding>,
 ) {
+    if families.duplicate_tests {
+        analyse_duplicate_tests(unit, ast, config, findings);
+    }
     if families.item_rules {
         analyse_item_rules(unit.file, ast, findings);
     }
