@@ -78,8 +78,18 @@ impl TestGroups<'_> {
             return None;
         }
         let mut shape = Vec::new();
-        let tokens: Vec<_> = self.tokens(item.block.span())?.into_iter().collect();
-        normalize_tokens(&tokens, LiteralContext::default(), &mut shape);
+        for statement in &item.block.stmts {
+            let tokens = self.tokens(statement.span())?;
+            // A declared item is structure a case table cannot carry, so it compares exactly, documentation
+            // included; a constant or static is a named value and normalizes like any other statement.
+            if matches!(statement, syn::Stmt::Item(nested) if !matches!(nested, syn::Item::Const(_) | syn::Item::Static(_)))
+            {
+                shape.push(format!("item:{tokens}"));
+                continue;
+            }
+            let tokens: Vec<_> = tokens.into_iter().collect();
+            normalize_tokens(&tokens, LiteralContext::default(), &mut shape);
+        }
         let attributes = item
             .attrs
             .iter()
@@ -152,8 +162,8 @@ impl<'ast> Visit<'ast> for TableLoop {
     }
 }
 
-/// Where a token sits: inside an index or slice, every literal stays exact; inside a macro body,
-/// a literal before `=>` is a map key.
+/// Where a token sits: inside an index, a slice or an attribute, every literal stays exact; inside a
+/// macro body, a literal before `=>` is a map key.
 #[derive(Clone, Copy, Default)]
 struct LiteralContext {
     exact: bool,
@@ -171,7 +181,9 @@ fn normalize_tokens(tokens: &[TokenTree], context: LiteralContext, shape: &mut V
         match &tokens[index] {
             TokenTree::Group(group) => {
                 let nested = LiteralContext {
-                    exact: context.exact || is_index_group(group, tokens, index),
+                    exact: context.exact
+                        || is_index_group(group, tokens, index)
+                        || is_attribute_group(group, tokens, index),
                     in_macro: context.in_macro || is_macro_body(tokens, index),
                 };
                 let inner: Vec<_> = group.stream().into_iter().collect();
@@ -217,6 +229,21 @@ fn is_index_group(group: &proc_macro2::Group, tokens: &[TokenTree], index: usize
         Some(TokenTree::Punct(punct)) => punct.as_char() == '?',
         None => false,
     }
+}
+
+/// A bracket group after `#` or `#!` is an attribute, such as `#[cfg(feature = "x")]` on a statement; its
+/// arguments select behaviour at compile time, so they are compared exactly. Documentation attributes never
+/// reach here: `doc_attribute_end` skips them first.
+fn is_attribute_group(group: &proc_macro2::Group, tokens: &[TokenTree], index: usize) -> bool {
+    let hash_at = |position: usize| {
+        index.checked_sub(position).is_some_and(
+            |at| matches!(&tokens[at], TokenTree::Punct(punct) if punct.as_char() == '#'),
+        )
+    };
+    let bang_before = index
+        .checked_sub(1)
+        .is_some_and(|at| matches!(&tokens[at], TokenTree::Punct(punct) if punct.as_char() == '!'));
+    group.delimiter() == Delimiter::Bracket && (hash_at(1) || (bang_before && hash_at(2)))
 }
 
 /// A group after `name!` is a macro body, as in `json!({...})` or `hashmap! {...}`.

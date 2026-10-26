@@ -346,6 +346,76 @@ fn duplicate_groups_preserve_executable_differences() {
             true,
             1,
         ),
+        (
+            "nested item attribute literal",
+            &[
+                "#[derive(Debug)] #[repr(align(4))] struct Opt; let value = parse(1); check(value);",
+                "#[derive(Debug)] #[repr(align(8))] struct Opt; let value = parse(2); check(value);",
+                "#[derive(Debug)] #[repr(align(16))] struct Opt; let value = parse(3); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "nested item rustdoc",
+            &[
+                "/// one\n struct Opt; let value = parse(1); check(value);",
+                "/// two\n struct Opt; let value = parse(2); check(value);",
+                "/// three\n struct Opt; let value = parse(3); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "nested fn literal",
+            &[
+                "fn helper() -> u8 { 1 } let value = helper(); check(value);",
+                "fn helper() -> u8 { 2 } let value = helper(); check(value);",
+                "fn helper() -> u8 { 3 } let value = helper(); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "nested const value",
+            &[
+                "const DATA: u8 = 1; let value = parse(DATA); check(value);",
+                "const DATA: u8 = 2; let value = parse(DATA); check(value);",
+                "const DATA: u8 = 3; let value = parse(DATA); check(value);",
+            ],
+            true,
+            1,
+        ),
+        (
+            "identical nested item",
+            &[
+                "struct Opt; let value = parse(1); check(value);",
+                "struct Opt; let value = parse(2); check(value);",
+                "struct Opt; let value = parse(3); check(value);",
+            ],
+            true,
+            1,
+        ),
+        (
+            "statement attribute literal",
+            &[
+                "#[cfg(feature = \"a\")] let value = parse(1); check(value);",
+                "#[cfg(feature = \"b\")] let value = parse(2); check(value);",
+                "#[cfg(feature = \"c\")] let value = parse(3); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "identical statement attribute",
+            &[
+                "#[allow(unused_variables)] let value = parse(1); check(value);",
+                "#[allow(unused_variables)] let value = parse(2); check(value);",
+                "#[allow(unused_variables)] let value = parse(3); check(value);",
+            ],
+            true,
+            1,
+        ),
     ];
     for (label, bodies, enabled, expected) in cases {
         assert_plain_groups(label, bodies, *enabled, *expected);
