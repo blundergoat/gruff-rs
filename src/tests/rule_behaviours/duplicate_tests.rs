@@ -6,11 +6,18 @@ const RULE: &str = "test-quality.duplicate-test-body";
 /// The plain test declaration most controls use; attribute controls pass their own.
 const PLAIN: &str = "#[test]\nfn";
 
+/// Two neutral statements opening every generated body, so a case written with two statements of its own
+/// meets the four-statement Rust minimum and a case written with one or none stays below it.
+const PRELUDE: &str = "let seed = 0u8; let _ = seed;";
+
 /// Build real source functions inside one module; each member is a declaration prefix and a body.
 fn test_source(members: &[(&str, &str)]) -> String {
     let mut source = String::from("mod probe {\n");
     for (index, (prefix, body)) in members.iter().enumerate() {
-        source.push_str(&format!("{prefix} case_{index}() {{ {body} }}\n"));
+        source.push_str(&format!(
+            "{prefix} case_{index}() {{ {} {body} }}\n",
+            PRELUDE
+        ));
     }
     source.push_str("}\n");
     source
@@ -227,6 +234,16 @@ fn duplicate_groups_preserve_executable_differences() {
         ),
         ("empty", &["", "", ""], true, 0),
         (
+            "stray semicolons",
+            &[
+                "check(1);;;",
+                "check(2);;;",
+                "check(3);;;",
+            ],
+            true,
+            0,
+        ),
+        (
             "text without whitespace",
             &[
                 "let value = parse(\"alpha\"); check(value);",
@@ -377,6 +394,46 @@ fn duplicate_groups_preserve_executable_differences() {
             0,
         ),
         (
+            "fn inside a block",
+            &[
+                "{ fn helper() -> u8 { 1 } check(helper()); } let value = parse(1); check(value);",
+                "{ fn helper() -> u8 { 2 } check(helper()); } let value = parse(1); check(value);",
+                "{ fn helper() -> u8 { 3 } check(helper()); } let value = parse(1); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "item inside a closure",
+            &[
+                "let make = || { fn helper() -> u8 { 1 } helper() }; let value = make(); check(value);",
+                "let make = || { fn helper() -> u8 { 2 } helper() }; let value = make(); check(value);",
+                "let make = || { fn helper() -> u8 { 3 } helper() }; let value = make(); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "rustdoc on an item inside a block",
+            &[
+                "{ /// one\n struct Opt; check(Opt); } let value = parse(1); check(value);",
+                "{ /// two\n struct Opt; check(Opt); } let value = parse(1); check(value);",
+                "{ /// three\n struct Opt; check(Opt); } let value = parse(1); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
+            "value outside an identical inner item",
+            &[
+                "{ fn helper() -> u8 { 1 } check(helper()); } let value = parse(1); check(value);",
+                "{ fn helper() -> u8 { 1 } check(helper()); } let value = parse(2); check(value);",
+                "{ fn helper() -> u8 { 1 } check(helper()); } let value = parse(3); check(value);",
+            ],
+            true,
+            1,
+        ),
+        (
             "nested const value",
             &[
                 "const DATA: u8 = 1; let value = parse(DATA); check(value);",
@@ -504,14 +561,14 @@ fn duplicate_groups_compare_the_return_type() {
         project.path(),
         concat!(
             "mod same {\n",
-            "    #[test] fn one() -> () { setup(); check(1); }\n",
-            "    #[test] fn two() -> () { setup(); check(2); }\n",
-            "    #[test] fn three() -> () { setup(); check(3); }\n",
+            "    #[test] fn one() -> () { setup(); warm(); check(1); done(); }\n",
+            "    #[test] fn two() -> () { setup(); warm(); check(2); done(); }\n",
+            "    #[test] fn three() -> () { setup(); warm(); check(3); done(); }\n",
             "}\n",
             "mod different {\n",
-            "    #[test] fn four() { setup(); check(4); }\n",
-            "    #[test] fn five() { setup(); check(5); }\n",
-            "    #[test] fn six() -> () { setup(); check(6); }\n",
+            "    #[test] fn four() { setup(); warm(); check(4); done(); }\n",
+            "    #[test] fn five() { setup(); warm(); check(5); done(); }\n",
+            "    #[test] fn six() -> () { setup(); warm(); check(6); done(); }\n",
             "}\n"
         ),
     );
@@ -529,25 +586,25 @@ fn duplicate_groups_stay_within_one_module() {
         project.path(),
         concat!(
             "mod first {\n",
-            "    #[test] fn one() { setup(); check(1); }\n",
-            "    #[test] fn two() { setup(); check(2); }\n",
-            "    #[test] fn three() { setup(); check(3); }\n",
+            "    #[test] fn one() { setup(); warm(); check(1); done(); }\n",
+            "    #[test] fn two() { setup(); warm(); check(2); done(); }\n",
+            "    #[test] fn three() { setup(); warm(); check(3); done(); }\n",
             "}\n",
-            "mod second { #[test] fn four() { setup(); check(4); } }\n",
-            "mod third { #[test] fn five() { setup(); check(5); } }\n",
+            "mod second { #[test] fn four() { setup(); warm(); check(4); done(); } }\n",
+            "mod third { #[test] fn five() { setup(); warm(); check(5); done(); } }\n",
             "mod outer_a { mod shared {\n",
-            "    #[test] fn six() { setup(); check(6); }\n",
-            "    #[test] fn seven() { setup(); check(7); }\n",
+            "    #[test] fn six() { setup(); warm(); check(6); done(); }\n",
+            "    #[test] fn seven() { setup(); warm(); check(7); done(); }\n",
             "} }\n",
-            "mod outer_b { mod shared { #[test] fn eight() { setup(); check(8); } } }\n",
-            "fn production() { setup(); check(9); }\n",
-            "#[test] #[case(10)] fn parameterized() { setup(); check(10); }\n",
+            "mod outer_b { mod shared { #[test] fn eight() { setup(); warm(); check(8); done(); } } }\n",
+            "fn production() { setup(); warm(); check(9); done(); }\n",
+            "#[test] #[case(10)] fn parameterized() { setup(); warm(); check(10); done(); }\n",
             "mod other;\n"
         ),
     );
     fs::write(
         project.path().join("src/other.rs"),
-        "#[test] fn separate() { setup(); check(11); }\n",
+        "#[test] fn separate() { setup(); warm(); check(11); done(); }\n",
     )
     .expect("other source file");
     let groups = group_findings(project.path(), true);
@@ -561,8 +618,9 @@ fn duplicate_groups_stay_within_one_module() {
     assert_eq!(names, ["first::one", "first::two", "first::three"]);
 }
 
-/// The field report's one-line f18 tests stay silent; with two statements each, the three positive
-/// assertions form one group, the negated pair stays silent, and folding the cases removes the finding.
+/// The field report's one- and two-statement f18 tests stay silent below the Rust minimum; with four
+/// statements each, the three positive assertions form one group, the negated pair stays silent, and
+/// folding the cases removes the finding.
 #[test]
 fn field_report_sorting_group_disappears_when_folded() {
     let _guard = analysis_lock();
@@ -584,6 +642,16 @@ fn field_report_sorting_group_disappears_when_folded() {
 #[test] fn sorts_after_equal() { let ordered = sorts_after("a", "a"); assert!(!ordered); }
 #[test] fn sorts_after_longer() { let ordered = sorts_after("ab", "a"); assert!(ordered); }
 #[test] fn sorts_after_numeric_suffix() { let ordered = sorts_after("b2", "b1"); assert!(ordered); }
+"#,
+            0,
+        ),
+        (
+            r#"
+#[test] fn sorts_after_basic_greater() { let left = "b"; let right = "a"; let ordered = sorts_after(left, right); assert!(ordered); }
+#[test] fn sorts_after_basic_less() { let left = "a"; let right = "b"; let ordered = sorts_after(left, right); assert!(!ordered); }
+#[test] fn sorts_after_equal() { let left = "a"; let right = "a"; let ordered = sorts_after(left, right); assert!(!ordered); }
+#[test] fn sorts_after_longer() { let left = "ab"; let right = "a"; let ordered = sorts_after(left, right); assert!(ordered); }
+#[test] fn sorts_after_numeric_suffix() { let left = "b2"; let right = "b1"; let ordered = sorts_after(left, right); assert!(ordered); }
 "#,
             1,
         ),

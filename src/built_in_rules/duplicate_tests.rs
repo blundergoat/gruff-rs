@@ -8,6 +8,9 @@ use syn::{spanned::Spanned, visit::Visit};
 const RULE: &str = "test-quality.duplicate-test-body";
 /// Section 16 reports groups of three or more and has no pair option in 0.6.0.
 const MIN_GROUP_SIZE: usize = 3;
+/// Section 16's Rust member minimum: an assertion macro does a whole check in one statement, so a
+/// shorter test is one named case whose table form reads no better.
+const MIN_STATEMENTS: usize = 4;
 /// Keywords that can sit directly before an array literal or slice pattern, so a following bracket is not an index.
 const ARRAY_PREFIX_KEYWORDS: &[&str] = &[
     "as", "break", "else", "for", "if", "in", "let", "match", "move", "mut", "return", "while",
@@ -64,11 +67,11 @@ impl<'ast> Visit<'ast> for TestGroups<'_> {
 
 impl TestGroups<'_> {
     /// Return the grouping key for a qualifying test, or `None` for a declaration section 16 leaves out:
-    /// a non-test, a parameterized case, a table loop, or a body of one statement or none.
+    /// a non-test, a parameterized case, a table loop, or a body below the four-statement minimum.
     fn group_key(&self, item: &syn::ItemFn) -> Option<GroupKey> {
         if !has_test_attr(&item.attrs)
             || has_case_attribute(&item.attrs)
-            || item.block.stmts.len() < 2
+            || counted_statements(&item.block) < MIN_STATEMENTS
         {
             return None;
         }
@@ -89,6 +92,12 @@ impl TestGroups<'_> {
             }
             let tokens: Vec<_> = tokens.into_iter().collect();
             normalize_tokens(&tokens, LiteralContext::default(), &mut shape);
+            // An item declared deeper, such as inside a block or closure, also compares exactly.
+            let mut nested = NestedItems::default();
+            nested.visit_stmt(statement);
+            for span in nested.0 {
+                shape.push(format!("item:{}", self.tokens(span)?));
+            }
         }
         let attributes = item
             .attrs
@@ -159,6 +168,32 @@ struct TableLoop(bool);
 impl<'ast> Visit<'ast> for TableLoop {
     fn visit_expr_for_loop(&mut self, _: &'ast syn::ExprForLoop) {
         self.0 = true;
+    }
+}
+
+/// Top-level statements toward the member minimum; syn keeps a stray `;` as an empty statement, which does not count.
+fn counted_statements(block: &syn::Block) -> usize {
+    block
+        .stmts
+        .iter()
+        .filter(|statement| {
+            !matches!(statement, syn::Stmt::Expr(syn::Expr::Verbatim(tokens), Some(_)) if tokens.is_empty())
+        })
+        .count()
+}
+
+/// Spans of items declared below a statement's top level, constants and statics excepted.
+#[derive(Default)]
+struct NestedItems(Vec<Span>);
+
+impl<'ast> Visit<'ast> for NestedItems {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        if matches!(item, syn::Item::Const(_) | syn::Item::Static(_)) {
+            syn::visit::visit_item(self, item);
+        } else {
+            // The item's exact tokens already cover anything declared inside it.
+            self.0.push(item.span());
+        }
     }
 }
 
