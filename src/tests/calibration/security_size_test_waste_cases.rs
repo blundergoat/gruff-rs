@@ -537,6 +537,24 @@ pub fn entry() {
         ),
         // ----- test quality -----
         case(
+            "test-quality.duplicate-test-body",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    concat!(
+                        "#[test] fn one() { let parsed = parse(1); assert_eq!(parsed, 2); }\n",
+                        "#[test] fn two() { let parsed = parse(3); assert_eq!(parsed, 4); }\n",
+                        "#[test] fn three() { let parsed = parse(5); assert_eq!(parsed, 6); }\n"
+                    ),
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root,
+                "#[test] fn cases() { for (input, expected) in [(1, 2), (3, 4), (5, 6)] { let parsed = parse(input); assert_eq!(parsed, expected); } }\n"
+            )
+            }),
+        ),
+        case(
             "test-quality.ignored-without-reason",
             Box::new(|root| {
                 baseline_with_lib(
