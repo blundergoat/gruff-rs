@@ -21,21 +21,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() {}\n")),
         ),
         case(
-            "docs.stale-todo",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\n// TODO fix this later\npub fn entry() {}\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\n// TODO(#123): remove after parser migration\npub fn entry() {}\n",
-                )
-            }),
-        ),
-        case(
             "docs.commented-out-code",
             Box::new(|root| {
                 baseline_with_lib(
@@ -94,21 +79,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             }),
         ),
         case(
-            "error-handling.public-unwrap",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() { let value: Option<i32> = Some(1); value.unwrap(); }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() -> Option<i32> { Some(1) }\n",
-                )
-            }),
-        ),
-        case(
             "error-handling.unimplemented-placeholder",
             Box::new(|root| {
                 baseline_with_lib(
@@ -119,20 +89,6 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 0 }\n")),
         ),
         // ----- naming -----
-        case(
-            "naming.boolean-prefix",
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn ready() -> bool { true }\n")
-            }),
-            Box::new(|root| {
-                baseline_with_lib(root, "/// Probe.\npub fn is_ready() -> bool { true }\n")
-            }),
-        ),
-        case(
-            "naming.generic-function",
-            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn process() {}\n")),
-            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn ingest_payload() {}\n")),
-        ),
         case(
             "naming.placeholder-identifier",
             Box::new(|root| {
@@ -180,6 +136,63 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
         ),
         // ----- performance -----
         case(
+            "performance.regex-in-loop",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    r#"/// Probe.
+pub fn entry(values: Vec<i32>) {
+    for value in values {
+        let _compiled = regex::Regex::new("^a$");
+        let _consume = value;
+    }
+}
+"#,
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\npub fn entry() { let _compiled = regex::Regex::new(\"^a$\"); }\n",
+                )
+            }),
+        ),
+    ]
+}
+
+/// Preserve the historical positive and negative fixtures as native retirement guards.
+pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
+    vec![
+        case(
+            "docs.stale-todo",
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\n// TODO fix this later\npub fn entry() {}\n",
+                )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                    root,
+                    "/// Probe.\n// TODO(#123): remove after parser migration\npub fn entry() {}\n",
+                )
+            }),
+        ),
+        case(
+            "naming.boolean-prefix",
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn ready() -> bool { true }\n")
+            }),
+            Box::new(|root| {
+                baseline_with_lib(root, "/// Probe.\npub fn is_ready() -> bool { true }\n")
+            }),
+        ),
+        case(
+            "naming.generic-function",
+            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn process() {}\n")),
+            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn ingest_payload() {}\n")),
+        ),
+        case(
             "performance.clone-in-loop",
             Box::new(|root| {
                 baseline_with_lib(
@@ -219,28 +232,6 @@ pub fn entry(values: Vec<i32>) {
                         root,
                         "/// Probe.\npub fn entry(value: i32) { let _formatted = format!(\"{value}\"); }\n",
                     )
-            }),
-        ),
-        case(
-            "performance.regex-in-loop",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    r#"/// Probe.
-pub fn entry(values: Vec<i32>) {
-    for value in values {
-        let _compiled = regex::Regex::new("^a$");
-        let _consume = value;
-    }
-}
-"#,
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _compiled = regex::Regex::new(\"^a$\"); }\n",
-                )
             }),
         ),
     ]

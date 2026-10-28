@@ -3,7 +3,7 @@ use super::*;
 #[test]
 pub(crate) fn json_report_uses_schema_version() {
     let report = AnalysisReport {
-        schema_version: "gruff.analysis.v2".to_string(),
+        schema_version: "gruff.analysis.v3".to_string(),
         tool: ToolInfo {
             name: "gruff-rs".to_string(),
             version: VERSION.to_string(),
@@ -31,8 +31,12 @@ pub(crate) fn json_report_uses_schema_version() {
         findings: Vec::new(),
         suppressed_count: None,
         score: ScoreReport {
-            composite: 100.0,
-            grade: "A".to_string(),
+            composite: Some(100.0),
+            grade: Some("A".to_string()),
+            evaluated_files: 10,
+            scored_pillars: Vec::new(),
+            clusters: Vec::new(),
+            rule_attribution: Vec::new(),
             pillars: Vec::new(),
             top_offenders: Vec::new(),
         },
@@ -40,10 +44,11 @@ pub(crate) fn json_report_uses_schema_version() {
         per_rule_deltas: None,
         suppressed_findings: Vec::new(),
         all_findings_summary: None,
+        machine_context: MachineReportContext::default(),
     };
 
     let rendered = render_report(&report, OutputFormat::Json);
-    assert!(rendered.contains("\"schemaVersion\": \"gruff.analysis.v2\""));
+    assert!(rendered.contains("\"schemaVersion\": \"gruff.analysis.v3\""));
 }
 
 const CALIBRATION_BASELINE_MANIFEST: &str = r#"[package]
@@ -137,6 +142,7 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
         },
     )
     .expect("calibration positive analysis succeeds");
+    assert_m02_advice(case.rule_id, &positive_report);
     let positive_fired = positive_report
         .findings
         .iter()
@@ -163,6 +169,39 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
     (positive_fired, negative_fired)
 }
 
+/// Keep M02 advice actionable without changing the calibration detection controls.
+fn assert_m02_advice(rule_id: &str, report: &AnalysisReport) {
+    let advice_terms: &[&str] = match rule_id {
+        "modernisation.manual-contains" => &["contains"],
+        "modernisation.manual-strip-prefix" => &["strip_prefix", "prefix"],
+        "modernisation.manual-unwrap-or-default" => &["unwrap_or_default"],
+        "modernisation.question-mark-candidate" => &["?", "error"],
+        "security.github-actions-remote-shell" => &["file", "checksum", "signature"],
+        "security.unsafe-block" => &["SAFETY", "invariant"],
+        "security.xxe-candidate" => &["DTD", "external-entity", "disabled"],
+        "waste.unnecessary-clone-candidate" => &["borrow", "move", "not used again"],
+        "waste.unwrap-expect" => &["?", "None/Err", "invariant"],
+        _ => &[],
+    };
+    if !advice_terms.is_empty() {
+        for finding in report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == rule_id)
+        {
+            let advice = finding.remediation.as_deref().unwrap_or("");
+            for term in advice_terms {
+                assert!(
+                    advice.contains(term),
+                    "{} advice lacks {term:?}: {advice:?}",
+                    rule_id
+                );
+            }
+            assert!(!advice.contains("paths.ignore") && !advice.contains("raise the limit"));
+        }
+    }
+}
+
 fn write_calibration_config(root: &Path, rule_id: &str) {
     fs::write(
         root.join(".gruff-rs.yaml"),
@@ -173,6 +212,7 @@ fn write_calibration_config(root: &Path, rule_id: &str) {
 
 mod cases_pillar_expansion;
 mod documentation_error_idiom_cases;
+mod limit_band_guards;
 mod security_size_test_waste_cases;
 mod structural_project_cases;
 
@@ -245,4 +285,71 @@ pub(crate) fn rule_calibration_matrix_covers_every_rule() {
             missing_positive.is_empty() && leaked_negative.is_empty(),
             "calibration mismatches: under-strict={missing_positive:?}, over-strict={leaked_negative:?}"
         );
+}
+#[test]
+pub(crate) fn m02_retired_rules_have_no_native_emitters() {
+    let retired = [
+        "docs.stale-todo",
+        "modernisation.manual-is-empty",
+        "naming.boolean-prefix",
+        "naming.generic-function",
+        "performance.clone-in-loop",
+        "performance.format-in-loop",
+        "test-quality.conditional-logic",
+        "test-quality.sleep-in-test",
+        "waste.unreachable-code",
+    ];
+    let mut config = Config::default();
+    for rule_id in retired {
+        config.rule_settings.insert(
+            rule_id.to_string(),
+            crate::config::RuleSetting {
+                enabled: Some(true),
+                ..Default::default()
+            },
+        );
+    }
+    let mut cases = documentation_error_idiom_cases::retired_cases();
+    cases.extend(cases_pillar_expansion::retired_cases());
+    cases.extend(security_size_test_waste_cases::retired_cases());
+    assert!(cases.iter().all(|case| retired.contains(&case.rule_id)));
+    assert_eq!(cases.len(), retired.len());
+    let mut emitted = Vec::new();
+    for case in cases {
+        for (label, setup) in [("positive", case.positive), ("negative", case.negative)] {
+            let dir = tempdir().expect("retired rule fixture");
+            setup(dir.path());
+            assert!(!crate::rules::builtin_registry_cached().contains(case.rule_id));
+            write_calibration_config(dir.path(), case.rule_id);
+            let error = load_config(dir.path(), &default_test_options())
+                .expect_err("retired rule config must be rejected");
+            assert!(error.contains(case.rule_id), "{error}");
+            let source = fs::read_to_string(dir.path().join("src/lib.rs")).expect("fixture source");
+            let parsed = crate::source::ParsedSource {
+                file: crate::source::SourceFile {
+                    absolute_path: dir.path().join("src/lib.rs"),
+                    display_path: "src/lib.rs".to_string(),
+                    is_rust: true,
+                    origin: crate::source::SourceOrigin::ExplicitFile,
+                },
+                rust_ast: Some(syn::parse_file(&source).expect("fixture parses")),
+                source,
+                bounded_deep_scan: false,
+                diagnostics: Vec::new(),
+                line_starts: OnceLock::new(),
+            };
+            // Explicit toggles keep removed catalogue entries from concealing an old emitter.
+            let findings = crate::analyse_source(&parsed.as_source_unit(false), &config);
+            if findings
+                .iter()
+                .any(|finding| finding.rule_id == case.rule_id)
+            {
+                emitted.push(format!("{}:{label}", case.rule_id));
+            }
+        }
+    }
+    assert!(
+        emitted.is_empty(),
+        "retired native emitters remain: {emitted:?}"
+    );
 }

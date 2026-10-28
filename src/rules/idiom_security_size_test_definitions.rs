@@ -1,20 +1,11 @@
 //! Registry definitions for idiom, security, size, and test-quality rules.
+//!
 //! The catalogue feeds rule listing and documentation with stable IDs,
 //! descriptions, relationships, options, and false-positive guidance.
 
 use super::*;
 
 pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "modernisation.manual-is-empty",
-        "Manual is_empty check",
-        Pillar::Modernisation,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags `len() == 0` and `len() != 0` comparisons that should use `is_empty()`.",
-    ),
     rule_definition!(
         "modernisation.manual-contains",
         "Manual contains check",
@@ -24,6 +15,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags `iter().any(|x| *x == y)` patterns that should use `.contains(&y)`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A custom iterator or collection exposes comparison semantics for `.iter().any(...)` that are unavailable or meaningfully different through `.contains(...)`.",
+                mitigation: "Keep the explicit predicate when its semantics are load-bearing and add an exact reviewed exclusion; otherwise use `.contains(&value)`.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "modernisation.manual-strip-prefix",
@@ -34,6 +32,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags `if s.starts_with(p) { &s[p.len()..] }` shapes that should use `strip_prefix`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A domain type implements `starts_with`, indexing, and `len` with non-string semantics that the syntax-only matcher cannot resolve.",
+                mitigation: "Prefer `strip_prefix` for strings; for a domain-specific operation, use a named helper or exclude the exact reviewed path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "modernisation.manual-unwrap-or-default",
@@ -44,6 +49,13 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags `match opt { Some(v) => v, None => Default::default() }` shapes that should use `unwrap_or_default()`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The expanded match is intentionally retained as a documented extension point even though both current arms are equivalent to `unwrap_or_default()`.",
+                mitigation: "Use `unwrap_or_default()` unless the extension point is concrete and reviewed; then document it and exclude only that path.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "modernisation.question-mark-candidate",
@@ -54,20 +66,15 @@ pub(crate) const METADATA_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags manual `match`/`if let Err` Result-propagation shapes that should use `?`.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "Expanded error propagation is kept for generated teaching code, instrumentation breakpoints, or a forthcoming branch even though the current arms return the same error.",
+                mitigation: "Use `?` for ordinary propagation; otherwise document the concrete need and exclude only the reviewed source path.",
+            },
+        ],
+        related: &[],
     ),
 ];
-
-const NAMING_GENERIC_FUNCTION_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
-    name: "extraGenericNames",
-    description: "Additional generic function names rejected by naming.generic-function.",
-    value_kind: OptionValueKind::StringArray,
-}];
-
-const NAMING_BOOLEAN_PREFIX_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
-    name: "predicatePrefixes",
-    description: "Additional predicate prefixes accepted by naming.boolean-prefix.",
-    value_kind: OptionValueKind::StringArray,
-}];
 
 const NAMING_PLACEHOLDER_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
     name: "extraPlaceholders",
@@ -76,50 +83,6 @@ const NAMING_PLACEHOLDER_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
 }];
 
 pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
-    RuleDefinition {
-        id: "naming.generic-function",
-        name: "Generic function name",
-        pillar: Pillar::Naming,
-        tier: "v0.1",
-        kind: RuleKind::Rust,
-        default_severity: Severity::Advisory,
-        confidence: Confidence::High,
-        threshold: None,
-        options: NAMING_GENERIC_FUNCTION_OPTIONS,
-        default_enabled: true,
-        description: "Flags function names that are too generic to explain intent.",
-        false_positive_shapes: &[
-            FalsePositiveShape {
-                shape: "Bridge functions whose name is dictated by an external macro (`#[wasm_bindgen]`, FFI signatures, JSON-RPC handlers).",
-                mitigation: "Add the host path to `paths.ignore` in `.gruff-rs.yaml`, or set `rules.naming.generic-function.enabled: false` on the affected scope (`extraGenericNames` extends the blocklist, not the allow-list).",
-            },
-        ],
-        related_rules: &[
-            "naming.boolean-prefix",
-            "naming.placeholder-identifier",
-            "naming.short-variable",
-        ],
-    },
-    RuleDefinition {
-        id: "naming.boolean-prefix",
-        name: "Boolean predicate prefix",
-        pillar: Pillar::Naming,
-        tier: "v0.1",
-        kind: RuleKind::Rust,
-        default_severity: Severity::Advisory,
-        confidence: Confidence::High,
-        threshold: None,
-        options: NAMING_BOOLEAN_PREFIX_OPTIONS,
-        default_enabled: true,
-        description: "Flags bool-returning functions whose names do not read like predicates.",
-        false_positive_shapes: &[
-            FalsePositiveShape {
-                shape: "Domain verbs that are inherently truthful (e.g. `validate`, `assert_`, `ensure_`).",
-                mitigation: "Add the prefix to `rules.naming.boolean-prefix.options.predicatePrefixes` in `.gruff-rs.yaml`.",
-            },
-        ],
-        related_rules: &["naming.generic-function", "naming.placeholder-identifier"],
-    },
     RuleDefinition {
         id: "naming.placeholder-identifier",
         name: "Placeholder identifier",
@@ -138,7 +101,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
                 mitigation: "Add the host path to `paths.ignore` in `.gruff-rs.yaml` (`extraPlaceholders` extends the blocklist, not the allow-list).",
             },
         ],
-        related_rules: &["naming.generic-function", "naming.short-variable"],
+        related_rules: &["naming.short-variable"],
     },
     rule_definition!(
         "naming.short-variable",
@@ -155,7 +118,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
                 mitigation: "Append the token to `allowlists.acceptedAbbreviations` in `.gruff-rs.yaml`.",
             },
         ],
-        related: &["naming.generic-function", "naming.placeholder-identifier"],
+        related: &["naming.placeholder-identifier"],
     ),
     rule_definition!(
         "naming.identifier-shadow",
@@ -170,17 +133,25 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "ci.github-event-shell-interpolation",
-        "GitHub event shell interpolation",
-        Pillar::Security,
-        RuleKind::Text,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
-    ),
-    rule_definition!(
+    // Off by default (ADR-024): wrong on all 4 judged findings, too few to delete on.
+    // Remove this override once a larger sample measures it right at least half the time.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "ci.github-event-shell-interpolation",
+            "GitHub event shell interpolation",
+            Pillar::Security,
+            RuleKind::Text,
+            Severity::Warning,
+            Confidence::High,
+            None,
+            "Flags GitHub event values interpolated directly into workflow or composite-action shell steps.",
+        )
+    },
+    // M02's blind repair measured 1/1 right, but fewer than ten findings; keep opt-in.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.github-actions-broad-permissions",
         "GitHub Actions broad permissions",
         Pillar::Security,
@@ -189,7 +160,15 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags workflow-level scoped writes and permissions: write-all grants.",
-    ),
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A narrowly trusted release workflow deliberately needs repository write access, but the text rule cannot evaluate environment protection or human approval controls.",
+                mitigation: "Move writes to the smallest job-scoped permission set; if broader access remains necessary, document the trust boundary and exclude only that workflow.",
+            },
+        ],
+        related: &[],
+        )
+    },
     rule_definition!(
         "security.github-actions-pull-request-target",
         "GitHub Actions pull_request_target",
@@ -199,6 +178,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags pull_request_target workflows for manual secret and checkout review.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A `pull_request_target` workflow processes only trusted metadata and never checks out or executes pull-request-controlled content.",
+                mitigation: "Keep the trusted-data boundary explicit and permissions minimal; then add a documented exclusion limited to the reviewed workflow if needed.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.github-actions-remote-shell",
@@ -218,7 +204,14 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags pull request workflows that reference repository secrets.",
+        "Flags pull_request_target workflows that reference repository secrets other than GITHUB_TOKEN.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "The referenced secret is protected by environment approval, a condition outside the bounded event comparison grammar, or unsupported YAML ownership that the source scan cannot prove.",
+                mitigation: "Avoid exposing repository secrets to pull-request jobs; otherwise make the approval and condition boundary explicit and exclude only the reviewed workflow.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.github-actions-unpinned-action",
@@ -229,26 +222,13 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.",
-    ),
-    rule_definition!(
-        "performance.clone-in-loop",
-        "Clone in loop",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        None,
-        "Flags clone calls inside loop bodies as allocation hot spot candidates.",
-    ),
-    rule_definition!(
-        "performance.format-in-loop",
-        "Format in loop",
-        Pillar::Maintainability,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::Medium,
-        None,
-        "Flags format! calls inside loop bodies as allocation hot spot candidates.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "An internally controlled action or reusable workflow intentionally follows a governed mutable tag that the source-only rule cannot distinguish from an untrusted third party.",
+                mitigation: "Pin the immutable commit SHA whenever possible; otherwise document ownership and update controls in an exact workflow exclusion.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "performance.regex-in-loop",
@@ -260,7 +240,9 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         None,
         "Flags Regex::new calls inside loop bodies.",
     ),
-    rule_definition!(
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.process-command",
         "Process command execution",
         Pillar::Security,
@@ -279,7 +261,8 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
             "security.insecure-rng-for-secrets",
             "sensitive-data.api-key-pattern",
         ],
-    ),
+    )
+    },
     rule_definition!(
         "security.insecure-rng-for-secrets",
         "Insecure RNG for secret material",
@@ -289,28 +272,40 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags non-cryptographic rand calls inside secret-like generation functions.",
-    ),
-    rule_definition!(
-        "security.sql-dynamic-query",
-        "Dynamic SQL query argument",
-        Pillar::Security,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::High,
-        None,
-        "Flags SQL-shaped format! values passed directly or through one local binding to query, execute, or prepare.",
         false_positives: &[
             FalsePositiveShape {
-                shape: "A non-SQL DSL whose formatted text has a supported SQL statement shape and reaches a method named query, execute, or prepare.",
-                mitigation: "Rename the reviewed wrapper method if possible, or add an `exclude:` entry for that path and message.",
-            },
-            FalsePositiveShape {
-                shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",
-                mitigation: "Prefer a static statement per identifier, prove the identifier comes from a literal/const allowlist in code review, or add a documented `exclude:` entry for that path.",
+                shape: "A deterministic test, benchmark, or non-security identifier generator uses `rand` inside a function whose name contains token, key, nonce, salt, or password vocabulary.",
+                mitigation: "Rename non-secret generators to state their purpose or use `OsRng` for real secret material; isolate deterministic fixtures with an exact path exclusion.",
             },
         ],
         related: &[],
     ),
+    // Off by default (ADR-024): wrong on all 4 judged findings, too few to delete on.
+    // Remove this override once a larger sample measures it right at least half the time.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "security.sql-dynamic-query",
+            "Dynamic SQL query argument",
+            Pillar::Security,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::High,
+            None,
+            "Flags SQL-shaped format! values passed directly or through one local binding to query, execute, or prepare.",
+            false_positives: &[
+                FalsePositiveShape {
+                    shape: "A non-SQL DSL whose formatted text has a supported SQL statement shape and reaches a method named query, execute, or prepare.",
+                    mitigation: "Rename the reviewed wrapper method if possible, or add an `exclude:` entry for that path and message.",
+                },
+                FalsePositiveShape {
+                    shape: "Locally bounded table, schema, or prefix interpolation that cannot use bind parameters because SQL identifiers are dynamic.",
+                    mitigation: "Prefer a static statement per identifier, prove the identifier comes from a literal/const allowlist in code review, or add a documented `exclude:` entry for that path.",
+                },
+            ],
+            related: &[],
+        )
+    },
     rule_definition!(
         "security.tls-verification-disabled",
         "TLS verification disabled",
@@ -330,6 +325,17 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags unsafe blocks without a nearby SAFETY rationale.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A rationale introduced by a marker other than `SAFETY:`, a bare `SAFETY` line, or a `# Safety` line, such as `// SAFETY This is safe because the slice is never empty` or `// Safety - the slice is never empty`.",
+                mitigation: "Open the rationale with `SAFETY:`.",
+            },
+            FalsePositiveShape {
+                shape: "A rationale separated from its block by a blank line, or written above a sibling match arm, call argument or struct field; the scan carries no comment past either.",
+                mitigation: "Put the `SAFETY:` comment directly above the `unsafe` block it explains.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "security.weak-crypto",
@@ -340,43 +346,34 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Confidence::Medium,
         None,
         "Flags explicit weak cryptographic primitive imports or constructors for review.",
-    ),
-    rule_definition!(
-        "security.path-traversal-candidate",
-        "Path traversal candidate",
-        Pillar::Security,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::Medium,
-        None,
-        "Flags filesystem path construction where externally-derived input is joined without normalisation.",
         false_positives: &[
             FalsePositiveShape {
-                shape: "Custom domain types that expose a `.join(...)` method unrelated to filesystem paths.",
-                mitigation: "The rule requires filesystem receiver evidence for `.join(...)` calls, such as a path-typed receiver or base-directory naming. Keep non-filesystem receivers domain-specific rather than naming them like roots or directories.",
-            },
-            FalsePositiveShape {
-                shape: "Segments sanitized before joining by removing traversal and both path separators.",
-                mitigation: "Use a visible sanitizer or local replacement chain that removes `..`, `/`, and `\\`; generic names like `key` or `value` remain reportable unless the defense is explicit.",
+                shape: "MD5, SHA-1, RC4, or DES is required for a legacy wire format, checksum, or interoperability contract rather than a security decision.",
+                mitigation: "Use a modern primitive for security-sensitive work; when compatibility is mandatory, document the non-security boundary and exclude only that implementation path.",
             },
         ],
-        related: &["security.process-command", "security.sql-dynamic-query"],
-    ),
-    rule_definition!(
-        "security.ssrf-candidate",
-        "SSRF candidate",
-        Pillar::Security,
-        RuleKind::Rust,
-        Severity::Warning,
-        Confidence::Medium,
-        None,
-        "Flags request URLs derived from local input without nearby allow-list evidence, including in executable test source.",
-        false_positives: &[FalsePositiveShape {
-            shape: "An isolated integration test intentionally sends a caller-provided URL to a local mock service.",
-            mitigation: "Parse the URL and enforce a visible loopback or host allowlist before the request; if the unsafe call is the behavior under test, add an `exclude:` entry limited to that harness path and message.",
-        }],
         related: &[],
     ),
+    // Off by default (ADR-024): wrong on all 4 judged findings, too few to delete on.
+    // Remove this override once a larger sample measures it right at least half the time.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
+            "security.ssrf-candidate",
+            "SSRF candidate",
+            Pillar::Security,
+            RuleKind::Rust,
+            Severity::Warning,
+            Confidence::Medium,
+            None,
+            "Flags request URLs derived from local input without nearby allow-list evidence in executable Rust.",
+            false_positives: &[FalsePositiveShape {
+                shape: "An isolated integration test intentionally sends a caller-provided URL to a local mock service.",
+                mitigation: "Parse the URL and enforce a visible loopback or host allowlist before the request; if the unsafe call is the behavior under test, add an `exclude:` entry limited to that harness path and message.",
+            }],
+            related: &[],
+        )
+    },
     rule_definition!(
         "security.template-injection-xss",
         "Template injection or XSS candidate",
@@ -385,14 +382,17 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags request-derived HTML/template output without visible escaping, including in executable test source.",
+        "Flags request-derived HTML/template output without visible escaping in executable Rust.",
         false_positives: &[FalsePositiveShape {
             shape: "A rendering test passes raw input to a custom wrapper that performs escaping outside the matched function.",
             mitigation: "Make escaping visible before the supported sink, or add an `exclude:` entry limited to the reviewed test path and message.",
         }],
         related: &[],
     ),
-    rule_definition!(
+    // M02's blind repair measured 9/9 right, but fewer than ten findings; keep opt-in.
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.hardcoded-bind-all-interfaces",
         "Hardcoded bind to all interfaces",
         Pillar::Security,
@@ -400,14 +400,17 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::High,
         None,
-        "Flags all-interface listener literals in executable Rust, including tests and CI helpers.",
+        "Flags all-interface listener literals in executable Rust, including CI helpers.",
         false_positives: &[FalsePositiveShape {
             shape: "An integration harness intentionally listens on every interface so another container or host can connect.",
             mitigation: "Prefer loopback for same-host tests; otherwise add a documented `exclude:` entry limited to the harness path and bind-all message.",
         }],
         related: &[],
-    ),
-    rule_definition!(
+        )
+    },
+    RuleDefinition {
+        default_enabled: false,
+        ..rule_definition!(
         "security.unsafe-deserialization",
         "Unsafe deserialization candidate",
         Pillar::Security,
@@ -415,13 +418,14 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags local-input YAML or binary deserialization in executable Rust, including tests.",
+        "Flags local-input YAML or binary deserialization in executable Rust.",
         false_positives: &[FalsePositiveShape {
             shape: "A test deserializes trusted bytes from a checked-in fixture, but the bytes arrive through a function parameter.",
             mitigation: "Read the trusted fixture directly with `include_bytes!` or otherwise keep its fixed provenance visible; if indirection is required, add an exact path-and-message `exclude:` entry.",
         }],
         related: &["security.xxe-candidate"],
-    ),
+    )
+    },
     rule_definition!(
         "security.xxe-candidate",
         "XXE candidate",
@@ -430,7 +434,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Severity::Warning,
         Confidence::Medium,
         None,
-        "Flags executable XML parser options that enable external entities or DTD loading, including in tests.",
+        "Flags executable XML parser options that enable external entities or DTD loading.",
         false_positives: &[FalsePositiveShape {
             shape: "A security or conformance test deliberately enables external entities for an isolated parser probe.",
             mitigation: "Keep the dangerous option in a dedicated reviewed test and add an exact path-and-message `exclude:` entry; do not disable the rule for all test paths.",
@@ -445,7 +449,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "API key pattern",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags common API key patterns.",
@@ -455,58 +459,38 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "AWS access key",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
-        "Flags AWS access key patterns.",
-    ),
-    rule_definition!(
-        "sensitive-data.database-url-password",
-        "Database URL password",
-        Pillar::SensitiveData,
-        RuleKind::Text,
-        Severity::Error,
-        Confidence::High,
-        None,
-        "Flags database URLs that appear to include passwords.",
+        "Flags AWS access key identifiers, both long-term keys and temporary session credentials.",
     ),
     rule_definition!(
         "sensitive-data.gcp-service-account-key",
         "GCP service account key",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags committed GCP service-account private key material.",
-    ),
-    rule_definition!(
-        "sensitive-data.hardcoded-env-value",
-        "Hardcoded environment-style secret",
-        Pillar::SensitiveData,
-        RuleKind::Text,
-        Severity::Error,
-        Confidence::High,
-        None,
-        "Flags secret-like KEY=value literals committed in source or config.",
     ),
     rule_definition!(
         "sensitive-data.high-entropy-string",
         "High entropy string",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::Medium,
         None,
         "Flags long string literals that look like generated secrets while skipping known structured non-secret values.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "Zero-separator CamelCase or mixed-case identifiers that are high entropy but not secrets.",
-                mitigation: "Prefer a separator-bearing identifier when practical. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
+                mitigation: "Prefer a separator-bearing identifier when practical, then review any remaining finding; secret preview values cannot suppress it.",
             },
             FalsePositiveShape {
                 shape: "Manifest checksum or signature fields whose value shape alone is indistinguishable from secret material.",
-                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible. Existing reviewed entries in `allowlists.secretPreviews` continue to suppress only their exact legacy alias.",
+                mitigation: "Keep package integrity prefixes such as `sha1-`/`sha512-` where possible, then review any remaining finding; secret preview values cannot suppress it.",
             },
         ],
         related: &["sensitive-data.api-key-pattern", "sensitive-data.jwt-token"],
@@ -516,7 +500,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "JWT token",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags JWT-looking token strings.",
@@ -526,7 +510,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "Private key block",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags private key block markers.",
@@ -536,7 +520,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "URL embedded credentials",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags HTTP(S) URLs that include embedded username and password credentials.",
@@ -546,7 +530,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "PII in test fixture",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags realistic emails, SSN-shaped strings, or US phone numbers in fixture or sample files.",
@@ -556,7 +540,7 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         "Protected health identifier",
         Pillar::SensitiveData,
         RuleKind::Text,
-        Severity::Error,
+        Severity::Warning,
         Confidence::High,
         None,
         "Flags SSN, MRN, and Medicare-style health identifiers with zero-payload category markers.",
@@ -613,16 +597,24 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
 ];
 
 pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
-    rule_definition!(
-        "test-quality.conditional-logic",
-        "Conditional logic in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags tests that contain conditional logic.",
-    ),
+    RuleDefinition {
+        default_enabled: true,
+        ..rule_definition!(
+            "test-quality.duplicate-test-body",
+            "Duplicate test body",
+            Pillar::TestQuality,
+            RuleKind::Rust,
+            Severity::Advisory,
+            Confidence::Medium,
+            None,
+            "Suggests a labelled table-driven case loop for three or more tests in one module whose attributes match and whose multi-statement bodies differ only in eligible literal values.",
+            false_positives: &[FalsePositiveShape {
+                shape: "Tests with the same syntax exercise distinct contracts encoded in literal payloads or module-local helpers.",
+                mitigation: "Keep separate tests when their intent is clearer; otherwise fold them into labelled table rows. Review all listed members before consolidating.",
+            }],
+            related: &[],
+        )
+    },
     rule_definition!(
         "test-quality.ignored-without-reason",
         "Ignored test without reason",
@@ -642,16 +634,6 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         TEST_LONG_THRESHOLD,
         "Flags long test functions that are harder to scan and maintain.",
-    ),
-    rule_definition!(
-        "test-quality.sleep-in-test",
-        "Sleep in test",
-        Pillar::TestQuality,
-        RuleKind::Rust,
-        Severity::Advisory,
-        Confidence::High,
-        None,
-        "Flags tests that sleep instead of synchronizing on behavior.",
     ),
     rule_definition!(
         "test-quality.trivial-assertion",
@@ -696,5 +678,12 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
         Confidence::High,
         None,
         "Flags `#[should_panic]` attributes without an `expected = \"...\"` clause.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A `#[should_panic]` test inside a `#[cfg(not(test))]` module, which never runs; only the test fn's own attributes are read, so the module's condition is not seen.",
+                mitigation: "Add `expected = \"...\"`, or put `#[cfg(not(test))]` on the fn itself.",
+            },
+        ],
+        related: &[],
     ),
 ];

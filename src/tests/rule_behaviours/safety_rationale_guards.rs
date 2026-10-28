@@ -76,8 +76,9 @@ pub(crate) fn same_line_safety_rationale_ignores_string_literals() {
 }
 
 #[test]
-/// Rationale lookup is bounded and cannot cross an intervening statement.
-pub(crate) fn nearby_safety_rationale_stops_at_code_and_sixteen_lines() {
+/// Rationale lookup reads the whole contiguous comment block above the unsafe line (FAMILY-CONTRACT section 12, search
+/// `A SAFETY rationale is found by comment block`) and cannot cross an intervening statement or blank line.
+pub(crate) fn nearby_safety_rationale_reads_the_whole_comment_block() {
     let separated_lines = [
         "// SAFETY: caller validated pointer alignment",
         "let unrelated = prepare();",
@@ -88,20 +89,22 @@ pub(crate) fn nearby_safety_rationale_stops_at_code_and_sixteen_lines() {
         "an intervening statement must end the rationale prelude"
     );
 
-    let mut within_bound = vec!["// SAFETY: caller validated pointer alignment"];
-    within_bound.extend(std::iter::repeat_n("// continued invariant", 15));
-    within_bound.push("unsafe { read_pointer() }");
+    let mut long_block = vec!["// SAFETY: caller validated pointer alignment"];
+    long_block.extend(std::iter::repeat_n("// continued invariant", 40));
+    long_block.push("unsafe { read_pointer() }");
     assert!(
-        crate::built_in_rules::find_nearby_safety_rationale(&within_bound, 16).is_some(),
-        "a marker sixteen lines before the block should be accepted"
+        crate::built_in_rules::find_nearby_safety_rationale(&long_block, 41).is_some(),
+        "a marker forty lines up in one comment block should be accepted"
     );
 
-    let mut beyond_bound = vec!["// SAFETY: caller validated pointer alignment"];
-    beyond_bound.extend(std::iter::repeat_n("// continued invariant", 16));
-    beyond_bound.push("unsafe { read_pointer() }");
+    let mut broken_block = vec!["// SAFETY: caller validated pointer alignment"];
+    broken_block.extend(std::iter::repeat_n("// continued invariant", 40));
+    broken_block.push("");
+    broken_block.push("// an unrelated note");
+    broken_block.push("unsafe { read_pointer() }");
     assert!(
-        crate::built_in_rules::find_nearby_safety_rationale(&beyond_bound, 17).is_none(),
-        "a marker beyond the bounded prelude must stay unresolved"
+        crate::built_in_rules::find_nearby_safety_rationale(&broken_block, 43).is_none(),
+        "a blank line ends the comment block, so a marker above it stays unresolved"
     );
 }
 
@@ -150,4 +153,207 @@ pub(crate) fn nearby_safety_rationale_follows_block_comment_boundaries() {
         crate::built_in_rules::find_nearby_safety_rationale(&inline_block_comment, 2).is_none(),
         "a trailing block comment must not disguise executable code as rationale text"
     );
+}
+
+#[test]
+/// A rationale still explains a block when a statement leading into it or a control-flow header sits between
+/// them, under a bare `SAFETY` line or a `# Safety` heading, and as the
+/// first comment inside the block. Prose that merely mentions safety explains nothing, and a blank line ends
+/// the prelude.
+pub(crate) fn nearby_safety_rationale_reads_continuations_headings_and_the_block_body() {
+    let find = crate::built_in_rules::find_nearby_safety_rationale;
+    let continuation = [
+        "// SAFETY: the slice is non-empty",
+        "let value =",
+        "    unsafe { read_pointer() };",
+    ];
+    assert_eq!(
+        find(&continuation, 2).as_deref(),
+        Some("the slice is non-empty")
+    );
+    let header = [
+        "// SAFETY: the tag was checked above",
+        "match tag {",
+        "    Tag::Raw => unsafe { read_pointer() },",
+    ];
+    assert_eq!(
+        find(&header, 2).as_deref(),
+        Some("the tag was checked above")
+    );
+    let blank = [
+        "// SAFETY: aligned by construction",
+        "",
+        "unsafe { read_pointer() }",
+    ];
+    assert!(find(&blank, 2).is_none(), "a blank line ends the prelude");
+    let bare = [
+        "// SAFETY",
+        "// The buffer outlives the call.",
+        "unsafe { read_pointer() }",
+    ];
+    assert_eq!(
+        find(&bare, 2).as_deref(),
+        Some("The buffer outlives the call.")
+    );
+    let heading = [
+        "// # Safety",
+        "// The caller guarantees exclusive access.",
+        "unsafe { read_pointer() }",
+    ];
+    assert_eq!(
+        find(&heading, 2).as_deref(),
+        Some("The caller guarantees exclusive access.")
+    );
+    let inside = [
+        "unsafe {",
+        "    // SAFETY: the glyph table is static",
+        "    read_pointer()",
+        "}",
+    ];
+    assert_eq!(
+        find(&inside, 0).as_deref(),
+        Some("the glyph table is static")
+    );
+    let inside_below_marker = [
+        "unsafe {",
+        "    // SAFETY:",
+        "    // We have a unique not null pointer here",
+        "    read_pointer()",
+        "}",
+    ];
+    assert_eq!(
+        find(&inside_below_marker, 0).as_deref(),
+        Some("We have a unique not null pointer here")
+    );
+    let inside_empty = ["unsafe {", "    // SAFETY:", "    read_pointer()", "}"];
+    assert_eq!(find(&inside_empty, 0).as_deref(), Some(""));
+    for decoy in [
+        [
+            "// thread safety is handled by the lock",
+            "unsafe { read_pointer() }",
+        ],
+        ["// TODO: safety review", "unsafe { read_pointer() }"],
+        [
+            "// SAFETYNET is a separate type",
+            "unsafe { read_pointer() }",
+        ],
+    ] {
+        assert!(find(&decoy, 1).is_none(), "{decoy:?}");
+    }
+    let completed = [
+        "// SAFETY: caller validated pointer alignment",
+        "let unrelated = prepare();",
+        "",
+        "unsafe { read_pointer() }",
+    ];
+    assert!(
+        find(&completed, 3).is_none(),
+        "a completed statement still ends the prelude after a blank line"
+    );
+    let weak = crate::built_in_rules::is_weak_safety_rationale;
+    for placeholder in [
+        "TODO: document the invariant here",
+        "FIXME this is unsound, see issue 123",
+    ] {
+        assert!(
+            weak(placeholder),
+            "a placeholder gives no rationale: {placeholder}"
+        );
+    }
+    assert!(!weak("the pointer comes from a live Box and is aligned"));
+    for (lines, block_line) in [
+        (
+            vec![
+                "match k {",
+                "    // SAFETY: k == 0 guarantees p is valid for reads.",
+                "    0 => unsafe { *p },",
+                "    _ => unsafe { *q },",
+            ],
+            3,
+        ),
+        (
+            vec![
+                "add(",
+                "    // SAFETY: p is valid for reads for the whole call.",
+                "    unsafe { *p },",
+                "    unsafe { *q },",
+            ],
+            3,
+        ),
+        (
+            vec![
+                "Pair {",
+                "    // SAFETY: p is valid for reads for the whole call.",
+                "    first: unsafe { *p },",
+                "    second: unsafe { *q },",
+            ],
+            3,
+        ),
+        (
+            vec![
+                "while unsafe { next(it) } != 0 {",
+                "    // SAFETY: it stays valid until next returns 0.",
+                "    let _value = unsafe { get(it) };",
+            ],
+            0,
+        ),
+        (
+            vec!["// SAFETY HAZARD: p may be dangling here", "unsafe { *p }"],
+            1,
+        ),
+        (
+            vec![
+                "// SAFETY is not guaranteed here, the pointer may dangle after free",
+                "unsafe { *p }",
+            ],
+            1,
+        ),
+        (
+            vec![
+                "// SAFETY HAZARD - this pointer may dangle after the owner frees it",
+                "unsafe { *p }",
+            ],
+            1,
+        ),
+        (
+            vec!["// SAFETY Note: the pointer may dangle", "unsafe { *p }"],
+            1,
+        ),
+        (
+            vec![
+                "// SAFETY Cannot be guaranteed when the buffer is shared with another thread.",
+                "unsafe { *p }",
+            ],
+            1,
+        ),
+        (
+            vec![
+                "// SAFETY This is safe because the buffer outlives the call",
+                "unsafe { *p }",
+            ],
+            1,
+        ),
+        (
+            vec![
+                "// SAFETY: `p` is non-null and valid for reads for the whole call.",
+                "let a = checked_read(p); // slow path :(",
+                "let b = unsafe { *q };",
+            ],
+            2,
+        ),
+        (
+            vec![
+                "if borrowed {",
+                "    // SAFETY: the borrowed buffer is released by its owner, never here.",
+                "} else {",
+                "    unsafe { *p = 0 };",
+            ],
+            3,
+        ),
+    ] {
+        assert!(
+            find(&lines, block_line).is_none(),
+            "a sibling's, another branch's, a loop body's or a hazard's comment explains nothing: {lines:?}"
+        );
+    }
 }

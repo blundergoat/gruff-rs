@@ -31,6 +31,11 @@ pub(crate) fn default_disabled_rules_need_explicit_opt_in() {
     for rule_id in [
         "test-quality.unwrap-in-test",
         "waste.unnecessary-clone-candidate",
+        "complexity.cyclomatic",
+        "security.process-command",
+        "security.unsafe-deserialization",
+        "security.github-actions-broad-permissions",
+        "security.hardcoded-bind-all-interfaces",
     ] {
         let default_config = Config::default();
         assert!(
@@ -75,7 +80,7 @@ rules:
 "#,
     );
     let config = load_config(dir.path(), &options).expect("empty selector accepted");
-    assert!(config.is_rule_enabled("security.process-command"));
+    assert!(!config.is_rule_enabled("security.process-command"));
     assert!(config.is_rule_enabled("docs.missing-readme"));
 
     write_config(
@@ -194,7 +199,6 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "dependency.duplicate-locked-version",
             "dependency.git-source",
             "dependency.git-unpinned-revision",
-            "dependency.path-source",
             "dependency.wildcard-version",
             "security.github-actions-broad-permissions",
             "security.github-actions-pull-request-target",
@@ -203,7 +207,6 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
             "security.github-actions-unpinned-action",
             "security.hardcoded-bind-all-interfaces",
             "security.insecure-rng-for-secrets",
-            "security.path-traversal-candidate",
             "security.process-command",
             "security.sql-dynamic-query",
             "security.ssrf-candidate",
@@ -233,9 +236,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
         vec![
             "sensitive-data.api-key-pattern",
             "sensitive-data.aws-access-key",
-            "sensitive-data.database-url-password",
             "sensitive-data.gcp-service-account-key",
-            "sensitive-data.hardcoded-env-value",
             "sensitive-data.high-entropy-string",
             "sensitive-data.jwt-token",
             "sensitive-data.phi-pattern",
@@ -257,14 +258,7 @@ pub(crate) fn list_rules_selector_preview_is_deterministic() {
     )
     .expect("selector json preview");
     let ids: Vec<String> = serde_json::from_str(&json_output).expect("selector json");
-    assert_eq!(
-        ids,
-        vec![
-            "performance.clone-in-loop",
-            "performance.format-in-loop",
-            "performance.regex-in-loop"
-        ]
-    );
+    assert_eq!(ids, vec!["performance.regex-in-loop"]);
 }
 
 #[test]

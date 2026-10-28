@@ -10,12 +10,12 @@ mod behavior_rules;
 mod comment_item_and_blocks;
 #[path = "concurrency_rules.rs"]
 mod concurrency_rules;
+#[path = "duplicate_tests.rs"]
+mod duplicate_tests;
 #[path = "modernisation_rules.rs"]
 mod modernisation_rules;
 #[path = "network_security_rules.rs"]
 mod network_security_rules;
-#[path = "path_traversal_rules.rs"]
-mod path_traversal_rules;
 #[path = "perf_rules.rs"]
 mod perf_rules;
 #[path = "waste_rules.rs"]
@@ -24,8 +24,8 @@ mod waste_rules;
 pub(crate) use behavior_rules::*;
 pub(crate) use comment_item_and_blocks::*;
 pub(crate) use concurrency_rules::*;
+pub(crate) use duplicate_tests::*;
 pub(crate) use modernisation_rules::*;
 pub(crate) use network_security_rules::*;
-pub(crate) use path_traversal_rules::*;
 pub(crate) use perf_rules::*;
 pub(crate) use waste_rules::*;

@@ -75,40 +75,15 @@ fn collect_input_path_sources(
     collect_directory_sources(&absolute, session, files);
 }
 
-// Explicit file args bypass the directory walk, so the config `paths.ignore`
-// check has to happen here too. A coding-agent hook passes changed files
-// directly, and config-ignored files must never produce findings however they
-// were supplied (ADR-018). Git/default ignores still do not apply to explicit
-// paths (ADR-004): an operator can inspect those by naming the file - except VCS
-// internals (`.git`/`.hg`/`.svn`), which `classify_ignored_relative` and
-// `check-ignore` treat as always blocked, so naming one explicitly stays blocked
-// here too (no reading or analysing repository internals from an untrusted tree).
+// Explicit file args bypass Git and fallback exclusions. Config policy and VCS
+// internals remain authoritative for every invocation shape.
 fn collect_input_file_source(
     session: &DiscoverySession<'_>,
     absolute: &Path,
     files: &mut Vec<SourceFile>,
 ) {
-    let relative = display_path(session.project_root, absolute);
-    if let Some(matcher) = config_ignore_match(&relative, session.config) {
-        record_ignored_path(
-            session.ignored_paths,
-            IgnoredPath {
-                path: relative,
-                source: IgnoreSource::Config,
-                pattern: Some(matcher.pattern().to_string()),
-            },
-        );
-        return;
-    }
-    if let Some(component) = vcs_internal_component(&relative) {
-        record_ignored_path(
-            session.ignored_paths,
-            IgnoredPath {
-                path: relative,
-                source: IgnoreSource::Default,
-                pattern: Some(component),
-            },
-        );
+    if let Some(ignored) = classify_explicit_file(session.project_root, absolute, session.config) {
+        record_ignored_path(session.ignored_paths, ignored);
         return;
     }
     push_source_file(
@@ -209,10 +184,19 @@ pub(crate) fn should_include_file(entry: &DirEntry, filters: &DiscoveryFilters<'
 // Shared exclusion gate for directories (descend) and files (include): classify
 // the path once, record it with its reason when ignored, otherwise keep it.
 fn should_keep_entry(entry: &DirEntry, filters: &DiscoveryFilters<'_>) -> bool {
-    let relative = display_path(filters.project_root, entry.path());
-    match classify_ignored_relative(&relative, filters.config, filters.include_ignored) {
+    match classify_ignored_path(
+        filters.project_root,
+        entry.path(),
+        filters.config,
+        filters.include_ignored,
+    ) {
         Some(ignored) => {
-            record_ignored_path(filters.ignored_paths, ignored);
+            // A minified file is listed only when gruff-rs would otherwise scan it, so `jquery.min.js` stays unsupported.
+            if ignored.pattern.as_deref() != Some(MINIFIED_FILE_PATTERN)
+                || is_scannable_source(entry.path())
+            {
+                record_ignored_path(filters.ignored_paths, ignored);
+            }
             false
         }
         None => true,
@@ -248,7 +232,9 @@ pub(crate) fn config_ignore_match<'a>(
 ///    `--include-ignored` can override it.
 /// 2. VCS internals (`.git`/`.hg`/`.svn`) — always blocked, even with
 ///    `--include-ignored` ("VCS internals remain blocked").
-/// 3. Default/generated directories — opt-out via `--include-ignored`.
+/// 3. Third-party, build-output and minified names — never defer to a `.gitignore`
+///    (FAMILY-CONTRACT.md section 7, precision-floor M04); opt-out via `--include-ignored`.
+/// 4. No-gitignore fallback directories — opt-out via `--include-ignored`.
 ///
 /// gitignore exclusions are applied by the discovery walk's `ignore`-crate
 /// matchers and are not re-derived here, keeping a single ignore engine (ADR-018).
@@ -256,6 +242,8 @@ pub(crate) fn classify_ignored_relative(
     relative: &str,
     config: &Config,
     include_ignored: bool,
+    fallback_applies: bool,
+    is_dir: bool,
 ) -> Option<IgnoredPath> {
     if let Some(matcher) = config_ignore_match(relative, config) {
         return Some(IgnoredPath {
@@ -274,15 +262,27 @@ pub(crate) fn classify_ignored_relative(
     if include_ignored {
         return None;
     }
+    if let Some(component) = third_party_component(relative, is_dir) {
+        return Some(IgnoredPath {
+            path: relative.to_string(),
+            source: IgnoreSource::Default,
+            pattern: Some(component),
+        });
+    }
+    if !is_dir && is_minified_name(relative) {
+        return Some(IgnoredPath {
+            path: relative.to_string(),
+            source: IgnoreSource::Default,
+            pattern: Some(MINIFIED_FILE_PATTERN.to_string()),
+        });
+    }
+    if !fallback_applies {
+        return None;
+    }
     let component = default_ignored_component(relative)?;
-    let source = if component == "generated" {
-        IgnoreSource::Generated
-    } else {
-        IgnoreSource::Default
-    };
     Some(IgnoredPath {
         path: relative.to_string(),
-        source,
+        source: IgnoreSource::Default,
         pattern: Some(component),
     })
 }
@@ -293,29 +293,102 @@ pub(crate) fn classify_ignored_path(
     config: &Config,
     include_ignored: bool,
 ) -> Option<IgnoredPath> {
-    classify_ignored_relative(&display_path(project_root, path), config, include_ignored)
+    classify_ignored_relative(
+        &display_path(project_root, path),
+        config,
+        include_ignored,
+        should_apply_fallback_at(project_root, path),
+        path.is_dir(),
+    )
+}
+
+pub(crate) fn classify_explicit_file(
+    project_root: &Path,
+    path: &Path,
+    config: &Config,
+) -> Option<IgnoredPath> {
+    classify_ignored_relative(
+        &display_path(project_root, path),
+        config,
+        true,
+        false,
+        false,
+    )
 }
 
 pub(crate) fn default_ignored_component(relative: &str) -> Option<String> {
-    let first = relative.split('/').next().unwrap_or(relative);
-    matches!(
-        first,
-        ".git"
-            | ".hg"
-            | ".svn"
-            | ".idea"
-            | ".vscode"
-            | "build"
-            | "cache"
-            | "coverage"
-            | "dist"
-            | "generated"
-            | "node_modules"
-            | "target"
-            | "tmp"
-            | "vendor"
-    )
-    .then(|| first.to_string())
+    relative
+        .split('/')
+        .find(|component| {
+            matches!(
+                *component,
+                ".fleet" | ".idea" | ".vscode" | "build" | "coverage" | "node_modules" | "target"
+            )
+        })
+        .map(str::to_string)
+}
+
+/// Pattern recorded for a minified file such as `settings.min.json`, which section 7 skips as generated. The glob is
+/// only a label: `is_minified_name` decides the match, `.min.` directly before the final extension.
+pub(crate) const MINIFIED_FILE_PATTERN: &str = "*.min.*";
+
+/// Return the outermost directory on `relative` that holds third-party copies or build output, lowercased over ASCII.
+/// A file's own name is not a directory, so `a/Vendor/x.rs` gives `vendor` while a file named `dist` matches nothing.
+pub(crate) fn third_party_component(relative: &str, is_dir: bool) -> Option<String> {
+    let components: Vec<&str> = relative.split('/').collect();
+    let directories = if is_dir {
+        &components[..]
+    } else {
+        &components[..components.len().saturating_sub(1)]
+    };
+    directories
+        .iter()
+        .map(|component| component.to_ascii_lowercase())
+        .find(|component| {
+            matches!(
+                component.as_str(),
+                "vendor" | "vendors" | "third_party" | "third-party" | "bower_components" | "dist"
+            )
+        })
+}
+
+/// Decide whether a base name has `.min.` directly before its final extension, such as `config.min.json`;
+/// `app.min.js.map` and `admin.mini.json` do not match.
+pub(crate) fn is_minified_name(relative: &str) -> bool {
+    let name = relative
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match name.rsplit_once('.') {
+        Some((stem, extension)) => !extension.is_empty() && stem.ends_with(".min"),
+        None => false,
+    }
+}
+
+pub(crate) fn should_apply_fallback_at(project_root: &Path, path: &Path) -> bool {
+    let absolute = absolutize(project_root, path);
+    let Some(parent) = absolute.parent() else {
+        return true;
+    };
+    let Ok(relative_parent) = parent.strip_prefix(project_root) else {
+        return true;
+    };
+
+    let mut current = project_root.to_path_buf();
+    if current.join(".gitignore").is_file() {
+        return false;
+    }
+    for component in relative_parent.components() {
+        let std::path::Component::Normal(component) = component else {
+            continue;
+        };
+        current.push(component);
+        if current.join(".gitignore").is_file() {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn vcs_internal_component(relative: &str) -> Option<String> {
@@ -331,19 +404,12 @@ pub(crate) fn push_source_file(
     origin: SourceOrigin,
     files: &mut Vec<SourceFile>,
 ) {
-    let extension = path
+    let is_rust = path
         .extension()
         .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    let extension = extension.to_ascii_lowercase();
-    let is_rust = extension == "rs";
-    let is_text = is_supported_text_file(&extension, file_name);
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"));
 
-    if is_rust || is_text {
+    if is_scannable_source(path) {
         files.push(SourceFile {
             absolute_path: path.to_path_buf(),
             display_path: display_path(project_root, path),
@@ -351,6 +417,20 @@ pub(crate) fn push_source_file(
             origin,
         });
     }
+}
+
+/// Decide whether `push_source_file` would admit a path: Rust source or a supported text or config file.
+pub(crate) fn is_scannable_source(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    extension == "rs" || is_supported_text_file(&extension, file_name)
 }
 
 fn is_supported_text_file(extension: &str, file_name: &str) -> bool {

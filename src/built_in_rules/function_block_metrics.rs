@@ -11,7 +11,11 @@ use super::*;
 pub(crate) struct FunctionBlock {
     pub(crate) name: String,
     pub(crate) param_count: usize,
+    /// First line of the block, its attached docs and attributes included; body offsets count from here.
     pub(crate) start_line: usize,
+    /// Line of the function's name, where a block finding is reported, so the report names the signature a
+    /// developer edits rather than its first doc or attribute line.
+    pub(crate) declaration_line: usize,
     pub(crate) line_count: usize,
     pub(crate) executable_line_count: usize,
     pub(crate) body: String,
@@ -20,10 +24,11 @@ pub(crate) struct FunctionBlock {
     pub(crate) is_test: bool,
     pub(crate) test_context: bool,
     pub(crate) is_async: bool,
-    pub(crate) returns_bool: bool,
     pub(crate) returns_result: bool,
     pub(crate) ignore_without_reason: bool,
     pub(crate) body_is_declarative_literal: bool,
+    /// Cyclomatic, nesting and cognitive complexity counted on the parsed body.
+    pub(crate) complexity: SyntaxComplexity,
 }
 
 impl FunctionBlock {
@@ -48,6 +53,8 @@ pub(crate) fn collect_module_function_blocks(
     }
 }
 
+/// Raw parser facts used to build one function record before the user's rules run.
+/// A scan reaches these facts after Rust source parses successfully.
 pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) lines: &'a [&'a str],
     pub(crate) name: String,
@@ -56,7 +63,6 @@ pub(crate) struct FunctionBlockParts<'a> {
     pub(crate) attrs: &'a [syn::Attribute],
     pub(crate) test_context: bool,
     pub(crate) is_async: bool,
-    pub(crate) returns_bool: bool,
     pub(crate) returns_result: bool,
     pub(crate) name_start: LineColumn,
     pub(crate) block_end: LineColumn,
@@ -80,19 +86,33 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         name: parts.name,
         param_count: parts.param_count,
         start_line: start + 1,
+        declaration_line: function_index + 1,
         line_count: end.saturating_sub(start) + 1,
-        executable_line_count: end.saturating_sub(function_index) + 1,
+        executable_line_count: declaration_code_line_count(
+            &body,
+            function_index.saturating_sub(start),
+        ),
         body,
         rustdoc: source_context.rustdoc,
         is_externally_public: is_externally_public(parts.visibility),
         is_test,
         test_context,
         is_async: parts.is_async,
-        returns_bool: parts.returns_bool,
         returns_result: parts.returns_result,
         ignore_without_reason: has_ignore_without_reason(parts.attrs),
         body_is_declarative_literal: is_declarative_literal_body(parts.block),
+        complexity: syntax_complexity(parts.block),
     }
+}
+
+/// Count the code lines from the declaration line to the end of the body (FAMILY-CONTRACT section 12, search `Code
+/// lines in every line count`). The body slice starts at the attached docs and attributes, so it is lexically whole.
+fn declaration_code_line_count(body: &str, declaration_offset: usize) -> usize {
+    rust_code_line_flags(body)
+        .into_iter()
+        .skip(declaration_offset)
+        .filter(|is_code| *is_code)
+        .count()
 }
 
 /// True iff the block is exactly one trailing expression whose shape is a
@@ -149,16 +169,6 @@ pub(crate) fn count_params(
         .count()
 }
 
-pub(crate) fn is_bool_return_type(output: &ReturnType) -> bool {
-    let ReturnType::Type(_, return_type) = output else {
-        return false;
-    };
-    let Type::Path(path) = return_type.as_ref() else {
-        return false;
-    };
-    path.path.is_ident("bool")
-}
-
 /// True iff the function signature returns a syntactic `Result<...>` or
 /// `std::result::Result<...>`. Type aliases (`Result<T>` defined as
 /// `type Result<T> = std::result::Result<T, MyError>`) cannot be detected
@@ -178,27 +188,8 @@ pub(crate) fn is_result_return_type(output: &ReturnType) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn max_nesting_depth(source: &str) -> usize {
-    let mut depth = 0usize;
-    let mut max_depth = 0usize;
-    for character in source.chars() {
-        match character {
-            '{' => {
-                depth += 1;
-                max_depth = max_depth.max(depth);
-            }
-            '}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    max_depth.saturating_sub(1)
-}
-
 /// Counts occurrences of `pattern` that appear inside a loop body in
-/// `source`. `count_line` lets callers skip structurally exempt lines
-/// (struct-field clones, owned API arguments) so the performance rules
-/// fire only on real per-tick waste, not on idiomatic per-iteration
-/// owned-value construction.
+/// `source`. `count_line` selects the source lines eligible for the caller's pattern.
 pub(crate) fn loop_pattern_count_filtered<F>(source: &str, pattern: &Regex, count_line: F) -> usize
 where
     F: Fn(&str) -> bool,

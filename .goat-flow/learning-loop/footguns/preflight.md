@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-08-14
+last_reviewed: 2026-10-03
 ---
 
 ## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
@@ -44,10 +44,9 @@ Resist the temptation to "fix the truncation" by widening the `tail` window: the
 
 `target/debug/gruff-rs` and `target/release/gruff-rs` are local Cargo artifacts,
 not freshness-guaranteed project entrypoints. During the 2026-06-10 sibling
-audit (`.goat-flow/scratchpad/sibling-audit-2026-06-10.json`, search:
-`surprises[5]`), this checkout's release binary was five days and nine commits
-behind HEAD and predated the `hook` subcommand entirely. Directly timing that
-binary measured stale code.
+audit (local scratchpad notes, not retained), this checkout's release binary
+was five days and nine commits behind HEAD and predated the `hook` subcommand
+entirely. Directly timing that binary measured stale code.
 
 The debug path can also stay stale after a test-only build. During 0.5.0 M01,
 `cargo test accepted_abbreviations` compiled a test binary containing
@@ -112,6 +111,20 @@ the canonical target, and the complete 85-rule detail scan reported zero
 dangling links. A post-test CLI proof must therefore check both the marker and
 the executable freshness; a successful test harness alone does not refresh the
 normal command.
+
+**2026-10-03 extension:** goat-flow 1.17.0 reordered the gruff playbook's
+Availability Check (`.goat-flow/skill-docs/playbooks/gruff-code-quality.md`,
+search: `"target/release/$target"`) so `target/release/gruff-rs` is tried
+before `bin/gruff-rs`. In this checkout the release binary was built the
+evening before the HEAD commit, so an agent following the playbook verbatim
+would have proved fixes against stale code. The preflight row for the wrapper
+kept passing because `bin/$target` was still in the list, only no longer first.
+`.goat-flow/config.yaml` now pins `hooks.gruff-code-quality.binaries.rs` to
+`bin/gruff-rs`, which the playbook treats as project authority and the hook
+honours, and `scripts/preflight-checks.sh` (search: `rs: bin/gruff-rs`) asserts
+the pin. The hook itself never searched `target/`
+(`.goat-flow/hooks/gruff-code-quality.sh`,
+search: `auto-executing a name-matched binary`).
 
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 

@@ -149,8 +149,12 @@ fn render_options_block(out: &mut String, definition: &RuleDefinition) {
     for option in definition.options {
         let _ = writeln!(
             out,
-            "  {name:<name_width$}  list  {description}",
+            "  {name:<name_width$}  {kind}  {description}",
             name = option.name,
+            kind = match option.value_kind {
+                crate::rules::OptionValueKind::StringArray => "list",
+                crate::rules::OptionValueKind::Boolean => "boolean",
+            },
             name_width = name_width,
             description = option.description,
         );

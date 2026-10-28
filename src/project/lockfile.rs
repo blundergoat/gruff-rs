@@ -28,6 +28,7 @@ pub(crate) fn read_lockfile_raw(
                 message: format!("Unable to read Cargo.lock: {error}"),
                 file_path: Some("Cargo.lock".to_string()),
                 line: Some(1),
+                invalidates_run: None,
             });
             return None;
         }
@@ -47,6 +48,7 @@ pub(crate) fn parse_lockfile_value(
                     .to_string(),
                 file_path: Some("Cargo.lock".to_string()),
                 line: Some(1),
+                invalidates_run: None,
             });
             return None;
         }
