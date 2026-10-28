@@ -598,7 +598,7 @@ pub(crate) const SIZE_RULES: &[RuleDefinition] = &[
 
 pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
     RuleDefinition {
-        default_enabled: false,
+        default_enabled: true,
         ..rule_definition!(
             "test-quality.duplicate-test-body",
             "Duplicate test body",
@@ -607,7 +607,7 @@ pub(crate) const TEST_QUALITY_RULES: &[RuleDefinition] = &[
             Severity::Advisory,
             Confidence::Medium,
             None,
-            "Suggests a labelled table-driven case loop for three or more tests in one module whose attributes match and whose multi-statement bodies differ only in eligible literal values. Off by default pending group measurement.",
+            "Suggests a labelled table-driven case loop for three or more tests in one module whose attributes match and whose multi-statement bodies differ only in eligible literal values.",
             false_positives: &[FalsePositiveShape {
                 shape: "Tests with the same syntax exercise distinct contracts encoded in literal payloads or module-local helpers.",
                 mitigation: "Keep separate tests when their intent is clearer; otherwise fold them into labelled table rows. Review all listed members before consolidating.",

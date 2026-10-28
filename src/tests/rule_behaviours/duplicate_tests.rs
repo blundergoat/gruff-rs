@@ -78,7 +78,7 @@ fn duplicate_groups_preserve_executable_differences() {
         "let value = parse(5); assert_eq!(value, 6);",
     ];
     let cases: &[(&str, &[&str], bool, usize)] = &[
-        ("default off", &variants, false, 0),
+        ("default on", &variants, false, 1),
         ("three", &variants, true, 1),
         (
             "four",
@@ -678,4 +678,22 @@ fn field_report_sorting_group_disappears_when_folded() {
             assert_eq!(group.symbol.as_deref(), Some("sorts_after_basic_greater"));
         }
     }
+}
+
+/// An explicit project setting can opt out after group detection becomes the default.
+#[test]
+fn duplicate_groups_can_be_disabled() {
+    let _guard = analysis_lock();
+    let project = tempdir().expect("project");
+    let members = [
+        (PLAIN, "let value = parse(1); assert_eq!(value, 2);"),
+        (PLAIN, "let value = parse(3); assert_eq!(value, 4);"),
+        (PLAIN, "let value = parse(5); assert_eq!(value, 6);"),
+    ];
+    baseline_with_lib(project.path(), &test_source(&members));
+    write_config(
+        project.path(),
+        &format!("rules:\n  {RULE}:\n    enabled: false\n"),
+    );
+    assert!(group_findings(project.path(), false).is_empty());
 }

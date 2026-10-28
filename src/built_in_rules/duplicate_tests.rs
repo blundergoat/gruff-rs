@@ -1,5 +1,5 @@
 //! Same-file test groups whose bodies differ only in eligible literal values (FAMILY-CONTRACT.md section 16).
-//! The default-off detector suggests a labelled table without claiming the cases have identical intent.
+//! The default-on detector suggests a labelled table without claiming the cases have identical intent.
 
 use super::*;
 use proc_macro2::{Delimiter, Spacing, Span, TokenStream, TokenTree};
