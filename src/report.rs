@@ -20,6 +20,8 @@ pub(crate) enum Confidence {
 
 impl Severity {
     /// Rank this severity so a display floor or an exit gate can compare against it.
+    ///
+    /// Returns 0 for `Advisory`, 1 for `Warning` and 2 for `Error`, so a larger rank is more severe.
     pub(crate) fn rank(self) -> usize {
         match self {
             Self::Advisory => 0,
@@ -33,6 +35,9 @@ impl std::str::FromStr for Severity {
     type Err = String;
 
     /// Read one of the three ratified severities, refusing anything else rather than guessing a floor.
+    ///
+    /// `value` is the text to parse; only the exact lowercase `advisory`, `warning` or `error` is accepted, with no trimming.
+    /// Returns the matching `Severity`, or an `Err` message that names the rejected text as an unknown severity.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "advisory" => Ok(Self::Advisory),
@@ -45,6 +50,8 @@ impl std::str::FromStr for Severity {
 
 impl Confidence {
     /// Name this confidence as the family contract spells it, for the hook payload a consumer parses.
+    ///
+    /// Returns the static lowercase name `low`, `medium` or `high`.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -85,6 +92,10 @@ pub(crate) const SCORE_PILLARS: &[Pillar] = &[
     Pillar::Design,
 ];
 
+/// Spell one pillar as its kebab-case label, the same name its `Serialize` derive writes.
+///
+/// `pillar` is the pillar to name; the match covers every variant, including `Waste`, which `SCORE_PILLARS` leaves out.
+/// Returns the static label, such as `dead-code` for `Pillar::DeadCode`.
 pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
     match pillar {
         Pillar::Size => "size",
@@ -138,6 +149,11 @@ pub(crate) struct Finding {
 }
 
 impl Serialize for Finding {
+    /// Serialize this finding as an 18-field struct with camelCase keys, writing `file_path` under both `file` and `filePath`.
+    ///
+    /// `serializer` is the serde backend that receives the fields.
+    /// `baseline_identity`, `baseline_subject` and `baseline_status` are never written.
+    /// Returns the serializer's success value, or the first error from starting the struct, writing a field or closing it with `end`.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -179,6 +195,10 @@ pub(crate) struct FindingDescriptor {
 }
 
 impl Finding {
+    /// Build a finding from its descriptor, deriving its scope, line-sensitive fingerprint and stable identity from those fields.
+    ///
+    /// `descriptor` holds the caller's rule, message, path, line, symbol and other fields, which move into the finding unchanged.
+    /// Returns the finding with tier `v0.1`, no end line, column or secondary pillars, and its three baseline fields `None`.
     pub(crate) fn new(descriptor: FindingDescriptor) -> Self {
         let FindingDescriptor {
             rule_id,
@@ -224,10 +244,14 @@ impl Finding {
     }
 }
 
-/// The finding's line-sensitive fingerprint, which is what the baseline matcher in `src/baseline.rs` keys on.
+/// The finding's line-sensitive fingerprint, which `Finding::new` stores in the published `fingerprint` field.
 ///
-/// Moving a finding to a different line changes this by design; the ratified `stable_identity` is the one that
-/// survives a move.
+/// Moving a finding to a different line changes this by design.
+/// `Finding::new` derives `stable_identity` separately, from the rule, path, message, symbol and a scope inferred with the line.
+///
+/// `rule_id`, `file_path`, `line` and `symbol` are hashed with SHA-256 in that order, separated by NUL bytes.
+/// A missing `line` hashes as 0 and a missing `symbol` as an empty string.
+/// Returns the first 16 lowercase hex characters of the digest.
 fn line_sensitive_fingerprint(
     rule_id: &str,
     file_path: &str,
@@ -257,6 +281,10 @@ pub(crate) struct RunDiagnostic {
 }
 
 impl RunDiagnostic {
+    /// Classify this diagnostic as a run failure by its type, unless its `invalidates_run` field is `Some(false)`.
+    ///
+    /// Returns `true` for the nine error types it lists, such as `missing-path`, `parse-error` and `gate-config-error`.
+    /// Returns `false` for every other type, such as `gate`, even when `invalidates_run` is `Some(true)`.
     pub(crate) fn is_failure(&self) -> bool {
         if self.invalidates_run == Some(false) {
             return false;
@@ -303,6 +331,13 @@ pub(crate) struct AnalysisReport {
 }
 
 impl Serialize for AnalysisReport {
+    /// Serialize this report by delegating entirely to `crate::machine_contract::serialize_analysis`.
+    ///
+    /// `serializer` is the serde backend, passed through unchanged.
+    /// Returns whatever that function returns: the serializer's success value or its error.
+    ///
+    /// Building the envelope panics if a required path has no project-relative form or the ignored paths and their details disagree.
+    /// It also panics when a default ignore has no canonical reason.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -465,6 +500,10 @@ pub(crate) struct FileScore {
 }
 
 impl Serialize for FileScore {
+    /// Serialize this file score as a four-field struct, writing `file_path` under both `file` and `filePath`.
+    ///
+    /// `serializer` is the serde backend that receives `file`, `filePath`, `score` and `findings`; `penalty` is never written.
+    /// Returns the serializer's success value, or the first error from starting the struct, writing a field or closing it with `end`.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

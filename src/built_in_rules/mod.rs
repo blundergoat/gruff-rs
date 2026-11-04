@@ -74,6 +74,10 @@ pub(crate) struct EnabledBuiltinFamilies {
 }
 
 impl EnabledBuiltinFamilies {
+    /// Work out which built-in rule families have at least one enabled rule, so disabled families skip their scan cost.
+    ///
+    /// `config` answers `is_rule_enabled` for each rule id; a family's flag is true when any rule it runs is enabled.
+    /// Returns one flag per family, all false when the configuration enables none of the listed rules.
     pub(crate) fn from_config(config: &Config) -> Self {
         Self {
             block_size: any_rule_is_enabled(
@@ -173,6 +177,9 @@ impl EnabledBuiltinFamilies {
         }
     }
 
+    /// Say whether any enabled family reads parsed function blocks, so a scan can skip building them when none does.
+    ///
+    /// Returns true when a block family, the network block security rules or the line rules are enabled; false otherwise.
     pub(crate) fn needs_function_blocks(self) -> bool {
         [
             self.block_size,
@@ -191,6 +198,9 @@ impl EnabledBuiltinFamilies {
         .any(std::convert::identity)
     }
 
+    /// Say whether any family that checks each function block is enabled, which gates the shared block analysis.
+    ///
+    /// Returns true when any `block_` family is enabled; unlike `needs_function_blocks` it ignores the network and line rules.
     pub(crate) fn has_block_rules(self) -> bool {
         [
             self.block_size,
@@ -208,6 +218,10 @@ impl EnabledBuiltinFamilies {
     }
 }
 
+/// Check whether a family's rules include one the configuration enables, so the family runs only when needed.
+///
+/// `config` holds the user's rule selection and `rule_ids` lists the identifiers of one family's rules.
+/// Returns true when at least one of `rule_ids` is enabled in `config`, and false for an empty list.
 fn any_rule_is_enabled(config: &Config, rule_ids: &[&str]) -> bool {
     rule_ids
         .iter()
@@ -215,10 +229,20 @@ fn any_rule_is_enabled(config: &Config, rule_ids: &[&str]) -> bool {
 }
 
 /// Run enabled text and Rust rules for one parsed source unit.
+///
+/// `unit` is the source unit to scan and `config` selects the enabled rules and their severities.
+/// Returns the findings of enabled rules after `apply_configured_severity`; any function blocks built on the way are dropped.
 pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     analyse_with_artifacts(unit, config, false).findings
 }
 
+/// Run enabled text and Rust rules for one source unit, optionally keeping the function blocks built for a Rust file.
+///
+/// `unit` is the source unit, carrying a Rust syntax tree when one is available, and `config` selects enabled rules and their severities.
+/// When `retain_function_blocks` is true and the unit has a syntax tree, the blocks are built even if no rule needed them.
+///
+/// Returns the findings of enabled rules after `apply_configured_severity`, plus the function blocks if a rule or the caller needed them.
+/// The blocks are `None` without a syntax tree, or when neither an enabled rule nor `retain_function_blocks` asked for them.
 pub(crate) fn analyse_with_artifacts(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -252,6 +276,10 @@ pub(crate) fn analyse_with_artifacts(
     }
 }
 
+/// Run every enabled Rust rule family on one parsed file, building the function blocks only when some family reads them.
+///
+/// `unit` is the source unit, `ast` its syntax tree, `config` the rule settings, and `families` the enabled family flags.
+/// `function_blocks` caches the blocks, filled here when empty and needed, and findings are appended to `findings`.
 fn analyse_rust_rules(
     unit: &SourceUnit<'_>,
     ast: &syn::File,
@@ -270,6 +298,11 @@ fn analyse_rust_rules(
     analyse_rust_ast_rules(unit, ast, config, families, findings);
 }
 
+/// Run the Rust rule families that read function blocks, such as the block rules, closure docs, network security and line rules.
+///
+/// `blocks` holds the file's function blocks, or `None` when no family needs them, in which case nothing runs.
+/// `ast` is the syntax tree, also walked for closure items, trait default methods and the template-injection check.
+/// `unit` supplies the file and source, `config` the rule settings and `families` the enabled flags; findings go to `findings`.
 fn analyse_block_dependent_rust_rules(
     unit: &SourceUnit<'_>,
     ast: &syn::File,
@@ -310,6 +343,10 @@ fn analyse_block_dependent_rust_rules(
     }
 }
 
+/// Run the enabled Rust security and modernisation rules that scan the whole file rather than its function blocks.
+///
+/// `unit` supplies the file and text, `ast` serves the process-command and bind-all-interfaces checks, and `families` gates each check.
+/// Findings are appended to `findings`.
 fn analyse_rust_source_rules(
     unit: &SourceUnit<'_>,
     ast: &syn::File,
@@ -339,6 +376,10 @@ fn analyse_rust_source_rules(
     }
 }
 
+/// Run the enabled Rust rule families that walk items or comments: duplicate tests, public docs, dead code, comments and naming patterns.
+///
+/// `unit` supplies the file and source, `ast` is its syntax tree, `config` feeds the naming patterns, and `families` gates each family.
+/// Findings are appended to `findings`.
 fn analyse_rust_ast_rules(
     unit: &SourceUnit<'_>,
     ast: &syn::File,
@@ -363,6 +404,10 @@ fn analyse_rust_ast_rules(
     }
 }
 
+/// Apply the severity configured for a finding's rule, except to a lower-band size or complexity finding, which keeps its own.
+///
+/// `finding` is the finding to adjust, and `config` gives its rule's severity, defaulting to the severity the finding already has.
+/// Returns `finding` with the configured severity, or unchanged when `is_lower_band` reports it as lower band.
 fn apply_configured_severity(mut finding: Finding, config: &Config) -> Finding {
     // A lower-band size or complexity finding is advisory whatever severity the user configured for its rule.
     if !is_lower_band(&finding) {

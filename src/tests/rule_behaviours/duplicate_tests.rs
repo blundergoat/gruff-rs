@@ -11,6 +11,9 @@ const PLAIN: &str = "#[test]\nfn";
 const PRELUDE: &str = "let seed = 0u8; let _ = seed;";
 
 /// Build real source functions inside one module; each member is a declaration prefix and a body.
+///
+/// `members` holds those pairs in order, and the member at position N becomes `case_N`, with the shared `PRELUDE` statements before its body.
+/// Returns the source of a `mod probe` block declaring one function per member, or an empty module when `members` is empty.
 fn test_source(members: &[(&str, &str)]) -> String {
     let mut source = String::from("mod probe {\n");
     for (index, (prefix, body)) in members.iter().enumerate() {
@@ -24,6 +27,12 @@ fn test_source(members: &[(&str, &str)]) -> String {
 }
 
 /// Scan one project and return only this rule's group findings.
+///
+/// `root` is the project directory, analysed with its config loaded and baselines turned off.
+/// When `enabled` is true, `enable_builtin_rule` first writes a project config turning the rule on; otherwise existing settings decide.
+///
+/// Returns the findings whose rule id is `RULE`, in report order and empty when no group forms.
+/// It panics when enabling the rule cannot write the project config or when the analysis fails.
 fn group_findings(root: &Path, enabled: bool) -> Vec<Finding> {
     if enabled {
         enable_builtin_rule(root, RULE);
@@ -45,6 +54,10 @@ fn group_findings(root: &Path, enabled: bool) -> Vec<Finding> {
 }
 
 /// Scan members declared with a plain `#[test]` and check the one group they form, if any.
+///
+/// `bodies` become plain `#[test]` functions in a fresh temporary project, and `enabled` is passed on to `group_findings`.
+/// It panics unless exactly `expected` groups appear; the first must anchor at line 3 on `case_0` with medium confidence and every body as a member.
+/// The group message must name every member and contain "table-driven case loop" and "descriptive label"; `label` tags count and line failures.
 fn assert_plain_groups(label: &str, bodies: &[&str], enabled: bool, expected: usize) {
     let members: Vec<_> = bodies.iter().map(|body| (PLAIN, *body)).collect();
     let project = tempdir().expect("project");

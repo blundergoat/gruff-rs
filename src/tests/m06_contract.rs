@@ -10,6 +10,10 @@ use super::*;
 const EVALUATED_FILES: usize = 10;
 
 /// Build one finding with an explicit weight and symbol so a test can state what it expects.
+///
+/// `rule_id` names the rule and seeds the message, `file_path` and `line` place the finding, and `pillar` files it under a scoring pillar.
+/// `severity` and the fixed high confidence set the finding's weight; `symbol` is stored as its symbol, which the clustering test varies.
+/// Returns the `Finding` built from those values, with a `{rule_id} message` text, a fixed remediation and empty JSON metadata.
 fn contract_finding(
     rule_id: &str,
     file_path: &str,
@@ -33,6 +37,9 @@ fn contract_finding(
 }
 
 /// Find one published pillar row by name, panicking rather than returning a default.
+///
+/// `score` is the score report whose published `pillars` rows are searched, and `name` is the pillar to look up.
+/// Returns the first `PillarScore` in `score.pillars` whose pillar is `name`, borrowed from `score`.
 fn pillar_row(score: &ScoreReport, name: Pillar) -> &PillarScore {
     score
         .pillars

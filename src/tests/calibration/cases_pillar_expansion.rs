@@ -1,5 +1,9 @@
 use super::*;
 
+/// Lists the current pillar-expansion calibration cases, each with a violating and a clean fixture.
+///
+/// Returns the cases in source order across modernisation, docs, test-quality, security and sensitive-data rules;
+/// `test-quality.should-panic-without-expected` appears twice, once for each attribute form that pins the expected panic message.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- modernisation batch -----
@@ -199,6 +203,8 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
 }
 
 /// Preserve the historical positive and negative fixtures as native retirement guards.
+///
+/// Returns one case for the retired `modernisation.manual-is-empty` rule, comparing `values.len() == 0` with `values.is_empty()`.
 pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
     vec![case(
         "modernisation.manual-is-empty",

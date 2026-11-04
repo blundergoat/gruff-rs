@@ -16,6 +16,9 @@ pub(crate) const DISTRIBUTION_BUCKETS: [DistributionBucket; 5] = [
 ];
 
 /// Render the full HTML inspection report for the given analysis result.
+///
+/// `report` is the analysis result and `scope` is the requested scope, both carried into the `ReportView` the page sections read.
+/// Returns the complete HTML document as a string.
 pub(crate) fn render(report: &AnalysisReport, scope: &RequestedScope) -> String {
     let view = ReportView::build(report, scope);
     sections::document(&view)
@@ -64,12 +67,21 @@ pub(crate) struct DistributionBucket {
 }
 
 impl DistributionBucket {
+    /// Pairs a cyclomatic-complexity bucket label with its class name, usable in a const such as `DISTRIBUTION_BUCKETS`.
+    ///
+    /// `label` is the range shown, such as `6-10`, and `class` is the class name copied onto the bucket's bar, empty for an unflagged bucket.
+    /// Returns the bucket holding both.
     const fn new(label: &'static str, class: &'static str) -> Self {
         Self { label, class }
     }
 }
 
 impl<'a> ReportView<'a> {
+    /// Precomputes the grade, verdict, table rows and distribution that the HTML report sections display.
+    ///
+    /// `report` supplies the score, findings and summary, and `scope` is stored unchanged.
+    /// A run with no composite score gets the grade `n/a` and the text `not evaluated` rather than a number.
+    /// Returns the view holding those values and the total finding count.
     fn build(report: &'a AnalysisReport, scope: &'a RequestedScope) -> Self {
         let composite = report.score.composite;
         // A run that evaluated nothing shows no number in the stamp, so an empty scan cannot read
@@ -102,6 +114,10 @@ impl<'a> ReportView<'a> {
     }
 }
 
+/// Builds the pillar table rows, one per digest in the order `pillar_digests` gives them.
+///
+/// `report` is the analysis result to digest; a pillar without a grade gets the letter `n/a` and the class `n`.
+/// Returns the rows with each pillar's score, grade and finding counts by severity.
 fn build_pillar_rows(report: &AnalysisReport) -> Vec<PillarRow> {
     pillar_digests(report)
         .into_iter()
@@ -124,6 +140,10 @@ fn build_pillar_rows(report: &AnalysisReport) -> Vec<PillarRow> {
         .collect()
 }
 
+/// Builds the top-offender table rows, pairing each file score with its grade letter and class.
+///
+/// `offenders` are the report's top-offender file scores, kept in their given order; a file with no score gets the letter `n/a`.
+/// Returns one row per offender, borrowing its file score.
 fn build_offender_rows(offenders: &[FileScore]) -> Vec<OffenderRow<'_>> {
     offenders
         .iter()
@@ -139,6 +159,10 @@ fn build_offender_rows(offenders: &[FileScore]) -> Vec<OffenderRow<'_>> {
         .collect()
 }
 
+/// Builds the cyclomatic-complexity histogram bars and the sentence that summarises them.
+///
+/// `findings` are searched for `complexity.cyclomatic` findings, which are counted into the `DISTRIBUTION_BUCKETS` ranges.
+/// Returns one bar per bucket with its label, count and class, together with the summary from `distribution_summary`.
 fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, String) {
     let counts = cyclomatic_distribution_counts(findings);
     let bars = DISTRIBUTION_BUCKETS
@@ -154,6 +178,10 @@ fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, String) {
     (bars, distribution_summary(&counts))
 }
 
+/// Counts cyclomatic-complexity findings into the five histogram buckets by their recorded complexity.
+///
+/// `findings` may hold any rule; a finding without a cyclomatic value is skipped.
+/// Returns the per-bucket counts in `DISTRIBUTION_BUCKETS` order.
 fn cyclomatic_distribution_counts(findings: &[Finding]) -> [usize; 5] {
     let mut counts = [0usize; 5];
     for finding in findings {
@@ -165,6 +193,9 @@ fn cyclomatic_distribution_counts(findings: &[Finding]) -> [usize; 5] {
     counts
 }
 
+/// Reads the complexity a cyclomatic-complexity finding recorded in its `complexity` metadata.
+///
+/// Returns the value when `finding` has the rule id `complexity.cyclomatic`, and None otherwise or when it is missing or not an unsigned integer.
 fn cyclomatic_value(finding: &Finding) -> Option<u64> {
     (finding.rule_id == "complexity.cyclomatic")
         .then(|| {
@@ -176,6 +207,10 @@ fn cyclomatic_value(finding: &Finding) -> Option<u64> {
         .flatten()
 }
 
+/// Maps a cyclomatic complexity onto its histogram bucket.
+///
+/// `value` is the complexity recorded on the finding.
+/// Returns 0 for up to 5, 1 for 6-10, 2 for 11-15, 3 for 16-20 and 4 for anything higher, matching `DISTRIBUTION_BUCKETS`.
 fn cyclomatic_bucket_index(value: u64) -> usize {
     match value {
         0..=5 => 0,
@@ -186,6 +221,10 @@ fn cyclomatic_bucket_index(value: u64) -> usize {
     }
 }
 
+/// Builds the histogram's summary sentence, which counts methods above cyclomatic complexity 10.
+///
+/// `counts` are the per-bucket counts in `DISTRIBUTION_BUCKETS` order; only the last three buckets, all above 10, are summed.
+/// Returns a no-methods sentence when they are all zero, and otherwise the total with its split across the 11-15, 16-20 and 21+ ranges.
 fn distribution_summary(counts: &[usize; 5]) -> String {
     let moderate = counts[2];
     let high = counts[3];
@@ -202,6 +241,10 @@ fn distribution_summary(counts: &[usize; 5]) -> String {
     }
 }
 
+/// Builds the report's one-sentence verdict on how many warning and error findings there are and how many pillars they span.
+///
+/// `summary` supplies the warning and error totals, and `findings` supplies the distinct pillars of the warning and error findings.
+/// Returns the verdict sentence, or a no-findings sentence when both totals are zero.
 fn verdict_summary(findings: &[Finding], summary: &crate::Summary) -> String {
     let threshold = summary.warning + summary.error;
     if threshold == 0 {
@@ -230,6 +273,10 @@ fn verdict_summary(findings: &[Finding], summary: &crate::Summary) -> String {
     )
 }
 
+/// Names a severity in lowercase for the HTML report.
+///
+/// `severity` is the finding severity to name.
+/// Returns `advisory`, `warning` or `error`.
 pub(crate) fn severity_text(severity: Severity) -> &'static str {
     match severity {
         Severity::Advisory => "advisory",
@@ -238,6 +285,10 @@ pub(crate) fn severity_text(severity: Severity) -> &'static str {
     }
 }
 
+/// Turns a grade letter into the one-letter class code the HTML report uses for it.
+///
+/// `grade_letter` is a grade such as `B` or `n/a`; only its first character is read.
+/// Returns that character in lowercase when it is a, b, c, d or f, and `n` for anything else, including `n/a` and an empty string.
 pub(crate) fn grade_class_letter(grade_letter: &str) -> char {
     grade_letter
         .chars()

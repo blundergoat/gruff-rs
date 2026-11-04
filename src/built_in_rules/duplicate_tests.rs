@@ -46,6 +46,10 @@ struct TestGroups<'a> {
 }
 
 impl<'ast> Visit<'ast> for TestGroups<'_> {
+    /// Track the module being walked so its tests group only with tests from the same module declaration.
+    ///
+    /// `module` is the module declaration; its name extends the qualified-name path used for member names while its items are visited.
+    /// Its name with its line and column also forms the container entry, so two same-named modules never share a group.
     fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
         // A module is identified by its declaration, so two same-named modules never share a container.
         let start = module.ident.span().start();
@@ -57,6 +61,9 @@ impl<'ast> Visit<'ast> for TestGroups<'_> {
         self.containers.pop();
     }
 
+    /// Add a visited free function to its duplicate group when it qualifies as a test, without walking into its body.
+    ///
+    /// `item` is the function item; `group_key` decides whether it qualifies and `member` records its name and position.
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
         if let Some(key) = self.group_key(item) {
             let member = self.member(item);
@@ -68,6 +75,10 @@ impl<'ast> Visit<'ast> for TestGroups<'_> {
 impl TestGroups<'_> {
     /// Return the grouping key for a qualifying test, or `None` for a declaration section 16 leaves out:
     /// a non-test, a parameterized case, a table loop, or a body below the four-statement minimum.
+    ///
+    /// `item` is the candidate function; its attributes, statement count, body shape and signature form the key or rule it out.
+    /// Returns the key of enclosing modules, non-doc attributes, nameless signature and normalized body shape.
+    /// It is also `None` when a statement, attribute or signature span cannot be re-read from the source as tokens.
     fn group_key(&self, item: &syn::ItemFn) -> Option<GroupKey> {
         if !has_test_attr(&item.attrs)
             || has_case_attribute(&item.attrs)
@@ -114,11 +125,17 @@ impl TestGroups<'_> {
     }
 
     /// Re-read declaration source as tokens so comments and formatting drop out.
+    ///
+    /// `span` locates the declaration; its byte range is sliced from the file source and parsed.
+    /// Returns the token stream, or `None` when the range is not a valid slice of the source or the slice does not tokenize.
     fn tokens(&self, span: Span) -> Option<TokenStream> {
         self.source.get(span.byte_range())?.parse().ok()
     }
 
     /// The signature without its name: asyncness, generics, inputs and return type decide how a body runs.
+    ///
+    /// `signature` is the test's parsed signature, re-read from source so the token after `fn` can be dropped.
+    /// Returns the remaining tokens as a string, or `None` when the signature span cannot be re-read.
     fn signature(&self, signature: &syn::Signature) -> Option<String> {
         let mut after_fn = false;
         let kept: TokenStream = self
@@ -134,6 +151,9 @@ impl TestGroups<'_> {
     }
 
     /// Record the native symbol, module-qualified name and declaration position of one member.
+    ///
+    /// `item` is the qualifying test function; its name is joined to the enclosing module names with `::`.
+    /// Returns the member with the identifier's 1-based line and column, the column shifted from proc-macro2's 0-based count.
     fn member(&self, item: &syn::ItemFn) -> TestMember {
         let name = item.sig.ident.to_string();
         let mut qualified = self.modules.clone();
@@ -149,6 +169,10 @@ impl TestGroups<'_> {
 }
 
 /// Known case attributes and explicit case loops already express repeated tests as a table.
+///
+/// Report whether a test carries a known case attribute, which keeps it out of duplicate groups.
+/// `attrs` are the test's attributes; one whose last path segment is `case`, `test_case`, `test_matrix` or `rstest` counts.
+/// Returns true when any such attribute is present, false otherwise.
 fn has_case_attribute(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().segments.last().is_some_and(|segment| {
@@ -166,12 +190,16 @@ fn has_case_attribute(attrs: &[syn::Attribute]) -> bool {
 struct TableLoop(bool);
 
 impl<'ast> Visit<'ast> for TableLoop {
+    /// Mark the visited body as holding a table loop when any `for` loop is reached, without visiting inside the loop.
     fn visit_expr_for_loop(&mut self, _: &'ast syn::ExprForLoop) {
         self.0 = true;
     }
 }
 
 /// Top-level statements toward the member minimum; syn keeps a stray `;` as an empty statement, which does not count.
+///
+/// `block` is the test body whose top-level statements are counted.
+/// Returns the number of statements other than empty `;` statements, zero for an empty body.
 fn counted_statements(block: &syn::Block) -> usize {
     block
         .stmts
@@ -187,6 +215,9 @@ fn counted_statements(block: &syn::Block) -> usize {
 struct NestedItems(Vec<Span>);
 
 impl<'ast> Visit<'ast> for NestedItems {
+    /// Record the span of an item declared inside a statement, walking into constants and statics instead of recording them.
+    ///
+    /// `item` is the visited item; a constant or static is searched for items within it, and any other item's span is kept whole.
     fn visit_item(&mut self, item: &'ast syn::Item) {
         if matches!(item, syn::Item::Const(_) | syn::Item::Static(_)) {
             syn::visit::visit_item(self, item);
@@ -206,6 +237,9 @@ struct LiteralContext {
 }
 
 /// Keep lexical kinds and group delimiters so values cannot erase executable differences.
+///
+/// `tokens` is one level of a token stream and `context` says whether its literals stay exact or sit inside a macro body.
+/// Each token's entry is pushed onto `shape`, a group as open and close markers around its contents, and doc attributes are skipped.
 fn normalize_tokens(tokens: &[TokenTree], context: LiteralContext, shape: &mut Vec<String>) {
     let mut index = 0;
     while index < tokens.len() {
@@ -243,6 +277,9 @@ fn normalize_tokens(tokens: &[TokenTree], context: LiteralContext, shape: &mut V
 
 /// A bracket group after an expression is an index or slice, such as `values[0]`, `call()[1..]` or `x?[2]`.
 /// After an operator, a delimiter or a keyword such as `in` it is an array literal or pattern instead.
+///
+/// `group` is the token group at `index` in `tokens`, and only the token before it is read.
+/// Returns true for a bracket group after an identifier other than an array-prefix keyword, a parenthesis or bracket group, a literal or `?`.
 fn is_index_group(group: &proc_macro2::Group, tokens: &[TokenTree], index: usize) -> bool {
     if group.delimiter() != Delimiter::Bracket {
         return false;
@@ -269,6 +306,10 @@ fn is_index_group(group: &proc_macro2::Group, tokens: &[TokenTree], index: usize
 /// A bracket group after `#` or `#!` is an attribute, such as `#[cfg(feature = "x")]` on a statement; its
 /// arguments select behaviour at compile time, so they are compared exactly. Documentation attributes never
 /// reach here: `doc_attribute_end` skips them first.
+///
+/// `group` is the token group at `index` in `tokens`, whose one or two preceding tokens are read.
+/// Returns true for a bracket group after `#` or `#!`, false otherwise.
+/// Panics if `index` is greater than the length of `tokens`.
 fn is_attribute_group(group: &proc_macro2::Group, tokens: &[TokenTree], index: usize) -> bool {
     let hash_at = |position: usize| {
         index.checked_sub(position).is_some_and(
@@ -282,6 +323,10 @@ fn is_attribute_group(group: &proc_macro2::Group, tokens: &[TokenTree], index: u
 }
 
 /// A group after `name!` is a macro body, as in `json!({...})` or `hashmap! {...}`.
+///
+/// `index` is the position of a token in `tokens`; the two tokens before it are read.
+/// Returns true when they are an identifier followed by `!`, false otherwise, including when `index` is below 2.
+/// Panics if `index` is at least 2 and greater than the length of `tokens`.
 fn is_macro_body(tokens: &[TokenTree], index: usize) -> bool {
     index >= 2
         && matches!(&tokens[index - 1], TokenTree::Punct(punct) if punct.as_char() == '!')
@@ -289,6 +334,12 @@ fn is_macro_body(tokens: &[TokenTree], index: usize) -> bool {
 }
 
 /// Normalize an eligible literal to its kind; keep it exact when section 16 retains it.
+///
+/// `literal` sits at `index` in `tokens`, and `context` says whether it is inside an index, slice, attribute or macro body.
+/// It stays exact in an exact context, as a key, as a tuple field after `.`, or as a string holding ASCII whitespace.
+///
+/// Returns `text:` with the decoded string for a retained string, `exact:` with the source text for another retained literal, or its kind.
+/// Can panic when `index` is greater than the length of `tokens`, through the tuple-field check.
 fn literal_shape(
     literal: &proc_macro2::Literal,
     tokens: &[TokenTree],
@@ -310,12 +361,18 @@ fn literal_shape(
 }
 
 /// The ASCII whitespace that keeps decoded text exact: U+0009 to U+000D and U+0020.
+///
+/// `character` is one decoded character of a string literal.
+/// Returns true for tab, line feed, vertical tab, form feed, carriage return or space, false otherwise.
 fn is_contract_whitespace(character: char) -> bool {
     matches!(character, '\t'..='\r' | ' ')
 }
 
 /// A literal before a lone `:` is a record or object key (`Pair { 0: a }`, `json!({"id": 1})`);
 /// inside a macro body, a literal before `=>` is a map key (`hashmap! {"id" => 1}`).
+///
+/// `index` is the literal's position in `tokens` and `context` says whether it sits inside a macro body.
+/// Returns true when the next token is a lone `:`, or, in a macro body, the next two form `=>` with no space between them, false otherwise.
 fn is_key_literal(tokens: &[TokenTree], index: usize, context: LiteralContext) -> bool {
     let next = tokens.get(index + 1);
     let colon = matches!(next, Some(TokenTree::Punct(punct)) if punct.as_char() == ':' && punct.spacing() == Spacing::Alone);
@@ -326,6 +383,10 @@ fn is_key_literal(tokens: &[TokenTree], index: usize, context: LiteralContext) -
 }
 
 /// A literal after a single `.` is a tuple field name (`pair.0`), not a value; `..` ranges are not.
+///
+/// `index` is the literal's position in `tokens`; the one or two tokens before it are read.
+/// Returns true when the token before is `.` and the one before that is not, false otherwise.
+/// Panics if `index` is greater than the length of `tokens`.
 fn follows_field_access(tokens: &[TokenTree], index: usize) -> bool {
     let dot = |offset: usize| {
         index
@@ -336,6 +397,10 @@ fn follows_field_access(tokens: &[TokenTree], index: usize) -> bool {
 }
 
 /// Token streams retain rustdoc as attributes; ordinary comments are already absent.
+///
+/// Find where a doc attribute starting at `start` in `tokens` ends, so normalization can skip it.
+/// Returns the index just past the bracket group whose first token is `doc` after `#` or `#!`, or `None` when no doc attribute starts there.
+/// Panics if `start` is not a valid index into `tokens`.
 fn doc_attribute_end(tokens: &[TokenTree], start: usize) -> Option<usize> {
     if !matches!(&tokens[start], TokenTree::Punct(punct) if punct.as_char() == '#') {
         return None;
@@ -356,6 +421,9 @@ fn doc_attribute_end(tokens: &[TokenTree], start: usize) -> Option<usize> {
 }
 
 /// Preserve numeric suffixes because typed literals can select different operations.
+///
+/// Classify literal source `text` by kind, such as `literal:string` or `literal:int:` followed by any numeric suffix.
+/// Returns the kind label, or `literal:verbatim:` followed by `text` for any other or unparsable literal.
 fn literal_kind(text: &str) -> String {
     match syn::parse_str::<syn::Lit>(text) {
         Ok(syn::Lit::Str(_)) => "literal:string".to_string(),
@@ -371,6 +439,9 @@ fn literal_kind(text: &str) -> String {
 }
 
 /// Emit each group of three or more once at its first test, retaining the native unqualified symbol for identity.
+///
+/// `ast` is the parsed file of `unit`, whose source supplies each test's tokens, and one finding per group is appended to `findings`.
+/// Members are ordered by line and column, and groups by their first member's position.
 pub(crate) fn analyse_duplicate_tests(
     unit: &SourceUnit<'_>,
     ast: &syn::File,
@@ -398,6 +469,10 @@ pub(crate) fn analyse_duplicate_tests(
 }
 
 /// Build one finding with the complete group so every member is available to the reviewer.
+///
+/// `file` is the scanned file and `group` the members in report order; the first member supplies the finding's line and symbol.
+/// Returns an advisory `test-quality.duplicate-test-body` finding listing every member in its message and metadata.
+/// Panics if `group` is empty.
 fn duplicate_group_finding(file: &SourceFile, group: &[TestMember]) -> Finding {
     let first = &group[0];
     let members: Vec<_> = group

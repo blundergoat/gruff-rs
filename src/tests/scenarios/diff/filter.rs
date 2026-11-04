@@ -452,6 +452,10 @@ diff --git a/src/lib.rs b/src/lib.rs\n\
 }
 
 /// Build a minimal function block for changed-region identity and scope tests.
+///
+/// `name` becomes the block's function name, and `start_line` sets both its start line and its declaration line.
+/// `line_count` sets both its total and its executable line counts.
+/// Returns an externally public `FunctionBlock` with all other flags false, no parameters, an empty body and no rustdoc.
 fn function_block(
     name: &str,
     start_line: usize,

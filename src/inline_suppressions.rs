@@ -57,6 +57,9 @@ const ZIZMOR_AUDITS: &[(&str, &str)] = &[
 /// Apply the configured exclusions and built-in skips, then remove each finding an `allow` or `expect` attribute or a
 /// zizmor comment covers and count it in one inline audit row per file and rule, after the built-in rows and numbered
 /// on from them.
+///
+/// `findings` is consumed, `config` supplies the exclusion lists, and `project_root` locates the files read for attributes and comments.
+/// Returns the kept findings, the suppression summaries with inline rows last, and every suppressed finding paired with its summary.
 pub(crate) fn apply_all_suppressions(
     findings: Vec<Finding>,
     config: &Config,
@@ -77,6 +80,9 @@ pub(crate) fn apply_all_suppressions(
 type InlineFindingsByFileAndRule = BTreeMap<(String, String), Vec<Finding>>;
 
 /// Split findings into the ones the report keeps and the ones an attribute or comment covers.
+///
+/// `findings` is consumed, and `project_root` locates each file holding a mapped finding, which is read only once.
+/// Returns the kept findings in their original order and the covered ones grouped by file path and rule id.
 fn partition_inline_findings(
     findings: Vec<Finding>,
     project_root: &Path,
@@ -106,6 +112,9 @@ fn partition_inline_findings(
 }
 
 /// Append one inline row per file and rule, and keep each removed finding for SARIF.
+///
+/// `removed` holds the covered findings by file and rule; each row is appended to `summaries` and its findings to `suppressed`.
+/// Row indexes start at the number of existing `summaries` whose source is set and rise in file-then-rule order.
 fn push_inline_rows(
     removed: InlineFindingsByFileAndRule,
     summaries: &mut Vec<SuppressionSummary>,
@@ -139,6 +148,9 @@ fn push_inline_rows(
 }
 
 /// Report whether section 13c maps any lint or zizmor audit to the rule.
+///
+/// `rule_id` is the finding's rule, looked up in `LINT_RULES` and `ZIZMOR_AUDITS`.
+/// Returns true when either table maps something to `rule_id`, otherwise false.
 fn is_mapped_rule(rule_id: &str) -> bool {
     LINT_RULES.iter().any(|(_, rules)| rules.contains(&rule_id))
         || ZIZMOR_AUDITS.iter().any(|(_, rule)| *rule == rule_id)
@@ -153,6 +165,9 @@ struct FileSuppressions {
 
 impl FileSuppressions {
     /// Read and parse one file; an unreadable file or one that does not parse covers nothing.
+    ///
+    /// `display_path` is joined onto `project_root` to read the file, and only a path ending in `.rs` is parsed for attribute scopes.
+    /// Returns the file's lines, empty when it cannot be read, and its attribute scopes, empty when it is not Rust or fails to parse.
     fn read(project_root: &Path, display_path: &str) -> Self {
         let source = std::fs::read_to_string(project_root.join(display_path)).unwrap_or_default();
         let scopes = match display_path.ends_with(".rs") {
@@ -169,6 +184,9 @@ impl FileSuppressions {
 
     /// Report whether an attribute scope holding the finding's line, or a zizmor comment on that line or alone on
     /// the line above, names a check that makes the finding's claim.
+    ///
+    /// `finding` supplies the one-based line and rule id, and a finding with no line or line 0 is never suppressed.
+    /// Returns true when an attribute scope, the same line or the comment line above covers `finding`, otherwise false.
     fn is_finding_suppressed(&self, finding: &Finding) -> bool {
         let Some(line) = finding.line.filter(|line| *line > 0) else {
             return false;
@@ -195,6 +213,9 @@ impl FileSuppressions {
 }
 
 /// Collect the file's own inner attributes as a whole-file scope, then every attributed item it holds.
+///
+/// `file` is the parsed source, and its inner `allow` or `expect` lints cover lines 1 through `usize::MAX`.
+/// Returns the whole-file scope first when the file allows a lint, then the item scopes in traversal order; empty when nothing allows a lint.
 fn file_scopes(file: &syn::File) -> Vec<(usize, usize, Vec<String>)> {
     let mut scopes = Vec::new();
     let file_lints = allowed_lints(&file.attrs);
@@ -209,6 +230,9 @@ fn file_scopes(file: &syn::File) -> Vec<(usize, usize, Vec<String>)> {
 
 /// Record one item's span when its attributes allow a lint, then descend into impls, traits and inline modules,
 /// whose members carry attributes of their own.
+///
+/// `item` is the item to record, and `scopes` gains the line range of it and of each method or nested item whose attributes allow a lint.
+/// Attributes are read on functions, impls, modules, traits, structs, enums, consts, statics and type aliases, and on impl or trait methods.
 fn collect_item_scopes(item: &Item, scopes: &mut Vec<(usize, usize, Vec<String>)>) {
     let attrs: &[Attribute] = match item {
         Item::Fn(item) => &item.attrs,
@@ -248,6 +272,8 @@ fn collect_item_scopes(item: &Item, scopes: &mut Vec<(usize, usize, Vec<String>)
 }
 
 /// Push the span's lines as a scope when the attributes allow any lint.
+///
+/// `span` gives the first and last line, `attrs` are the item's attributes, and `scopes` gains the entry only when they allow a lint.
 fn push_scope(
     span: proc_macro2::Span,
     attrs: &[Attribute],
@@ -261,6 +287,9 @@ fn push_scope(
 
 /// List the lint paths an `allow` or `expect` attribute names, such as `clippy::too_many_lines`; a `reason = "..."`
 /// argument is not a lint and is skipped.
+///
+/// `attrs` are scanned in order, and an `allow` or `expect` whose arguments fail to parse as a comma list contributes nothing.
+/// Returns each lint path in attribute order with its segments joined by `::`, or an empty list when none is named.
 fn allowed_lints(attrs: &[Attribute]) -> Vec<String> {
     attrs
         .iter()
@@ -284,6 +313,9 @@ fn allowed_lints(attrs: &[Attribute]) -> Vec<String> {
 }
 
 /// Report whether one allowed lint makes the rule's claim.
+///
+/// `lint` is an allowed lint path such as `dead_code`, and `rule_id` is the finding's rule; both must match a `LINT_RULES` entry exactly.
+/// Returns true when `LINT_RULES` maps `lint` to `rule_id`, otherwise false.
 fn is_lint_for_rule(lint: &str, rule_id: &str) -> bool {
     LINT_RULES
         .iter()
@@ -291,6 +323,9 @@ fn is_lint_for_rule(lint: &str, rule_id: &str) -> bool {
 }
 
 /// Report whether a `# zizmor: ignore[...]` on the line names an audit that makes the rule's claim.
+///
+/// `line` is searched for its first `zizmor:` marker, which this check does not require to follow a `#`, and `rule_id` is the finding's rule.
+/// Returns true when a comma-separated audit after `ignore` maps to `rule_id` in `ZIZMOR_AUDITS`, otherwise false.
 fn has_zizmor_audit_for_rule(line: &str, rule_id: &str) -> bool {
     let Some(start) = line.find("zizmor:") else {
         return false;

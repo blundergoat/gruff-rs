@@ -24,8 +24,12 @@ struct CheckIgnoreEntry {
 /// mirror `git check-ignore`: 0 when at least one path is ignored, 1 when none
 /// are, 2 on error.
 ///
-/// Passing no paths is not an error: the operator gets empty output and exit 1, the same status as "nothing here is
-/// ignored", so a script that branches on the exit code cannot tell the two apart.
+/// Passing no paths is not an error: it exits 1, the same status as "nothing here is ignored", so a script that branches on the exit code
+/// cannot tell the two apart. Unless `writer` is silent, text mode prints a blank line and JSON mode an empty array.
+///
+/// `args` carries the paths, config choice, and output format; `verbose` appends each ignored path's source and pattern in text output.
+/// `writer` receives the rendered verdicts, while errors are printed to standard error.
+/// Returns exit 0 when any path is ignored, 1 when none is, and 2 when the current directory or config cannot be resolved.
 pub(crate) fn run_check_ignore(
     args: CheckIgnoreArgs,
     verbose: bool,
@@ -72,6 +76,10 @@ pub(crate) fn run_check_ignore(
 /// Decide one path's verdict and record which layer claimed it.
 /// Config `paths.ignore` is consulted before `.gitignore` so the reported source names the rule the operator can actually
 /// edit; an unignored path still returns an entry, carrying `ignored: false`.
+///
+/// `project_root` anchors `path`, the path to check as given, and `config` supplies the ignore policy that discovery uses.
+/// An existing file is judged by the explicit-file policy alone; only another path falls through to the `.gitignore` lookup.
+/// Returns the verdict with its displayed path, and the source and pattern set only when the path is ignored.
 fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> CheckIgnoreEntry {
     let absolute = absolutize(project_root, path);
     let explicit_file = absolute.is_file();
@@ -127,6 +135,9 @@ fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> Chec
 ///
 /// A direct query has no traversal context, so this rebuild is what stops a nested policy such as `src/.gitignore` from
 /// being missed and the operator being told a genuinely ignored file is not.
+///
+/// `project_root` is the matcher root and top of the hierarchy, and `absolute` is the queried path whose parent directories are searched.
+/// Returns one matcher over every `.gitignore` found on that route, or an empty matcher that ignores nothing when building fails.
 pub(crate) fn gitignore_for_path(
     project_root: &Path,
     absolute: &Path,
@@ -152,6 +163,8 @@ pub(crate) fn gitignore_for_path(
 
 /// List the directories whose `.gitignore` can claim `absolute`, from the project root down to the path's own parent.
 /// Returns nothing when the path sits outside the project, because no rule in this project could apply to it.
+///
+/// `project_root` is always the first directory listed, and `absolute` must lie under it; `.` and `..` segments add no directory.
 fn gitignore_directories(project_root: &Path, absolute: &Path) -> Vec<PathBuf> {
     // Outside the project root there is no hierarchy to rebuild, so no directory contributes rules.
     let Ok(relative) = absolute.strip_prefix(project_root) else {
@@ -177,6 +190,10 @@ fn gitignore_directories(project_root: &Path, absolute: &Path) -> Vec<PathBuf> {
 /// Ask the rebuilt matcher whether `.gitignore` claims this path, returning the pattern that did.
 /// `None` means no gitignore rule matched, or the path lies outside the matcher root and cannot be asked at all - both
 /// reach the operator as "not ignored".
+///
+/// `gitignore` is the rebuilt matcher and `relative` the project-relative path text it is asked about.
+/// `absolute` is the same path on disk, checked only to tell the matcher whether it is a directory.
+/// Returns the matching pattern as written in its `.gitignore`; an explicit `!` un-ignore also gives None.
 fn gitignore_match(
     gitignore: &ignore::gitignore::Gitignore,
     relative: &str,
@@ -197,6 +214,9 @@ fn gitignore_match(
 
 /// Render the verdicts in the format the caller asked for.
 /// JSON is the shape agent consumers parse; text is what an operator reads in a terminal.
+///
+/// `entries` are the verdicts in request order, `format` picks JSON or text, and `verbose` adds source and pattern to text output only.
+/// Returns pretty-printed JSON listing every verdict, or text listing only the ignored paths.
 fn render_check_ignore(
     entries: &[CheckIgnoreEntry],
     format: CheckIgnoreFormat,
@@ -216,6 +236,9 @@ fn render_check_ignore(
 ///
 /// With nothing ignored the result is an empty string, which is why the exit code rather than the output is what a shell
 /// caller should test.
+///
+/// `entries` are the verdicts to filter, and `verbose` adds the tab-separated `source:pattern` suffix to each line.
+/// Returns the ignored paths joined by newlines with no trailing newline; a missing source or pattern prints as empty.
 fn render_check_ignore_text(entries: &[CheckIgnoreEntry], verbose: bool) -> String {
     let mut output = String::new();
     // Unignored paths are dropped here so the output can be piped straight into another command, the way

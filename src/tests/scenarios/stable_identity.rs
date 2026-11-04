@@ -114,6 +114,9 @@ pub(crate) fn outcome_b_keeps_structured_pii_hook_new_only_identity_compatible()
 }
 
 /// Analyse the focused fixture path used by the Outcome B hook compatibility guard.
+///
+/// `root` is the project directory to scan; only its `tests/fixtures/users.txt` is analysed, with config and baseline loading turned off.
+/// Returns the analysis report for that fixture; it panics when the analysis fails.
 fn analyse_structured_pii_fixture(root: &Path) -> AnalysisReport {
     run_project_analysis(
         root,
@@ -127,6 +130,13 @@ fn analyse_structured_pii_fixture(root: &Path) -> AnalysisReport {
     .expect("analysis succeeds")
 }
 
+/// Build a synthetic advisory naming finding for the stable-identity and fingerprint tests.
+///
+/// `rule_id` and `file` set the rule and path that both hashes include, and `line` sets the reported line, which the message also names.
+/// `symbol` is the identity subject when present, so the stable identity ignores `line`; with `None` it may fall back to the message instead.
+/// The fingerprint always hashes `line`, so it changes with the line either way.
+///
+/// Returns the `Finding` that `Finding::new` builds from these values, with high confidence, no remediation and empty metadata.
 fn make_finding(rule_id: &str, file: &str, line: usize, symbol: Option<&str>) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: rule_id.to_string(),
@@ -322,6 +332,12 @@ pub(crate) fn config_entry_for_one_command_does_not_leak_to_another() {
         FailThreshold::None
     );
 }
+/// Build a synthetic finding at `src/auth.rs` line 10 for the composite-score exclusion tests.
+///
+/// `rule_id` is the rule that `rule_settings` exclusions match, and it also appears in the message.
+/// `severity` sets the finding's penalty weight in `score_report`, and `pillar` picks the pillar whose penalty bucket receives it.
+///
+/// Returns the `Finding` that `Finding::new` builds with high confidence, no symbol, no remediation and empty metadata.
 fn synth_finding(rule_id: &str, severity: Severity, pillar: Pillar) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: rule_id.to_string(),
@@ -729,6 +745,7 @@ pub(crate) fn typed_baseline_paths_are_read_from_the_launch_directory() {
 struct RestoreCurrentDir(PathBuf);
 
 impl Drop for RestoreCurrentDir {
+    /// Switch the process back to the working directory this guard saved, ignoring any error so cleanup never panics.
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.0);
     }

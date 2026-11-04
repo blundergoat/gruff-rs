@@ -534,6 +534,10 @@ license = "MIT"
     );
 }
 
+/// Tells the dead-code tests whether an analysis flagged one named item as an unused private item candidate.
+///
+/// `report` is the finished analysis and `symbol` the exact item name to match.
+/// Returns true when `report` holds a `dead-code.unused-private-item-candidate` finding for `symbol`, and false otherwise.
 pub(super) fn has_dead_code_symbol(report: &AnalysisReport, symbol: &str) -> bool {
     report.findings.iter().any(|finding| {
         finding.rule_id == "dead-code.unused-private-item-candidate"
@@ -541,6 +545,10 @@ pub(super) fn has_dead_code_symbol(report: &AnalysisReport, symbol: &str) -> boo
     })
 }
 
+/// Checks whether an analysis reported the dead-code candidate rule as suppressed for partial context.
+///
+/// Looks through the diagnostics of `report`, the finished analysis.
+/// Returns true when one of them has type `partial-context-rule-suppressed` and its message names `dead-code.unused-private-item-candidate`.
 fn has_partial_context_diagnostic(report: &AnalysisReport) -> bool {
     report.diagnostics.iter().any(|diagnostic| {
         diagnostic.diagnostic_type == "partial-context-rule-suppressed"
@@ -550,6 +558,9 @@ fn has_partial_context_diagnostic(report: &AnalysisReport) -> bool {
     })
 }
 
+/// Writes a two-file crate whose private `helper_used_by_child` in `src/lib.rs` is called only from `src/child.rs`.
+///
+/// `root` is the project directory that receives `Cargo.toml`, `README.md`, `src/lib.rs` and `src/child.rs`; any write failure panics.
 fn write_cross_file_dead_code_fixture(root: &Path) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     fs::write(root.join("README.md"), "# Fixture\n").expect("readme write");

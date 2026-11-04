@@ -77,6 +77,9 @@ const FIXTURE_ENTROPY_SECRET: &str = "Q7m2P9x8R4s6T1v3W5y7Z0a2B4c6D8e0";
 
 /// Analyse one source containing each identity-independent sensitive-data shape.
 /// Renderer tests use it to compare category markers without touching fixture PII.
+///
+/// Returns the report from analysing only `src/lib.rs` of a fresh temporary project, with config and baseline turned off.
+/// Panics if creating the temporary directory, writing the project files or analysing the project fails.
 fn identity_independent_sensitive_report() -> AnalysisReport {
     let dir = tempdir().expect("tempdir");
     let source = format!(
@@ -114,6 +117,10 @@ pub fn entry() {{
 }
 
 /// Return the one expected finding for a sensitive-data rule in the focused report.
+///
+/// `report` is the analysed report to search and `rule_id` is the rule identifier to look for.
+/// Returns the first finding in `report` whose rule ID equals `rule_id`; it does not check that only one finding matches.
+/// Panics with every finding listed when no finding has that rule ID.
 fn sensitive_finding<'a>(report: &'a AnalysisReport, rule_id: &str) -> &'a Finding {
     report
         .findings

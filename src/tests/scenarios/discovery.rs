@@ -381,6 +381,9 @@ pub(crate) fn explicit_invalid_utf8_file_stays_fatal_and_visible() {
 const RISKY_RS: &str =
     "pub fn risky() -> i32 {\n    let value: Option<i32> = None;\n    value.unwrap()\n}\n";
 
+/// Build a configuration whose ignore list is `vendor/**` and `src/generated.rs`, leaving every other setting at its default.
+///
+/// Returns a `Config` whose `ignored_paths` hold those two patterns in that order and whose `ignored_path_matchers` are compiled from them.
 fn vendor_ignore_config() -> Config {
     let patterns = vec!["vendor/**".to_string(), "src/generated.rs".to_string()];
     Config {
@@ -566,6 +569,11 @@ pub(crate) fn check_ignore_gitignore_matcher_loads_nested_gitignore_files() {
     );
 }
 
+/// Name the gitignore pattern that ignores a path, so a test can assert which loaded rule matched.
+///
+/// `gitignore` is the matcher to query, and `path` is the path matched together with its parent directories.
+/// Returns the original text of the ignoring pattern, or `None` when the matcher reports anything other than an ignore match.
+/// A nonempty `gitignore` may panic when `path` is absolute and outside its root.
 fn ignored_gitignore_pattern(
     gitignore: &ignore::gitignore::Gitignore,
     path: &str,
@@ -619,6 +627,9 @@ pub(crate) fn include_ignored_still_honours_config_ignore() {
 }
 
 /// Write each relative path with a one-line Rust body, creating its directories.
+///
+/// `root` is the directory each of the `paths` is joined to; every file gets the same `pub fn copied() {}` body, overwriting any existing file.
+/// It panics if a directory or file cannot be written.
 fn write_rust_files(root: &Path, paths: &[&str]) {
     for path in paths {
         let absolute = root.join(path);
@@ -628,6 +639,10 @@ fn write_rust_files(root: &Path, paths: &[&str]) {
 }
 
 /// Discover every source under `root` with the given `--include-ignored` setting and explicit paths.
+///
+/// `root` is the directory the relative `paths` resolve against, and `paths` are the scan arguments, such as `.` or single files.
+/// `include_ignored` mirrors `--include-ignored`; config loading and the baseline are off, and the default `Config` applies.
+/// Returns the discovery result, holding the files to analyse and the ignored paths with their source and pattern.
 fn discover_paths(root: &Path, paths: &[&str], include_ignored: bool) -> DiscoveryResult {
     discover_sources(
         root,

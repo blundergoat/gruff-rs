@@ -20,6 +20,9 @@ pub(crate) struct SyntaxComplexity {
 }
 
 /// Measure one function body.
+///
+/// `block` is the body to walk; only its control structures and short-circuit operators change the counts.
+/// Returns the cyclomatic count as one plus the decisions, the deepest nesting level reached, and the weighted cognitive total.
 pub(crate) fn syntax_complexity(block: &syn::Block) -> SyntaxComplexity {
     let mut counter = ComplexityCounter::default();
     counter.visit_block(block);
@@ -49,6 +52,9 @@ impl ComplexityCounter {
     }
 
     /// Visit a body nested one level inside the current control structure.
+    ///
+    /// `visit_inside` runs on `&mut Self` with the depth raised by one, and the depth is restored after it returns.
+    /// Reaching a new deepest level updates `max_depth`, which keeps that maximum after the call.
     fn nested<F: FnOnce(&mut Self)>(&mut self, visit_inside: F) {
         self.depth += 1;
         self.max_depth = self.max_depth.max(self.depth);
@@ -58,6 +64,9 @@ impl ComplexityCounter {
 
     /// Count an `if` and the `else if` arms that follow it; an `else if` is a sibling, so it pays no nesting penalty.
     /// Returning early is the advice the cognitive rule gives, so a guard that only exits pays none either.
+    ///
+    /// `node` is the `if` to count, and `is_else_if` is true when it follows an `else`.
+    /// Its condition is visited at the current depth, while its then branch and a final `else` block are visited one level deeper.
     fn visit_if_chain(&mut self, node: &syn::ExprIf, is_else_if: bool) {
         if is_else_if || is_early_exit_guard(node) {
             self.decisions += 1;
@@ -77,10 +86,17 @@ impl ComplexityCounter {
 }
 
 impl<'ast> Visit<'ast> for ComplexityCounter {
+    /// Counts an `if` that heads a chain, together with every `else if` after it.
+    ///
+    /// `node` is that `if`, handed to `visit_if_chain` as the head rather than an `else if`.
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         self.visit_if_chain(node, false);
     }
 
+    /// Counts a `match` as one control structure, however many arms it has.
+    ///
+    /// `node` is the `match`; its scrutinee is visited at the current depth and its arms one level deeper.
+    /// Structures inside an arm pay no extra cognitive penalty for this match's level.
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
         self.count_structure();
         self.visit_expr(&node.expr);
@@ -95,23 +111,35 @@ impl<'ast> Visit<'ast> for ComplexityCounter {
         });
     }
 
+    /// Counts a `for` loop as one control structure at the current nesting level.
+    ///
+    /// `node` is the loop; its iterated expression is visited at the current depth and its body one level deeper.
     fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
         self.count_structure();
         self.visit_expr(&node.expr);
         self.nested(|counter| counter.visit_block(&node.body));
     }
 
+    /// Counts a `while` loop as one control structure at the current nesting level.
+    ///
+    /// `node` is the loop; its condition is visited at the current depth and its body one level deeper.
     fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
         self.count_structure();
         self.visit_expr(&node.cond);
         self.nested(|counter| counter.visit_block(&node.body));
     }
 
+    /// Counts a bare `loop` as one control structure at the current nesting level.
+    ///
+    /// `node` is the loop, whose body is visited one level deeper.
     fn visit_expr_loop(&mut self, node: &'ast syn::ExprLoop) {
         self.count_structure();
         self.nested(|counter| counter.visit_block(&node.body));
     }
 
+    /// Counts each short-circuit `&&` or `||` as one decision and one cognitive point.
+    ///
+    /// `node` is the binary expression; other operators add nothing, and both operands are walked either way.
     fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
         // Only the short-circuit operators are decisions; a closure's `||` is an `ExprClosure`, never reached here.
         if matches!(node.op, syn::BinOp::And(_) | syn::BinOp::Or(_)) {
@@ -123,6 +151,9 @@ impl<'ast> Visit<'ast> for ComplexityCounter {
 }
 
 /// Whether an `if` is a guard clause: no `else`, and a body of one `return`, `break`, `continue` or `panic!`.
+///
+/// `node` is the `if` to test; its body must hold exactly one statement, and `panic!` is matched by its bare name only.
+/// Returns true for such a guard, and false for an `if` with an `else`, a longer body, or any other single statement.
 fn is_early_exit_guard(node: &syn::ExprIf) -> bool {
     if node.else_branch.is_some() || node.then_branch.stmts.len() != 1 {
         return false;

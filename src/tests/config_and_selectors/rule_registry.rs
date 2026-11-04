@@ -5,6 +5,8 @@
 use super::*;
 
 /// Build one compact rule definition for registry-construction failure tests.
+/// `id` is the rule ID the definition carries, and `related_rules` lists the rule IDs it links to as related rules.
+/// Returns a default-enabled, advisory, high-confidence text rule in the Documentation pillar with no threshold, options or false-positive shapes.
 const fn registry_test_definition(
     id: &'static str,
     related_rules: &'static [&'static str],

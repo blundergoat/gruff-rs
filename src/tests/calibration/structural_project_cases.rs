@@ -5,6 +5,8 @@
 use super::*;
 
 /// Builds the exact positive/negative matrix for structural and project rules.
+/// Returns one `CalibrationCase` for each selected architecture, complexity, concurrency, dead-code and dependency rule in this file.
+/// Each case pairs a closure that writes a firing fixture under a project root with one that writes a quiet fixture.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- architecture -----

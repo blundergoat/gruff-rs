@@ -125,6 +125,8 @@ fn unused_private() {}
 
 /// A Rust file with `production` statements in one function (`production + 2` code lines) and, when `test_calls` is
 /// set, an inline `#[cfg(test)]` module whose test makes that many calls (`test_calls + 5` code lines).
+///
+/// Returns the generated source text, which opens with the `Probe.` rustdoc on `entry` and has no test module when `test_calls` is `None`.
 fn production_and_test_module(production: usize, test_calls: Option<usize>) -> String {
     let mut source = String::from("/// Probe.\npub fn entry() {\n");
     for index in 0..production {
@@ -144,6 +146,10 @@ fn production_and_test_module(production: usize, test_calls: Option<usize>) -> S
 }
 
 /// The `size.file-length` findings of one analysed source, as (line, severity, measured, test-module lines).
+///
+/// `source` is written as `src/lib.rs` in a fresh temporary project, which is analysed whole with config and baseline turned off.
+/// Returns one row per `size.file-length` finding in report order, or an empty vector when none is reported.
+/// A missing metadata key reads as `Value::Null`; it panics if creating the temporary directory, writing its files or the analysis fails.
 fn file_length_rows(source: &str) -> Vec<(Option<usize>, Severity, Value, Value)> {
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), source);

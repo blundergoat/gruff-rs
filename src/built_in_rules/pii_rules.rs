@@ -6,6 +6,9 @@ static PII_PHONE_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Flags realistic emails, SSN-shaped strings, and US-format phone numbers
 /// in fixture-like files while skipping obvious placeholders.
+///
+/// `unit` is the file to scan; nothing is reported unless `path_is_test_fixture` accepts its display path.
+/// Findings are appended to `findings`, one per realistic match, in email, SSN, then phone order.
 pub(crate) fn analyse_pii_test_fixture(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
     if !path_is_test_fixture(&unit.file.display_path) {
         return;
@@ -16,6 +19,12 @@ pub(crate) fn analyse_pii_test_fixture(unit: &SourceUnit<'_>, findings: &mut Vec
     push_pii_phone_findings(unit, starts, findings);
 }
 
+/// Recognises a fixture-like file path, the only kind of file the PII fixture rule scans.
+///
+/// `display_path` is lowercased, backslashes become slashes, and each path segment is compared whole against a fixed list of names.
+/// A file name counts only when it equals a listed name exactly, so `fixtures.rs` on its own does not qualify.
+///
+/// Returns true when any segment is a singular or plural `fixture`, `sample`, `seed` or `mock`, or `testdata` or `test_data`.
 fn path_is_test_fixture(display_path: &str) -> bool {
     const FIXTURE_DIR_NAMES: &[&str] = &[
         "fixture",
@@ -35,6 +44,10 @@ fn path_is_test_fixture(display_path: &str) -> bool {
         .any(|segment| FIXTURE_DIR_NAMES.contains(&segment))
 }
 
+/// Reports every email-shaped string in the file whose domain is not an obvious placeholder.
+///
+/// `unit` supplies the source text and `starts` its line starts, used to turn each match offset into a line number.
+/// Each finding of kind `email` is appended to `findings`.
 fn push_pii_email_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {
     let regex = static_regex(
         &PII_EMAIL_REGEX,
@@ -53,6 +66,10 @@ fn push_pii_email_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &m
     }
 }
 
+/// Reports every SSN-shaped string in the file unless it starts with `000`, `666` or `9`.
+///
+/// `unit` supplies the source text and `starts` its line starts, used to turn each match offset into a line number.
+/// Each finding of kind `ssn` is appended to `findings`.
 fn push_pii_ssn_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {
     let regex = static_regex(&PII_SSN_REGEX, r"\b\d{3}-\d{2}-\d{4}\b");
     for capture in regex.find_iter(unit.source) {
@@ -68,6 +85,10 @@ fn push_pii_ssn_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut
     }
 }
 
+/// Reports every dash-separated ten-digit phone number in the file that `phone_is_obvious_placeholder` does not exempt.
+///
+/// `unit` supplies the source text and `starts` its line starts, used to turn each match offset into a line number.
+/// Each finding of kind `phone` is appended to `findings`.
 fn push_pii_phone_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &mut Vec<Finding>) {
     let regex = static_regex(&PII_PHONE_REGEX, r"\b\d{3}-\d{3}-\d{4}\b");
     for capture in regex.find_iter(unit.source) {
@@ -87,10 +108,20 @@ fn push_pii_phone_findings(unit: &SourceUnit<'_>, starts: &[usize], findings: &m
 /// (`AAA-555-NNNN`, e.g. `212-555-0100`) plus the non-assignable `555` and
 /// `000` area codes. The regex guarantees the `AAA-EEE-NNNN` shape, so `-555-`
 /// can only be the exchange segment.
+///
+/// `value` is a matched number in that shape; it is a placeholder when its area code is `555` or `000` or its exchange is `555`.
+/// Returns true for a placeholder, which the caller skips, and false for a number that should be reported.
 fn phone_is_obvious_placeholder(value: &str) -> bool {
     value.starts_with("555-") || value.starts_with("000-") || value.contains("-555-")
 }
 
+/// Decides whether an email address uses a reserved or obviously fake domain that the PII fixture rule should not report.
+///
+/// `address` is a matched email; only the domain after its first `@` is compared, ignoring case.
+/// Placeholder domains are exactly `example.com`, `example.org`, `example.net`, `test.com`, `test.org` or `localhost`.
+/// So are domains starting with `foo.`, `bar.` or `baz.` and domains ending in `.local`, `.invalid`, `.test` or `.example`.
+///
+/// Returns true for a placeholder domain, and false for any other domain or for text without an `@`.
 fn email_is_obvious_placeholder(address: &str) -> bool {
     let lower = address.to_ascii_lowercase();
     let Some((_, domain)) = lower.split_once('@') else {
@@ -108,6 +139,12 @@ fn email_is_obvious_placeholder(address: &str) -> bool {
         || domain.ends_with(".example")
 }
 
+/// Builds the `sensitive-data.pii-test-fixture` finding for one match, leaving the matched characters out of the report.
+///
+/// `unit` supplies the file's display path and `line` is the line where the match starts.
+/// `kind` names the category, such as `email`, `ssn` or `phone`, and is the only classification the message and metadata carry.
+///
+/// Returns a high-confidence finding at the rule's built-in severity, with a remediation pointing to placeholder values.
 fn pii_finding(unit: &SourceUnit<'_>, line: usize, kind: &str) -> Finding {
     // The detector-owned category is the only classification a report may carry: the matched
     // characters and their count are forbidden by FAMILY-CONTRACT section 5. Masking the message

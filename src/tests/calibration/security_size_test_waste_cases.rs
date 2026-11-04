@@ -5,6 +5,9 @@
 use super::*;
 
 /// Builds one positive and one quiet project for each calibrated rule in these families.
+///
+/// Each case holds a rule ID, a closure that writes under a given root a fixture the rule must flag, and one writing a fixture it must not flag.
+/// Returns one `CalibrationCase` per rule in source order, covering the security, dependency, CI, sensitive-data, size, test-quality and waste rules.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- security -----
@@ -654,6 +657,8 @@ pub fn entry() {
 }
 
 /// Preserve the historical positive and negative fixtures as native retirement guards.
+///
+/// Returns one `CalibrationCase` per retired rule, holding that rule's historical positive and negative fixture builders.
 pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
     vec![
         case(

@@ -4,6 +4,10 @@
 
 use super::*;
 
+/// Runs the async-only concurrency rules on one parsed function.
+///
+/// `unit` supplies the file and its full source, `block` is the parsed function, and `searchable_body` is its body text the rules search.
+/// Blocking-call and lock-across-await findings are appended to `findings`; a `block` that is not async adds nothing.
 pub(crate) fn analyse_concurrency_block(
     unit: &SourceUnit<'_>,
     block: &FunctionBlock,
@@ -17,6 +21,13 @@ pub(crate) fn analyse_concurrency_block(
     }
 }
 
+/// Reports at most one blocking standard-library path that appears as text in an async function's block text, comments included.
+///
+/// `searchable_body` is checked by substring for blocking `std` paths in a fixed order, such as `std::thread::sleep` and `std::fs::read`.
+/// The caller passes the function's block text with string literals masked and comments kept, so a path written in a comment counts.
+///
+/// The first path found adds one `concurrency.blocking-call-in-async` warning to `findings`, naming `block` from `file` as async.
+/// A longer path such as `std::fs::read_dir` also matches `std::fs::read`, and no call syntax is checked.
 pub(crate) fn analyse_async_blocking_calls(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -60,6 +71,9 @@ pub(crate) fn analyse_async_blocking_calls(
 
 /// Reports a guard binding that remains lexically live when a later await begins.
 /// Source comments and strings are masked before acquisition evidence is inspected.
+///
+/// `searchable_body` is the function text scanned line by line, and `unit` also supplies the whole file for struct-field lock evidence.
+/// At most one `concurrency.lock-across-await` finding naming `block` is appended to `findings`.
 pub(crate) fn analyse_lock_across_await(
     unit: &SourceUnit<'_>,
     block: &FunctionBlock,
@@ -98,6 +112,8 @@ impl LockEvidenceSources<'_> {
 
     /// Mask strings and comments once, and only when a function-scoped lookup came up empty,
     /// so an ordinary async function never pays to scan its whole file.
+    ///
+    /// Returns the file source with string literals and comments masked, computed on the first call and cached afterwards.
     fn masked_file(&self) -> &str {
         self.masked_file.get_or_init(|| {
             strip_rust_comments_after_string_mask(&strip_rust_string_literals(self.file_source))
@@ -107,6 +123,9 @@ impl LockEvidenceSources<'_> {
 
 /// Returns the first qualifying guard because the rule emits one function finding.
 /// The full function slice supplies receiver-linked type or constructor evidence.
+///
+/// `lines` are the comment-stripped function lines checked for `let` guard bindings, and `sources` supplies lock evidence.
+/// A binding qualifies when `is_guard_held_across_await` accepts the lines after it; None means no binding qualified.
 fn find_lock_guard_held_across_await(
     lines: &[&str],
     sources: &LockEvidenceSources<'_>,
@@ -147,6 +166,9 @@ fn find_lock_guard_held_across_await(
 
 /// Classifies a bound RHS as a zero-argument, guard-preserving lock acquisition.
 /// Ambiguous read/write methods additionally need evidence tied to their receiver.
+///
+/// `rhs` is the text after `=` in a `let` binding, and `sources` supplies receiver evidence for `read` and `write` calls.
+/// Returns true when a zero-argument `lock`, `read` or `write` call on an identifier has a guard-preserving tail and lock evidence.
 fn rhs_is_lock_guard_binding(rhs: &str, sources: &LockEvidenceSources<'_>) -> bool {
     static LOCK_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
     let lock_call = static_regex(
@@ -174,6 +196,9 @@ fn rhs_is_lock_guard_binding(rhs: &str, sources: &LockEvidenceSources<'_>) -> bo
 
 /// Keeps `.lock()` as the explicit lock-named heuristic used by mutex APIs.
 /// Read/write methods need receiver-linked evidence because I/O uses the same names.
+///
+/// `method` is the called method, `receiver` the identifier it was called on, and `sources` the text searched for evidence.
+/// Returns true for `lock`, or when `receiver` has a `Mutex` or `RwLock` type or constructor in the function text or the masked file.
 fn acquisition_has_lock_evidence(
     method: &str,
     receiver: &str,
@@ -191,7 +216,10 @@ fn acquisition_has_lock_evidence(
 }
 
 /// Finds a receiver type containing `Mutex`/`RwLock` or a local lock constructor.
-/// This same-function text check intentionally does not resolve aliases or struct fields.
+/// This text check does not resolve type aliases; run over the masked file, it also matches a struct field declared with a lock type.
+///
+/// `function_source` is the text searched, the function body or the masked whole file, and `receiver` is the identifier to match.
+/// Returns true when `receiver` is typed with `Mutex` or `RwLock`, or bound by `let` to a `Mutex::new` or `RwLock::new` call, else false.
 fn receiver_has_local_lock_evidence(function_source: &str, receiver: &str) -> bool {
     // Neither receiver-specific pattern can match without a lock type token.
     if !function_source.contains("Mutex") && !function_source.contains("RwLock") {
@@ -225,6 +253,10 @@ fn receiver_has_local_lock_evidence(function_source: &str, receiver: &str) -> bo
             .any(names_receiver)
 }
 
+/// Checks that the text after a lock call only awaits or unwraps the guard instead of chaining another call on it.
+///
+/// Returns true when `suffix` is empty or made only of `.await`, `.unwrap()`, `?` and `.expect(` steps, in any order and number.
+/// An `.expect(` step ends at its first `)`, so an argument with its own parentheses makes the result false.
 fn lock_suffix_is_guard_preserving(mut suffix: &str) -> bool {
     loop {
         suffix = suffix.trim_start();
@@ -251,12 +283,25 @@ fn lock_suffix_is_guard_preserving(mut suffix: &str) -> bool {
     }
 }
 
+/// Removes one leading `.expect(...)` call from the text that follows a lock acquisition.
+///
+/// Returns the text after the first `)` past `.expect(`, or None when `suffix` lacks that prefix or a closing parenthesis.
 fn strip_expect_suffix(suffix: &str) -> Option<&str> {
     let rest = suffix.strip_prefix(".expect(")?;
     let close = rest.find(')')?;
     Some(&rest[close + 1..])
 }
 
+/// Applies a line-based heuristic to decide whether a lock guard is still held when a later line awaits.
+///
+/// `later_lines` are the function lines after the binding of `guard`, the bound name searched for in a `drop` call.
+/// `scope_depth` is the brace depth before the binding line and `depth` the depth after it, updated after each line without an await.
+///
+/// Returns true at the first line containing `.await` if the depth carried into that line is at least `scope_depth`.
+/// Braces on the await line itself are not counted, so a `}` before the await on that line does not end the scope.
+///
+/// A line holding the exact whitespace-free text of a `drop` call on `guard` gives false first, even on the await line.
+/// An earlier line that takes the depth below `scope_depth`, or running out of lines without an await, also gives false.
 fn is_guard_held_across_await(
     later_lines: &[&str],
     guard: &str,
@@ -279,6 +324,10 @@ fn is_guard_held_across_await(
     false
 }
 
+/// Tracks lexical nesting by counting the braces on one source line.
+///
+/// `depth` is the nesting before `line`; each `{` adds one and each `}` removes one, never going below zero.
+/// Returns the depth after every brace character in `line` is counted.
 fn brace_depth_after_line(mut depth: usize, line: &str) -> usize {
     for character in line.chars() {
         match character {
@@ -290,6 +339,10 @@ fn brace_depth_after_line(mut depth: usize, line: &str) -> usize {
     depth
 }
 
+/// Builds the finding for an async function that holds a lock guard across an await.
+///
+/// `file` and `block` locate the function, and `guard` is the binding name placed in the message and metadata.
+/// Returns a medium-confidence `concurrency.lock-across-await` warning advising to drop the guard or use an async-aware lock.
 fn lock_across_await_finding(file: &SourceFile, block: &FunctionBlock, guard: &str) -> Finding {
     block_finding_with_extras(
         BlockFindingDescriptor {

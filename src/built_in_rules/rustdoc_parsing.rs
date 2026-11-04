@@ -22,6 +22,10 @@ pub(crate) struct FunctionSourceContext {
 }
 
 /// Discover the existing block anchor and any supported rustdoc attached to this function.
+///
+/// `lines` holds the file's source lines, `attributes` the function's parsed attributes, and `function_index` its 0-based line index in `lines`.
+/// Returns the block's start line index and the attached rustdoc, which is `None` when no supported doc comment is attached.
+/// A `function_index` greater than the length of `lines` panics.
 pub(crate) fn function_source_context(
     lines: &[&str],
     attributes: &[syn::Attribute],
@@ -34,6 +38,10 @@ pub(crate) fn function_source_context(
 }
 
 /// Anchor the block on the item's own first line while walking attached line docs, attributes, and spacing once.
+///
+/// `lines` holds the file's source lines and `function_index` is the function's 0-based line index; one greater than `lines.len()` panics.
+/// Returns the 0-based index of the topmost non-blank line reached by walking up through `///` lines, attribute-opening lines and blanks.
+/// Any other line stops the walk, including a multi-line attribute's closing line, and with nothing walked the result is `function_index`.
 fn function_block_start_index(lines: &[&str], function_index: usize) -> usize {
     let mut start = function_index;
 
@@ -58,6 +66,9 @@ fn function_block_start_index(lines: &[&str], function_index: usize) -> usize {
 }
 
 /// Extract normalized text and the first source line from supported attached rustdoc attributes.
+///
+/// `lines` holds the file's source lines, used to see how each attribute is written, and `attributes` are the function's parsed attributes.
+/// Returns the supported doc texts joined with newlines and their smallest 1-based line, or `None` when no attribute is a supported doc comment.
 fn extract_attached_outer_rustdoc(
     lines: &[&str],
     attributes: &[syn::Attribute],
@@ -85,6 +96,10 @@ fn extract_attached_outer_rustdoc(
 }
 
 /// Accept one parser-owned `///` or `/** */` attribute and reject deferred explicit doc attributes.
+///
+/// `lines` holds the file's source lines and `attribute` is one parsed attribute, kept only when its source line starts with `///` or `/**`.
+/// Returns the attribute's 1-based line with its normalized doc text.
+/// `None` means an inner doc comment, an explicit `doc` attribute, a value that is not a string, or a span with no source line.
 fn supported_outer_rustdoc_attribute(
     lines: &[&str],
     attribute: &syn::Attribute,
@@ -120,6 +135,9 @@ fn supported_outer_rustdoc_attribute(
 }
 
 /// Normalize line and block rustdoc into the same plain text used by section and prose checks.
+///
+/// `text` is the doc string as the parser stores it.
+/// Returns its lines trimmed, each without one leading `*`, joined with newlines and trimmed as a whole.
 fn normalize_outer_rustdoc_text(text: &str) -> String {
     // One decorative leading star is removed from conventional block-rustdoc lines.
     text.lines()
@@ -137,6 +155,8 @@ fn normalize_outer_rustdoc_text(text: &str) -> String {
 /// (other than implicit unit). Strips rustdoc/comment lines first so doc
 /// examples containing `fn foo() -> T {}` cannot trigger a false positive
 /// on a fn whose real signature is `fn bar()`.
+///
+/// Returns `true` when a `fn` header in the stripped `body` has an arrow before its opening brace, and `false` otherwise.
 pub(crate) fn signature_has_return_type(body: &str) -> bool {
     static SIG_RETURN_REGEX: OnceLock<Regex> = OnceLock::new();
     let code = body_without_doc_comments(body);
@@ -171,6 +191,8 @@ pub(crate) fn body_without_doc_comments(body: &str) -> String {
 /// frontend bridge: `#[tauri::command]`, `#[command]`, `#[wasm_bindgen]`,
 /// or `#[pyfunction]`. Bridge functions follow user-facing-summary rustdoc
 /// convention rather than the Rust API contract style.
+///
+/// Returns `true` when one of those attributes, or `pyo3::pyfunction`, appears anywhere in `body`, and `false` otherwise.
 pub(crate) fn has_frontend_bridge_attr(body: &str) -> bool {
     static BRIDGE_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(
@@ -186,6 +208,9 @@ pub(crate) fn has_frontend_bridge_attr(body: &str) -> bool {
 /// before `:` in each chunk. Skips `self` receivers and bare `_`. Strips
 /// rustdoc/comment lines first so `/// fn example(unrelated: i32)` in
 /// docs cannot be picked up as the real signature.
+///
+/// `body` is the function's source block, doc and attribute lines included.
+/// Returns the parameter names in signature order, or an empty vector when no `fn` header with balanced parentheses is found.
 pub(crate) fn extract_param_names(body: &str) -> Vec<String> {
     let code = body_without_doc_comments(body);
     let Some(inside) = function_signature_params(&code) else {
@@ -197,6 +222,10 @@ pub(crate) fn extract_param_names(body: &str) -> Vec<String> {
         .collect()
 }
 
+/// Find the parameter list of the first `fn` header in a function's source text.
+///
+/// `body` is that source text; the list opens at the first `(` after the first `fn` followed by a space, not a tab or newline.
+/// Returns the text between that parenthesis and its match, or `None` when that `fn`, the `(` or its matching `)` is missing.
 fn function_signature_params(body: &str) -> Option<&str> {
     let fn_index = body.find("fn ")?;
     let after_fn = &body[fn_index..];
@@ -205,6 +234,10 @@ fn function_signature_params(body: &str) -> Option<&str> {
     Some(&after_fn[open_paren + 1..close])
 }
 
+/// Find the byte offset of the parenthesis that closes a parameter list.
+///
+/// `after_fn` is the source text from the `fn` keyword on and `open_paren` is the byte offset of the opening `(` in it.
+/// Returns the offset of the matching `)` in `after_fn`, or `None` when the parentheses never balance; parentheses inside strings count too.
 fn matching_close_paren_offset(after_fn: &str, open_paren: usize) -> Option<usize> {
     let mut depth = 0i32;
     for (offset, byte) in after_fn.as_bytes().iter().enumerate().skip(open_paren) {
@@ -222,6 +255,11 @@ fn matching_close_paren_offset(after_fn: &str, open_paren: usize) -> Option<usiz
     None
 }
 
+/// Split a parameter list into one chunk per parameter at the commas outside any nested brackets.
+///
+/// `inside` is the text between the parameter list's parentheses; angle, round, square and curly brackets raise the nesting depth.
+/// Their closers lower it, never below zero, and an arrow's `>` counts as a closer.
+/// Returns every chunk untrimmed, including an empty last chunk after a trailing comma or for empty input.
 fn split_top_level_commas(inside: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
@@ -248,6 +286,11 @@ fn split_top_level_commas(inside: &str) -> Vec<String> {
     chunks
 }
 
+/// Pull the parameter name out of one chunk of a signature's parameter list.
+///
+/// `chunk` is one parameter as written, such as an optional `mut`, a name, and a type after a colon.
+/// Returns the leading run of ASCII letters, digits and underscores before the colon, after stripping leading `mut` keywords and then `&` signs.
+/// `None` means an empty chunk, a `self` receiver, a bare `_`, or text that starts with no such character.
 fn parameter_name(chunk: String) -> Option<String> {
     let trimmed = chunk.trim();
     if trimmed.is_empty() || parameter_is_self(trimmed) || trimmed == "_" {
@@ -272,6 +315,10 @@ fn parameter_name(chunk: String) -> Option<String> {
     }
 }
 
+/// Report whether one parameter is a `self` receiver such as `self`, `mut self`, `&self`, `&mut self` or `self: Box<Self>`.
+///
+/// `trimmed` is the parameter text with surrounding whitespace removed.
+/// Returns `true` when `self` follows any leading `&` and `mut` and is not followed by an ASCII letter, digit or underscore.
 fn parameter_is_self(trimmed: &str) -> bool {
     let candidate = trimmed
         .trim_start_matches('&')

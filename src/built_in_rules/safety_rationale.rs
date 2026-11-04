@@ -10,6 +10,12 @@ const SAFETY_RATIONALE_LOOKAHEAD_LINES: usize = 2;
 /// first line that is not comment, attribute or lead-in code, not at a line count (FAMILY-CONTRACT section 12,
 /// search `A SAFETY rationale is found by comment block`), so a longer explanation is never read as a missing one.
 /// `None` means no marker is connected to the block without crossing executable code.
+///
+/// `lines` holds the source lines being scanned and `line_index` is the 0-based index of the unsafe line; an out-of-range index panics.
+///
+/// Returns a marker's text from the unsafe line itself, without continuation lines, when that line has one.
+/// Otherwise returns a nearby marker's text joined with its continuation comment lines in source order.
+/// A marker with no rationale text gives `Some` of an empty string, which `is_weak_safety_rationale` rates weak, unlike `None`.
 pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
     let mut prelude = SafetyPreludeScanner::default();
 
@@ -36,10 +42,15 @@ pub(crate) fn find_nearby_safety_rationale(lines: &[&str], line_index: usize) ->
     forward_safety_rationale(lines, line_index)
 }
 
-/// Read the first lines inside an `unsafe {` that the unsafe line opens, stopping at the first code line.
-/// The line must end with the block's own `unsafe {`: in `while unsafe { next(it) } != 0 {` the brace opens
-/// the loop body, whose comments are about other statements. `None` leaves the block visible to the
-/// missing-rationale rule.
+/// Read the first lines inside an `unsafe {` that the unsafe line opens, stopping at the first line not starting with `//` or `/*`.
+/// The line must end with the block's own `unsafe {`: in `while unsafe { next(it) } != 0 {` the brace opens the loop body,
+/// whose comments are about other statements. `None` leaves the block visible to the missing-rationale rule.
+///
+/// `lines` holds the source lines being scanned and `line_index` is the 0-based index of the unsafe line; an out-of-range index panics.
+///
+/// Returns the marker's text joined with the line comments under it, searching two lines after the opener; an empty string means neither has text.
+/// `None` means the line does not end in `unsafe {` or `unsafe{`, or no marker appears in the two-line lookahead before a line
+/// that starts, after indentation, with neither `//` nor `/*`, such as the ` * ` middle line of a block comment.
 fn forward_safety_rationale(lines: &[&str], line_index: usize) -> Option<String> {
     let opener = lines[line_index].trim_end();
     if !opener.ends_with("unsafe {") && !opener.ends_with("unsafe{") {
@@ -68,6 +79,9 @@ fn forward_safety_rationale(lines: &[&str], line_index: usize) -> Option<String>
 /// Append the line comments directly under a marker, in source order, so a rationale written below an empty
 /// `// SAFETY:` line is read whole. The run ends at the first line that is not a line comment, or at another
 /// marker.
+///
+/// `marker_text` is the text already read after the marker, left out when empty, and `following` holds the lines below the marker line.
+/// Returns the non-empty pieces joined with single spaces, which is an empty string when neither the marker nor the run holds text.
 fn with_following_comment_lines(marker_text: &str, following: &[&str]) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if !marker_text.is_empty() {
@@ -109,6 +123,9 @@ enum SafetyPreludeStep {
 
 impl<'a> SafetyPreludeScanner<'a> {
     /// Consume one earlier line without accepting a block marker until its opener is validated.
+    ///
+    /// `line` is the next source line above those already scanned.
+    /// Returns `Found` with the rationale once a marker is accepted, `Continue` while the prelude goes on, or `Boundary` when `line` ends it.
     fn scan_line(&mut self, line: &'a str) -> SafetyPreludeStep {
         let was_inside_block_comment = self.inside_block_comment;
         let comment_text = backward_comment_text(line, &mut self.inside_block_comment);
@@ -134,6 +151,9 @@ impl<'a> SafetyPreludeScanner<'a> {
     }
 
     /// Retain the nearest inner marker while the scan searches for a standalone block opener.
+    ///
+    /// `line` is the scanned line and `marker_end` is the byte offset where its marker ends, or `None` when it has none.
+    /// Only the first marker found inside a block comment is kept, with the count of continuation lines read before it.
     fn remember_pending_marker(&mut self, line: &'a str, marker_end: Option<usize>) {
         if !self.inside_block_comment || self.pending_block_marker.is_some() {
             return;
@@ -148,6 +168,8 @@ impl<'a> SafetyPreludeScanner<'a> {
     }
 
     /// Build a stored marker using only continuation text discovered below that marker.
+    ///
+    /// Returns the joined rationale and clears the stored marker, or `None` when no marker is pending.
     fn take_pending_rationale(&mut self) -> Option<String> {
         let pending = self.pending_block_marker.take()?;
         Some(join_safety_rationale(
@@ -159,6 +181,10 @@ impl<'a> SafetyPreludeScanner<'a> {
 
     /// Keep contiguous comment text, complete attributes and code that leads into the unsafe expression;
     /// a blank line or a line that completes a statement ends the prelude.
+    ///
+    /// `line` is the scanned source line and `comment_text` is its comment text, or `None` when `line` is not standalone comment text.
+    /// Comment text is recorded as continuation only while no block marker is pending.
+    /// Returns `Continue` for comment, attribute and lead-in lines, or `Boundary` for any other line.
     fn continue_or_stop(
         &mut self,
         line: &'a str,
@@ -190,6 +216,10 @@ fn safety_rationale_in_comment(line: &str) -> Option<String> {
 }
 
 /// Join marker text and following comment lines in their original source order.
+///
+/// `marker_line` is the line holding the marker and `marker_end` is the byte offset where the marker ends; an invalid offset panics.
+/// `continuation_lines` holds the comment texts below the marker in the bottom-up order the backward scan read them.
+/// Returns the text after the marker followed by the continuation texts top-down, joined with single spaces and skipping empty parts.
 fn join_safety_rationale<'a>(
     marker_line: &'a str,
     marker_end: usize,
@@ -214,6 +244,9 @@ fn join_safety_rationale<'a>(
 /// rationale is the comment lines around it. Prose that only mentions safety, such as `thread safety is
 /// handled by the lock`, `TODO: safety review`, `SAFETY is not guaranteed here` or `SAFETY Cannot be
 /// guaranteed`, carries no marker: without its colon, text after `SAFETY` may as well be a warning.
+///
+/// `line` is the comment line or comment text to search.
+/// Returns the byte offset just past the marker, the length of `line` for a heading, or `None` when `line` holds no marker.
 fn safety_marker_end(line: &str) -> Option<usize> {
     if let Some(position) = line
         .as_bytes()
@@ -237,6 +270,9 @@ fn safety_marker_end(line: &str) -> Option<usize> {
 
 /// Byte offset where a comment's text begins, past its opener (`///`, `//!`, `//`, `/**`, `/*!`, `/*` or
 /// a block comment's leading `*`) and the spaces after it; text with no opener starts at its first non-space.
+///
+/// `line` is the comment line or comment text to measure.
+/// Returns a byte offset into `line`, equal to its length when nothing follows the opener.
 fn comment_content_start(line: &str) -> usize {
     let mut rest = line.trim_start();
     for opener in ["///", "//!", "//", "/**", "/*!", "/*", "*"] {
@@ -253,6 +289,9 @@ fn comment_content_start(line: &str) -> usize {
 /// such as `match tag {`. A line ending in `,` completes a sibling arm, argument or field, a line opening
 /// with `}` (such as `} else {`) closes the previous branch, and a line with its own `unsafe` belongs to that
 /// block, so none of them carries a rationale past it.
+///
+/// `line` is one source line, judged by its trimmed text after `without_trailing_comment` drops a trailing `//` comment.
+/// Returns `true` when `line` leads into the unsafe expression below it, and `false` for any other line.
 fn is_continuation_line(line: &str) -> bool {
     let code = crate::built_in_rules::without_trailing_comment(line).trim();
     if code.starts_with('}') {
@@ -277,6 +316,10 @@ fn is_continuation_line(line: &str) -> bool {
 }
 
 /// Return comment text while walking backwards through a standalone comment prelude.
+///
+/// `line` is the next earlier source line in the walk and `inside_block_comment` tracks whether the walk is inside a block comment.
+/// The flag is set when `line` closes a block comment and cleared when it opens one, so the caller carries it to the next line.
+/// Returns the trimmed comment text, or `None` when `line` is not standalone comment text, such as code or a block comment after code.
 fn backward_comment_text<'a>(line: &'a str, inside_block_comment: &mut bool) -> Option<&'a str> {
     let trimmed = line.trim();
     // After a closing delimiter, every preceding line is comment text until its opener.
@@ -314,17 +357,26 @@ fn backward_comment_text<'a>(line: &'a str, inside_block_comment: &mut bool) -> 
 }
 
 /// Remove optional decorative `*` syntax from one known block-comment line.
+///
+/// `comment` is the line's text inside the block comment.
+/// Returns the text trimmed, without one leading `*` or any trailing `*/`, borrowed from `comment`.
 fn trim_block_comment_line(comment: &str) -> &str {
     let trimmed = comment.trim();
     trim_comment_suffix(trimmed.strip_prefix('*').unwrap_or(trimmed))
 }
 
 /// Remove a closing block-comment delimiter without changing rationale punctuation.
+///
+/// `comment` is comment text that may end in `*/`.
+/// Returns the text trimmed of surrounding whitespace and any trailing `*/` delimiters.
 fn trim_comment_suffix(comment: &str) -> &str {
     comment.trim().trim_end_matches("*/").trim()
 }
 
 /// Return whether one complete outer attribute may connect a comment to an unsafe expression.
+///
+/// `line` is a source line, judged by its trimmed text.
+/// Returns `true` when that text starts with a hash and an opening square bracket and ends with a closing one; nothing between is validated.
 fn is_rust_attribute_line(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.starts_with("#[") && trimmed.ends_with(']')
@@ -333,6 +385,9 @@ fn is_rust_attribute_line(line: &str) -> bool {
 /// Returns whether nearby `SAFETY:` text is empty, ceremonial, a placeholder whose first word is a
 /// work-in-progress marker (`todo`, `fixme`, `xxx` or `hack`, in any case), or too brief.
 /// ASCII word spans keep `same-thread access` punctuation-stable.
+///
+/// `rationale` is the text found after the marker, compared in lowercase as ASCII-alphanumeric words.
+/// Too brief means fewer than three words, or fewer than twelve characters once the words are joined with single spaces.
 pub(crate) fn is_weak_safety_rationale(rationale: &str) -> bool {
     let normalized = rationale.trim().to_ascii_lowercase();
     let words = safety_rationale_words(&normalized);
@@ -374,6 +429,9 @@ pub(crate) fn is_weak_safety_rationale(rationale: &str) -> bool {
 }
 
 /// Extracts ASCII-alphanumeric words before the weak-rationale policy runs.
+///
+/// `rationale` is the text to split, already lowercased by the caller; every character that is not ASCII alphanumeric separates words.
+/// Returns the non-empty words in order, borrowed from `rationale`, or an empty vector when it has no ASCII alphanumeric character.
 fn safety_rationale_words(rationale: &str) -> Vec<&str> {
     // Punctuation delimits words, so hyphens and slashes cannot hide spans.
     rationale

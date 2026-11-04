@@ -30,6 +30,9 @@ const LOCKFILE_TWIN_NAME: &str = "other.json";
 
 /// Materialise the four corpus cases this suite needs into one temporary project.
 /// The values are the spec's synthetic sentinels, so no real credential is ever written.
+///
+/// `project_root` is the project directory; each case is written to its corpus path under the `src` directory created there.
+/// Panics if that directory or any case file cannot be written.
 fn write_redaction_corpus(project_root: &Path) {
     let aws_source = concat!(
         "//! Synthetic redaction fixture.\n\n",
@@ -55,7 +58,11 @@ fn write_redaction_corpus(project_root: &Path) {
 }
 
 /// Analyse the corpus project under one config body and return its report.
-/// The config always exists, so only the `sensitiveExclusions` section varies between runs.
+/// The config always exists, so runs on one corpus differ only in what `config_body` declares.
+///
+/// `project_root` is the corpus project, analysed from its root with `no_baseline` set.
+/// `config_body` is the config file text written into that project before the run; callers pass an empty body for an unconfigured run.
+/// Returns the report of that run; panics if the config cannot be written or config loading or analysis fails.
 fn analyse_corpus_with_config(project_root: &Path, config_body: &str) -> AnalysisReport {
     write_config(project_root, config_body);
     run_project_analysis(
@@ -72,6 +79,9 @@ fn analyse_corpus_with_config(project_root: &Path, config_body: &str) -> Analysi
 
 /// Load config for the corpus project and return the loader's error.
 /// Rejection cases need the diagnostic text, which never reaches an analysis report.
+///
+/// `project_root` is the project the config is written into and loaded from; `config_body` is the config text the loader must reject.
+/// Returns the loader's error message; panics if the config cannot be written or loads successfully.
 fn corpus_config_error(project_root: &Path, config_body: &str) -> String {
     write_config(project_root, config_body);
     load_config(project_root, &default_test_options()).expect_err("configuration is rejected")
@@ -79,6 +89,8 @@ fn corpus_config_error(project_root: &Path, config_body: &str) -> String {
 
 /// Collect one report's findings as comparable `rule id @ path` pairs.
 /// The sibling rule in the family case file is checked by differencing two of these sets.
+///
+/// Returns one `rule id @ path` string per distinct scope among the findings in `report`, sorted, and empty when `report` has no findings.
 fn finding_scopes(report: &AnalysisReport) -> BTreeSet<String> {
     report
         .findings
@@ -88,7 +100,11 @@ fn finding_scopes(report: &AnalysisReport) -> BTreeSet<String> {
 }
 
 /// Assert the configured run removed exactly the declared scopes and nothing else.
-/// An unintended sibling suppression fails here rather than silently hiding a finding.
+/// An unintended sibling scope that disappears entirely fails here; a scope that loses only some of its findings still passes.
+///
+/// `baseline` is the report of the run without exclusions and `configured` the report of the run with them.
+/// `expected` lists the `rule id @ path` scopes that should be in `baseline` but not `configured`, in any order.
+/// The assertion panics when the removed set differs from `expected` in either direction.
 fn assert_removed_scopes(
     baseline: &AnalysisReport,
     configured: &AnalysisReport,
@@ -182,6 +198,9 @@ fn suppression_line(text: &str) -> &str {
 
 /// Write one lockfile and its byte-identical twin under a neutral name, so a path-based mechanism is visible.
 /// Both hold a digest-shaped token and a key-shaped identifier, assembled here so no whole secret is stored.
+///
+/// `project_root` is the project directory; both files are written into the `web` directory created there.
+/// Panics if that directory or either file cannot be written.
 fn write_lockfile_corpus(project_root: &Path) {
     let digest = concat!("q7ZxM2kPv9LtB4nR", "w8HsD3jFy6GcT5mV", "a1UeN0bK");
     let key = concat!("AKIA", "QQZZRSTVZZZZWWWW");
@@ -193,6 +212,9 @@ fn write_lockfile_corpus(project_root: &Path) {
 }
 
 /// Collect one report's rule ids for one file path.
+///
+/// `report` is the analysis report to read, and `file_path` is the path to match exactly against each finding's recorded path.
+/// Returns the rule id of every matching finding in report order, repeats kept, and empty when no finding names that path.
 fn rules_for(report: &AnalysisReport, file_path: &str) -> Vec<String> {
     report
         .findings

@@ -12,6 +12,9 @@ use super::*;
 use crate::custom_rules::rust_comment_scope_source;
 
 /// Route one discovered text source through general and metadata-specific rules.
+///
+/// `unit` is the discovered file and its source text, and `config` holds the user's rule settings.
+/// Each rule appends what it reports to `findings`.
 pub(crate) fn analyse_text_rules(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -25,6 +28,10 @@ pub(crate) fn analyse_text_rules(
 }
 
 /// Report a source file whose substantive review surface exceeds the configured line threshold.
+///
+/// `unit` supplies the file and its source text; only Rust files whose paths are not exempt are measured.
+/// `config` gives the `size.file-length` threshold and severity applied to the production code-line count.
+/// The file finding and any oversized inline test module findings are appended to `findings`.
 fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Vec<Finding>) {
     // File length measures Rust source only; JSON, YAML, TOML and other text files are data, not logic
     // (FAMILY-CONTRACT section 12, search `Size and complexity findings in two bands`).
@@ -82,6 +89,9 @@ fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Ve
 /// Report each inline test module over the file-length threshold on its own `mod` line, so an oversized test module
 /// stays visible; it is advisory unless the user configured the rule's severity. It carries no band key, and its
 /// `testModule` key names the module, so a reader can tell it from the file's production finding without the message.
+///
+/// `unit` supplies the reported file and `config` the threshold and severity; `test_modules` holds the measured inline test modules.
+/// Each finding is appended to `findings`.
 fn push_oversized_test_module_findings(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -127,6 +137,10 @@ struct InlineTestModule {
 }
 
 /// Split a Rust file's code lines between production code and its inline test modules, from one projection.
+///
+/// `source` is the whole Rust file text.
+/// Returns the code lines outside the inline test modules and, for each module, its name, 0-based `mod` line and code-line count.
+/// The module list is empty when the file has no inline test module whose braces close.
 fn rust_file_lengths(source: &str) -> RustFileLengths {
     let comment_projection = rust_comment_scope_source(source);
     let code_view = rust_code_view(source, &comment_projection);
@@ -159,6 +173,10 @@ struct InlineTestModuleSpan {
 
 /// Find each inline `#[cfg(test)]` module in the code view, where comments and literals cannot open or close one.
 /// A test module nested inside one already found is part of it. A `mod tests;` declaration has no inline body.
+///
+/// `source` gives the line starts for byte-to-line mapping; `code_view` is the same text with comments and literals blanked.
+/// Returns each module's name and 0-based attribute, `mod` and closing-brace lines in source order, or an empty list when there is none.
+/// A module whose braces never close is skipped, leaving its lines to the production count.
 fn inline_test_module_spans(source: &str, code_view: &str) -> Vec<InlineTestModuleSpan> {
     static CFG_TEST_MODULE: OnceLock<Regex> = OnceLock::new();
     let pattern = static_regex(
@@ -194,6 +212,9 @@ fn inline_test_module_spans(source: &str, code_view: &str) -> Vec<InlineTestModu
 }
 
 /// Byte index of the brace that closes the one at `open`, counting only the braces the code view keeps.
+///
+/// `code` is the code view's bytes, where braces inside comments and literals are already blank.
+/// Returns the closing brace's byte index, or `None` when the brace at `open` is never closed.
 fn matching_brace(code: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (index, byte) in code.iter().enumerate().skip(open) {
@@ -216,6 +237,9 @@ fn matching_brace(code: &[u8], open: usize) -> Option<usize> {
 /// Rust sources drop `//` lines and nested `/* */` blocks via the string-aware comment
 /// projection; hash-comment formats drop full-line `#` (and `;` for ini-style) comments; other
 /// formats count every non-blank line.
+///
+/// `display_path` picks the format by its lowercased extension, with backslashes read as slashes; `source` is the text measured.
+/// Returns the number of substantive lines, 0 for an empty source; a comment-only source counts 0 only for Rust, YAML, TOML and INI.
 fn substantive_line_count(display_path: &str, source: &str) -> usize {
     let normalized = display_path.replace('\\', "/").to_ascii_lowercase();
     if normalized.ends_with(".rs") {
@@ -244,6 +268,9 @@ fn substantive_line_count(display_path: &str, source: &str) -> usize {
 }
 
 /// Rust-aware count of the code lines `rust_code_line_flags` marks.
+///
+/// `source` is a lexically whole Rust text, such as a file.
+/// Returns how many of its lines hold code, so blank, comment-only, doc-comment and attribute-only lines are not counted.
 fn rust_substantive_line_count(source: &str) -> usize {
     rust_code_line_flags(source)
         .into_iter()
@@ -258,6 +285,8 @@ fn rust_substantive_line_count(source: &str) -> usize {
 /// string- and raw-string-aware and tracks nested block comments, so a comment marker inside a string stays code and
 /// a trailing comment cannot hide the statement in front of it. A line inside a multi-line string literal is data and
 /// stays code. Callers pass a lexically whole slice, such as a file or one function's lines.
+///
+/// Returns one flag per line of `source`, in order, true when that line holds code.
 pub(crate) fn rust_code_line_flags(source: &str) -> Vec<bool> {
     let comment_projection = rust_comment_scope_source(source);
     let code_view = rust_code_view(source, &comment_projection);
@@ -266,6 +295,10 @@ pub(crate) fn rust_code_line_flags(source: &str) -> Vec<bool> {
 
 /// Per-line code flags from a source, its comment projection and its code view, which share every byte position.
 /// An attribute's bracket depth is carried across lines, so a multi-line attribute is free on every line it spans.
+///
+/// `source` is the original text and `comment_projection` holds a non-space byte wherever `source` has a comment.
+/// `code_view` is `source` with comments and literals blanked; it is read only for attribute openers and brackets.
+/// Returns one flag per line, true when that line holds code.
 fn code_line_flags(source: &str, comment_projection: &str, code_view: &str) -> Vec<bool> {
     let mut attribute_depth = 0usize;
     source
@@ -285,6 +318,10 @@ fn code_line_flags(source: &str, comment_projection: &str, code_view: &str) -> V
 
 /// True when one line has a non-whitespace byte outside every comment and attribute. Attribute brackets are read
 /// from the code view, where string bytes are blank, so a bracket inside an attribute's string cannot end it early.
+///
+/// `source`, `comments` and `code` are the same line taken from the source, its comment projection and its code view.
+/// `attribute_depth` brings an open attribute's bracket depth in from the previous line and is left updated for the next one.
+/// Returns true when the line holds code, false for a blank, comment-only or attribute-only line.
 fn line_has_code(source: &[u8], comments: &[u8], code: &[u8], attribute_depth: &mut usize) -> bool {
     let mut has_code = false;
     let mut index = 0usize;
@@ -309,6 +346,10 @@ fn line_has_code(source: &[u8], comments: &[u8], code: &[u8], attribute_depth: &
 }
 
 /// Move an open attribute's bracket depth past one of its bytes; the closing bracket ends the attribute.
+///
+/// `byte` is the code-view byte at the current index, or `None` past the end of the code view's line.
+/// An opening bracket raises `attribute_depth` and a closing one lowers it; any other byte leaves it unchanged.
+/// Call it only while the depth is above zero: a closing bracket at zero underflows, which panics in debug builds.
 fn track_attribute_bracket(byte: Option<&u8>, attribute_depth: &mut usize) {
     match byte {
         Some(b'[') => *attribute_depth += 1,
@@ -318,6 +359,8 @@ fn track_attribute_bracket(byte: Option<&u8>, attribute_depth: &mut usize) {
 }
 
 /// The length of the attribute opener (`#[` or `#![`) at the start of `rest`, when one starts there.
+///
+/// Returns 2 for the outer-attribute opener, 3 for the inner-attribute opener, or `None` when `rest` starts with neither.
 fn attribute_opener_len(rest: &[u8]) -> Option<usize> {
     if rest.starts_with(b"#[") {
         Some(2)
@@ -330,6 +373,9 @@ fn attribute_opener_len(rest: &[u8]) -> Option<usize> {
 
 /// The source with every comment byte and every string or char literal byte blanked, byte for byte, so structure
 /// read from it (attribute brackets, module braces) cannot be opened or closed by text inside either.
+///
+/// `source` is the Rust text and `comment_projection` its comment projection, which holds a non-space byte inside each comment.
+/// Returns the blanked copy as an owned string, decoded lossily if the blanking leaves invalid UTF-8.
 fn rust_code_view(source: &str, comment_projection: &str) -> String {
     let bytes: Vec<u8> = strip_rust_string_literals(source)
         .bytes()
@@ -346,6 +392,9 @@ fn rust_code_view(source: &str, comment_projection: &str) -> String {
 }
 
 /// Identify file shapes whose length is not a useful source-review signal.
+///
+/// `display_path` is the reported path with backslashes read as slashes; lockfile, Markdown and `.sh` checks use its lowercased file name.
+/// Returns true for lockfiles, Markdown, shell scripts, rule definition tables, calibration case tables and agent hook scripts.
 fn file_length_is_exempt(display_path: &str) -> bool {
     let normalized = display_path.replace('\\', "/");
     // `rsplit` always yields one segment; the fallback names an unexpected empty iterator safely.
@@ -363,6 +412,9 @@ fn file_length_is_exempt(display_path: &str) -> bool {
 }
 
 /// Recognise dependency lockfiles governed by their package manager.
+///
+/// `file_name` is the file's base name, which the caller lowercases because the comparison is case-sensitive.
+/// Returns true for `cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` or any other name ending in `.lock`.
 fn file_name_is_lockfile(file_name: &str) -> bool {
     matches!(
         file_name,
@@ -371,21 +423,33 @@ fn file_name_is_lockfile(file_name: &str) -> bool {
 }
 
 /// Recognise Markdown prose governed by documentation review.
+///
+/// `file_name` is the file's base name, which the caller lowercases because the comparison is case-sensitive.
+/// Returns true when it ends in `.md` or `.markdown`.
 fn file_name_is_markdown(file_name: &str) -> bool {
     file_name.ends_with(".md") || file_name.ends_with(".markdown")
 }
 
 /// Recognise declarative rule tables that intentionally centralise many entries.
+///
+/// `normalized` is the display path with backslashes read as slashes, compared case-sensitively.
+/// Returns true for a path under `src/rules/` that ends in `_definitions.rs`.
 fn path_is_rule_definition_table(normalized: &str) -> bool {
     normalized.starts_with("src/rules/") && normalized.ends_with("_definitions.rs")
 }
 
 /// Recognise calibration case tables whose repeated fixtures are intentional.
+///
+/// `normalized` is the display path with backslashes read as slashes, compared case-sensitively.
+/// Returns true for a path under `src/tests/calibration/` that ends in `_cases.rs`.
 fn path_is_calibration_case_table(normalized: &str) -> bool {
     normalized.starts_with("src/tests/calibration/") && normalized.ends_with("_cases.rs")
 }
 
 /// Recognise agent hook scripts governed by shell and hook-specific checks.
+///
+/// `normalized` is the display path with backslashes read as slashes, compared case-sensitively.
+/// Returns true when the path sits in a `.codex/hooks/` or `.claude/hooks/` directory, at the root or nested deeper.
 fn path_is_agent_hook(normalized: &str) -> bool {
     normalized.contains("/.codex/hooks/")
         || normalized.contains("/.claude/hooks/")

@@ -13,6 +13,12 @@ use std::fmt::Write as _;
 const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
 /// Render a compact summary view from a full analysis report.
+///
+/// `report` is the finished analysis and `format` picks the text card or the machine JSON summary.
+/// `top` caps the text card's top-rule and top-file lists, and `duration_ms` is the run time it prints; JSON ignores both.
+/// Returns the text card without trailing newlines, or the JSON summary that the machine contract renders.
+///
+/// The JSON form panics when the machine contract meets report paths or ignore details it cannot render.
 pub(crate) fn render(
     report: &AnalysisReport,
     top: usize,
@@ -72,6 +78,10 @@ struct FileDigest {
 }
 
 impl SummaryDigest {
+    /// Gather the pillar, top-rule and top-file digests and the per-rule deltas the text summary prints.
+    ///
+    /// `report` is the analysis to digest and `top` caps the rule and file lists.
+    /// Returns the digest, with the deltas copied from the report and None when the report has none.
     fn build(report: &AnalysisReport, top: usize) -> Self {
         SummaryDigest {
             pillars: pillar_digests(report),
@@ -82,6 +92,10 @@ impl SummaryDigest {
     }
 }
 
+/// Build one digest row per scored pillar with its severity counts, the pillar with the most findings first.
+///
+/// `report` supplies the pillar scores and the findings to count.
+/// Returns rows sorted by finding count descending, then by pillar label; a report with no pillar scores yields an empty list.
 pub(crate) fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
     let severity_counts = tally_severity_by_pillar(&report.findings);
     let mut digests: Vec<PillarDigest> = report
@@ -99,6 +113,10 @@ pub(crate) fn pillar_digests(report: &AnalysisReport) -> Vec<PillarDigest> {
     digests
 }
 
+/// Count how many advisory, warning and error findings each pillar holds.
+///
+/// `findings` holds the findings to count.
+/// Returns a map from pillar to its advisory, warning and error counts in that order; a pillar with no findings is absent.
 fn tally_severity_by_pillar(findings: &[Finding]) -> BTreeMap<Pillar, (usize, usize, usize)> {
     let mut counts: BTreeMap<Pillar, (usize, usize, usize)> = BTreeMap::new();
     for finding in findings {
@@ -112,6 +130,10 @@ fn tally_severity_by_pillar(findings: &[Finding]) -> BTreeMap<Pillar, (usize, us
     counts
 }
 
+/// Combine one pillar's score with its severity counts into a digest row.
+///
+/// `pillar_score` supplies the grade, score, findings, penalty and applicability, and `severity_counts` the per-pillar severity tallies.
+/// Returns the row, with zero counts for a pillar missing from the tallies, applicable only when the pillar is also a score pillar.
 fn pillar_digest_row(
     pillar_score: &PillarScore,
     severity_counts: &BTreeMap<Pillar, (usize, usize, usize)>,
@@ -133,6 +155,10 @@ fn pillar_digest_row(
     }
 }
 
+/// List the rules with the most findings and their severity, adding confidence and a short description for built-in rules only.
+///
+/// `report` supplies the findings and `top` caps how many rules are kept.
+/// Returns at most `top` rows sorted by count descending, then rule id; empty when there are no findings or `top` is 0.
 fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
     let registry = builtin_registry();
     let by_rule = tally_findings_by_rule(report);
@@ -154,6 +180,10 @@ fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
 // `RuleDefinition.default_severity`, so `rules.<id>.severity:` overrides
 // (applied via `config.severity` at rule-emission time) stay consistent
 // between `summary.<severity>` counts and the topRules digest.
+/// Count each rule's findings and take its severity from the findings themselves, so severity overrides match the summary counts.
+///
+/// `report` supplies the findings.
+/// Returns a map from rule id to its finding count and the severity of its first finding; empty when the report has none.
 fn tally_findings_by_rule(report: &AnalysisReport) -> BTreeMap<&str, (usize, Severity)> {
     let mut by_rule: BTreeMap<&str, (usize, Severity)> = BTreeMap::new();
     for finding in &report.findings {
@@ -165,6 +195,10 @@ fn tally_findings_by_rule(report: &AnalysisReport) -> BTreeMap<&str, (usize, Sev
     by_rule
 }
 
+/// Make the top-rules row for one rule, adding the registry's confidence and the first sentence of its description.
+///
+/// `rule_id`, `count` and `severity` come from the findings tally, and `registry` is searched for the rule's definition.
+/// Returns the row; confidence and description are None when the registry does not know the rule.
 fn build_rule_digest(
     rule_id: &str,
     count: usize,
@@ -181,6 +215,10 @@ fn build_rule_digest(
     }
 }
 
+/// Cut a rule description down to its first sentence for the summary table.
+///
+/// `description` is the full description; a sentence ends at the first period followed by a space.
+/// Returns the text up to and including that period, or the whole description when it has none.
 fn first_sentence(description: &'static str) -> &'static str {
     match description.find(". ") {
         Some(end) => &description[..=end],
@@ -188,6 +226,10 @@ fn first_sentence(description: &'static str) -> &'static str {
     }
 }
 
+/// List the top file offenders as the scoring module ranks them, with each file's finding count, score and grade.
+///
+/// `report` supplies the findings and evaluated-file count, and `top` caps the list.
+/// Returns the rows in the order the scoring module gives them; a file without a score has no grade.
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
     top_file_scores_with_limit(&report.findings, top, report.score.evaluated_files)
         .iter()
@@ -200,6 +242,10 @@ fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
         .collect()
 }
 
+/// Lay out the text summary: the scan card, diagnostics, pillars, top rules, top files and the suppression audit lines.
+///
+/// `report` supplies the card values, diagnostics and suppression audit, `digest` the table rows and deltas, and `duration_ms` the run time.
+/// Returns the text with trailing newlines trimmed.
 fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u128) -> String {
     let mut out = String::new();
     render_scan_card(&mut out, report, duration_ms, |out| {
@@ -220,6 +266,9 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     out.trim_end_matches('\n').to_string()
 }
 
+/// Write one line per report diagnostic giving its type and message, with its file in parentheses when it has one.
+///
+/// `out` receives the lines and `report` supplies the diagnostics; a report without diagnostics writes nothing.
 fn render_diagnostics_text(out: &mut String, report: &AnalysisReport) {
     for diagnostic in &report.diagnostics {
         let _ = write!(
@@ -242,6 +291,10 @@ mod rule_delta_blocks {
     use super::{RuleDelta, RULE_DELTA_BLOCK_LIMIT};
     use std::fmt::Write as _;
 
+    /// Write the improved and regressed rule-delta lines, each listing up to five rules by largest net change.
+    ///
+    /// `out` receives the lines and `deltas` holds the per-rule movement; None, or no rule with a nonzero net, writes nothing.
+    /// A negative net counts as improved and a positive one as regressed, and a side with no rules prints no line.
     pub(super) fn render_text(out: &mut String, deltas: Option<&[RuleDelta]>) {
         let Some(deltas) = deltas else {
             return;
@@ -262,6 +315,10 @@ mod rule_delta_blocks {
         }
     }
 
+    /// Format the deltas a predicate selects as one comma-separated list of signed net changes with their rule ids.
+    ///
+    /// `deltas` holds every rule's movement and `predicate` picks the ones to list.
+    /// Returns up to five entries, each a signed net then the rule id, largest absolute net first and then by rule id; empty when none match.
     fn entries(deltas: &[RuleDelta], predicate: impl Fn(&RuleDelta) -> bool) -> String {
         let mut filtered: Vec<&RuleDelta> =
             deltas.iter().filter(|delta| predicate(delta)).collect();
@@ -284,6 +341,10 @@ mod rule_delta_blocks {
 // `mid` runs between the header detail and the canonical composite block so
 // callers can inject content there (per-rule deltas per ADR-014 in the
 // comparison case). When the caller has nothing to inject, pass a no-op closure.
+/// Write the summary's header card: masthead, composite block, path, file count, duration, then the injected lines, annotations and guidance.
+///
+/// `out` receives the text, `report` supplies the values, and `duration_ms` is the run time shown on the card.
+/// `mid` runs once after the duration line, so a caller can insert lines before the annotations.
 fn render_scan_card(
     out: &mut String,
     report: &AnalysisReport,
@@ -315,6 +376,9 @@ fn render_scan_card(
 // Baseline / diagnostics / missing-path context that previously trailed the
 // `Score:` line. Kept off the canonical composite block (which must stay
 // byte-aligned across ports) by emitting a single annotation line after it.
+/// Write one line joining the baseline, diagnostic-count and missing-path notes, when any of them applies.
+///
+/// `out` receives the line and `report` supplies the baseline result, diagnostics and missing paths; with none of them, nothing is written.
 fn render_scan_annotations(out: &mut String, report: &AnalysisReport) {
     let mut annotations: Vec<String> = Vec::new();
     if let Some(baseline) = &report.baseline {
@@ -341,6 +405,10 @@ fn render_scan_annotations(out: &mut String, report: &AnalysisReport) {
     }
 }
 
+/// Format the ignored-path count that follows the file count on the card.
+///
+/// `report` supplies the ignored paths.
+/// Returns the count after `ignored:` in parentheses with a leading space, or an empty string when nothing was ignored.
 fn ignored_count_label(report: &AnalysisReport) -> String {
     if report.paths.ignored_paths.is_empty() {
         String::new()
@@ -349,6 +417,10 @@ fn ignored_count_label(report: &AnalysisReport) -> String {
     }
 }
 
+/// Write the hint lines that tell the user how to scan ignored paths, see baseline-suppressed findings, or start a baseline.
+///
+/// `out` receives the hints and `report` decides them; ignored paths add the `--include-ignored` hint.
+/// A baseline that suppressed findings adds the `--no-baseline` hint, and no baseline with findings adds the `--generate-baseline` tip.
 fn render_scan_guidance(out: &mut String, report: &AnalysisReport) {
     if !report.paths.ignored_paths.is_empty() {
         let _ = writeln!(
@@ -373,6 +445,10 @@ fn render_scan_guidance(out: &mut String, report: &AnalysisReport) {
     }
 }
 
+/// Format a run time for the card in the unit that suits its size.
+///
+/// `duration_ms` is the run time in milliseconds.
+/// Returns whole milliseconds below one second, seconds to two decimals below a minute, and otherwise minutes with zero-padded seconds.
 fn format_duration(duration_ms: u128) -> String {
     if duration_ms < 1_000 {
         format!("{duration_ms}ms")
@@ -386,6 +462,10 @@ fn format_duration(duration_ms: u128) -> String {
     }
 }
 
+/// Shorten a project root under the home directory to a `~` path for display.
+///
+/// `project_root` is the root as the report records it.
+/// Returns `~` for the home directory, `~` plus the remainder for a path below it, and the root unchanged otherwise or with `HOME` unset or empty.
 fn display_project_root(project_root: &str) -> String {
     if let Some(home) = std::env::var_os("HOME") {
         let home = home.to_string_lossy();
@@ -403,6 +483,9 @@ fn display_project_root(project_root: &str) -> String {
     project_root.to_string()
 }
 
+/// Write the Pillars section with one aligned row per pillar giving its grade, score and severity counts.
+///
+/// `out` receives the section and `pillars` holds the digest rows in display order; an empty slice prints `(none)`.
 fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {
     out.push_str("Pillars\n");
     if pillars.is_empty() {
@@ -439,10 +522,17 @@ fn render_pillars_text(out: &mut String, pillars: &[PillarDigest]) {
     }
 }
 
+/// Count the decimal digits of a number so the summary columns line up.
+///
+/// `value` is the number to measure.
+/// Returns its digit count, which is 1 for zero.
 fn digit_width(value: usize) -> usize {
     value.checked_ilog10().map_or(1, |log| log as usize + 1)
 }
 
+/// Write the Top rules section with each rule's count, id, severity, confidence and description in aligned columns.
+///
+/// `out` receives the section and `rules` holds the digest rows in display order; an empty slice prints `(none)`.
 fn render_rules_text(out: &mut String, rules: &[RuleDigest]) {
     out.push_str("Top rules\n");
     if rules.is_empty() {
@@ -484,6 +574,9 @@ fn render_rules_text(out: &mut String, rules: &[RuleDigest]) {
     }
 }
 
+/// Write the Top file offenders section with each file's finding count, score and grade.
+///
+/// `out` receives the section and `files` holds the digest rows in display order; an empty slice prints `(none)`.
 fn render_files_text(out: &mut String, files: &[FileDigest]) {
     out.push_str("Top file offenders\n");
     if files.is_empty() {

@@ -26,6 +26,10 @@ const RETAINED_PYPA_ACTION: &str = include_str!(concat!(
 ));
 
 /// Write one workflow or action fixture at the path a CLI user supplies.
+///
+/// `root` is the project directory and `relative_path` is the fixture's location inside it; missing parent directories are created first.
+/// `source` becomes the complete file contents, replacing any file already at that path.
+/// Panics when the joined path has no parent or when the directories or the file cannot be written.
 fn write_github_metadata(root: &Path, relative_path: &str, source: &str) {
     let metadata_path = root.join(relative_path);
     let parent = metadata_path
@@ -36,6 +40,9 @@ fn write_github_metadata(root: &Path, relative_path: &str, source: &str) {
 }
 
 /// Count one rule's findings so applicability assertions remain readable.
+///
+/// `report` is the finished analysis to inspect, and `rule_id` is compared exactly against each finding's rule ID.
+/// Returns how many findings in `report` carry `rule_id`, or zero when none do.
 fn github_rule_count(report: &AnalysisReport, rule_id: &str) -> usize {
     // Only the requested rule contributes to the user-visible count under review.
     report
@@ -46,6 +53,10 @@ fn github_rule_count(report: &AnalysisReport, rule_id: &str) -> usize {
 }
 
 /// Select GitHub metadata findings when a test needs to inspect their paths or wording.
+///
+/// `report` is the finished analysis to filter; the returned references borrow its findings.
+/// Returns findings whose rule ID is `ci.github-event-shell-interpolation` or starts with `security.github-actions-`, in report order,
+/// or an empty vector when the report holds none.
 fn github_metadata_findings(report: &AnalysisReport) -> Vec<&Finding> {
     // The GitHub prefixes isolate metadata findings from unrelated project diagnostics.
     report

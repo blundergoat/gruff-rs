@@ -5,6 +5,10 @@
 
 use super::*;
 
+/// Turn each requested input path that does not exist into a `missing-path` diagnostic for the report.
+///
+/// `missing_paths` holds the requested paths that discovery could not find.
+/// Returns one diagnostic per entry, in input order, naming the path in its message and file; an empty slice yields an empty list.
 pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagnostic> {
     missing_paths
         .iter()
@@ -23,6 +27,10 @@ pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagn
 // rule_settings is a HashMap, so sort matched rule ids before emitting
 // for deterministic output. Custom rules can't reach this state — the
 // config loader rejects excludeFromScore outside `enabled` for them.
+/// Warn about each Security or SensitiveData built-in rule set to `excludeFromScore: true`, so the score exclusion stays visible.
+///
+/// `config` supplies the per-rule settings to inspect.
+/// Returns one `excluded-security-rule-from-score` diagnostic per such rule, sorted by rule id; with none configured the list is empty.
 fn excluded_security_rule_diagnostics(config: &Config) -> Vec<RunDiagnostic> {
     let mut ids = collect_excluded_security_rule_ids(config);
     ids.sort_by_key(|(rule_id, _)| *rule_id);
@@ -31,6 +39,10 @@ fn excluded_security_rule_diagnostics(config: &Config) -> Vec<RunDiagnostic> {
         .collect()
 }
 
+/// Find the built-in Security and SensitiveData rules whose settings set `excludeFromScore` to true.
+///
+/// `config` supplies the per-rule settings; a rule id the built-in registry does not know is skipped.
+/// Returns each matching rule id with its pillar, unsorted; no match yields an empty list.
 fn collect_excluded_security_rule_ids(config: &Config) -> Vec<(&str, Pillar)> {
     let registry = rules::builtin_registry();
     config
@@ -45,6 +57,10 @@ fn collect_excluded_security_rule_ids(config: &Config) -> Vec<(&str, Pillar)> {
         .collect()
 }
 
+/// Build the warning that one score-excluded Security or SensitiveData rule still reports findings but no longer affects the composite score.
+///
+/// `rule_id` is the rule named in the message and `pillar` is its pillar, printed in debug form beside it.
+/// Returns an `excluded-security-rule-from-score` diagnostic with no file, no line and no run-invalidation flag.
 fn excluded_security_rule_diagnostic(rule_id: &str, pillar: Pillar) -> RunDiagnostic {
     RunDiagnostic {
         diagnostic_type: "excluded-security-rule-from-score".to_string(),
@@ -57,6 +73,10 @@ fn excluded_security_rule_diagnostic(rule_id: &str, pillar: Pillar) -> RunDiagno
     }
 }
 
+/// Order findings deterministically for the report and drop repeats that share a fingerprint.
+///
+/// `findings` is sorted in place by file path, line (a missing line sorts as 0), rule id and message.
+/// Consecutive entries with equal fingerprints then collapse to the first; equal fingerprints the sort leaves apart both stay.
 pub(crate) fn sort_and_dedupe_findings(findings: &mut Vec<Finding>) {
     findings.sort_by(|left, right| {
         (
@@ -96,6 +116,10 @@ const BUILT_IN_LOCKFILE_NAMES: &[&str] = &[
 
 /// Remove the findings both suppression channels claim and count every configured entry.
 /// The returned summaries carry `exclude` rows first, then `sensitiveExclusions` rows, then built-in rows.
+///
+/// `findings` holds the findings to filter, and each one goes to the first channel that claims it, in the row order above.
+/// `exclusions` and `sensitive_exclusions` are the configured `exclude` and `sensitiveExclusions` entries.
+/// Returns the kept findings, the audit rows with their counts, and each suppressed finding paired with the row that claimed it.
 pub(crate) fn apply_report_exclusions(
     findings: Vec<Finding>,
     exclusions: &[ExclusionRule],
@@ -132,6 +156,9 @@ pub(crate) fn apply_report_exclusions(
 /// skips that one rule by file name. It is counted on every surface rather than applied in silence, and a lockfile
 /// with nothing to skip publishes no row (FAMILY-CONTRACT.md section 13a). Every other sensitive-data rule still
 /// reads the lockfile, because a credential pasted into one is as live as anywhere else.
+///
+/// `findings` holds the findings still to filter; `summaries` gains one row per lockfile in path order, indexed from 0.
+/// Returns the kept findings and each skipped finding paired with its lockfile's row; with nothing skipped, `summaries` is unchanged.
 fn partition_built_in_lockfile_findings(
     findings: Vec<Finding>,
     summaries: &mut Vec<SuppressionSummary>,
@@ -176,6 +203,9 @@ fn partition_built_in_lockfile_findings(
 }
 
 /// Decide whether a path's base name is one of the ratified package-manager lockfiles.
+///
+/// `file_path` is a finding's path; backslashes count as separators and the base name must match exactly, including case.
+/// Returns true when the base name is on the lockfile list, at any depth, and false otherwise.
 fn is_built_in_lockfile(file_path: &str) -> bool {
     let normalized = file_path.replace('\\', "/");
     let file_name = normalized.rsplit('/').next().unwrap_or(&normalized);
@@ -214,6 +244,10 @@ static BUILT_IN_TEST_FILE_NAME_REGEX: OnceLock<Regex> = OnceLock::new();
 /// A user scanning a project with sample keys or a deliberate `Command::new("sh")` in `tests/fixtures/` sees
 /// `builtInTestPath[...]` rows instead of findings. The skip is never silent, and the fixture-PII rule keeps reading
 /// these files (FAMILY-CONTRACT.md section 13a).
+///
+/// `findings` holds the findings still to filter; `summaries` gains one row per file and rule, indexed after the built-in rows it already holds.
+/// Here sensitive-data means a rule id starting `sensitive-data.` and security means the Security pillar; fixture-PII stays exempt.
+/// Returns the kept findings and each skipped finding paired with its row; with nothing skipped, `summaries` is unchanged.
 fn partition_built_in_test_path_findings(
     findings: Vec<Finding>,
     summaries: &mut Vec<SuppressionSummary>,
@@ -258,6 +292,9 @@ fn partition_built_in_test_path_findings(
 type TestPathFindingsByFileAndRule = BTreeMap<(String, String), Vec<Finding>>;
 
 /// Split findings into the ones the report keeps and the skipped findings in test code, grouped by file and rule.
+///
+/// A finding in `findings` is skipped on a test path when it is Security-pillar or its rule id starts `sensitive-data.`, except fixture-PII.
+/// Returns the kept findings in input order and the skipped ones keyed by path and rule in byte order; either side may be empty.
 fn split_test_path_findings(
     findings: Vec<Finding>,
 ) -> (Vec<Finding>, TestPathFindingsByFileAndRule) {
@@ -283,6 +320,9 @@ fn split_test_path_findings(
 }
 
 /// Decide whether a finding's file is test, fixture or example code, e.g. `tests/fixtures/keys.json` or `keys_test.go`.
+///
+/// `file_path` is the finding's path, with backslashes read as separators; any listed directory name, in any letter case, marks test code.
+/// Returns true for such a directory on the path or a base name matching the family test-file pattern, and false otherwise.
 fn is_built_in_test_path(file_path: &str) -> bool {
     let normalized = file_path.replace('\\', "/");
     let mut segments: Vec<&str> = normalized.split('/').collect();
@@ -297,6 +337,10 @@ fn is_built_in_test_path(file_path: &str) -> bool {
     .is_match(file_name)
 }
 
+/// Build the zero-count audit row for each configured `exclude` entry before any finding is matched.
+///
+/// `exclusions` holds the configured entries; each row copies an entry's selector, paths, message filter and reason, indexed by its position.
+/// Returns one row per entry in order, with no symbol, no source and the `exclude` config key; no entries yield an empty list.
 fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<SuppressionSummary> {
     exclusions
         .iter()
@@ -319,6 +363,9 @@ fn initial_suppression_summaries(exclusions: &[ExclusionRule]) -> Vec<Suppressio
 
 /// Publish one audit row per sensitive exclusion, including entries that match nothing.
 /// A zero count is a valid result, so a fixed fixture never breaks the user's build.
+///
+/// `sensitive_exclusions` holds the configured `sensitiveExclusions` entries; each row takes an entry's rule, single path, symbol and reason.
+/// Returns one zero-count row per entry, indexed by position, with no source and no message filter; no entries yield an empty list.
 fn initial_sensitive_suppression_summaries(
     sensitive_exclusions: &[SensitiveExclusionRule],
 ) -> Vec<SuppressionSummary> {
@@ -341,6 +388,13 @@ fn initial_sensitive_suppression_summaries(
         .collect()
 }
 
+/// Remove the findings a configured `exclude` entry claims and count each entry's matches in its audit row.
+///
+/// `findings` holds the findings to filter and `exclusions` the configured entries; a finding goes to the first entry that matches it.
+/// `summaries` holds the entries' rows in the same order, and each match raises that row's `suppressed` count.
+/// A match on an entry with no row in `summaries` panics on the index.
+///
+/// Returns the unmatched findings and each matched finding paired with a copy of its row, whose count is the running total at that match.
 fn partition_excluded_findings(
     findings: Vec<Finding>,
     exclusions: &[ExclusionRule],
@@ -372,6 +426,11 @@ fn partition_excluded_findings(
     (kept, suppressed)
 }
 
+/// Decide whether one configured `exclude` entry covers one finding.
+///
+/// `exclusion` supplies the rule ids and optional message substring, and `path_matchers` its compiled path patterns.
+/// `finding` is the finding under test, and its path is compared in normalised report form.
+/// Returns true only when the rule id matches, any pattern matches the path or none exist, and the message holds the substring if set.
 fn exclusion_matches_finding_with_paths(
     exclusion: &ExclusionRule,
     path_matchers: &[PathMatcher],
@@ -397,6 +456,10 @@ fn exclusion_matches_finding_with_paths(
 
 /// Remove the sensitive-data findings inside a declared exclusion scope and count each entry.
 /// Findings outside every declared scope pass through untouched.
+///
+/// `findings` holds the findings to filter and `sensitive_exclusions` the declared scopes; a finding goes to the first scope that matches it.
+/// `summaries` holds the scopes' rows in the same order; each match raises its row's `suppressed` count, and a match with no row panics.
+/// Returns the unmatched findings and each matched finding paired with a copy of its row, whose count is the running total at that match.
 fn partition_sensitive_findings(
     findings: Vec<Finding>,
     sensitive_exclusions: &[SensitiveExclusionRule],
@@ -424,6 +487,9 @@ fn partition_sensitive_findings(
 
 /// Decide whether one finding falls inside one declared sensitive exclusion scope.
 /// Every comparison is exact: no glob, prefix, message, or value matching participates.
+///
+/// `exclusion` gives the scope's rule id, report path and optional symbol, and `finding` is the finding under test.
+/// Returns true when the rule ids are equal, the finding's normalised path equals the scope's path, and the symbol matches if one is named.
 fn sensitive_exclusion_matches_finding(
     exclusion: &SensitiveExclusionRule,
     finding: &Finding,
@@ -441,6 +507,11 @@ fn sensitive_exclusion_matches_finding(
         .is_none_or(|symbol| finding.symbol.as_deref() == Some(symbol))
 }
 
+/// Analyse the selected sources under a project root and assemble the report, recording history when the options ask for it.
+///
+/// `project_root` is where discovery and diff resolution start, and `config` supplies the rule settings.
+/// `options` carries the requested paths, diff selection, baseline settings, output format and optional history file.
+/// Returns the report, whose diagnostics include missing paths and score-excluded security rules; Err holds a diff or baseline failure.
 pub(crate) fn run_analysis_in_project(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -474,6 +545,9 @@ pub(crate) fn run_analysis_in_project(
     Ok(report)
 }
 
+/// Append the gate's diagnostic to the report, or a `gate-config-error` diagnostic when the gate's scope precondition fails.
+///
+/// `report` is the finished report whose diagnostics gain one entry, and `gate` is the configured gate; None leaves the report unchanged.
 pub(crate) fn apply_gate_diagnostic(report: &mut AnalysisReport, gate: Option<&Gate>) {
     let Some(gate) = gate else {
         return;
@@ -491,6 +565,14 @@ pub(crate) fn apply_gate_diagnostic(report: &mut AnalysisReport, gate: Option<&G
     report.diagnostics.push(diagnostic);
 }
 
+/// Analyse the discovered sources, meet the baseline and apply suppressions to gather everything `build_report` needs.
+///
+/// `project_root` roots the analysis, baseline and suppressions, and `config` supplies the rule and suppression settings.
+/// `options` selects the baseline and diff behaviour, and `discovery` lists the selected sources and moves into the inputs.
+///
+/// `diagnostics` holds the diagnostics so far, to which source, project and baseline-collision diagnostics are added.
+/// `coverage` describes which Rust files the scan covered, and `diff_filter`, when set, narrows the inputs to the changed region.
+/// Returns the report inputs; Err holds the message when the baseline cannot be resolved.
 fn collect_report_inputs(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -539,6 +621,10 @@ fn collect_report_inputs(
 ///
 /// The pre-baseline copy is what a gate scoped to everything counts, so it is taken before suppression drops the
 /// debt the user already accepted; the parsed functions are what name a finding by the declaration it sits on.
+///
+/// `project_root`, `config` and `discovery` give the root, rule settings and selected files; `coverage` says which Rust files the scan covered.
+/// `diagnostics` gains every source-read, parse and project-context diagnostic.
+/// Returns the sorted, deduplicated and named findings, an identical copy of them, and the parsed functions keyed by display path.
 #[allow(clippy::type_complexity)]
 fn analysed_findings(
     project_root: &Path,
@@ -576,6 +662,10 @@ fn analysed_findings(
 ///
 /// A sensitive finding is left unnamed, because it has no durable identity at all; a finding this run cannot name
 /// keeps `None` and is published without a fingerprint rather than with a guessed one.
+///
+/// `findings` is updated in place: each one's baseline identity and subject are set together, or both cleared when it cannot be named.
+/// `blocks_by_file` holds each file's parsed functions, which supply declaration positions and same-named function lines.
+/// If the identities cannot be computed, every finding is left as it was.
 fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>) {
     let declaration_position = declaration_position_from_blocks(blocks_by_file);
     let same_named = same_named_lines_from_blocks(blocks_by_file);
@@ -595,6 +685,10 @@ fn name_findings(findings: &mut [Finding], blocks_by_file: &BTreeMap<String, Vec
     }
 }
 
+/// Pack the suppression audit rows and the suppressed findings into the report's suppression section.
+///
+/// `summaries` holds the audit rows and `suppressed_findings` each suppressed finding with the row that claimed it.
+/// Returns both lists unchanged inside one `ReportSuppressions`.
 fn report_suppressions(
     summaries: Vec<SuppressionSummary>,
     suppressed_findings: Vec<SuppressedFinding>,
@@ -610,6 +704,10 @@ fn report_suppressions(
 /// `ReportInputs`. With no diff filter the inputs pass through untouched.
 /// `discovery` and `baseline_report` pass through unchanged - the filter only
 /// narrows findings to the changed region.
+///
+/// `project_root`, `options` and `config` rebuild the report from `inputs`, and `diff_filter` supplies the patch and changed-region scope.
+/// `analysed_paths` lists the analysed files; `function_blocks_by_file` holds the parsed functions the changed-region filter reads.
+/// Returns the filtered inputs, with the all-findings summary recounted for the changed scope; with no `diff_filter`, `inputs` itself.
 fn apply_changed_region_to_inputs(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -653,6 +751,11 @@ fn apply_changed_region_to_inputs(
     }
 }
 
+/// Describe the diff that narrowed this run for the report's machine context.
+///
+/// `options` supplies the requested diff selection and `diff_filter` the resolved filter whose patch lists the changed files.
+/// Returns the diff mode and the changed files, or None when either the filter or the selection is absent.
+/// The mode is `stdin` for a patch read from `-`, `patch` for a patch file, `changed-ranges` for explicit ranges, or the git mode as given.
 fn machine_diff_context(
     options: &AnalysisOptions,
     diff_filter: Option<&ResolvedDiffFilter>,
@@ -671,6 +774,11 @@ fn machine_diff_context(
     })
 }
 
+/// Summarise the pre-baseline findings under the diff filter's changed-region scope for the report's all-findings summary.
+///
+/// `all_findings` holds the findings before baseline and suppression, and `diff_filter` gives the patch and the scope.
+/// `function_blocks_by_file` holds the parsed functions by file, passed through to the changed-findings summary.
+/// Returns the `Summary` that `summarize_changed_findings` computes for the changed scope.
 fn changed_scope_all_summary(
     all_findings: &[Finding],
     diff_filter: &ResolvedDiffFilter,
@@ -692,8 +800,14 @@ type RunBaseline = (Option<BaselineReport>, Option<Vec<RuleDelta>>, Summary);
 
 /// Meet the baseline for this run and turn every collision it found into a diagnostic the user reads.
 ///
-/// Findings are named by the declaration they sit on, so two findings inside one function share an identity while
-/// a second function of the same name takes its own, which is what keeps one review from covering both.
+/// Eligible findings with a usable symbol are named by rule, file, symbol and declaration ordinal, so findings of one rule that name one
+/// function share an identity while a same-named function gets another ordinal, which keeps one review from covering both.
+///
+/// `project_root` and `options` locate the baseline; applying it can drop entries from `findings` and sets `baseline_status` on the rest.
+/// `function_blocks_by_file` supplies declaration positions, and `diagnostics` gains one `baseline-collision` entry per collision.
+///
+/// Returns the report section, per-rule deltas and pre-baseline summary; Err holds a resolution failure.
+/// Both sections are None without a baseline, and the deltas are also None for a generated baseline or an empty delta list.
 fn resolve_run_baseline(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -709,6 +823,11 @@ fn resolve_run_baseline(
     Ok((report, deltas, all_findings_summary))
 }
 
+/// Unpack a baseline resolution into its report section, its per-rule deltas and the collisions it found.
+///
+/// `resolution` is the baseline outcome, or None when the run produced none.
+/// Returns the report and collisions as given, plus the deltas only when the report is not freshly generated and the list is non-empty.
+/// A None `resolution` returns None for both sections and no collisions.
 fn split_baseline_resolution(
     resolution: Option<BaselineResolution>,
 ) -> (
@@ -732,6 +851,9 @@ fn split_baseline_resolution(
 ///
 /// Neither finding is suppressed and the run is not invalidated: hiding either would let one review cover a
 /// finding nobody read, which is exactly what the declaration ordinal exists to prevent.
+///
+/// `collisions` lists the identities the baseline found shared between declarations.
+/// Returns one `baseline-collision` diagnostic per collision, naming its identity, subjects, rule and file; no collisions yield an empty list.
 fn collision_diagnostics(collisions: &[BaselineCollision]) -> Vec<RunDiagnostic> {
     collisions
         .iter()
@@ -752,10 +874,18 @@ fn collision_diagnostics(collisions: &[BaselineCollision]) -> Vec<RunDiagnostic>
         .collect()
 }
 
+/// Collect the display path of every analysed source file, Rust or not.
+///
+/// `files` holds the discovered sources.
+/// Returns the distinct display paths in sorted order; no files yield an empty set.
 pub(crate) fn analysed_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
     files.iter().map(|file| file.display_path.clone()).collect()
 }
 
+/// Collect the display paths of the Rust sources among the discovered files.
+///
+/// `files` holds the discovered sources; only those flagged as Rust count.
+/// Returns the distinct Rust display paths in sorted order, empty when no file is Rust.
 fn rust_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
     files
         .iter()
@@ -764,6 +894,13 @@ fn rust_display_paths(files: &[SourceFile]) -> BTreeSet<String> {
         .collect()
 }
 
+/// Compare the Rust files this run analyses with those a whole-project scan would find, so later steps can spot a partial scan.
+///
+/// `project_root`, `options` and `config` drive a rediscovery of the whole project, done only when the unused-private-item rule is enabled.
+/// `discovery` holds this run's files after diff selection, `pre_diff_rust_paths` its Rust paths before it, and `diff_filter` the resolved diff.
+///
+/// Returns the analysed and discoverable Rust paths, flagged as diff-narrowed when a diff that is not explicit ranges dropped Rust files.
+/// With the rule off, both sets hold the analysed paths and nothing is flagged; `parse_incomplete` is always false here.
 fn project_coverage(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -794,6 +931,11 @@ fn project_coverage(
     }
 }
 
+/// Find every Rust source a whole-project scan would discover, regardless of the paths and diff this run requested.
+///
+/// `project_root` is where discovery starts and `config` supplies its settings.
+/// `options` is cloned with its paths replaced by `.` and its diff cleared, so every other discovery option still applies.
+/// Returns the sorted Rust display paths found, empty when the project has none.
 fn discover_project_rust_universe(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -832,6 +974,12 @@ pub(crate) struct AnalysisArtifacts {
 
 /// Analyze the selected sources and retain optional function evidence for the user's report.
 /// External test ownership is derived before per-file rules run, so an unselected parent cannot silence a warning.
+///
+/// `project_root` roots the project context, `files` are the sources to read and parse, and `config` selects rules and the deep-scan budget.
+/// `coverage` decides whether external test ownership can be proved, and `retain_function_blocks` keeps each file's parsed functions when true.
+/// `diagnostics` gains every read, parse and project-context diagnostic.
+///
+/// Returns the project and per-file findings, unsorted, with the parsed functions by display path, empty unless `retain_function_blocks` is set.
 pub(crate) fn analyse_discovered_sources_with_artifacts(
     project_root: &Path,
     files: &[SourceFile],
@@ -881,6 +1029,9 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
 
 /// Find external `tests.rs` modules whose selected parent compiles them only for tests.
 /// Partial and single-file scans keep production warnings because their module owner is unproved.
+///
+/// `sources` holds the parsed sources, and a partial `coverage` returns an empty set at once.
+/// Returns the display paths of directory-scanned, parsed files that exactly one declaration claims, when that declaration is test-only.
 fn source_proven_external_test_modules(
     sources: &[ParsedSource],
     coverage: &ProjectCoverage,
@@ -918,6 +1069,10 @@ fn source_proven_external_test_modules(
 
 /// Read only direct crate-root or `mod.rs` declarations for their sibling `tests.rs`.
 /// A path override or another owner makes the user's test-only ownership claim ambiguous.
+///
+/// `parent` is a parsed source, considered only when it is a directory-scanned `main.rs`, `lib.rs` or `mod.rs` with a syntax tree.
+/// Returns the sibling `tests.rs` path and one flag per out-of-line module named `tests` or carrying a `path` or `cfg_attr` attribute.
+/// A flag is true only for `mod tests` with a test cfg and no such attribute; None when the parent does not qualify or declares no such module.
 fn external_test_declarations(parent: &ParsedSource) -> Option<(String, Vec<bool>)> {
     // An explicitly named file may have an unseen production owner.
     if parent.file.origin != SourceOrigin::Directory {
@@ -971,6 +1126,10 @@ pub(crate) struct AnalysisCapabilities {
 }
 
 impl AnalysisCapabilities {
+    /// Work out from the enabled rules whether the run must parse Rust and build the project context.
+    ///
+    /// `config` says which built-in and custom rules are enabled.
+    /// Returns the capabilities the enabled built-in rules need; custom rules add none, and both stay false when no rule needs them.
     pub(crate) fn from_config(config: &Config) -> Self {
         let registry = rules::builtin_registry();
         let mut capabilities = Self {
@@ -994,6 +1153,10 @@ impl AnalysisCapabilities {
         capabilities
     }
 
+    /// Turn on the capabilities one enabled built-in rule needs.
+    ///
+    /// `definition` is the enabled rule: a project rule turns on Rust parsing and the project context, and a Rust rule turns on parsing.
+    /// A text rule turns on parsing only when it needs the syntax tree; no rule ever turns a capability off.
     fn include_builtin_rule(&mut self, definition: &rules::RuleDefinition) {
         match definition.kind {
             rules::RuleKind::Project => {
@@ -1011,6 +1174,9 @@ impl AnalysisCapabilities {
         }
     }
 
+    /// Account for one enabled custom rule, whose every scope leaves the run's capabilities unchanged.
+    ///
+    /// `rule` is the custom rule; matching on its scope means a new scope will not compile until it is handled here.
     fn include_custom_rule(&mut self, rule: &CustomRule) {
         match rule.scope {
             CustomRuleScope::Text | CustomRuleScope::RustCode | CustomRuleScope::Comments => {}
@@ -1020,10 +1186,17 @@ impl AnalysisCapabilities {
 
 /// Private-key findings read the syntax tree to prove a header-only constant is a native format detector,
 /// so a run that selects only text rules still parses Rust when it includes this one.
+///
+/// `rule_id` is the id of the text rule being considered.
+/// Returns true only for `sensitive-data.private-key`.
 fn text_rule_needs_rust_ast(rule_id: &str) -> bool {
     rule_id == "sensitive-data.private-key"
 }
 
+/// Record this run's finding count and composite score in the history file when the options name one, and do nothing otherwise.
+///
+/// `project_root` and `config` are passed to the history writer, and `options` names the history file, if any.
+/// `report` supplies the findings and evaluated-file count, and its diagnostics may gain entries from the history writer.
 pub(crate) fn record_history_if_requested(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -1055,6 +1228,10 @@ pub(crate) struct ReportInputs {
     pub(crate) machine_diff: Option<MachineDiffContext>,
 }
 
+/// Build the report's run block from the project root, the options and the current time.
+///
+/// `project_root` is shown as given, and `options` supplies the output format and fail-on level.
+/// Returns the run info, stamped with the current UTC time in RFC 3339 form.
 fn report_run_info(project_root: &Path, options: &AnalysisOptions) -> RunInfo {
     RunInfo {
         project_root: project_root.display().to_string(),
@@ -1064,6 +1241,10 @@ fn report_run_info(project_root: &Path, options: &AnalysisOptions) -> RunInfo {
     }
 }
 
+/// Turn the discovery result into the report's path section.
+///
+/// `discovery` is consumed for its file count, ignored paths with their details, and missing paths.
+/// Returns the path summary with the number of analysed files and those three lists moved in unchanged.
 fn report_path_summary(discovery: DiscoveryResult) -> PathSummary {
     PathSummary {
         analysed_files: discovery.files.len(),
@@ -1083,7 +1264,10 @@ pub(crate) const CONFIG_ERROR_DIAGNOSTIC_TYPE: &str = "config-error";
 /// Choose the diagnostic type a failed run publishes from the failure itself.
 ///
 /// A scope the run could not read and a configuration it could not load are the two ways a run cannot start
-/// once its arguments parsed; anything else keeps the generic run type.
+/// once its arguments parsed; any failure the changed-region check does not match is published as a configuration error.
+///
+/// `error` is the failure message; containing `changed range`, `--changed-ranges` or `diff` anywhere marks a changed-region failure.
+/// Returns `changed-region` for such a message and `config-error` for every other one.
 pub(crate) fn failed_run_diagnostic_type(error: &str) -> &'static str {
     if error.contains("changed range")
         || error.contains("--changed-ranges")
@@ -1099,6 +1283,10 @@ pub(crate) fn failed_run_diagnostic_type(error: &str) -> &'static str {
 /// A run that never started has no findings and nothing discovered, so the envelope carries one
 /// run-invalidating diagnostic and empty everything else. Printing only to stderr would leave a JSON consumer
 /// with no diagnostic, no type and no run block to read, where every other port publishes all three.
+///
+/// `project_root`, `options` and `config` fill the run block, score and machine context as for any report.
+/// `error` becomes the diagnostic's message, and its text picks the diagnostic type through `failed_run_diagnostic_type`.
+/// Returns the report with that single run-invalidating diagnostic and no findings, discovered paths, suppressions, baseline or deltas.
 pub(crate) fn failed_run_report(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -1138,6 +1326,10 @@ pub(crate) fn failed_run_report(
     )
 }
 
+/// Assemble the `gruff.analysis.v3` report from the collected inputs, computing the summary and score from the kept findings.
+///
+/// `project_root` and `options` fill the run block and machine context, `config` feeds the scoring, and `inputs` supplies every report section.
+/// Returns the report, with the score's file count limited to Rust files; the pre-baseline findings in `inputs` are dropped.
 pub(crate) fn build_report(
     project_root: &Path,
     options: &AnalysisOptions,

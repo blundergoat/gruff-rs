@@ -1,5 +1,10 @@
 use super::*;
 
+/// Runs the unused-private-function check over every top-level item of one parsed Rust file.
+///
+/// `file` supplies the display path for each finding, `ast` supplies the top-level items, and `findings` receives every new finding.
+/// `source` is the file text; it passes through `rust_code_reference_source` before any same-file reference is counted.
+/// Top-level items start outside test context.
 pub(crate) fn analyse_dead_code(
     file: &SourceFile,
     ast: &syn::File,
@@ -12,6 +17,10 @@ pub(crate) fn analyse_dead_code(
     }
 }
 
+/// Routes one item to the dead-code check for functions, impl blocks or modules, and ignores every other item kind.
+///
+/// `file` supplies the display path for findings, `item` is the item to inspect, and `source` is the file's reference-counting text.
+/// `test_context` is true inside a test-only module and suppresses findings there; new findings are appended to `findings`.
 pub(crate) fn analyse_dead_code_item(
     file: &SourceFile,
     item: &Item,
@@ -27,6 +36,10 @@ pub(crate) fn analyse_dead_code_item(
     }
 }
 
+/// Checks one free function for the unused-private-function finding by wrapping it in a `DeadFunctionCandidate`.
+///
+/// `file` supplies the display path, `item_fn` supplies the visibility, attributes, signature, body and name span to check.
+/// `source` is the file's reference-counting text, `test_context` is true inside a test-only module, and `findings` receives any finding.
 pub(crate) fn analyse_dead_item_fn(
     file: &SourceFile,
     item_fn: &syn::ItemFn,
@@ -50,6 +63,11 @@ pub(crate) fn analyse_dead_item_fn(
     );
 }
 
+/// Checks every method of an inherent impl block for the unused-private-function finding and skips trait impls entirely.
+///
+/// `file` supplies the display path, `item_impl` is the impl block, and `source` is the file's reference-counting text.
+/// `test_context` is true inside a test-only module; a test or `cfg(test)` attribute on the impl also makes its methods test code.
+/// New findings are appended to `findings`.
 pub(crate) fn analyse_dead_impl(
     file: &SourceFile,
     item_impl: &syn::ItemImpl,
@@ -69,6 +87,10 @@ pub(crate) fn analyse_dead_impl(
     }
 }
 
+/// Checks one inherent impl method for the unused-private-function finding by wrapping it in a `DeadFunctionCandidate`.
+///
+/// `file` supplies the display path, `method` supplies the visibility, attributes, signature, body and name span to check.
+/// `source` is the file's reference-counting text, `test_context` is true for a test-only impl or module, and `findings` gets any finding.
 pub(crate) fn analyse_dead_impl_method(
     file: &SourceFile,
     method: &syn::ImplItemFn,
@@ -92,6 +114,11 @@ pub(crate) fn analyse_dead_impl_method(
     );
 }
 
+/// Checks every item inside an inline module body for unused private functions; a `mod name;` declaration without a body is skipped.
+///
+/// `file` supplies the display path, `item_mod` is the module, and `source` is the file's reference-counting text.
+/// `test_context` is true inside a test-only module, and `is_test_module` can also mark this module test-only for everything nested in it.
+/// New findings are appended to `findings`.
 pub(crate) fn analyse_dead_mod(
     file: &SourceFile,
     item_mod: &syn::ItemMod,
@@ -118,6 +145,15 @@ pub(crate) struct DeadFunctionCandidate<'a> {
     test_context: bool,
 }
 
+/// Reports a private function as `dead-code.unused-private-function` when nothing in the file references its name besides its definition.
+///
+/// `candidate` carries the function's visibility, attributes, signature, body, name, name span and test context.
+/// `file` gives the display path, `source` is the file's reference-counting text, and any advisory finding is appended to `findings`.
+///
+/// Functions `is_public` accepts, `main`, test-context functions and those `is_reached_outside_file_references` accepts are skipped.
+/// Nothing is reported for a file that `is_parent_module_file` matches.
+///
+/// Panics when a checked name is long enough to push a generated regex past the regex crate's size limit, or the reference cache lock is poisoned.
 pub(crate) fn analyse_dead_function(
     file: &SourceFile,
     source: &str,
@@ -162,6 +198,10 @@ pub(crate) fn analyse_dead_function(
 
 /// Report whether a private fn is reached by something a same-file reference count cannot see: a test
 /// harness, an export attribute, or [`is_reached_without_rust_reference`].
+///
+/// `attrs` are the function's attributes, checked for test, `cfg(test)` and export markers.
+/// `sig` and `block` are its signature and body, which `is_reached_without_rust_reference` reads together with `attrs`.
+/// Returns true when any of those checks exempts the function from the same-file count, and false when none applies.
 fn is_reached_outside_file_references(
     attrs: &[syn::Attribute],
     sig: &syn::Signature,
@@ -178,6 +218,11 @@ fn is_reached_outside_file_references(
 // dead-code detection misses descendant call sites. Skip dead-code on
 // parents - the cost of a stale helper in a parent module is low,
 // and the false-positive rate without this skip is high.
+/// Detects a parent module file by a line-leading out-of-line `mod name;` declaration, so dead-code checks can skip it.
+///
+/// `source` is the file text to search for a line-leading `mod` declaration, optionally `pub` or `pub(...)`, ending in a semicolon.
+/// The module name must be an ASCII identifier, so a declaration with a non-ASCII or raw `r#` name is not detected.
+/// Returns true when a matching declaration is found, and false otherwise, as for a file with only inline modules or none.
 fn is_parent_module_file(source: &str) -> bool {
     static SUBMODULE_DECL_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(
@@ -187,6 +232,13 @@ fn is_parent_module_file(source: &str) -> bool {
     .is_match(source)
 }
 
+/// Counts how often `name` appears as a whole word in `source`, minus each `fn` definition of that name.
+///
+/// `source` is the text to search and `name` is the function name, escaped so it matches literally.
+/// The two regexes for each `name` are compiled once and cached for the process.
+/// This panics if the cache mutex is poisoned or a regex fails to compile, such as one for a `name` past the regex size limit.
+///
+/// Returns the count of whole-word matches of `name` minus its `fn` definitions, saturating at zero; zero means nothing else references it.
 pub(crate) fn function_reference_count(source: &str, name: &str) -> usize {
     static CACHE: OnceLock<Mutex<HashMap<String, (Regex, Regex)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));

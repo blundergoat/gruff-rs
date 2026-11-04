@@ -392,6 +392,10 @@ pub(crate) fn enabled_builtin_families_tracks_rule_selectors() {
     assert!(!ssrf.process_commands);
 }
 
+/// Build a default config whose positive selectors opt into the rules the given selectors expand to in the built-in registry.
+///
+/// `selectors` lists the selector strings to expand and add to the positive selector set; one that fails to expand panics on its `expect`.
+/// Returns a `Config` that enables only the expanded rules, with other settings at their defaults; an empty `selectors` disables every rule.
 fn config_selecting(selectors: &[&str]) -> Config {
     let registry = rules::builtin_registry();
     let mut config = Config::default();

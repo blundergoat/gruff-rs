@@ -1041,7 +1041,11 @@ pub(crate) fn a_written_baseline_carries_no_sentinel() {
     assert!(written.contains(r#""sensitive-data.aws-access-key": 1"#));
 }
 
-/// Return every shape a leaked secret could take in an artifact, so a derived value is caught as well as a raw one.
+/// Return the four forms the leak test searches a written artifact for, so a derived copy of the secret is caught as well as the raw text.
+///
+/// `sentinel` is the secret literal the shapes are derived from.
+/// Taking the `partial` shape panics when `sentinel` is shorter than eight bytes or byte eight falls inside a character.
+/// Returns four labelled forms: the `raw` sentinel, its `partial` first eight bytes, its `hashed` hex SHA-256 digest and its `encoded` base64.
 fn sentinel_forms(sentinel: &str) -> Vec<(&'static str, String)> {
     let mut hasher = Sha256::new();
     hasher.update(sentinel.as_bytes());
@@ -1054,6 +1058,9 @@ fn sentinel_forms(sentinel: &str) -> Vec<(&'static str, String)> {
 }
 
 /// Encode bytes as standard base64, so the test can search for an encoded secret without a new dependency.
+///
+/// `input` is the bytes to encode, taken three at a time; a short final chunk is zero-filled and the missing characters become `=` padding.
+/// Returns the standard base64 text over the `+` and `/` alphabet, a multiple of four characters long, or an empty string for an empty `input`.
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut encoded = String::new();
@@ -1073,7 +1080,11 @@ fn base64_encode(input: &[u8]) -> String {
     encoded
 }
 
-/// Build one ordinary finding; each test varies only the field whose effect on the identity it is proving.
+/// Build one ordinary finding from the rule, path, line and symbol that the baseline tests vary.
+///
+/// `rule_id` names the rule, and the message is the rule id with the word message appended.
+/// `file_path` and `line` place the finding, and `symbol` is its optional named subject; `None` makes a symbol-less finding.
+/// Returns an advisory, high-confidence finding in the naming pillar with no remediation and empty JSON metadata.
 fn baseline_test_finding(
     rule_id: &str,
     file_path: &str,
@@ -1095,6 +1106,9 @@ fn baseline_test_finding(
 }
 
 /// A file-level finding whose message states the measurement, which is the shape the amendment of 2026-09-05 covers.
+///
+/// `lines` is the measured line count, written into the message and the metadata beside a fixed threshold of 1000.
+/// Returns a `size.file-length` warning on line 1 of `src/lib.rs` with no symbol, so calls differ only in the measured count.
 fn measured_file_finding(lines: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "size.file-length".to_string(),
@@ -1111,6 +1125,9 @@ fn measured_file_finding(lines: usize) -> Finding {
 }
 
 /// Stage the 0.5 baseline a migration reads, and hand back its bytes for the comparison after the migration.
+///
+/// `path` is the file created or overwritten with a `gruff.baseline.v1` document holding one `naming.short` entry for `process` at line 12.
+/// Returns the exact bytes written, and panics if serialising or writing the file fails.
 fn write_legacy_input(path: &Path) -> Vec<u8> {
     let legacy = serde_json::to_vec_pretty(&json!({
         "schemaVersion": "gruff.baseline.v1",

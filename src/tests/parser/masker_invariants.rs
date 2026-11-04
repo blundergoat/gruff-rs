@@ -25,6 +25,11 @@ const FUZZ_ALPHABET: &[char] = &[
 // form (including the quote-holding char-literal footgun), lifetimes, raw
 // strings with varied hash counts, doc and nested block comments, unterminated
 // forms, and multi-byte text.
+/// Lists hand-picked Rust fragments covering the source shapes the string and comment maskers treat specially.
+///
+/// They include plain code, string and char literals, a char literal holding a double quote, and lifetimes.
+/// They also include raw strings with zero to two hashes, line, doc and nested block comments, unterminated forms, and multi-byte text.
+/// Returns the fragments in a fixed order as static string slices, never an empty list.
 fn corpus() -> Vec<&'static str> {
     vec![
         "let x = 5;\n",
@@ -64,6 +69,10 @@ fn corpus() -> Vec<&'static str> {
 
 // Every ordered pair of corpus fragments, so construct-against-construct
 // adjacencies (a raw string butted against a comment, etc.) are exercised.
+/// Joins every ordered pair of fragments so each construct is also tested directly against every other one.
+///
+/// `parts` is the fragment list to pair; every fragment is joined with itself and with each other fragment in both orders.
+/// Returns the joined strings in nested-loop order, the square of the fragment count in length and empty when `parts` is empty.
 fn concat_pairs(parts: &[&str]) -> Vec<String> {
     let mut combos = Vec::new();
     for left in parts {
@@ -77,6 +86,9 @@ fn concat_pairs(parts: &[&str]) -> Vec<String> {
 // Every string of length one to three over the stress alphabet. Exhaustive
 // trigrams catch local masker bugs with no randomness, keeping the suite
 // deterministic.
+/// Builds every string of one to three characters over `FUZZ_ALPHABET`, so local masker bugs surface without randomness.
+///
+/// Returns the strings in a fixed order, each one-character string followed by its longer extensions; the list is never empty.
 fn fuzzed_inputs() -> Vec<String> {
     let mut inputs = Vec::new();
     for first in FUZZ_ALPHABET {
@@ -97,6 +109,9 @@ fn fuzzed_inputs() -> Vec<String> {
 }
 
 // The full input set every structural invariant runs over.
+/// Builds the full input set the looped masker invariant tests run over.
+///
+/// Returns the corpus fragments, then every ordered pair of them joined, then the fuzzed one-to-three-character strings, in that order.
 fn all_inputs() -> Vec<String> {
     let base = corpus();
     let mut inputs = base
@@ -111,6 +126,10 @@ fn all_inputs() -> Vec<String> {
 // The maskers replace spans in place: identical byte length and identical
 // newline offsets, so finding line and column numbers stay aligned with the
 // original source.
+/// Asserts a masker output keeps the input's byte length and newline offsets, so findings stay aligned with the original source.
+///
+/// `label` names the masker or mask combination in the failure message, and `input` is the source before masking.
+/// `output` is the masked text; the assertion panics when its byte length or line start offsets differ from those of `input`.
 fn assert_byte_aligned(label: &str, input: &str, output: &str) {
     assert_eq!(
         input.len(),

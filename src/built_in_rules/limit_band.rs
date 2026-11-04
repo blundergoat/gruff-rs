@@ -29,6 +29,9 @@ pub(crate) const GROUP_PARAMETERS: &str =
 pub(crate) const SIMPLIFY_PATH: &str = "Simplify the execution path: return early, merge branches that lead to the same result, and drop flags that steer later branches. Moving branches into helpers leaves the path as hard to follow.";
 
 /// Name the band a measured value falls in against the limit in force, compared in floating point without rounding.
+///
+/// `measured` is the unit's measured size or complexity value and `limit` is the limit in force for its rule.
+/// Returns the band name, `upper` when `measured` is at least `UPPER_BAND_RATIO` (1.5) times `limit` and `lower` otherwise.
 pub(crate) fn limit_band(measured: usize, limit: f64) -> &'static str {
     if measured as f64 >= UPPER_BAND_RATIO * limit {
         "upper"
@@ -38,12 +41,20 @@ pub(crate) fn limit_band(measured: usize, limit: f64) -> &'static str {
 }
 
 /// Whether a finding sits in the lower band, which keeps it advisory after the configured severity is applied.
+///
+/// Returns true when `finding` carries the `limitBand` metadata value `lower`, and false when that key is missing or holds any other value.
 pub(crate) fn is_lower_band(finding: &Finding) -> bool {
     finding.metadata.get(LIMIT_BAND_KEY).and_then(Value::as_str) == Some("lower")
 }
 
 /// Put a size or complexity finding in its band: a lower-band finding is advisory whatever the configured severity,
 /// and every banded finding carries its band's advice and the `limitBand` key.
+///
+/// `measured` is the unit's measured value and `limit` the limit in force; together they pick the band as `limit_band` does.
+/// `lower_advice` is the remediation for a lower-band finding and `upper_advice` the remediation for an upper-band one.
+///
+/// `finding` is changed in place: its remediation becomes that advice, and in the lower band its severity becomes advisory.
+/// The band name is written under `limitBand` only when the metadata of `finding` is a JSON object.
 pub(crate) fn apply_limit_band(
     finding: &mut Finding,
     measured: usize,

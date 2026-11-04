@@ -19,6 +19,8 @@ pub(crate) struct ExecutionSelectors {
 
 impl ExecutionSelectors {
     /// Report whether the user narrowed execution at all.
+    ///
+    /// Returns `true` when any include or exclude list for rules or pillars holds an entry, and `false` when all four lists are empty.
     pub(crate) fn is_requested(&self) -> bool {
         !self.include_rules.is_empty()
             || !self.exclude_rules.is_empty()
@@ -42,6 +44,8 @@ pub(crate) struct DisplaySelectors {
 
 impl DisplaySelectors {
     /// Report whether the user narrowed the view at all.
+    ///
+    /// Returns `true` when a minimum severity is set or any show or hide list for rules or pillars holds an entry, and `false` otherwise.
     pub(crate) fn is_requested(&self) -> bool {
         self.min_severity.is_some()
             || !self.show_rules.is_empty()
@@ -51,6 +55,12 @@ impl DisplaySelectors {
     }
 
     /// Report whether one finding survives every active display selector.
+    ///
+    /// `finding` is hidden when its severity ranks below `min_severity`.
+    /// It is also hidden when a non-empty `show_rules` lacks its rule ID or `hide_rules` contains it.
+    /// The same show and hide test then runs on its pillar label with `show_pillars` and `hide_pillars`.
+    ///
+    /// Returns `true` when `finding` passes every check, and `false` as soon as one check hides it.
     pub(crate) fn allows(&self, finding: &Finding) -> bool {
         // A finding below the floor is muted before any rule or pillar check runs.
         if self

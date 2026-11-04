@@ -1,5 +1,8 @@
 use super::*;
 
+/// Lists the current documentation, error-handling, naming and performance calibration cases, each with a violating and a clean fixture.
+///
+/// Returns one case per rule in source order, from `docs.missing-public-doc` through `performance.regex-in-loop`.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- docs -----
@@ -161,6 +164,9 @@ pub fn entry(values: Vec<i32>) {
 }
 
 /// Preserve the historical positive and negative fixtures as native retirement guards.
+///
+/// Returns one case for each retired rule: `docs.stale-todo`, `naming.boolean-prefix`, `naming.generic-function`,
+/// `performance.clone-in-loop` and `performance.format-in-loop`.
 pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
     vec![
         case(

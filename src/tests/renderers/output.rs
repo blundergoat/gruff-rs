@@ -11,6 +11,9 @@ const HOSTILE_MESSAGE: &str =
 
 /// Build one finding and delta whose controlled fields exercise Markdown structure.
 /// A CLI user reaches the same renderer after scanning an untrusted source tree.
+///
+/// Returns a sample report with one warning finding built from `HOSTILE_RULE_ID`, `HOSTILE_FILE_PATH` and `HOSTILE_MESSAGE` at line 9.
+/// Its `per_rule_deltas` holds one delta for `HOSTILE_RULE_ID` with one finding introduced, none removed and a net of one.
 fn hostile_renderer_report() -> AnalysisReport {
     let mut report = sample_report_with(
         vec![Finding::new(FindingDescriptor {

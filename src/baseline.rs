@@ -86,6 +86,10 @@ pub(crate) fn write_baseline(path: &Path, findings: &[Finding]) -> Result<usize,
 }
 
 /// Write a baseline using this run's parsed functions to rank same-named declarations.
+///
+/// `path` is the file to create or overwrite with the v3 document, and `findings` are this run's findings.
+/// `declaration_position` gives each finding's declaration position, which the identity uses to rank same-named declarations.
+/// Returns the number of rows written, or an error when the identities cannot be built or the file cannot be written.
 pub(crate) fn write_baseline_with_positions(
     path: &Path,
     findings: &[Finding],
@@ -104,7 +108,11 @@ pub(crate) fn write_baseline_with_positions(
     Ok(entries)
 }
 
-/// Build the document a generated baseline writes, ordered so two identical runs produce one identical file.
+/// Build the document a generated baseline writes, ordered so two identical runs produce the same rows in the same order.
+///
+/// `findings` are the findings to record; `declaration_position` gives each one's declaration position to rank same-named ones.
+/// A finding left without an identity is stored nowhere, and is counted by rule in the sensitive summary when it is not baseline-eligible.
+/// Returns the v3 document with one row per identity holding its occurrence count, or an error when the identities cannot be built.
 fn baseline_document(
     findings: &[Finding],
     declaration_position: &dyn Fn(&Finding) -> usize,
@@ -156,6 +164,10 @@ fn baseline_document(
 /// All five ports write and auto-discover the same filename, so without this an ordinary upgrade-then-generate
 /// destroys the 0.5 baseline that is the user's documented retreat path, before they know they need it.
 /// Regenerating v3 over v3 is not destructive, because v3 is what the tool now reads.
+///
+/// `output_path` is where the baseline will be written, and only a file with the default baseline name is checked; `force` skips the check.
+/// Returns an error naming the migrate command when that file is JSON whose `schemaVersion` names another schema.
+/// A missing, unreadable, non-JSON, or unversioned file passes.
 fn require_overwritable_default_path(output_path: &Path, force: bool) -> Result<(), String> {
     // Any other destination is the user's own choice of file, and any v3 file is what this version already reads.
     if force || output_path.file_name().and_then(|name| name.to_str()) != Some(DEFAULT_BASELINE) {
@@ -181,6 +193,9 @@ fn require_overwritable_default_path(output_path: &Path, force: bool) -> Result<
 }
 
 /// Read one v3 baseline, refusing a 0.5 layout, another port's file, and any row that could expire or leak.
+///
+/// `path` is the baseline file to read, shown in every error message.
+/// Returns the parsed document, or an error when the file cannot be read or parsed, names another schema or port, or fails row validation.
 fn load_baseline(path: &Path) -> Result<BaselineData, String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("unable to read baseline {}: {error}", path.display()))?;
@@ -211,6 +226,10 @@ fn load_baseline(path: &Path) -> Result<BaselineData, String> {
 }
 
 /// Refuse a stored row that omits its identity, suppresses nothing, or carries a field that would expire on an edit.
+///
+/// `entries` are the parsed rows to check; `raw` is the file's unparsed text, searched for forbidden keys under `occurrences`.
+/// `path` names the file in error messages. An identity must be 16 lowercase hex characters and a count must be positive.
+/// Returns an error for the first violation found; text that does not parse as JSON skips the forbidden-key check.
 fn validate_rows(path: &Path, raw: &str, entries: &[BaselineEntry]) -> Result<(), String> {
     let raw_rows: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
     for (index, entry) in entries.iter().enumerate() {
@@ -257,6 +276,10 @@ fn validate_rows(path: &Path, raw: &str, entries: &[BaselineEntry]) -> Result<()
 /// Findings are classified in the ratified order: a sensitive finding is never eligible, an identity over two
 /// declarations is a collision that hides nothing, occurrences within the reviewed count are unchanged, and the
 /// rest are new. The reviewed count is spent lowest line first, so two ports hide the same occurrences.
+///
+/// `path` is the baseline file to load, and `declaration_position` gives each finding's declaration position for identity naming.
+/// `findings` is changed in place: every finding gets its baseline status, then the unchanged ones are removed.
+/// Returns the counts, per-rule deltas, collisions, and resolved rows, or an error when loading the baseline or naming identities fails.
 pub(crate) fn apply_baseline(
     path: &Path,
     findings: &mut Vec<Finding>,
@@ -311,6 +334,13 @@ pub(crate) fn apply_baseline(
 ///
 /// The reviews are re-identified from the current scan rather than translated, because a 0.5 digest names a line
 /// and this one does not. A finding the 0.5 file never accepted stays visible.
+///
+/// `input_path` is the 0.5 baseline to read, `output_path` the separate file the v3 document is written to, and `findings` the current scan.
+/// `declaration_position` gives each accepted finding's declaration position for identity naming.
+/// Returns the rows written, the findings accepted, and the sensitive findings counted.
+///
+/// It errors when the paths name one file, the input is unreadable or not a 0.5 baseline, or naming identities or writing fails.
+/// It also errors when the input's bytes changed by the time the write finished.
 pub(crate) fn migrate_baseline(
     input_path: &Path,
     output_path: &Path,
@@ -364,6 +394,9 @@ pub(crate) fn migrate_baseline(
 ///
 /// A symlink resolves to the same real path; a hard link does not, but shares the inode, and either one would let
 /// an out-of-place migration overwrite the retreat copy it is supposed to preserve.
+///
+/// `input_path` is the 0.5 baseline being migrated and `output_path` the destination, which need not exist yet.
+/// Returns an error naming the input when the two resolve to the same path or share an inode.
 fn require_distinct_paths(input_path: &Path, output_path: &Path) -> Result<(), String> {
     let resolved_input = fs::canonicalize(input_path).unwrap_or_else(|_| input_path.to_path_buf());
     let resolved_output =
@@ -378,6 +411,9 @@ fn require_distinct_paths(input_path: &Path, output_path: &Path) -> Result<(), S
 }
 
 /// Report whether two paths name one file on disk, which a hard link makes true under two different names.
+///
+/// `input_path` and `output_path` are the two paths whose file metadata is compared.
+/// Returns true when both share a device and inode, and false when they differ or either cannot be read.
 fn is_same_inode(input_path: &Path, output_path: &Path) -> bool {
     let (Ok(input), Ok(output)) = (fs::metadata(input_path), fs::metadata(output_path)) else {
         // A missing output is the ordinary case: there is nothing to collide with yet.
@@ -391,6 +427,10 @@ fn is_same_inode(input_path: &Path, output_path: &Path) -> bool {
 /// A file naming more than one of the three 0.5 container keys is refused: the five 0.5 writers used three of them,
 /// so such a file migrates differently in different ports, and refusing it is the only reading that is the same
 /// everywhere.
+///
+/// `path` names the file in error messages and `contents` are its raw bytes.
+/// Returns a copy of the rows in the single container that holds a list.
+/// It errors when the bytes are not JSON, the schema is not `gruff.baseline.v1`, or no container or more than one holds a list.
 fn legacy_rows(path: &Path, contents: &[u8]) -> Result<Vec<Value>, String> {
     let document: Value = serde_json::from_slice(contents)
         .map_err(|error| format!("invalid baseline {}: {error}", path.display()))?;
@@ -430,6 +470,9 @@ fn legacy_rows(path: &Path, contents: &[u8]) -> Result<Vec<Value>, String> {
 ///
 /// A row is matched on its rule and path, narrowed by its symbol and message when it recorded them, and it accepts
 /// as many occurrences as the file held. A finding the old baseline never covered stays visible.
+///
+/// `rows` are the 0.5 rows, whose path is read from `filePath` or else `file`, and `findings` are the current scan's findings.
+/// Returns clones of the accepted findings sorted by line then column, and an empty list when no row covers any finding.
 fn accepted_by_legacy(rows: &[Value], findings: &[Finding]) -> Vec<Finding> {
     let mut budget: BTreeMap<String, usize> = BTreeMap::new();
     for row in rows {
@@ -465,6 +508,10 @@ fn accepted_by_legacy(rows: &[Value], findings: &[Finding]) -> Vec<Finding> {
 /// Report whether one 0.5 row still covers this finding, spending it when it does.
 ///
 /// A sparser 0.5 writer stored fewer fields, so the wider shapes are tried in turn and no accepted debt is lost.
+///
+/// `budget` maps each row shape to its unspent count and is decremented in place on a match; `finding` is the finding to cover.
+/// Shapes run from rule, path, symbol, and message together down to rule and path alone.
+/// Returns true when a shape with remaining budget was spent, and false when none covers the finding.
 fn can_spend_legacy_budget(budget: &mut BTreeMap<String, usize>, finding: &Finding) -> bool {
     let symbol = finding.symbol.as_deref().unwrap_or_default();
     for candidate in [
@@ -489,11 +536,17 @@ fn can_spend_legacy_budget(budget: &mut BTreeMap<String, usize>, finding: &Findi
 }
 
 /// Join the fields a 0.5 row could narrow on into one key, so a row and a finding compare as whole shapes.
+///
+/// `rule_id` and `path` always take part; `symbol` and `message` are empty when that shape does not narrow on them.
+/// Returns the four fields joined with NUL separators.
 fn acceptance_key(rule_id: &str, path: &str, symbol: &str, message: &str) -> String {
     format!("{rule_id}\0{path}\0{symbol}\0{message}")
 }
 
 /// Read one stored 0.5 field, treating an absent or non-text value as a field that row never narrowed on.
+///
+/// `row` is one 0.5 row and `key` the field name to read.
+/// Returns the field's text, or an empty string when it is absent or not a string.
 fn row_text(row: &Value, key: &str) -> String {
     row.get(key)
         .and_then(Value::as_str)
@@ -512,6 +565,8 @@ enum BaselineStatus {
 
 impl BaselineStatus {
     /// Name this status as the ratified vocabulary spells it, for the payload a consumer reads.
+    ///
+    /// Returns `new`, `unchanged`, `collision`, or `notEligible`.
     fn as_str(self) -> &'static str {
         match self {
             Self::New => "new",
@@ -535,6 +590,11 @@ struct IdentityGroup<'a> {
 }
 
 /// Bucket every eligible finding by identity, remembering the declarations and subjects each one covers.
+///
+/// `findings` are this run's findings, and `identities` holds each one's identity at the same index, None for a finding left unnamed.
+/// Returns the groups keyed by identity, each with its finding indexes, distinct declarations, and subjects in first-seen order.
+///
+/// Panics when `identities` is shorter than `findings`.
 fn group_by_identity<'a>(
     findings: &'a [Finding],
     identities: &'a [Option<FindingIdentity>],
@@ -567,6 +627,12 @@ fn group_by_identity<'a>(
 ///
 /// The run is walked once in file order rather than per identity, so two ports hide the same occurrences for
 /// identical input rather than merely the same number of them.
+///
+/// `findings` and `identities` are index-aligned; `groups` comes from `group_by_identity` and marks collided identities.
+/// `reviewed` maps each baselined identity to the occurrence count it hides.
+/// Returns one status per finding at its index: not eligible without an identity, collision, unchanged within the count, or new.
+///
+/// Panics when `identities` is shorter than `findings`.
 fn classify(
     findings: &[Finding],
     identities: &[Option<FindingIdentity>],
@@ -604,6 +670,9 @@ fn classify(
 }
 
 /// Order this run's findings by line then column, which is the ratified order a reviewed count is spent in.
+///
+/// `findings` are this run's findings, which are left untouched.
+/// Returns their indexes sorted by line then column, with a finding that has no line placed last and ties kept in their original order.
 fn spend_order(findings: &[Finding]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..findings.len()).collect();
     order.sort_by_key(|index| {
@@ -615,7 +684,10 @@ fn spend_order(findings: &[Finding]) -> Vec<usize> {
     order
 }
 
-/// Total each status, so the report can show what was hidden and what still fails the run.
+/// Total each status, so the report can show what was hidden and what stays visible for the run's exit policy to judge.
+///
+/// `statuses` are the per-finding labels from `classify`.
+/// Returns the new, unchanged, collision, and not-eligible totals, with `absent` left at zero for `apply_baseline` to fill.
 fn count_statuses(statuses: &[BaselineStatus]) -> BaselineCounts {
     let mut counts = BaselineCounts::default();
     for status in statuses {
@@ -630,6 +702,11 @@ fn count_statuses(statuses: &[BaselineStatus]) -> BaselineCounts {
 }
 
 /// Find every reviewed identity with fewer live occurrences than reviewed, which is debt the user has since fixed.
+///
+/// `entries` are the baseline rows, `groups` this run's identity groups, and `statuses` the labels that mark a collided group.
+/// Returns one row per baseline row with more reviewed than live occurrences, holding the surplus; collided identities are skipped.
+///
+/// Panics when `statuses` has no entry for a matching group's first finding.
 fn resolved_surplus(
     entries: &[BaselineEntry],
     groups: &BTreeMap<&str, IdentityGroup>,
@@ -657,6 +734,9 @@ fn resolved_surplus(
 }
 
 /// List the identities that covered two declarations, so the run can name each one for the user.
+///
+/// `groups` are this run's identity groups.
+/// Returns one collision per identity whose group spans more than one declaration, in identity order, with its rule, path, and subjects.
 fn collided_identities(groups: &BTreeMap<&str, IdentityGroup>) -> Vec<BaselineCollision> {
     groups
         .iter()
@@ -675,6 +755,12 @@ fn collided_identities(groups: &BTreeMap<&str, IdentityGroup>) -> Vec<BaselineCo
 }
 
 /// Report per-rule movement against the baseline: what this run introduced, and what the user resolved (ADR-014).
+///
+/// `findings` and `statuses` are index-aligned; every finding not labelled unchanged counts as introduced for its rule.
+/// `resolved` are the surplus rows, each adding its count as removed for its rule, or for `unknown` when the row names none.
+/// Returns one delta per rule seen on either side, sorted by rule id.
+///
+/// Panics when `statuses` is shorter than `findings`.
 fn rule_deltas(
     findings: &[Finding],
     statuses: &[BaselineStatus],
@@ -699,6 +785,10 @@ fn rule_deltas(
     rule_deltas_from_counts(&introduced_per_rule, &removed_per_rule)
 }
 
+/// Combine per-rule introduced and removed counts into one delta row per rule.
+///
+/// `introduced_per_rule` and `removed_per_rule` map rule ids to counts; a rule missing from one side counts zero there.
+/// Returns the deltas sorted by rule id, each with net equal to introduced minus removed, and an empty list when both maps are empty.
 pub(crate) fn rule_deltas_from_counts(
     introduced_per_rule: &BTreeMap<String, usize>,
     removed_per_rule: &BTreeMap<String, usize>,
@@ -734,6 +824,10 @@ pub(crate) struct BaselineResolution {
 /// *before* baseline suppression drops `unchanged` findings, so the gate's
 /// `scope: all` can count the pre-baseline set (ADR-003 addendum). The summary is
 /// taken up front because `resolve_baseline_inner` mutates `findings` in place.
+///
+/// `project_root` anchors relative baseline paths, and `options` decides whether to generate, migrate, apply, or skip a baseline.
+/// `declaration_position` gives each finding's declaration position for identity naming.
+/// Returns the resolution, None when no baseline applies, paired with the pre-baseline summary, or the error from the chosen action.
 pub(crate) fn resolve_baseline(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -745,6 +839,13 @@ pub(crate) fn resolve_baseline(
     Ok((resolution, all_findings_summary))
 }
 
+/// Carry out the baseline action the options ask for: generate or migrate a file, apply an explicit or default baseline, or do nothing.
+///
+/// `project_root` anchors relative paths, `options` holds the baseline flags, and `declaration_position` ranks same-named declarations.
+/// `findings` is changed in place only when a baseline is applied: each gains its status and the unchanged ones are removed.
+/// Returns the resolution, None when no baseline is generated or applied, or an error when migrating without generating or the action fails.
+///
+/// An apply error has each occurrence of the resolved baseline path replaced by the `--baseline` value as given, or the default file name.
 fn resolve_baseline_inner(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -789,6 +890,9 @@ fn resolve_baseline_inner(
 
 /// A load error names the absolute path it read, and the envelope may not publish a host path, so the message names the
 /// baseline as the run was given it, or by the default file name when it was discovered.
+///
+/// `error` is the message to rewrite, `baseline_path` the path it was read from, and `options` holds any `--baseline` value.
+/// Returns the message with each occurrence of that path replaced by the given value, or by the default file name when none was given.
 fn baseline_named_as_given(error: &str, baseline_path: &Path, options: &AnalysisOptions) -> String {
     let shown = options
         .baseline
@@ -800,6 +904,11 @@ fn baseline_named_as_given(error: &str, baseline_path: &Path, options: &Analysis
     )
 }
 
+/// Write a generated or migrated baseline and describe it as a report whose comparison counts are all zero.
+///
+/// `project_root` anchors `path`, the baseline file to write, and the report's displayed path; `migrate_path` names an optional 0.5 input.
+/// `force` allows overwriting a non-v3 file at the default path; `findings` and `declaration_position` are passed on to the writer.
+/// Returns a report marked generated, with no deltas or collisions, or an error when the default path is protected or writing fails.
 fn generate_baseline_report(
     project_root: &Path,
     path: &Path,
@@ -842,6 +951,10 @@ fn generate_baseline_report(
 ///
 /// A migration re-identifies the 0.5 reviews from this scan and writes them beside the original, which stays
 /// byte-identical; an ordinary generate records the current findings and carries nothing across.
+///
+/// `baseline_path` is the file to write, `migrate_path` the optional 0.5 input resolved against `project_root`, and `findings` the scan.
+/// `declaration_position` gives each finding's declaration position for identity naming.
+/// Returns the rows written, the sensitive findings counted, and the source `generated` or `migrated`, or the build or write error.
 fn write_generated_baseline(
     project_root: &Path,
     baseline_path: &Path,
@@ -867,6 +980,11 @@ fn write_generated_baseline(
     Ok((migration.entries, migration.sensitive_counted, "migrated"))
 }
 
+/// Choose the baseline a run compares against: the `--baseline` file when given, otherwise the default file when it exists.
+///
+/// `project_root` anchors a relative `--baseline` path and is where the default file is looked for; `options` supplies that path.
+/// Returns the resolved path with source `explicit` or `default`, or None when no path was given and no default file exists.
+/// An explicit path is returned without checking that it exists.
 fn select_baseline_path(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -878,6 +996,11 @@ fn select_baseline_path(
     default.exists().then_some((default, "default"))
 }
 
+/// Apply the chosen baseline file to this run and describe the outcome as a baseline report.
+///
+/// `baseline_path` is the file to apply, shown relative to `project_root` when under it, and `source` says explicit or default.
+/// `findings` is changed in place as `apply_baseline` describes, and `declaration_position` gives each finding's declaration position.
+/// Returns the report, deltas, and collisions, with entries counted as resolved rows plus unchanged findings, or the error from applying.
 fn apply_selected_baseline(
     project_root: &Path,
     baseline_path: &Path,
@@ -905,6 +1028,11 @@ fn apply_selected_baseline(
     })
 }
 
+/// Append this run's finding count and composite score to the JSON history file, keeping only the newest 100 entries.
+///
+/// `history_file` is resolved against `project_root`; `findings`, `config`, and `evaluated_files` feed the recorded count and score.
+/// Each entry also records the current time; a missing, unreadable, or malformed history file starts a new list holding only this entry.
+/// `diagnostics` gains a `history-error` diagnostic when the file cannot be written.
 pub(crate) fn record_history(
     project_root: &Path,
     history_file: &Path,

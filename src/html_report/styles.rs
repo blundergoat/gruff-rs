@@ -1,3 +1,6 @@
+/// Builds the inline stylesheet for the HTML report, appending the diagnostics panel styles only when `include_diagnostics` is true.
+///
+/// Returns the base stylesheet text, followed by the diagnostics panel rules when `include_diagnostics` is true.
 pub(crate) fn css(include_diagnostics: bool) -> String {
     let mut out = String::with_capacity(CSS_BASE.len() + 256);
     out.push_str(CSS_BASE);

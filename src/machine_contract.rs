@@ -23,6 +23,9 @@ pub(crate) struct MachineReportContext {
 }
 
 impl Default for MachineReportContext {
+    /// Build the neutral machine context for a report that has no run-specific root, inputs, or options.
+    ///
+    /// Returns a context whose project root and only input are both `.`, with no config path, ignored paths excluded, exit code 0, and no diff.
     fn default() -> Self {
         Self {
             project_root: ".".to_string(),
@@ -35,6 +38,11 @@ impl Default for MachineReportContext {
     }
 }
 
+/// Capture the run facts the v3 machine envelopes publish: the analysed root, the requested inputs, the config path, and the diff context.
+///
+/// `project_root` becomes the context root in display form, and `diff` is stored unchanged.
+/// `options` supplies the inputs (`.` when no paths were given), the config path (none when `no_config` is set), and `include_ignored`.
+/// Returns the context with its exit code set to 0.
 pub(crate) fn report_context(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -65,14 +73,32 @@ pub(crate) fn report_context(
     }
 }
 
+/// Render the analysis v3 envelope for a finished report as pretty-printed JSON text.
+///
+/// `report` is the analysis whose run, counts, score, findings, paths, and suppressions the envelope publishes.
+/// Returns the pretty-printed `gruff.analysis.v3` document.
+///
+/// Panics under the same conditions as `analysis_value`.
 pub(crate) fn render_analysis(report: &AnalysisReport) -> String {
     serde_json::to_string_pretty(&analysis_value(report)).expect("analysis v3 serializes")
 }
 
+/// Render the summary v3 envelope for a finished report as pretty-printed JSON text.
+///
+/// `report` is the analysis to summarise; its findings list is left out of the summary.
+/// Returns the pretty-printed `gruff.summary.v3` document.
+///
+/// Panics under the same conditions as `analysis_value`.
 pub(crate) fn render_summary(report: &AnalysisReport) -> String {
     serde_json::to_string_pretty(&summary_value(report)).expect("summary v3 serializes")
 }
 
+/// Write the analysis v3 envelope for a report through any serde serializer instead of rendering it to a string.
+///
+/// `report` is the analysis to publish and `serializer` is the serde serializer that receives the envelope.
+/// Returns the serializer's output, or its error when serialization fails.
+///
+/// Panics under the same conditions as `analysis_value`.
 pub(crate) fn serialize_analysis<S>(
     report: &AnalysisReport,
     serializer: S,
@@ -83,6 +109,13 @@ where
     analysis_value(report).serialize(serializer)
 }
 
+/// Build the `gruff.analysis.v3` envelope for a finished report as a JSON value.
+///
+/// `report` supplies every section; its baseline, diff context, and per-rule deltas are added only when present.
+/// Returns the envelope object, making path fields project-relative except for score cluster paths, which are copied unchanged.
+///
+/// Panics when a finding, suppression, top-offender, missing, ignored, or changed-file path has no project-relative form.
+/// It also panics when the ignored paths and their details disagree, or when a default ignore has a pattern with no canonical reason.
 pub(crate) fn analysis_value(report: &AnalysisReport) -> Value {
     let (details, ignored_paths) = path_details(report);
     let mut payload = json!({
@@ -114,6 +147,12 @@ pub(crate) fn analysis_value(report: &AnalysisReport) -> Value {
     payload
 }
 
+/// Build the `gruff.summary.v3` envelope: the analysis envelope with its schema version replaced and its findings list removed.
+///
+/// `report` is the finished analysis to summarise.
+/// Returns the summary envelope object, which keeps every other analysis section, including the finding counts.
+///
+/// Panics under the same conditions as `analysis_value`.
 fn summary_value(report: &AnalysisReport) -> Value {
     let mut payload = analysis_value(report);
     let object = payload
@@ -127,6 +166,11 @@ fn summary_value(report: &AnalysisReport) -> Value {
     payload
 }
 
+/// Build the `run` section of the analysis envelope from the run settings and the report's machine context.
+///
+/// `report` supplies the fail-on threshold, output format, inputs, config path, and whether ignored paths were included.
+/// Returns an object whose project root is always `.` and whose inputs omit any input with no project-relative form.
+/// It carries `config` only when the config path has a project-relative form, and `includeIgnored` only when that flag is set.
 fn run_value(report: &AnalysisReport) -> Value {
     let context = &report.machine_context;
     let mut payload = json!({
@@ -145,6 +189,13 @@ fn run_value(report: &AnalysisReport) -> Value {
     payload
 }
 
+/// Build the `summary` counts section of the analysis envelope.
+///
+/// `report` supplies the file, diagnostic, finding, pillar, missing-path, and parse-error counts and any suppressed-finding count.
+/// `ignored_count` is the number of ignored paths, published as both `ignoredPaths` and `skippedFiles`.
+/// Returns the counts object, where analysed, discovered, and parsed files all report the analysed-file count.
+///
+/// `suppressedFindings` appears only when the report carries a suppressed count.
 fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value {
     let mut payload = json!({
         "analysedFiles": report.paths.analysed_files,
@@ -175,6 +226,10 @@ fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value 
     payload
 }
 
+/// Tally findings by their primary pillar for the summary's `findingsByPillar` map.
+///
+/// `findings` are the findings to count, each under the label of its own pillar.
+/// Returns a map from pillar label to count, sorted by label; a pillar without findings has no key, so no findings give an empty map.
 fn findings_by_pillar(findings: &[Finding]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for finding in findings {
@@ -185,6 +240,13 @@ fn findings_by_pillar(findings: &[Finding]) -> BTreeMap<String, usize> {
     counts
 }
 
+/// Build the ignored-path details and the deduplicated ignored-path list for the envelope's `paths` section.
+///
+/// `report` supplies the ignored paths, their details, and the machine-context project root they are made relative to.
+/// Returns the detail objects in detail order and the ignored paths in first-seen order, both project-relative.
+///
+/// Panics unless the deduplicated ignored paths equal the detail paths in the same order.
+/// It also panics when any of these paths has no project-relative form, or when a default ignore has a pattern with no canonical reason.
 fn path_details(report: &AnalysisReport) -> (Vec<Value>, Vec<String>) {
     let root = &report.machine_context.project_root;
     let details: Vec<Value> = report
@@ -210,6 +272,12 @@ fn path_details(report: &AnalysisReport) -> (Vec<Value>, Vec<String>) {
     (details, ignored_paths)
 }
 
+/// Describe one ignored path for the envelope's `paths.details` list.
+///
+/// `detail` supplies the path, its ignore source, and any matching pattern; `root` is the project root the path is made relative to.
+/// Returns an object with `path`, `reason`, and `source`, plus `pattern` only when the detail carries a non-empty one.
+///
+/// Panics when the path has no project-relative form under `root`, or when a default ignore has a pattern with no canonical reason.
 fn path_detail_value(detail: &IgnoredPath, root: &str) -> Value {
     let mut payload = json!({
         "path": machine_path(&detail.path, root),
@@ -229,6 +297,12 @@ fn path_detail_value(detail: &IgnoredPath, root: &str) -> Value {
     payload
 }
 
+/// Map an ignored path's source to the reason code the envelope publishes for it.
+///
+/// `detail` supplies the ignore source and, for a default ignore, the pattern that picks the reason.
+/// Returns `config-ignore` for a config ignore, `gitignored` for a gitignore match, and the canonical default reason otherwise.
+///
+/// Panics when a default ignore's pattern has no canonical reason.
 fn ignored_reason(detail: &IgnoredPath) -> &'static str {
     match detail.source {
         IgnoreSource::Config => "config-ignore",
@@ -238,6 +312,10 @@ fn ignored_reason(detail: &IgnoredPath) -> &'static str {
     }
 }
 
+/// Classify a built-in ignore pattern into the reason category the envelope publishes.
+///
+/// `pattern` is the default ignore pattern that claimed the path, if any.
+/// Returns `vcs`, `dependency`, `build-output`, `generated`, or `local-tooling` for a known pattern, and None for an unknown or missing one.
 fn default_ignored_reason(pattern: Option<&str>) -> Option<&'static str> {
     match pattern {
         Some(".git" | ".hg" | ".svn") => Some("vcs"),
@@ -252,6 +330,13 @@ fn default_ignored_reason(pattern: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// Project one finding into its `gruff.analysis.v3` finding object.
+///
+/// `finding` is the finding to publish; `root` is the project root its file path is made relative to.
+/// Returns the object, with a line of at least 1, empty remediation when none, and `endLine` and `column` only when positive.
+/// `symbol` appears only when non-empty, and the metadata gains `locationPrecision`, set by whether the finding has a positive column.
+///
+/// Panics when the finding's file path has no project-relative form under `root`.
 pub(crate) fn finding_value(finding: &Finding, root: &str) -> Value {
     let has_column = finding.column.is_some_and(|column| column > 0);
     let mut metadata = finding.metadata.as_object().cloned().unwrap_or_default();
@@ -292,6 +377,11 @@ pub(crate) fn finding_value(finding: &Finding, root: &str) -> Value {
     payload
 }
 
+/// Project one run diagnostic into its analysis v3 object.
+///
+/// `diagnostic` supplies the type, message, file, line, and any explicit run-invalidation flag; `root` is the project root for its file path.
+/// Returns the object, with `invalidatesRun` defaulting to whether the diagnostic is a failure.
+/// `file` is left out when the path has no project-relative form, and `line` appears only when positive.
 fn diagnostic_value(diagnostic: &RunDiagnostic, root: &str) -> Value {
     let invalidates_run = diagnostic
         .invalidates_run
@@ -309,6 +399,13 @@ fn diagnostic_value(diagnostic: &RunDiagnostic, root: &str) -> Value {
     payload
 }
 
+/// Build the `score` section of the analysis envelope.
+///
+/// `report` supplies the score; clusters, rule attribution, evaluated files, and scored pillars are copied as they are.
+/// Returns the score object, with top-offender files made relative to the machine-context project root.
+/// Composite, pillar, and file scores and penalties equal to zero are written as positive zero.
+///
+/// Panics when a top offender's file has no project-relative form.
 fn score_value(report: &AnalysisReport) -> Value {
     let root = &report.machine_context.project_root;
     json!({
@@ -327,6 +424,10 @@ fn score_value(report: &AnalysisReport) -> Value {
     })
 }
 
+/// Project one pillar's score into its analysis v3 object.
+///
+/// `score` supplies the pillar, whether it applies, its finding count, penalty, optional score, and grade.
+/// Returns the object, with a zero penalty or score written as positive zero and a missing score as null.
 fn pillar_score_value(score: &PillarScore) -> Value {
     json!({
         "pillar": score.pillar,
@@ -338,6 +439,12 @@ fn pillar_score_value(score: &PillarScore) -> Value {
     })
 }
 
+/// Project one file's score into a top-offender object for the analysis envelope.
+///
+/// `score` supplies the file, finding count, penalty, and optional score; `root` is the project root the file is made relative to.
+/// Returns the object, with a zero penalty or score written as positive zero and a missing score as null.
+///
+/// Panics when the file path has no project-relative form under `root`.
 pub(crate) fn top_offender_value(score: &FileScore, root: &str) -> Value {
     json!({
         "file": machine_path(&score.file_path, root),
@@ -347,6 +454,13 @@ pub(crate) fn top_offender_value(score: &FileScore, root: &str) -> Value {
     })
 }
 
+/// Project one suppression's summary into its analysis v3 object.
+///
+/// `suppression` supplies the index, rule, paths, reason, suppressed count, and optional symbol and source.
+/// `root` is the project root its paths are made relative to, with duplicates then dropped.
+/// Returns the object; `symbol` appears only when non-empty, and `source` only when the suppression names one.
+///
+/// Panics when any of its paths has no project-relative form under `root`.
 fn suppression_value(suppression: &SuppressionSummary, root: &str) -> Value {
     let mut payload = json!({
         "index": suppression.index,
@@ -375,6 +489,12 @@ fn suppression_value(suppression: &SuppressionSummary, root: &str) -> Value {
     payload
 }
 
+/// Add the sections an analysis envelope carries only when the run produced them: baseline, diff, and per-rule deltas.
+///
+/// `payload` is the envelope object, extended in place with `baseline`, `diff`, and `extensions` for each section present.
+/// `report` supplies the optional baseline report, diff context, and per-rule deltas.
+///
+/// Panics when `payload` is not a JSON object, or when a changed-file path has no project-relative form.
 fn add_optional_sections(payload: &mut Value, report: &AnalysisReport) {
     let object = payload
         .as_object_mut()
@@ -393,6 +513,11 @@ fn add_optional_sections(payload: &mut Value, report: &AnalysisReport) {
     }
 }
 
+/// Build the `baseline` section that reports how this run met its baseline.
+///
+/// `baseline` supplies the counts, source, entry count, and path; `report` supplies the project root the path is made relative to.
+/// Returns the section; `applied` is true unless this run generated the baseline, and `path` is left out without a project-relative form.
+/// `newFindings` sums the new, collision, and not-eligible counts.
 fn baseline_value(baseline: &BaselineReport, report: &AnalysisReport) -> Value {
     // newFindings is the gated count a user must still act on: new, plus collisions and secrets nothing may hide.
     let mut payload = json!({
@@ -414,6 +539,12 @@ fn baseline_value(baseline: &BaselineReport, report: &AnalysisReport) -> Value {
     payload
 }
 
+/// Build the `diff` section of the analysis envelope for a diff-mode run.
+///
+/// `diff` supplies the mode and changed files; `report` supplies the project root and its suppressed count, published as `filteredFindings`.
+/// Returns the section with `enabled` always true and the changed files made project-relative and deduplicated.
+///
+/// Panics when a changed file has no project-relative form.
 fn diff_value(diff: &MachineDiffContext, report: &AnalysisReport) -> Value {
     let changed_files = machine_paths(&diff.changed_files, &report.machine_context.project_root);
     json!({
@@ -425,12 +556,19 @@ fn diff_value(diff: &MachineDiffContext, report: &AnalysisReport) -> Value {
     })
 }
 
+/// Set an optional positive number on a JSON object, leaving zero and absent values out.
+///
+/// `object` gains `key` set to `value` only when `value` is present and above zero; otherwise it is left unchanged.
 fn insert_positive_usize(object: &mut Map<String, Value>, key: &str, value: Option<usize>) {
     if let Some(value) = value.filter(|value| *value > 0) {
         object.insert(key.to_string(), json!(value));
     }
 }
 
+/// Normalise a number before it is published, so negative zero is written as plain zero.
+///
+/// `value` is the score or penalty to publish.
+/// Returns positive zero when `value` equals zero, and `value` unchanged otherwise.
 fn machine_number(value: f64) -> f64 {
     if value == 0.0 {
         0.0
@@ -439,12 +577,21 @@ fn machine_number(value: f64) -> f64 {
     }
 }
 
+/// Publish a path field only when the path has a project-relative form, so no host path reaches the envelope.
+///
+/// `object` gains `key` set to `value` made relative to `root`; it is left unchanged when `value` has no such form.
 fn insert_optional_path(object: &mut Map<String, Value>, key: &str, value: &str, root: &str) {
     if let Some(path) = relative_machine_path(value, root) {
         object.insert(key.to_string(), Value::String(path));
     }
 }
 
+/// Make a list of paths project-relative for publication, dropping duplicates.
+///
+/// `values` are the paths to publish, in order; `root` is the project root they are made relative to.
+/// Returns the relative paths in first-seen order with later duplicates removed, and an empty list for no input.
+///
+/// Panics when any path has no project-relative form under `root`.
 fn machine_paths(values: &[String], root: &str) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut paths = Vec::new();
@@ -463,6 +610,9 @@ fn machine_paths(values: &[String], root: &str) -> Vec<String> {
 /// and a target named from a sibling directory, such as `analyse ../proj`, has no form under it. A host path may
 /// not be published, so the input is left out the way `insert_optional_path` leaves out such a config path, and the
 /// way gruff-go leaves out the same input, instead of failing the one envelope that says why the run could not start.
+///
+/// `values` are the run's inputs as given, and `root` is the project root they are made relative to.
+/// Returns the relative inputs in first-seen order without duplicates, and an empty list when none has a project-relative form.
 fn machine_inputs(values: &[String], root: &str) -> Vec<String> {
     let mut seen = BTreeSet::new();
     values
@@ -472,10 +622,23 @@ fn machine_inputs(values: &[String], root: &str) -> Vec<String> {
         .collect()
 }
 
+/// Make one path project-relative for a field the envelope must always carry.
+///
+/// `value` is the path to publish and `root` is the project root it is made relative to.
+/// Returns the slash-separated relative path, or `.` for the root itself.
+///
+/// Panics when `value` has no project-relative form under `root`.
 fn machine_path(value: &str, root: &str) -> String {
     relative_machine_path(value, root).expect("machine path is project-relative")
 }
 
+/// Convert a path into the slash-separated project-relative form the machine envelopes publish.
+///
+/// `value` is the path to convert, and `root` is the project root it must lie under.
+/// An absolute `value` has `root` stripped after both are canonicalised where possible; a relative one is taken as already relative to `root`.
+/// Returns the normalised path, or `.` for the root itself.
+///
+/// Returns None for an empty value, a backslash or drive letter, an absolute path outside `root`, a climb above it, or non-UTF-8 text.
 fn relative_machine_path(value: &str, root: &str) -> Option<String> {
     if value.is_empty() || value.contains('\\') || is_windows_drive_path(value) {
         return None;
@@ -499,6 +662,11 @@ fn relative_machine_path(value: &str, root: &str) -> Option<String> {
     normalize_relative_path(&relative)
 }
 
+/// Resolve `.` and `..` segments in a relative path and join what remains with forward slashes.
+///
+/// `path` is the relative path to normalise, without touching the filesystem.
+/// Returns the joined path, or `.` when nothing remains.
+/// Returns None when a `..` climbs above the start, when the path has a root or prefix, or when a segment is not valid UTF-8.
 fn normalize_relative_path(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for component in path.components() {
@@ -518,6 +686,10 @@ fn normalize_relative_path(path: &Path) -> Option<String> {
     })
 }
 
+/// Detect a path that starts with a Windows drive letter, which can never be published as project-relative.
+///
+/// `value` is the path text to inspect.
+/// Returns true when its first byte is an ASCII letter and its second is a colon, and false otherwise.
 fn is_windows_drive_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'

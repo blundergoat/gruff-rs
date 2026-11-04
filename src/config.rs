@@ -222,6 +222,9 @@ impl PathMatcher {
     }
 
     /// Check whether one normalized report path is covered by this user pattern.
+    ///
+    /// `path` is normalized here first, so a caller may pass it unnormalized.
+    /// Returns `true` when that normalized `path` equals the pattern, lies at or under its prefix, or fully matches its wildcard regex.
     pub(crate) fn matches(&self, path: &str) -> bool {
         let path = normalize_report_path(path);
         // An exact path match should always appear ignored, regardless of the compiled pattern kind.
@@ -240,8 +243,12 @@ impl PathMatcher {
     }
 }
 
-/// Compile the user's configured ignore strings once for repeated discovery checks.
+/// Compile the user's configured path patterns once for repeated path checks.
 /// An empty list means no config-owned path matcher can hide a discovered file.
+///
+/// `patterns` are the configured path patterns, each compiled with `PathMatcher::new`.
+/// Returns one matcher per pattern in the same order, so an empty slice yields an empty vector.
+/// Panics through `wildcard_regex` if a wildcard pattern's generated regex fails to compile.
 pub(crate) fn compile_path_matchers(patterns: &[String]) -> Vec<PathMatcher> {
     patterns
         .iter()
@@ -251,6 +258,10 @@ pub(crate) fn compile_path_matchers(patterns: &[String]) -> Vec<PathMatcher> {
 
 /// Translate a user wildcard pattern into the anchored regex used for report paths.
 /// The generated regex is internal; UI explanations keep showing the original config text.
+///
+/// `pattern` is a glob in which `**` may cross directories, `*` stays inside one segment and every other character matches literally.
+/// A leading `**/` also matches a root-level file; a trailing `/**` matches the base path and descendants, though no `**` matches a newline.
+/// Returns the compiled regex anchored at both ends; it panics through `expect` if the generated text does not compile.
 fn wildcard_regex(pattern: &str) -> Regex {
     let tree_suffix = pattern.ends_with("/**");
     // A tree suffix is rendered separately so the base path itself and all descendants match.
@@ -367,6 +378,10 @@ impl Config {
 
     /// Decide whether one rule remains active after user selectors and per-rule overrides.
     /// Unknown rules default to enabled so custom and forward-compatible definitions are not silently lost.
+    ///
+    /// `rule_id` is off when a negative selector names it or a positive subset omits it; otherwise an explicit `enabled` setting decides.
+    /// Without that setting, a rule inside a positive subset stays on and any other rule takes its catalogue default.
+    /// Returns `true` when the rule should run and `false` when a selector, an explicit setting or its catalogue default turns it off.
     pub(crate) fn is_rule_enabled(&self, rule_id: &str) -> bool {
         // A negative selector is the user's strongest request to remove this rule from the run.
         if self.selectors.negative.contains(rule_id) {
@@ -396,6 +411,9 @@ impl Config {
 
     /// Return whether findings stay visible but stop reducing the user's composite score.
     /// Missing configuration means normal scoring, as defined by ADR-014.
+    ///
+    /// `rule_id` selects the per-rule setting whose `exclude_from_score` flag is read.
+    /// Returns `true` only when that flag is `Some(true)`, and `false` when the rule has no setting or the flag is unset or false.
     pub(crate) fn is_rule_excluded_from_score(&self, rule_id: &str) -> bool {
         self.rule_settings
             .get(rule_id)
@@ -404,6 +422,10 @@ impl Config {
     }
 
     /// Return the user's threshold override or the catalogue default shown by `list-rules` and `init`.
+    ///
+    /// `rule_id` names the rule whose `threshold` override is read.
+    /// Returns that override when set, otherwise the value `rules::builtin_threshold` gives for `rule_id`.
+    /// With no override, it panics when `rule_id` is unknown to the catalogue or declares no threshold.
     pub(crate) fn threshold(&self, rule_id: &str) -> f64 {
         self.rule_settings
             .get(rule_id)
@@ -412,6 +434,9 @@ impl Config {
     }
 
     /// Return the user's severity override or the default already attached to the applicable rule or finding.
+    ///
+    /// `rule_id` names the rule whose `severity` override is read, and `default_severity` is the caller's fallback.
+    /// Returns the override when the rule's setting has one, otherwise `default_severity` unchanged.
     pub(crate) fn severity(&self, rule_id: &str, default_severity: Severity) -> Severity {
         self.rule_settings
             .get(rule_id)
@@ -420,7 +445,10 @@ impl Config {
     }
 
     /// Return a configured string-list option for a rule so built-in and user values can be combined.
-    /// An empty slice means the user did not configure that option.
+    /// An empty slice means the option is absent or was configured with no values.
+    ///
+    /// `rule_id` names the rule and `option` the key to look up among its configured string-array options.
+    /// Returns the configured values in their stored order, or an empty slice when the rule or that option is not configured.
     pub(crate) fn string_array_option(&self, rule_id: &str, option: &str) -> &[String] {
         self.rule_settings
             .get(rule_id)

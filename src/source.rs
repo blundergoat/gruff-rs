@@ -43,6 +43,10 @@ pub(crate) struct ParsedSource {
 
 impl ParsedSource {
     /// Pass the selected parent module's test-only ownership into rules for this source file.
+    ///
+    /// `external_test_module` says whether a selected parent module owns this file as test-only code; it is copied into the unit unchanged.
+    ///
+    /// Returns a `SourceUnit` borrowing this record's file, source text, optional AST and lazily filled line-start cache.
     pub(crate) fn as_source_unit(&self, external_test_module: bool) -> SourceUnit<'_> {
         SourceUnit {
             file: &self.file,
@@ -56,6 +60,11 @@ impl ParsedSource {
 }
 
 impl SourceUnit<'_> {
+    /// Gives the line-start offsets of this unit's source, computing them with `crate::line_starts` on the first call.
+    ///
+    /// The cache is borrowed from the owning `ParsedSource`, so units built from the same record compute the offsets only once.
+    ///
+    /// Returns the cached slice of offsets exactly as `crate::line_starts` produced them for this source.
     pub(crate) fn line_starts(&self) -> &[usize] {
         self.line_starts
             .get_or_init(|| crate::line_starts(self.source))
@@ -72,6 +81,12 @@ pub(crate) struct ProjectCoverage {
 }
 
 impl ProjectCoverage {
+    /// Reports whether the scan saw only part of the project's Rust files or failed to parse a selected input.
+    ///
+    /// An incomplete parse always counts as partial; otherwise an empty analysed set does not.
+    /// When files were analysed, a narrowed diff selection or any discoverable Rust file missing from the analysed set makes it partial.
+    ///
+    /// Returns `true` for an incomplete parse or partial coverage, and `false` otherwise, including a complete parse that analysed nothing.
     pub(crate) fn is_partial(&self) -> bool {
         if self.parse_incomplete {
             return true;

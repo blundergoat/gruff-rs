@@ -19,6 +19,9 @@ pub(crate) struct DeepScanBudget {
 }
 
 impl Default for DeepScanBudget {
+    /// Build the built-in deep-scan budget, enabled with the default paired line and byte limits.
+    ///
+    /// Returns an enabled budget at `DEEP_SCAN_DEFAULT_MAX_LINES` lines and `DEEP_SCAN_DEFAULT_MAX_BYTES` bytes, with override label "default".
     fn default() -> Self {
         Self {
             enabled: true,
@@ -37,6 +40,9 @@ pub(crate) enum DeepScanBudgetOverride {
 }
 
 impl DeepScanBudgetOverride {
+    /// Render this override in the `off` or `LINES:BYTES` text form used by the `--deep-scan-budget` flag.
+    ///
+    /// Returns "off" for `Disabled`, or `max_lines` and `max_bytes` joined by one colon for `Limits`.
     pub(crate) fn as_cli_value(&self) -> String {
         match self {
             Self::Disabled => "off".to_string(),
@@ -51,6 +57,11 @@ impl DeepScanBudgetOverride {
 impl std::str::FromStr for DeepScanBudgetOverride {
     type Err = String;
 
+    /// Parse a `--deep-scan-budget` flag value into a disabled override or a pair of positive line and byte limits.
+    ///
+    /// `value` is the raw flag text, either exactly `off` or two positive integers joined by one colon as `LINES:BYTES`.
+    /// Returns `Disabled` for `off` and `Limits` holding the parsed `max_lines` and `max_bytes` for `LINES:BYTES`.
+    /// Returns `Err` with the flag's usage message when the colon is missing or repeated, a side is not a `usize`, or a side is zero.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         const ERROR: &str =
             "--deep-scan-budget must be two positive integers as LINES:BYTES, or off.";
@@ -77,6 +88,10 @@ impl std::str::FromStr for DeepScanBudgetOverride {
 
 impl Config {
     /// Apply a command-line budget after config loading so CLI always wins.
+    ///
+    /// `override_value` is the parsed command-line override, or `None` to leave `self.deep_scan_budget` unchanged.
+    /// `Disabled` turns the budget off but keeps the current `max_lines` and `max_bytes`; `Limits` replaces the budget with an enabled one.
+    /// Either variant sets the budget's `override_state` to "cli".
     pub(crate) fn apply_deep_scan_budget_override(
         &mut self,
         override_value: Option<&DeepScanBudgetOverride>,

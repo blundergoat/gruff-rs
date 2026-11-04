@@ -1,5 +1,10 @@
 use super::*;
 
+/// Run the dependency rules over a project's Cargo manifest and lockfile and append every finding they raise.
+///
+/// `context` supplies the parsed manifest and lockfile summaries; when either is absent, the rules that need it are skipped.
+/// `config` decides which dependency rules run and supplies the duplicate-version threshold.
+/// `findings` receives each new finding after its existing entries.
 pub(crate) fn analyse_dependency_rules(
     context: &ProjectContext,
     config: &Config,
@@ -17,6 +22,10 @@ pub(crate) fn analyse_dependency_rules(
     }
 }
 
+/// Report a package whose Cargo manifest lacks description or license text under the `dependency.missing-package-metadata` rule.
+///
+/// `manifest` supplies the package name, metadata, file path and package line; an unnamed package is reported as `package`.
+/// `config` must enable the rule or nothing is checked, and `findings` receives at most one advisory finding listing the missing fields.
 pub(crate) fn analyse_manifest_metadata(
     manifest: &ManifestSummary,
     config: &Config,
@@ -61,6 +70,10 @@ pub(crate) fn analyse_manifest_metadata(
     }));
 }
 
+/// Run the git-source, unpinned-git-revision and wildcard-version checks on one dependency declared in the manifest.
+///
+/// `manifest` supplies the file path for findings, and `dependency` is the declaration checked by all three rules.
+/// `config` enables each rule independently, and `findings` receives every finding the checks raise.
 pub(crate) fn analyse_manifest_dependency(
     manifest: &ManifestSummary,
     dependency: &DependencySummary,
@@ -72,6 +85,10 @@ pub(crate) fn analyse_manifest_dependency(
     analyse_wildcard_dependency(manifest, dependency, config, findings);
 }
 
+/// Report a manifest dependency that takes its code from a git source under the `dependency.git-source` rule.
+///
+/// `manifest` supplies the file path reported, and `dependency` supplies the git source, name, section and line.
+/// `config` must enable the rule, and `findings` receives at most one warning for the dependency.
 pub(crate) fn analyse_git_dependency(
     manifest: &ManifestSummary,
     dependency: &DependencySummary,
@@ -102,6 +119,10 @@ pub(crate) fn analyse_git_dependency(
     }
 }
 
+/// Report a git dependency that sets no fixed `rev` under the `dependency.git-unpinned-revision` rule.
+///
+/// `manifest` supplies the file path reported, and `dependency` supplies the git source, `rev`, name, section and line.
+/// `config` must enable the rule, and `findings` receives at most one warning for the dependency.
 pub(crate) fn analyse_unpinned_git_dependency(
     manifest: &ManifestSummary,
     dependency: &DependencySummary,
@@ -132,6 +153,10 @@ pub(crate) fn analyse_unpinned_git_dependency(
     }
 }
 
+/// Report a dependency with a wildcard version requirement under the `dependency.wildcard-version` rule.
+///
+/// `manifest` supplies the file path reported, and `dependency` supplies the requirement, name, section and line; no requirement means no check.
+/// `config` must enable the rule, and `findings` receives at most one warning for the dependency.
 pub(crate) fn analyse_wildcard_dependency(
     manifest: &ManifestSummary,
     dependency: &DependencySummary,
@@ -160,6 +185,10 @@ pub(crate) fn analyse_wildcard_dependency(
     }
 }
 
+/// Report each locked package whose count of distinct version strings exceeds the `dependency.duplicate-locked-version` threshold.
+///
+/// `lockfile` supplies the locked packages and the reported file path; `config` must enable the rule and sets the allowed version count.
+/// `findings` receives one finding per package over the threshold, in package-name order, located at that package's earliest line.
 pub(crate) fn analyse_lockfile_duplicates(
     lockfile: &LockfileSummary,
     config: &Config,
@@ -199,6 +228,10 @@ pub(crate) fn analyse_lockfile_duplicates(
     }
 }
 
+/// Group a lockfile's packages by name so the versions locked for one crate can be counted together.
+///
+/// `lockfile` supplies the packages, which keep their stored order within each group.
+/// Returns a map from package name to that name's package entries, ordered by name; a lockfile with no packages gives an empty map.
 fn group_locked_packages_by_name(
     lockfile: &LockfileSummary,
 ) -> BTreeMap<&str, Vec<&LockedPackageSummary>> {
@@ -215,6 +248,13 @@ struct LockedPackageDuplicate<'a> {
     versions: Vec<&'a str>,
 }
 
+/// Build the duplicate-locked-version finding for one package locked at more versions than the threshold allows.
+///
+/// `rule_id` names the rule and selects its severity; it must be a built-in rule id, even when overridden, or this function panics.
+/// `file_path` is the lockfile path reported, and `summary` supplies the package name, first line and distinct versions.
+///
+/// `allowed_versions` is the threshold quoted in the message and metadata; `config` resolves the severity, defaulting to the built-in one.
+/// Returns a Security-pillar finding whose metadata records the versions, the measured count and the threshold.
 fn duplicate_locked_version_finding(
     rule_id: &str,
     file_path: &str,

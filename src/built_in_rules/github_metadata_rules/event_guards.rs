@@ -45,6 +45,10 @@ struct GuardNode {
 
 /// Return only source lines inside an own guard false for the covered PR event.
 /// Completing ownership first prevents late conditions and sibling scopes from being confused.
+///
+/// `source` is the whole workflow YAML text.
+/// Returns the 1-based line numbers of every job or step whose own `if` is provably false for a `pull_request_target` event.
+/// The set is empty when the file has no `jobs` mapping or uses a structure the ownership parser does not support.
 pub(super) fn unreachable_secret_lines(source: &str) -> BTreeSet<usize> {
     let mut blocked = BTreeSet::new();
     let Some(nodes) = ownership(source) else {
@@ -77,6 +81,9 @@ pub(super) fn unreachable_secret_lines(source: &str) -> BTreeSet<usize> {
 }
 
 /// Direct-child lookup cannot borrow an input named if from nested with/env mappings.
+///
+/// `nodes` is the ownership tree, `parent` the index of the entry to search and `key` the mapping key to match; an out-of-range `parent` panics.
+/// Returns the index of the first direct mapping child whose key equals `key`, or `None` when there is none; sequence items never match.
 fn child(nodes: &[GuardNode], parent: usize, key: &str) -> Option<usize> {
     nodes[parent]
         .children
@@ -86,6 +93,9 @@ fn child(nodes: &[GuardNode], parent: usize, key: &str) -> Option<usize> {
 }
 
 /// Inclusive ranges include references before an own late condition.
+///
+/// `nodes` is the ownership tree and `index` is the job or step entry whose direct `if` child is evaluated; an out-of-range `index` panics.
+/// When that guard is provably false for `pull_request_target`, every line in the entry's inclusive range is added to `blocked`.
 fn mark_rejected(nodes: &[GuardNode], index: usize, blocked: &mut BTreeSet<usize>) {
     let Some(guard) = child(nodes, index, "if") else {
         return;
@@ -96,6 +106,9 @@ fn mark_rejected(nodes: &[GuardNode], index: usize, blocked: &mut BTreeSet<usize
 }
 
 /// Strip only unquoted YAML comments; unmatched quotes cannot establish ownership.
+///
+/// `raw` is one source line of the workflow file.
+/// Returns the line trimmed and cut before a `#` that starts a comment, or `None` when a quote character opens no complete quoted span.
 fn yaml_text(raw: &str) -> Option<&str> {
     let bytes = raw.as_bytes();
     let mut index = 0;
@@ -114,6 +127,9 @@ fn yaml_text(raw: &str) -> Option<&str> {
 }
 
 /// Build complete block ownership; any unsupported structure disables guard proof.
+///
+/// `source` is the whole workflow YAML text.
+/// Returns the entries in source order with the document root at index 0, or `None` when any line uses a structure the parser does not support.
 fn ownership(source: &str) -> Option<Vec<GuardNode>> {
     let lines: Vec<_> = source.split('\n').collect();
     let mut nodes = vec![GuardNode {
@@ -156,6 +172,10 @@ fn ownership(source: &str) -> Option<Vec<GuardNode>> {
 }
 
 /// Close siblings before attaching the next mapping sequence item.
+///
+/// `nodes` is the tree and `stack` the path of open entries; entries indented at least `indent` spaces are popped and closed before this line.
+/// `line_index` is the 0-based index of the current line, and a non-empty `prefix` pushes a new sequence item that owns the line.
+/// Returns the owning entry's index, or `None` when the parent has scalar content or would mix mapping keys with sequence items.
 fn parent_node(
     nodes: &mut Vec<GuardNode>,
     stack: &mut Vec<usize>,
@@ -195,6 +215,10 @@ fn parent_node(
 }
 
 /// Duplicate keys, merges and aliases retain warnings rather than overwriting owners.
+///
+/// `nodes` is the tree, `parent` the owning entry, `text` the comment-free line, `prefix` its sequence-item prefix and `node` the entry to fill.
+/// Returns the new entry's index, or `parent` after storing a keyless sequence item's text as its content.
+/// `None` means an alias, anchor, merge key, duplicate key, or a line that is neither a key nor a sequence item.
 fn append_entry(
     nodes: &mut Vec<GuardNode>,
     parent: usize,
@@ -235,6 +259,10 @@ fn append_entry(
 }
 
 /// Decode only a whole YAML scalar/wrapper; errors fall back to unknown proof.
+///
+/// `content` is the raw value of an `if` key, plain or quoted, with or without its expression wrapper.
+/// Returns the expression's non-whitespace tokens, which may be empty for an empty expression.
+/// `None` means decoding failed, a quote or wrapper does not span the whole value, a token is unsupported, or there are more than 128 tokens.
 fn guard_tokens(content: &str) -> Option<Vec<String>> {
     let mut expression = content.trim().to_string();
     if expression.starts_with('"') {
@@ -278,6 +306,8 @@ enum Operand {
 
 impl Operand {
     /// Event/string values cannot be mistaken for boolean proof.
+    ///
+    /// Returns the boolean held by a `Truth` operand, which may itself be unknown, and `None` for an event name or string literal.
     fn truth(self) -> Option<bool> {
         match self {
             Self::Truth(result) => result,
@@ -296,11 +326,17 @@ struct GuardExpression {
 
 impl GuardExpression {
     /// The empty sentinel bounds token reads without panicking on malformed input.
+    ///
+    /// Returns the token at the cursor without consuming it, or an empty string once every token has been read.
     fn peek(&self) -> &str {
         self.tokens.get(self.position).map_or("", String::as_str)
     }
 
     /// Negation binds before equality; parentheses carry their own boolean proof.
+    ///
+    /// Consumes the next operand, marking the expression invalid on a missing `)` or an unsupported token.
+    /// Returns `Event` for `github.event_name` and `Literal` for a quoted string.
+    /// Any other operand is `Truth`, holding a negation's or parenthesised group's value when proven and unknown for a bare identifier.
     fn unary(&mut self) -> Operand {
         let token = self.peek().to_string();
         self.position += 1;
@@ -328,6 +364,9 @@ impl GuardExpression {
     }
 
     /// Only an exact event/string comparison establishes reachability.
+    ///
+    /// Returns the result when `github.event_name` is compared with a string literal by `==` or `!=`, ignoring ASCII case.
+    /// Any other comparison is `None`, and an operand with no operator after it returns that operand's own truth.
     fn comparison(&mut self) -> Option<bool> {
         let left = self.unary();
         let operator = self.peek().to_string();
@@ -347,6 +386,8 @@ impl GuardExpression {
     }
 
     /// False AND unknown can prove unreachability; malformed branches still invalidate it.
+    ///
+    /// Returns `Some(false)` when any `&&` operand is false, `Some(true)` when all are true, and `None` otherwise.
     fn conjunction(&mut self) -> Option<bool> {
         let mut result = self.comparison();
         while self.peek() == "&&" {
@@ -362,6 +403,8 @@ impl GuardExpression {
     }
 
     /// Unknown in an OR branch preserves a possibly reachable secret warning.
+    ///
+    /// Returns `Some(true)` when any `||` operand is true, `Some(false)` when all are false, and `None` otherwise.
     fn disjunction(&mut self) -> Option<bool> {
         let mut result = self.conjunction();
         while self.peek() == "||" {
@@ -378,6 +421,9 @@ impl GuardExpression {
 }
 
 /// Complete syntax is required even when partial evaluation already appears false.
+///
+/// `content` is the raw `if` value and `event` is the event name that `github.event_name` is compared against.
+/// Returns the guard's proven value for `event`, or `None` when it depends on unknown context or is empty, malformed or only partly consumed.
 fn event_truth(content: &str, event: &str) -> Option<bool> {
     let tokens = guard_tokens(content)?;
     if tokens.is_empty() {

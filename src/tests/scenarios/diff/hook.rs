@@ -468,6 +468,10 @@ pub(crate) fn hook_diff_new_only_keeps_a_newly_added_duplicate_line_finding() {
     );
 }
 
+/// Renders `report` as hook output and parses the JSON text back into a value for assertions.
+///
+/// `changed_region_active` and `new_only_active` tell the renderer whether changed-region scope and new-only filtering applied to the run.
+/// Returns the parsed hook document; panics when the rendered text is not valid JSON.
 fn render_hook_value(
     report: AnalysisReport,
     changed_region_active: bool,
@@ -481,6 +485,9 @@ fn render_hook_value(
     .expect("hook json")
 }
 
+/// Finds the first hook finding in `findings` whose `ruleId` field equals `rule_id`.
+///
+/// Returns a reference to that finding; panics, printing all of `findings`, when none matches.
 fn finding_by_rule<'a>(findings: &'a [Value], rule_id: &str) -> &'a Value {
     findings
         .iter()
@@ -488,6 +495,10 @@ fn finding_by_rule<'a>(findings: &'a [Value], rule_id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing {rule_id} in {findings:#?}"))
 }
 
+/// Writes `src/lib.rs` under `root` as one constant holding an AWS-access-key-shaped string followed by filler constants.
+///
+/// `lines` is the total line count including the key line, and a value of 0 still writes that line.
+/// Creates `src/` when missing and replaces any existing `src/lib.rs`; panics when either write fails.
 fn write_secret_oversized_rust_file(root: &Path, lines: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     let mut source = String::from("const LEAKED_KEY: &str = \"AKIA1234567890ABCDEF\";\n");
@@ -497,6 +508,9 @@ fn write_secret_oversized_rust_file(root: &Path, lines: usize) {
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
 
+/// Writes `src/lib.rs` under `root` as `lines` public `usize` filler constants, one per line, to set its file length.
+///
+/// Creates `src/` when missing and replaces any existing `src/lib.rs`; panics when either write fails.
 fn write_oversized_rust_file(root: &Path, lines: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     let source = (0..lines)
@@ -505,6 +519,10 @@ fn write_oversized_rust_file(root: &Path, lines: usize) {
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
 
+/// Writes `lines` public `usize` filler constants, one per line, to the file at `rel` under `root`.
+///
+/// `rel` is the file path relative to `root`; its parent directories are created first and any existing file is replaced.
+/// Panics when a directory or the file cannot be written.
 fn write_named_oversized_rust_file(root: &Path, rel: &str, lines: usize) {
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -516,6 +534,9 @@ fn write_named_oversized_rust_file(root: &Path, rel: &str, lines: usize) {
     fs::write(&path, source).expect("named lib write");
 }
 
+/// Writes `src/lib.rs` under `root` as `count` differently named constants that all hold the same AWS-access-key-shaped string.
+///
+/// Creates `src/` when missing and replaces any existing `src/lib.rs`; panics when either write fails.
 fn write_aws_key_file(root: &Path, count: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     // Distinct const names, identical AWS key value: each line yields a
@@ -526,6 +547,9 @@ fn write_aws_key_file(root: &Path, count: usize) {
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
 
+/// Counts the `sensitive-data.aws-access-key` findings in `report`.
+///
+/// Returns that count, which is 0 when the rule did not fire.
 fn aws_key_count(report: &AnalysisReport) -> usize {
     report
         .findings
@@ -534,6 +558,9 @@ fn aws_key_count(report: &AnalysisReport) -> usize {
         .count()
 }
 
+/// Analyses only `src/lib.rs` in the project at `root`, without reading a config file or baseline.
+///
+/// Returns the analysis report; panics when config loading or the analysis fails.
 fn analyse_lib_no_config(root: &Path) -> AnalysisReport {
     run_project_analysis(
         root,
@@ -547,6 +574,9 @@ fn analyse_lib_no_config(root: &Path) -> AnalysisReport {
     .expect("analysis succeeds")
 }
 
+/// Builds the analysis options the hook diff tests pass when exporting base stable identities.
+///
+/// Returns `default_test_options` narrowed to `src/lib.rs`, with config files and baselines turned off.
 fn hook_diff_test_options() -> AnalysisOptions {
     AnalysisOptions {
         paths: vec![PathBuf::from("src/lib.rs")],
@@ -556,17 +586,26 @@ fn hook_diff_test_options() -> AnalysisOptions {
     }
 }
 
+/// Initialises a Git repository at `root` and sets a local test user name and email so commits can be made there.
+///
+/// Panics when any of the Git commands fails.
 fn init_git_repo(root: &Path) {
     git(root, &["init"]);
     git(root, &["config", "user.name", "Gruff Test"]);
     git(root, &["config", "user.email", "gruff@example.test"]);
 }
 
+/// Runs Git in the repository at `root` with the command-line arguments `args`, discarding its output.
+///
+/// Panics when the command fails.
 fn git(root: &Path, args: &[&str]) {
     let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
     crate::changed_region::git_output(root, &args).expect("git command succeeds");
 }
 
+/// Builds a `size.file-length` error finding for `src/lib.rs` that reports `lines` measured lines against a threshold of 1000.
+///
+/// Returns the finding, placed on line 1 with high confidence and no symbol or remediation.
 fn file_length_finding(lines: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "size.file-length".to_string(),
@@ -587,6 +626,9 @@ fn file_length_finding(lines: usize) -> Finding {
     })
 }
 
+/// Copies every descriptor field of `finding` into a new `FindingDescriptor`, so a test can rebuild the finding with some fields changed.
+///
+/// Returns the descriptor, cloned field by field from `finding`.
 fn finding_descriptor_from(finding: &Finding) -> FindingDescriptor {
     FindingDescriptor {
         rule_id: finding.rule_id.clone(),

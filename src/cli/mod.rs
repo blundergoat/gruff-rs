@@ -88,6 +88,9 @@ pub(crate) struct GlobalOptions {
 }
 
 impl GlobalOptions {
+    /// Build the stdout writer that applies the `--silent` and `--quiet` flags to command output.
+    ///
+    /// Returns an `OutputWriter` that copies those two flags.
     pub(crate) fn writer(&self) -> OutputWriter {
         OutputWriter {
             silent: self.silent,
@@ -95,6 +98,9 @@ impl GlobalOptions {
         }
     }
 
+    /// Tell whether the run must not prompt, which `--no-interaction` or `--silent` requests.
+    ///
+    /// Returns true when either flag is set.
     pub(crate) fn is_non_interactive(&self) -> bool {
         self.no_interaction || self.silent
     }
@@ -107,6 +113,11 @@ pub(crate) struct OutputWriter {
 }
 
 impl OutputWriter {
+    /// Print a command's primary output to stdout unless the silent or quiet flags suppress it.
+    ///
+    /// `body` is the text printed with a trailing newline, and `outcome` is the run's result: quiet mode prints `body` only for a failing outcome.
+    /// Silent mode prints nothing whatever the outcome.
+    /// Panics, as `println!` does, when writing to stdout fails.
     pub(crate) fn emit(self, outcome: RunOutcome, body: &str) {
         if self.silent {
             return;
@@ -126,6 +137,9 @@ impl OutputWriter {
         println!("{body}");
     }
 
+    /// Report whether the `--silent` flag suppresses all output from this writer.
+    ///
+    /// Returns true when `--silent` was set; `--quiet` alone gives false.
     pub(crate) fn is_silent(self) -> bool {
         self.silent
     }
@@ -142,6 +156,9 @@ impl RunOutcome {
     /// Classify a run's exit outcome. A fatal diagnostic is exit 2; otherwise the
     /// `gate:` block evaluates first (a trip with `onMatch: fail` is exit 1), then
     /// the legacy `--fail-on` flag - the precedence documented in ADR-003.
+    ///
+    /// `report` supplies the diagnostics and findings, `fail_on` is the `--fail-on` threshold, and `gate` is the configured gate, if any.
+    /// Returns `DiagnosticsFailed` for a failing diagnostic, then `ThresholdHit` when the gate fails or a finding meets `fail_on`, else `Success`.
     pub(crate) fn classify(
         report: &AnalysisReport,
         fail_on: FailThreshold,
@@ -163,6 +180,9 @@ impl RunOutcome {
         Self::Success
     }
 
+    /// Map the run outcome to its numeric exit status.
+    ///
+    /// Returns 0 for `Success`, 1 for `ThresholdHit` and 2 for `DiagnosticsFailed`.
     pub(crate) fn numeric_code(self) -> usize {
         match self {
             Self::Success => 0,
@@ -171,10 +191,16 @@ impl RunOutcome {
         }
     }
 
+    /// Convert the run outcome into a process `ExitCode`.
+    ///
+    /// Returns an `ExitCode` built from `numeric_code`, so 0, 1 or 2.
     pub(crate) fn exit_code(self) -> ExitCode {
         ExitCode::from(self.numeric_code() as u8)
     }
 
+    /// Tell whether the run did not succeed, which lets quiet mode still print a failing run's output.
+    ///
+    /// Returns true for `ThresholdHit` and `DiagnosticsFailed`, and false for `Success`.
     pub(crate) fn is_failure(self) -> bool {
         !matches!(self, Self::Success)
     }
@@ -217,6 +243,9 @@ pub(crate) enum OutputFormat {
 }
 
 impl OutputFormat {
+    /// Give the lowercase name of the output format, such as `json` or `sarif`.
+    ///
+    /// Returns a static string holding the variant name in lowercase.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Text => "text",
@@ -257,6 +286,9 @@ pub(crate) enum FailThreshold {
 }
 
 impl FailThreshold {
+    /// Give the canonical lowercase name of a fail-on threshold, the spelling `from_str` parses back to the same value.
+    ///
+    /// Returns one of none, advisory, warning or error.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -266,6 +298,11 @@ impl FailThreshold {
         }
     }
 
+    /// Decide whether a finding of the given severity reaches this fail-on threshold.
+    ///
+    /// `severity` is the finding's severity; under `None` nothing triggers and under `Advisory` every severity does.
+    /// Under `Warning` a warning or error triggers, and under `Error` only an error does.
+    /// Returns true when `severity` meets this threshold.
     pub(crate) fn is_triggered_by_severity(self, severity: Severity) -> bool {
         match self {
             Self::None => false,
@@ -282,6 +319,10 @@ pub(crate) struct FailThresholdParseError {
 }
 
 impl std::fmt::Display for FailThresholdParseError {
+    /// Write the error message for a rejected fail-on value, listing the accepted values.
+    ///
+    /// `f` is the formatter the message goes to; the message quotes the rejected `value` and lists advisory, warning, error and none.
+    /// Returns the formatter's result, an error only when writing to `f` fails.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -296,6 +337,10 @@ impl std::error::Error for FailThresholdParseError {}
 impl std::str::FromStr for FailThreshold {
     type Err = FailThresholdParseError;
 
+    /// Parse a fail-on threshold name, ignoring surrounding whitespace and letter case.
+    ///
+    /// `value` is the text to parse; only none, advisory, warning and error are accepted, so names such as never or medium are refused.
+    /// Returns the matching threshold, or a `FailThresholdParseError` that keeps the original untrimmed `value` for its message.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
@@ -310,6 +355,11 @@ impl std::str::FromStr for FailThreshold {
 }
 
 impl<'de> Deserialize<'de> for FailThreshold {
+    /// Deserialize a fail-on threshold from a string with the same case and whitespace handling as `from_str`.
+    ///
+    /// `deserializer` is the serde source, asked for a string.
+    /// Returns the parsed threshold, or a serde error when the source cannot supply a string or `from_str` rejects the name.
+    /// A rejected name keeps the `from_str` message.
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,

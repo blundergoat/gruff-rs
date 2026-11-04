@@ -5,6 +5,9 @@
 use super::*;
 
 /// Analyse one source file without project config so built-in rustdoc defaults remain visible.
+///
+/// `source` is written as the library file of a fresh temporary project, which is analysed with no config and no baseline.
+/// Returns the full analysis report; panics if creating or writing the temporary project fails, or the analysis returns an error.
 fn analyse_rustdoc_source(source: &str) -> AnalysisReport {
     let directory = tempdir().expect("tempdir");
     baseline_with_lib(directory.path(), source);
@@ -239,6 +242,9 @@ pub fn measured() -> usize {
 
 /// Build one function with `statements` statements between its signature and its tail: `statements + 3` code lines.
 /// Padding puts a blank, comment, doc-comment or attribute line, and once a multi-line attribute, between statements.
+///
+/// `padded` switches that padding on; without it the statements sit directly between the signature and the tail.
+/// Returns the source of a `chained` function, opened by a one-line rustdoc and ending with a newline.
 fn chained_function(statements: usize, padded: bool) -> String {
     let mut source =
         String::from("/// Sums a chain of values.\npub fn chained(seed: i32) -> i32 {\n");
@@ -641,6 +647,9 @@ const EVERY_CALLABLE_ON: &str = "rules:
 /// the missing-public, missing-param and missing-return findings as sorted (rule id, symbol, severity,
 /// message) rows. `Combines both inputs.` names neither parameter nor the return value, so the param and
 /// return rules fire wherever they are in scope.
+///
+/// Returns one row per finding, empty when none of the three rules fires.
+/// Panics if creating or writing the temporary project fails, or the analysis under `config` returns an error.
 fn every_callable_rows(config: &str) -> Vec<(String, String, String, String)> {
     documentation_rule_rows(
         r#"//! Visibility cases for the everyCallable switch.
@@ -678,6 +687,9 @@ pub fn public_add(left: u32, right: u32) -> u32 {
 
 /// Analyse `source` as the library file of a temporary project under `config`, and list the missing-public,
 /// missing-param and missing-return findings as sorted (rule id, symbol, severity, message) rows.
+///
+/// Returns the rows, empty when none of the three rules fires; the severity is its `Debug` text and a missing symbol is empty.
+/// Panics if creating or writing the temporary project fails, or the project analysis returns an error.
 fn documentation_rule_rows(source: &str, config: &str) -> Vec<(String, String, String, String)> {
     let directory = tempdir().expect("tempdir");
     baseline_with_lib(directory.path(), source);
@@ -808,6 +820,9 @@ pub(crate) fn every_callable_messages_do_not_call_private_functions_public() {
 /// Analyse a public and a private `#[tauri::command]`, a `#[wasm_bindgen]` export and a plain public control
 /// under `config`, and list their documentation rule rows. Each rustdoc names neither parameter nor the return
 /// value, so the parameter and return rules fire on every function they check.
+///
+/// Returns the sorted rows, empty when no documentation rule fires.
+/// Panics if creating or writing the temporary project fails, or the analysis under `config` returns an error.
 fn bridge_rows(config: &str) -> Vec<(String, String, String, String)> {
     documentation_rule_rows(
         r#"//! Bridge cases for the everyCallable switch.
@@ -1101,6 +1116,9 @@ pub fn advance(step: usize) {
 
 /// Rows for closures assigned to private `const` and `static` items, an undocumented private and public closure,
 /// and a public fn control whose parameter rustdoc is reported at default settings.
+///
+/// `config` is the configuration text written into the temporary project; panics if project setup fails or analysis returns an error.
+/// Returns the sorted (rule id, symbol, severity, message) rows from `documentation_rule_rows`, empty when no documentation rule fires.
 fn closure_item_rows(config: &str) -> Vec<(String, String, String, String)> {
     documentation_rule_rows(
         r#"//! Closure items for the everyCallable switch.
@@ -1127,6 +1145,9 @@ pub fn open_control(file_name: &str) {
 }
 
 /// Project closure-item rows to their rule and symbol.
+///
+/// `rows` holds (rule id, symbol, severity, message) rows such as `closure_item_rows` returns.
+/// Returns the (rule id, symbol) pairs borrowed from `rows`, in the same order, and empty when `rows` is empty.
 fn rule_symbol_pairs(rows: &[(String, String, String, String)]) -> Vec<(&str, &str)> {
     rows.iter()
         .map(|row| (row.0.as_str(), row.1.as_str()))

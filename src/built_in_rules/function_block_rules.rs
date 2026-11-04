@@ -1,5 +1,10 @@
 use super::*;
 
+/// Reports an advisory `naming.placeholder-identifier` finding when a function's name is a stock or configured placeholder.
+///
+/// `file` is the source file the finding points into, and `block` is the parsed function whose `name` is checked.
+/// `config` supplies the rule's `extraPlaceholders` names, matched exactly beside the built-in `foo`, `bar`, `baz` and `qux`.
+/// The finding, with medium confidence and a rename remediation, is appended to `findings`; nothing is added for any other name.
 pub(crate) fn analyse_placeholder_block_name(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -30,6 +35,10 @@ pub(crate) fn analyse_placeholder_block_name(
     }
 }
 
+/// Runs the `error-handling.production-panic` and `error-handling.unimplemented-placeholder` checks on one function block.
+///
+/// `file` and `block` locate the function, and `searchable_body` is its body text, comments included, which both checks scan.
+/// Findings from either check are appended to `findings`, the panic check's first.
 pub(crate) fn analyse_error_handling_block(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -40,6 +49,13 @@ pub(crate) fn analyse_error_handling_block(
     analyse_placeholder_block(file, block, searchable_body, findings);
 }
 
+/// Reports an `error-handling.production-panic` warning when the body text of a function outside test code matches a `panic!` invocation.
+///
+/// Test functions, blocks in test context and files on test-infrastructure paths are skipped.
+/// `file` and `block` locate the function, and `searchable_body` is the body text, comments included, searched for a `panic!` invocation.
+/// A `PANIC:` or `INVARIANT:` substring anywhere in the body, found by `has_nearby_invariant_comment`, suppresses the finding.
+///
+/// The high-confidence finding is appended to `findings`; nothing is added when the function is skipped or passes.
 pub(crate) fn analyse_panic_block(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -72,6 +88,11 @@ pub(crate) fn analyse_panic_block(
     }
 }
 
+/// Reports an `error-handling.unimplemented-placeholder` warning when the cleaned body text has a parenthesised `todo!` or `unimplemented!`.
+///
+/// Files on test-infrastructure paths are skipped; comments and matched `quote!` or `quote_spanned!` bodies are masked before matching.
+/// `file` and `block` locate the function, and `searchable_body` is the body text, comments included, that is cleaned and scanned.
+/// The high-confidence finding lists each distinct macro in its `macros` metadata and is appended to `findings`.
 pub(crate) fn analyse_placeholder_block(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -119,9 +140,15 @@ pub(crate) fn analyse_placeholder_block(
     }
 }
 
-/// Blank the body of every `quote!` or `quote_spanned!` invocation, keeping line breaks, so a macro name
+/// Blank the body of each matched `quote!` or `quote_spanned!` invocation, keeping line breaks, so a macro name
 /// inside a generated-code token stream is not read as a call. Strings are already masked, so the
 /// delimiters counted here are all code.
+///
+/// `code` is function body text whose comments have already been stripped.
+/// Only the spelling with `!` right after the macro name is matched, so whitespace before the `!` leaves that stream unmasked.
+///
+/// Returns a copy of `code` with the same byte length, in which each stream body's bytes other than newlines are spaces.
+/// A stream that never closes is blanked to the end of the text; the macro name and its delimiters are kept.
 fn mask_quote_token_streams(code: &str) -> String {
     static QUOTE_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(&QUOTE_MACRO_REGEX, r"\bquote(?:_spanned)?!\s*[\(\[\{]");
@@ -143,6 +170,9 @@ fn mask_quote_token_streams(code: &str) -> String {
 
 /// Return the index of the delimiter that closes the one at `open_index`, counting every bracket kind, or
 /// the end of the text when the stream never closes.
+///
+/// `bytes` is the code text being scanned, and `open_index` is the position of the opening bracket to match.
+/// Returns the first index where the bracket depth falls back to zero, so a closing bracket of any kind can end the stream.
 fn closing_delimiter_index(bytes: &[u8], open_index: usize) -> usize {
     let mut depth = 0usize;
     for (index, byte) in bytes.iter().enumerate().skip(open_index) {

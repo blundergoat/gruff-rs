@@ -13,6 +13,9 @@ pub(crate) enum IgnoreSource {
 }
 
 impl IgnoreSource {
+    /// Maps this ignore source to its lowercase label, the same text the `Serialize` derive writes for it.
+    ///
+    /// Returns `config` for `Config`, `gitignore` for `Gitignore` and `default` for `Default`; the label is never empty.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Config => "config",

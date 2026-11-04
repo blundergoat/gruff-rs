@@ -8,6 +8,9 @@ pub(crate) struct DiffPatchLineMap {
 }
 
 impl DiffPatchLineMap {
+    /// List the files this map records, including entries with no added lines and whole-file changes.
+    ///
+    /// Returns the sorted union of the files in `lines_by_file`, including those with no added lines, and those in `whole_files`.
     pub(crate) fn changed_files(&self) -> BTreeSet<String> {
         self.lines_by_file
             .keys()
@@ -17,6 +20,10 @@ impl DiffPatchLineMap {
     }
 }
 
+/// Read the unified diff a `--diff-patch` run filters by, from standard input when the path is `-`.
+///
+/// `project_root` anchors a relative `path`, and `path` is the patch file, or `-` for standard input.
+/// Returns the patch text, or Err naming stdin or `path` when it cannot be read.
 pub(crate) fn read_diff_patch(project_root: &Path, path: &Path) -> Result<String, String> {
     if path == Path::new("-") {
         let mut patch = String::new();
@@ -44,6 +51,10 @@ pub(crate) enum DiffHunkLineKind {
     OutsideHunk,
 }
 
+/// Collect the new-side line numbers each file gains in a unified diff, so findings can be matched against the changed region.
+///
+/// `patch` is the diff text; trailing carriage returns are ignored, and inside a hunk a `+++` line counts as an added line, not a header.
+/// Returns the added new-side line numbers per named file, an empty set for a file with none, and `saw_hunk` set once a hunk header parses.
 pub(crate) fn parse_unified_diff(patch: &str) -> DiffPatchLineMap {
     let mut line_map = DiffPatchLineMap::default();
     let mut state = DiffPatchState::default();
@@ -63,6 +74,13 @@ pub(crate) fn parse_unified_diff(patch: &str) -> DiffPatchLineMap {
     line_map
 }
 
+/// Apply a file or hunk header line to the parse state, so the lines after it are attributed to the right file and new-side line.
+///
+/// `line` is one patch line with any trailing carriage return removed.
+/// `state` takes the file from a `+++` line or the start of an `@@` hunk, and a `diff --git` or binary marker ends the current hunk.
+/// `line_map` gains an empty entry for the current file and has `saw_hunk` set once a hunk start parses.
+///
+/// Returns true when `line` was one of these headers, and false when it must be handled as hunk content.
 pub(crate) fn should_handle_diff_header(
     line: &str,
     state: &mut DiffPatchState,
@@ -95,6 +113,9 @@ pub(crate) fn should_handle_diff_header(
     false
 }
 
+/// Register the current file in the line map before any added line, so a file whose hunks only delete still counts as changed.
+///
+/// `line_map` gains an empty line set for `current_file` unless it has one, and nothing happens when `current_file` is None.
 pub(crate) fn ensure_diff_file_entry(
     line_map: &mut DiffPatchLineMap,
     current_file: &Option<String>,
@@ -104,6 +125,11 @@ pub(crate) fn ensure_diff_file_entry(
     }
 }
 
+/// Advance the new-side line counter over one hunk line, recording the line number when the line was added.
+///
+/// `line` is the patch line; nothing happens unless `state` has both a current file and an open hunk.
+/// `state` advances its new-side line on added and context lines and closes the hunk on a line that cannot be hunk content.
+/// `line_map` gains the new-side number of each added line under the current file.
 pub(crate) fn record_diff_hunk_line(
     line: &str,
     state: &mut DiffPatchState,
@@ -133,6 +159,11 @@ pub(crate) fn record_diff_hunk_line(
     }
 }
 
+/// Classify one patch line by its first character, as it would read inside a hunk.
+///
+/// `line` is the patch line without its trailing carriage return.
+/// Returns `NoNewlineMarker` for `\`, `OldSideOnly` for `-`, `Added` for `+` and `Context` for a space.
+/// Any other line, including an empty one, is `OutsideHunk`.
 pub(crate) fn diff_hunk_line_kind(line: &str) -> DiffHunkLineKind {
     if line.starts_with('\\') {
         DiffHunkLineKind::NoNewlineMarker
@@ -148,6 +179,9 @@ pub(crate) fn diff_hunk_line_kind(line: &str) -> DiffHunkLineKind {
 }
 
 impl DiffHunkLineKind {
+    /// Tell whether a line of this kind continues an open hunk.
+    ///
+    /// Returns true for added, context, old-side-only and no-newline-marker lines, and false for `OutsideHunk`.
     fn is_inside_hunk(&self) -> bool {
         matches!(
             self,
@@ -156,6 +190,10 @@ impl DiffHunkLineKind {
     }
 }
 
+/// Turn the path text of a `+++` header into the report-relative path findings use.
+///
+/// `raw_path` may be C-quoted or carry a tab-separated timestamp, and one leading `b/` or `a/` prefix is stripped from it.
+/// Returns the normalised path, or None for `/dev/null` or a path that is empty after normalising.
 pub(crate) fn parse_diff_path(raw_path: &str) -> Option<String> {
     let unquoted = unquote_git_path(raw_path);
     let path = unquoted
@@ -179,6 +217,10 @@ pub(crate) fn parse_diff_path(raw_path: &str) -> Option<String> {
 pub(crate) use git_quoted::unquote_git_path;
 
 mod git_quoted {
+    /// Decode a quoted git path's octal, newline, carriage-return and tab escapes; any other escaped byte just loses its backslash.
+    ///
+    /// `raw_path` is the path text; whitespace around it is ignored.
+    /// Returns the decoded path, with invalid UTF-8 replaced lossily, or None when `raw_path` is not wrapped in double quotes.
     pub(crate) fn unquote_git_path(raw_path: &str) -> Option<String> {
         let trimmed = raw_path.trim();
         if !(trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2) {
@@ -194,6 +236,11 @@ mod git_quoted {
         Some(String::from_utf8_lossy(&bytes).to_string())
     }
 
+    /// Decode one character of a quoted git path, either a literal byte or a backslash escape.
+    ///
+    /// `bytes` is the text between the quotes, and `index` is where this character starts; an `index` at or past the end panics.
+    /// `output` gains the decoded byte, or a lone backslash when the text ends in one.
+    /// Returns the index just after the consumed character or escape.
     fn push_unquoted_byte(bytes: &[u8], index: usize, output: &mut Vec<u8>) -> usize {
         if bytes[index] != b'\\' {
             output.push(bytes[index]);
@@ -218,6 +265,10 @@ mod git_quoted {
         }
     }
 
+    /// Read a git octal escape of one to three digits, the form git uses for non-ASCII path bytes.
+    ///
+    /// `bytes` is the quoted path text and `start` is the index just after the backslash.
+    /// Returns the byte value, capped at 255, with the index after the last digit, or None when no octal digit is at `start`.
     fn read_octal_escape(bytes: &[u8], start: usize) -> Option<(u8, usize)> {
         bytes.get(start).copied().filter(|byte| is_octal(*byte))?;
         let mut value = 0u8;
@@ -232,10 +283,18 @@ mod git_quoted {
         Some((value, index))
     }
 
+    /// Test whether a byte is an ASCII octal digit, the only digits a git path escape uses.
+    ///
+    /// `byte` is the candidate escape character.
+    /// Returns true for `0` through `7`.
     fn is_octal(byte: u8) -> bool {
         matches!(byte, b'0'..=b'7')
     }
 
+    /// Decode the character after a backslash in a quoted git path when it does not start an octal escape.
+    ///
+    /// `byte` is the escaped character.
+    /// Returns a newline, carriage return or tab for `n`, `r` and `t`, and `byte` itself otherwise, as for an escaped quote or backslash.
     fn escaped_byte(byte: u8) -> u8 {
         match byte {
             b'n' => b'\n',
@@ -246,6 +305,10 @@ mod git_quoted {
     }
 }
 
+/// Read the new-side start line from an `@@` hunk header.
+///
+/// `line` is the hunk header; the digits after its first `+` are taken.
+/// Returns the start line, raised to 1 when the header says 0, or None without a `+` or digits after it, or when they overflow `usize`.
 pub(crate) fn parse_hunk_new_start(line: &str) -> Option<usize> {
     let plus = line.find('+')?;
     let rest = &line[plus + 1..];
@@ -257,6 +320,10 @@ pub(crate) fn parse_hunk_new_start(line: &str) -> Option<usize> {
     Some(start.max(1))
 }
 
+/// Bring a patch or finding path into one form, so the two can be compared directly.
+///
+/// `path` is a file path from a patch or a finding.
+/// Returns `path` with backslashes turned into forward slashes and every leading `./` removed.
 pub(crate) fn normalize_report_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
@@ -278,6 +345,14 @@ pub(crate) fn apply_diff_patch_filter(
     )
 }
 
+/// Narrow a finished report to the findings inside the changed region and rescore it, recording what was dropped.
+///
+/// `report` is consumed, `patch` is the parsed diff, and `analysed_files` lets patch files the run never scanned be named.
+/// `config` drives the rescoring, and `function_blocks_by_file` and `scope` feed the check that decides which findings touch the change.
+///
+/// Returns the report holding only intersecting findings, with its summary and score recomputed over them.
+/// Its per-rule deltas count kept findings as introduced and dropped ones as removed, and are None when there are none.
+/// Its suppressed-finding audit is narrowed the same way, `suppressed_count` holds the dropped count, and a `patch-filter` diagnostic is added.
 pub(crate) fn apply_changed_region_filter(
     mut report: AnalysisReport,
     patch: &DiffPatchLineMap,
@@ -320,6 +395,11 @@ pub(crate) fn apply_changed_region_filter(
     report
 }
 
+/// Summarise only the findings that touch the changed region, leaving the findings themselves untouched.
+///
+/// `findings` are the run's findings and `patch` is the parsed diff.
+/// `function_blocks_by_file` and `scope` feed the same intersection check `apply_changed_region_filter` uses.
+/// Returns the summary of the intersecting findings.
 pub(crate) fn summarize_changed_findings(
     findings: &[Finding],
     patch: &DiffPatchLineMap,
@@ -343,6 +423,10 @@ pub(crate) fn summarize_changed_findings(
     summarize(&changed_findings)
 }
 
+/// Count, per rule, the findings the changed-region filter kept as introduced and those it dropped as removed.
+///
+/// `kept` are the findings inside the changed region and `suppressed` are those outside it.
+/// Returns the per-rule deltas that `rule_deltas_from_counts` builds from those two counts.
 fn patch_rule_deltas(kept: &[Finding], suppressed: &[Finding]) -> Vec<RuleDelta> {
     let mut introduced_per_rule: BTreeMap<String, usize> = BTreeMap::new();
     for finding in kept {
@@ -357,6 +441,10 @@ fn patch_rule_deltas(kept: &[Finding], suppressed: &[Finding]) -> Vec<RuleDelta>
     crate::rule_deltas_from_counts(&introduced_per_rule, &removed_per_rule)
 }
 
+/// Find the recorded patch files that the run never analysed, so the filter diagnostic can name them.
+///
+/// `changed_files` are the files the patch map records and `analysed_files` the files the run scanned.
+/// Returns the changed files missing from `analysed_files` in sorted order, or an empty list when all were analysed.
 fn unanalysed_patch_files(
     changed_files: &BTreeSet<String>,
     analysed_files: &BTreeSet<String>,
@@ -373,6 +461,11 @@ struct DiffPatchPartition {
     suppressed: Vec<Finding>,
 }
 
+/// Split the report's findings into those that touch the changed region and those that do not.
+///
+/// `report` is changed in place: its findings are moved out, and suppressed findings outside the region leave its audit and counts.
+/// `patch`, `changed_files`, `function_blocks_by_file` and `scope` feed the intersection check that decides each finding.
+/// Returns the kept findings and the dropped ones, each in their original order.
 fn partition_findings_by_patch(
     report: &mut AnalysisReport,
     patch: &DiffPatchLineMap,
@@ -408,6 +501,11 @@ fn partition_findings_by_patch(
     DiffPatchPartition { kept, suppressed }
 }
 
+/// Record what the changed-region filter did as a `patch-filter` diagnostic on the report.
+///
+/// `report` gains the diagnostic, which names no file or line and leaves `invalidates_run` unset.
+/// `total_findings`, `kept_findings` and `suppressed_findings` are the filter's before, kept and dropped counts.
+/// `missing_files` are the patch files the run did not analyse, named in the message.
 fn push_patch_filter_diagnostic(
     report: &mut AnalysisReport,
     total_findings: usize,
@@ -429,6 +527,10 @@ fn push_patch_filter_diagnostic(
     });
 }
 
+/// Recompute each suppression summary's count from the suppressed findings that remain after a filter dropped some.
+///
+/// `summaries` are changed in place: every count is reset to 0, then raised by one per finding whose config key and index match.
+/// `suppressed_findings` are the suppressed findings still in the report; one matching no summary is not counted.
 pub(crate) fn recount_suppressions(
     summaries: &mut [SuppressionSummary],
     suppressed_findings: &[SuppressedFinding],
@@ -447,6 +549,12 @@ pub(crate) fn recount_suppressions(
     }
 }
 
+/// Decide whether one finding falls inside the changed region by its file and line span.
+///
+/// `finding` gives the file and line span, `patch` the added lines and whole-file changes, and `changed_files` the files the map records.
+///
+/// Returns false for a file outside `changed_files`, and true for a whole-file change or a finding with no line.
+/// Otherwise it returns whether an added line falls from the finding's line through its end line, a missing or earlier end meaning one line.
 pub(crate) fn patch_intersects_finding(
     finding: &Finding,
     patch: &DiffPatchLineMap,
@@ -469,6 +577,10 @@ pub(crate) fn patch_intersects_finding(
 /// True when any changed line of `file_path` lies in `start..=end`, or the whole
 /// file changed. Shared by `patch_intersects_finding` here and the symbol-scope
 /// check in `changed_region`.
+///
+/// `patch` holds the added lines and whole-file changes, and `file_path` is the normalised report path to look up.
+/// `start` and `end` are the first and last line of the span, both inclusive.
+/// Returns true on a whole-file change or an added line inside the span, and false otherwise, including for a file the patch never names.
 pub(crate) fn patch_range_intersects(
     patch: &DiffPatchLineMap,
     file_path: &str,
@@ -484,6 +596,11 @@ pub(crate) fn patch_range_intersects(
         .is_some_and(|lines| (start..=end).any(|line| lines.contains(&line)))
 }
 
+/// Word the `patch-filter` diagnostic so a reader sees how much the changed-region filter kept and which patch files went unanalysed.
+///
+/// `total_findings`, `kept_findings` and `suppressed_findings` are the counts quoted in the message.
+/// `missing_files` are listed comma-separated as patch files not analysed.
+/// Returns the message, ending with a note that all patch files were analysed when `missing_files` is empty.
 pub(crate) fn patch_filter_message(
     total_findings: usize,
     kept_findings: usize,

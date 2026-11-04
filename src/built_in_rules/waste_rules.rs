@@ -20,6 +20,11 @@ pub(crate) struct CloneOwnershipPattern {
 }
 
 impl CloneOwnershipPattern {
+    /// Tests one source line against this ownership pattern's regex, which `static_regex` builds from `pattern` and caches in `cell`.
+    ///
+    /// `line` is one line of source text checked for an owned or consumed `.clone()`.
+    /// If `cell` is still empty and `pattern` is not a valid regex, building it panics.
+    /// Returns true when the regex matches `line`; the anchored patterns must match the whole line.
     pub(crate) fn matches(&self, line: &str) -> bool {
         static_regex(self.cell, self.pattern).is_match(line)
     }
@@ -74,11 +79,12 @@ const CLONE_OWNERSHIP_PATTERNS: &[CloneOwnershipPattern] = &[
     },
 ];
 
-/// Returns true when a `.expect("...")` call carries a substantive
-/// rationale string (≥15 characters of non-whitespace content). The
-/// waste rule accepts these because the author has already declared why
-/// the unwrap is safe; trivial rationales like `.expect("ok")` still
-/// fire.
+/// Returns true when a `.expect("...")` call carries a substantive rationale string (at least 15 bytes after trimming surrounding whitespace).
+/// The waste rule accepts these because the author has already declared why the unwrap is safe; a trivial `.expect("ok")` gets no exemption here.
+///
+/// `line` is one source line searched for textual `.expect("...")` matches; quote matching does not account for Rust escapes.
+/// Any one match with such a rationale passes. A raw-string argument such as `.expect(r#"..."#)` is not itself matched, but
+/// `.expect("...")` text inside any string literal on the line still is.
 pub(crate) fn expect_has_substantive_rationale(line: &str) -> bool {
     static EXPECT_RATIONALE_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(&EXPECT_RATIONALE_REGEX, r#"\.expect\(\s*"([^"]*)"\s*\)"#);
@@ -92,6 +98,9 @@ pub(crate) fn expect_has_substantive_rationale(line: &str) -> bool {
 
 /// Returns true when the line's unwraps are accepted: an `expect` with a substantive rationale, or only calls that
 /// have an outcome fixed by the source.
+///
+/// `raw_line` is one source line with its string literals intact, because both checks read the literal arguments.
+/// `display_path` is the file's display path, which decides whether Cargo build-script variables count as fixed.
 pub(crate) fn is_accepted_unwrap_line(raw_line: &str, display_path: &str) -> bool {
     expect_has_substantive_rationale(raw_line)
         || has_only_fixed_outcome_unwraps(raw_line, display_path)
@@ -123,6 +132,13 @@ const CARGO_BUILD_SCRIPT_VARIABLES: &[&str] = &[
 /// Returns true when every `unwrap()` or `expect()` on the line follows a call whose outcome the source fixes: a
 /// Cargo-set variable read in a build script, or a constructor given one literal, which succeeds or fails the same
 /// way on every run. Any other unwrap on the line keeps it reporting.
+///
+/// Only `CString::new`, `Regex::new`, `Url::parse` and IP or socket address `from_str` count as fixed-outcome constructors.
+/// A `CString` literal holding `\0`, `\x00` or an all-zero `\u` escape without underscores is excluded, because that unwrap always panics.
+/// Variables count only when listed in `CARGO_BUILD_SCRIPT_VARIABLES` and `display_path` is `build.rs` or ends in `/build.rs`.
+///
+/// `raw_line` is one source line with its string literals intact, since the literal arguments and variable names are read.
+/// Returns false for a line with no `unwrap` or `expect` call.
 fn has_only_fixed_outcome_unwraps(raw_line: &str, display_path: &str) -> bool {
     static UNWRAP_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
     static BUILD_VARIABLE_REGEX: OnceLock<Regex> = OnceLock::new();

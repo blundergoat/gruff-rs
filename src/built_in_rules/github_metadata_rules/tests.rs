@@ -79,6 +79,8 @@ fn workflow_secret_event_guard_matrix() {
 
 /// Replay `lines` through one permissions state, reporting whether any line
 /// is judged to grant broad write access.
+///
+/// Returns true at the first line the state judges broad, without replaying later lines, and false when no line is.
 fn has_broad_permission(lines: &[&str]) -> bool {
     let mut state = WorkflowPermissionsState::default();
     // The first broad grant makes the synthetic workflow actionable to a user.

@@ -1,5 +1,12 @@
 use super::*;
 
+/// Parses the config's `exclude` array into exclusion rules and installs them on the loaded config.
+///
+/// `exclude_value` is the raw `exclude` value, which must be an array whose entries are each parsed by `parse_exclusion_rule`.
+/// `config` supplies the custom rules selectors may name besides built-in rules; on success its `exclusions` list is replaced.
+///
+/// Returns `Ok(())` once every entry parses, or an `Err` message when `exclude` is not an array or any entry is invalid.
+/// On error `config` is left unchanged.
 pub(crate) fn apply_exclusions_section(
     exclude_value: &Value,
     config: &mut Config,
@@ -21,6 +28,14 @@ pub(crate) fn apply_exclusions_section(
     Ok(())
 }
 
+/// Validates one `exclude` entry from the config and builds the `ExclusionRule` it describes.
+///
+/// `index` is the entry's position in the `exclude` array and is used only to name the entry in error messages.
+/// `entry_value` is the raw entry, which must be an object using only the keys `rule`, `paths`, `message_contains` and `reason`.
+/// `registry` and `custom_rules` are the built-in and custom rules that the entry's `rule` selector is expanded against.
+///
+/// Returns the parsed rule with its selector, expanded rule ids, normalized paths, optional message filter and reason.
+/// Returns an `Err` message instead when the entry is not an object, has an unknown key, or has an invalid field.
 pub(crate) fn parse_exclusion_rule(
     index: usize,
     entry_value: &Value,
@@ -52,6 +67,13 @@ pub(crate) fn parse_exclusion_rule(
     })
 }
 
+/// Reads an exclusion entry's required `rule` selector and expands it into the concrete rule ids it covers.
+///
+/// `entry` is the exclusion object, and `entry_path` is its config path prefix used to name `rule` in error messages.
+/// `registry` and `custom_rules` are the built-in and custom rules the selector is resolved against by `expand_rule_selector_with_custom`.
+///
+/// Returns the selector as written together with its expanded rule ids.
+/// Returns an `Err` message instead when `rule` is missing, is not a string, or the selector fails to expand.
 fn parse_exclusion_selector(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -68,6 +90,12 @@ fn parse_exclusion_selector(
     Ok((selector, rule_ids))
 }
 
+/// Reads an exclusion entry's optional `paths` list and normalizes each path with `normalize_report_path`.
+///
+/// `entry` is the exclusion object, and `entry_path` is its config path prefix used to name `paths` in error messages.
+///
+/// Returns the normalized paths, or an empty list when `paths` is absent.
+/// Returns an `Err` message instead when `string_array` rejects the `paths` value.
 fn parse_exclusion_paths(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -86,6 +114,12 @@ fn parse_exclusion_paths(
         .unwrap_or_default())
 }
 
+/// Reads an exclusion entry's optional `message_contains` filter, rejecting a value that is not a string or is empty.
+///
+/// `entry` is the exclusion object, and `entry_path` is its config path prefix used to name `message_contains` in error messages.
+///
+/// Returns `Some` filter text when the key holds a non-empty string, or `None` when `message_contains` is absent.
+/// Returns an `Err` message instead when the value is not a string or is the empty string; whitespace-only text is accepted.
 fn parse_exclusion_message_filter(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -109,6 +143,11 @@ fn parse_exclusion_message_filter(
     Ok(message_contains)
 }
 
+/// Reads an exclusion entry's required `reason`, which must be a string with at least one non-whitespace character.
+///
+/// `entry` is the exclusion object, and `entry_path` is its config path prefix used to name `reason` in error messages.
+///
+/// Returns the reason exactly as written, without trimming, or an `Err` message when `reason` is missing, not a string, or blank.
 fn parse_exclusion_reason(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -122,6 +161,12 @@ fn parse_exclusion_reason(
     Ok(reason)
 }
 
+/// Reads a required string field from a config object and rejects it when it is empty or whitespace-only.
+///
+/// `object` is the config object to read, and `key` is the name of the required field.
+/// `entry_path` is the object's config path; error messages name the field as `entry_path` and `key` joined by a dot.
+///
+/// Returns the field value without trimming, or an `Err` message when the field is missing, not a string, or blank.
 pub(crate) fn required_non_empty_config_string(
     object: &serde_json::Map<String, Value>,
     key: &str,
@@ -135,6 +180,11 @@ pub(crate) fn required_non_empty_config_string(
     Ok(value)
 }
 
+/// Reads a required string field from a config object, reporting a config error when it is missing or not a string.
+///
+/// `object` is the config object to read, `key` is the field to look up, and `path` is the field's full config path used in error messages.
+///
+/// Returns an owned copy of the value, which may be empty, or an `Err` message when `key` is missing or its value is not a string.
 pub(crate) fn required_config_string(
     object: &serde_json::Map<String, Value>,
     key: &str,

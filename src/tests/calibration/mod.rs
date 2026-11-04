@@ -78,6 +78,9 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
 
+/// Writes the calibration project skeleton into `root`: a `src/` directory, a README, and a Cargo manifest and lockfile naming `serde`.
+///
+/// Replaces any of those files that already exist; panics when a directory or file cannot be written.
 pub(crate) fn calibration_baseline(root: &Path) {
     fs::create_dir_all(root.join("src")).expect("calibration src dir");
     fs::write(root.join("README.md"), "# Calibration\n").expect("calibration readme");
@@ -87,15 +90,24 @@ pub(crate) fn calibration_baseline(root: &Path) {
         .expect("calibration lockfile");
 }
 
+/// Writes `content` as `src/lib.rs` under `root`, replacing any existing file.
+///
+/// The `src/` directory must already exist, as `calibration_baseline` creates it; panics when the write fails.
 pub(crate) fn write_lib(root: &Path, content: &str) {
     fs::write(root.join("src/lib.rs"), content).expect("calibration lib");
 }
 
+/// Writes the calibration project skeleton into `root` and then `lib_content` as its `src/lib.rs`.
+///
+/// Panics when any of those writes fails.
 pub(crate) fn baseline_with_lib(root: &Path, lib_content: &str) {
     calibration_baseline(root);
     write_lib(root, lib_content);
 }
 
+/// Builds Rust source with a leading `Probe.` doc line and `count` empty public functions `item_0` onward, each with its own doc line.
+///
+/// Returns the source text, which holds only the `Probe.` line when `count` is 0.
 pub(crate) fn module_with_n_items(count: usize) -> String {
     let mut body = String::from("/// Probe.\n");
     for index in 0..count {
@@ -104,6 +116,9 @@ pub(crate) fn module_with_n_items(count: usize) -> String {
     body
 }
 
+/// Builds Rust source with a leading `Root.` doc line and `count` inline modules `child_0` onward, each holding one empty public function.
+///
+/// Returns the source text, which holds only the `Root.` line when `count` is 0.
 pub(crate) fn module_with_n_mod_decls(count: usize) -> String {
     let mut body = String::from("/// Root.\n");
     for index in 0..count {
@@ -120,6 +135,10 @@ pub(crate) struct CalibrationCase {
     negative: Setup,
 }
 
+/// Pairs a rule with the two fixture setups that calibrate it.
+///
+/// `rule_id` names the rule, `positive` sets up a project where it should fire, and `negative` one where it should stay silent.
+/// Returns the calibration case holding all three.
 pub(crate) fn case(rule_id: &'static str, positive: Setup, negative: Setup) -> CalibrationCase {
     CalibrationCase {
         rule_id,
@@ -128,6 +147,10 @@ pub(crate) fn case(rule_id: &'static str, positive: Setup, negative: Setup) -> C
     }
 }
 
+/// Analyses the positive and negative projects of `case` in fresh temporary directories, each with a config that enables the case's rule.
+///
+/// Panics when creating a directory or config fails, a setup panics, an analysis fails, or the positive report fails `assert_m02_advice`.
+/// Returns a pair saying whether the rule fired on the positive project and whether it fired on the negative one.
 pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
     let positive_dir = tempdir().expect("calibration positive tempdir");
     (case.positive)(positive_dir.path());
@@ -170,6 +193,10 @@ pub(crate) fn run_calibration_case(case: &CalibrationCase) -> (bool, bool) {
 }
 
 /// Keep M02 advice actionable without changing the calibration detection controls.
+///
+/// For a `rule_id` with a known advice term list, every finding of that rule in `report` must have remediation containing each term.
+/// That remediation must also avoid the text `paths.ignore` and the phrase raise the limit; a missing remediation counts as empty.
+/// Any violation panics, and a `rule_id` with no term list is not checked at all.
 fn assert_m02_advice(rule_id: &str, report: &AnalysisReport) {
     let advice_terms: &[&str] = match rule_id {
         "modernisation.manual-contains" => &["contains"],
@@ -202,6 +229,9 @@ fn assert_m02_advice(rule_id: &str, report: &AnalysisReport) {
     }
 }
 
+/// Writes a `.gruff-rs.yaml` into `root` that declares `SCHEMA_VERSION` and enables the rule `rule_id`.
+///
+/// Replaces any existing config there; panics when the write fails.
 fn write_calibration_config(root: &Path, rule_id: &str) {
     fs::write(
         root.join(".gruff-rs.yaml"),
@@ -216,6 +246,9 @@ mod limit_band_guards;
 mod security_size_test_waste_cases;
 mod structural_project_cases;
 
+/// Combines the case lists of the calibration case modules into one list for the rule-calibration matrix.
+///
+/// Returns the cases in module order, starting with `structural_project_cases` and ending with `cases_pillar_expansion`.
 pub(crate) fn calibration_cases() -> Vec<CalibrationCase> {
     let mut cases = structural_project_cases::cases();
     cases.extend(documentation_error_idiom_cases::cases());

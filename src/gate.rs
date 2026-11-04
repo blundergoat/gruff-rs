@@ -46,8 +46,12 @@ pub(crate) struct GateEvaluation {
 
 impl Gate {
     /// Evaluate the gate against a report's severity counts. Pure: depends only on
-    /// the summary and the configured caps, so the same inputs always classify the
+    /// the summary, the configured caps and `on_match`, so the same inputs always classify the
     /// same way (Kill Criteria: no coupling to score or a separate runtime mode).
+    ///
+    /// `summary` supplies the error, warning, advisory and total counts, each compared against its cap; an unset cap never breaches.
+    /// Returns a `GateEvaluation` whose `fails` is true only when some count exceeds its cap and `on_match` is `GateOnMatch::Fail`.
+    /// Its message names the decision `pass`, `trip` or `warn` and lists every dimension with its count and any cap.
     pub(crate) fn evaluate(&self, summary: &Summary) -> GateEvaluation {
         let dimensions = [
             ("error", summary.error as u64, self.error),
@@ -77,6 +81,9 @@ impl Gate {
     /// This is the report-aware wrapper around the pure `evaluate`; the exit-code
     /// path (`RunOutcome::classify`) and the diagnostic both go through it so the
     /// scope choice is applied once, consistently.
+    ///
+    /// `report` supplies the summary that `gated_summary` picks for this gate's `scope`.
+    /// Returns the `GateEvaluation` that `evaluate` gives for that summary.
     pub(crate) fn evaluate_report(&self, report: &AnalysisReport) -> GateEvaluation {
         self.evaluate(self.gated_summary(report))
     }
@@ -84,6 +91,9 @@ impl Gate {
     /// The severity summary this gate counts. `All` uses the pre-baseline summary
     /// (falling back to the report summary when none was captured); `Current` and
     /// `New` use the report summary (new-only when a baseline is applied).
+    ///
+    /// `report` is the analysed report whose summaries are read, never copied.
+    /// Returns a reference into `report`: `all_findings_summary` for `All` when it is present, otherwise `summary`.
     fn gated_summary<'a>(&self, report: &'a AnalysisReport) -> &'a Summary {
         match self.scope {
             GateScope::All => report
@@ -98,6 +108,9 @@ impl Gate {
     /// `scope: new` (or `--fail-on-new`) with no applied baseline, where "new" is
     /// undefined. The caller turns this into a fatal config-error diagnostic (exit
     /// 2) rather than silently treating every finding as new.
+    ///
+    /// `report` is checked for an applied baseline; a baseline this run only generated does not count.
+    /// Returns `None` for `Current` and `All`, and for `New` once a baseline is applied; otherwise `Some` holds a message with three fixes.
     pub(crate) fn scope_precondition_error(&self, report: &AnalysisReport) -> Option<String> {
         (self.scope == GateScope::New && !is_baseline_applied(report)).then(|| {
             "`gate.scope: new` (and `--fail-on-new`) needs a baseline to define what is \
@@ -111,6 +124,9 @@ impl Gate {
     /// gated scope, plus the baseline new/unchanged counts (debt visibility) when a
     /// baseline is applied. Pushed onto the report so the decision renders without
     /// forcing a config-error exit.
+    ///
+    /// `report` supplies the gated summary and, when a baseline was applied rather than generated, its new and unchanged counts.
+    /// Returns a `RunDiagnostic` of type `gate` with no file, line or `invalidates_run` value, which `is_failure` never counts as a failure.
     pub(crate) fn diagnostic(&self, report: &AnalysisReport) -> RunDiagnostic {
         let base = self.evaluate_report(report).message;
         let message = match report
@@ -135,7 +151,10 @@ impl Gate {
 }
 
 /// Whether a baseline was *applied* for comparison (not merely generated). Drives
-/// the `scope: new` precondition and the diagnostic's debt-count suffix.
+/// the `scope: new` precondition; `diagnostic` repeats the same test inline for its debt-count suffix.
+///
+/// `report` is the analysed report whose `baseline` section is inspected.
+/// Returns `true` when `report.baseline` is present and its `generated` flag is false, and `false` when it is absent or generated.
 fn is_baseline_applied(report: &AnalysisReport) -> bool {
     report
         .baseline

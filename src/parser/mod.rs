@@ -7,10 +7,18 @@ pub(crate) use comments::{
     extract_rust_comments, strip_rust_comments_after_string_mask, RustComment,
 };
 
+/// Compile a fixed regex once and hand back the cached copy on every later call.
+///
+/// `lock` is the static cell that caches the compiled regex, and `pattern` is compiled only when `lock` is still empty.
+/// Returns the cached regex; it panics through `expect` if `pattern` fails to compile.
 pub(crate) fn static_regex(lock: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     lock.get_or_init(|| Regex::new(pattern).expect("static regex compiles"))
 }
 
+/// List the byte offset at which each line of a source text starts.
+///
+/// `source` is the text to scan; the byte after each newline begins a new line.
+/// Returns the offsets in order, always starting with 0; a trailing newline adds an offset equal to the length of `source`.
 pub(crate) fn line_starts(source: &str) -> Vec<usize> {
     let mut starts = vec![0];
     for (index, byte) in source.bytes().enumerate() {
@@ -21,10 +29,21 @@ pub(crate) fn line_starts(source: &str) -> Vec<usize> {
     starts
 }
 
+/// Translate a byte offset into a 1-based line number.
+///
+/// `line_starts` is the sorted offset list the `line_starts` function builds, and `byte_index` is the offset to locate.
+/// Returns the number of line starts at or before `byte_index`, which is that offset's 1-based line.
 pub(crate) fn byte_line_from_starts(line_starts: &[usize], byte_index: usize) -> usize {
     line_starts.partition_point(|line_start| *line_start <= byte_index)
 }
 
+/// Blank out Rust double-quoted strings, raw strings and recognised char literals, delimiters included, leaving code and comments in place.
+///
+/// `source` is Rust source text; comments are copied through unchanged so a quote inside one does not start a literal.
+/// Returns text of the same byte length in which each masked byte becomes a space, except newlines, which are kept.
+///
+/// A char literal that `char_literal_end` rejects, such as one holding a multi-byte character, is not skipped as one span:
+/// scanning resumes after its opening quote, so its closing quote can open a wrongly recognised literal that is then masked.
 pub(crate) fn strip_rust_string_literals(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut output = String::with_capacity(source.len());
@@ -60,6 +79,10 @@ pub(crate) fn strip_rust_string_literals(source: &str) -> String {
     output
 }
 
+/// Copy the character that starts at a byte offset into the output unchanged.
+///
+/// `source` is the text being masked, `index` the byte offset of the character, and `output` the masked text that gains it.
+/// Returns the byte offset just past that character; it panics if `index` is not a character boundary inside `source`.
 pub(crate) fn push_original_char(source: &str, index: usize, output: &mut String) -> usize {
     let character = source[index..]
         .chars()
@@ -69,6 +92,10 @@ pub(crate) fn push_original_char(source: &str, index: usize, output: &mut String
     index + character.len_utf8()
 }
 
+/// Build the text searched for identifier references: the source with strings and comments blanked, plus selected serde attribute paths.
+///
+/// `source` is the Rust file text.
+/// Returns the masked source followed by a space and the path for each serde reference that `append_serde_default_references` keeps.
 pub(crate) fn rust_code_reference_source(source: &str) -> String {
     let masked_source = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
     let mut reference_source = String::with_capacity(masked_source.len() + 64);
@@ -77,8 +104,11 @@ pub(crate) fn rust_code_reference_source(source: &str) -> String {
     reference_source
 }
 
-/// Source with every comment blanked and string literals kept, so a serde attribute quoted in a comment or a
-/// doc example is not read as a reference. The two maskers keep byte offsets, so they differ only on comments.
+/// Source with every comment blanked and string literals kept, so a serde attribute quoted in a comment or a doc example is not read as a reference.
+///
+/// The two maskers keep byte offsets, so they differ only on comments.
+///
+/// Returns the rebuilt text; each blanked comment character becomes one space, so a multi-byte character in a comment shortens it.
 fn source_without_comments(source: &str) -> String {
     let string_masked = strip_rust_string_literals(source);
     let code_only = comments::strip_rust_comments_after_string_mask(&string_masked);
@@ -94,9 +124,12 @@ fn source_without_comments(source: &str) -> String {
         .collect()
 }
 
-/// Append the fn names that serde attributes, including those applied through `cfg_attr`, call by string.
-/// A path whose first segment is a type or `std`, `core` or `alloc`, such as `Option::is_none`, names
-/// another crate's item and is skipped, so it cannot stand in for a same-named private fn here.
+/// Append the fn and module paths that serde attributes, including those applied through `cfg_attr`, name by string.
+///
+/// A path with `::` is skipped when its first segment is `std`, `core` or `alloc`, or is not `Self` and starts with an ASCII uppercase letter,
+/// as in `Option::is_none`, so it cannot stand in for a same-named private fn here.
+///
+/// `source` is the text to scan, passed with comments blanked, and `output` gains a space then the path for each kept reference.
 fn append_serde_default_references(source: &str, output: &mut String) {
     static SERDE_ATTRIBUTE_REGEX: OnceLock<Regex> = OnceLock::new();
     static DEFAULT_REFERENCE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -132,10 +165,11 @@ fn append_serde_default_references(source: &str, output: &mut String) {
     }
 }
 
-/// Masks a `"..."` Rust string literal starting at the opening quote at
-/// `start`. Handles backslash escapes so `\"` does not terminate the
-/// string. Returns the byte index just past the closing quote (or
-/// `bytes.len()` if the source is malformed and the quote is unclosed).
+/// Masks a `"..."` Rust string literal starting at the opening quote at `start`.
+///
+/// Handles backslash escapes so `\"` does not terminate the string.
+/// Returns the byte index just past the closing quote (or `bytes.len()` if the source is malformed and the quote is unclosed).
+/// `bytes` is the source being masked; `output` gains a space for each byte from the opening quote through the closing one, newlines kept.
 fn mask_double_quoted_string(bytes: &[u8], start: usize, output: &mut String) -> usize {
     output.push(' ');
     let mut index = start + 1;
@@ -155,11 +189,11 @@ fn mask_double_quoted_string(bytes: &[u8], start: usize, output: &mut String) ->
     index
 }
 
-/// Returns the byte index just past a Rust character literal that starts at
-/// `start`. Recognises `'X'`, escape sequences (`'\n'`, `'\''`), byte escapes
-/// (`'\x41'`), and unicode escapes (`'\u{0041}'`). Returns `None` for
-/// lifetimes (`'a`, `'static`) and any other shape, so the masker leaves
-/// them alone.
+/// Returns the byte index just past a Rust character literal that starts at `start`.
+///
+/// Recognises `'X'`, escape sequences (`'\n'`, `'\''`), byte escapes (`'\x41'`), and unicode escapes (`'\u{0041}'`).
+/// Returns `None` for lifetimes (`'a`, `'static`) and any other shape, so the masker copies this quote and scans on from the next character.
+/// `bytes` is the source being scanned; a literal holding a multi-byte character is one of those other shapes and also gets `None`.
 pub(crate) fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     if bytes.get(start).copied()? != b'\'' {
         return None;
@@ -168,10 +202,15 @@ pub(crate) fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     (bytes.get(cursor).copied()? == b'\'').then_some(cursor + 1)
 }
 
-/// Advances past the character payload between the opening and closing
-/// quotes of a char literal. Handles escape sequences (`\n`, `\x41`,
-/// `\u{0041}`, etc.) plus plain single-byte chars. `start` is the literal's
-/// opening-quote index, kept around for unicode-escape sanity bounds.
+/// Advances past the character payload between the opening and closing quotes of a char literal.
+///
+/// Handles escape sequences (`\n`, `\x41`, `\u{0041}`, etc.) plus plain single-byte chars.
+/// `bytes` is the source being scanned and `cursor` the index just after the opening quote.
+/// `start` is the literal's opening-quote index, kept around for unicode-escape sanity bounds.
+///
+/// Returns the index just past the payload, where the closing quote should sit; the caller checks that it does.
+/// Returns None when the source ends before the payload or its escape letter, or a `\u` escape lacks its opening brace or runs too long.
+/// A `\x` escape is assumed to span two more bytes, without checking that they exist or are hex digits.
 fn char_literal_body_end(bytes: &[u8], cursor: usize, start: usize) -> Option<usize> {
     if bytes.get(cursor).copied()? != b'\\' {
         return Some(cursor + 1);
@@ -185,8 +224,11 @@ fn char_literal_body_end(bytes: &[u8], cursor: usize, start: usize) -> Option<us
     }
 }
 
-/// Advances past a `\u{XXXX}` unicode escape. `cursor` is the byte after
-/// the `\u`; on success, returns the byte after the closing brace.
+/// Advances past a `\u{XXXX}` unicode escape.
+///
+/// `cursor` is the byte after the `\u`; on success, returns the byte after the closing brace.
+/// `bytes` is the source being scanned and `start` the char literal's opening-quote index, which bounds how far the escape may run.
+/// Returns None when `cursor` is not on `{`, the source ends first, or the closing brace lies more than 12 bytes past `start`.
 fn unicode_escape_end(bytes: &[u8], cursor: usize, start: usize) -> Option<usize> {
     if bytes.get(cursor).copied()? != b'{' {
         return None;
@@ -201,11 +243,20 @@ fn unicode_escape_end(bytes: &[u8], cursor: usize, start: usize) -> Option<usize
     Some(walk + 1)
 }
 
+/// Find the end of a raw string literal whose `r` sits at a given offset.
+///
+/// `bytes` is the source being scanned and `start` the offset that must hold the `r` of `r"..."` or `r#"..."#`.
+/// Returns the index just past the closing quote and its matching hashes, or `bytes.len()` when the literal never closes.
+/// Returns None when no raw string opens at `start`.
 pub(crate) fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     let (hashes, cursor) = raw_string_opening(bytes, start)?;
     find_raw_string_end(bytes, hashes, cursor).or(Some(bytes.len()))
 }
 
+/// Recognise the opening of a raw string literal at a given offset.
+///
+/// `bytes` is the source being scanned and `start` the offset that must hold `r`, followed by any number of `#` and then a quote.
+/// Returns the hash count and the index just past the opening quote, or None when that shape is not there.
 pub(crate) fn raw_string_opening(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     (bytes.get(start).copied()? == b'r').then_some(())?;
     let mut cursor = start + 1;
@@ -213,6 +264,10 @@ pub(crate) fn raw_string_opening(bytes: &[u8], start: usize) -> Option<(usize, u
     (bytes.get(cursor) == Some(&b'"')).then_some((hashes, cursor + 1))
 }
 
+/// Count the run of `#` bytes at the cursor of a raw string opening.
+///
+/// `bytes` is the source being scanned, and `cursor` is advanced past every `#` it counts so the caller reads where the run stopped.
+/// Returns the number of `#` bytes, 0 when `cursor` is not on one.
 pub(crate) fn count_raw_string_hashes(bytes: &[u8], cursor: &mut usize) -> usize {
     let mut hashes = 0usize;
     while bytes.get(*cursor) == Some(&b'#') {
@@ -222,6 +277,10 @@ pub(crate) fn count_raw_string_hashes(bytes: &[u8], cursor: &mut usize) -> usize
     hashes
 }
 
+/// Search for the closing delimiter of a raw string literal.
+///
+/// `bytes` is the source being scanned, `hashes` the number of `#` the opening used, and `cursor` the index to start searching from.
+/// Returns the index just past the first quote followed by `hashes` hash bytes, or None when the source ends first.
 pub(crate) fn find_raw_string_end(bytes: &[u8], hashes: usize, mut cursor: usize) -> Option<usize> {
     while cursor < bytes.len() {
         if bytes[cursor] == b'"' && has_raw_string_hashes_at(bytes, cursor + 1, hashes) {
@@ -232,18 +291,29 @@ pub(crate) fn find_raw_string_end(bytes: &[u8], hashes: usize, mut cursor: usize
     None
 }
 
+/// Check whether enough hash bytes to close a raw string follow a quote.
+///
+/// `bytes` is the source being scanned, `start` the offset just after the quote, and `hashes` how many `#` must follow.
+/// Returns true when the `hashes` bytes from `start` lie within `bytes` and are all `#`, including an empty range, and false otherwise.
 pub(crate) fn has_raw_string_hashes_at(bytes: &[u8], start: usize, hashes: usize) -> bool {
     bytes
         .get(start..start + hashes)
         .is_some_and(|slice| slice.iter().all(|byte| *byte == b'#'))
 }
 
+/// Mask a byte range of the source into the output.
+///
+/// `bytes` is the source being masked, `start` and `end` bound the half-open range, and `output` gains one space per byte, newlines kept.
+/// It panics if the range is out of order or runs past the end of `bytes`.
 pub(crate) fn mask_bytes(bytes: &[u8], start: usize, end: usize, output: &mut String) {
     for byte in &bytes[start..end] {
         mask_byte(*byte, output);
     }
 }
 
+/// Mask one source byte, keeping line breaks so masked text stays line-aligned.
+///
+/// `output` gains a newline when `byte` is a newline and a space otherwise.
 pub(crate) fn mask_byte(byte: u8, output: &mut String) {
     if byte == b'\n' {
         output.push('\n');

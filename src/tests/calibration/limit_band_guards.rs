@@ -11,6 +11,9 @@ use crate::built_in_rules::{
 
 /// Analyse one library source with default settings, plus complexity.cyclomatic, which is off by default, turned on, and
 /// return its findings for one rule.
+///
+/// `lib` is the library source the fresh temporary project is built with, and `rule_id` is the one rule id whose findings are kept.
+/// Returns that rule's findings in report order, empty when it reports nothing; panics if the temporary project cannot be made or the analysis fails.
 fn rule_findings(lib: &str, rule_id: &str) -> Vec<Finding> {
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), lib);
@@ -35,6 +38,9 @@ fn rule_findings(lib: &str, rule_id: &str) -> Vec<Finding> {
 }
 
 /// A documented function with the given number of straight-line statements in its body.
+///
+/// `statements` is how many `let` statements the body holds, each binding its own index to its own variable.
+/// Returns the source of a doc-commented `pub fn probe()` with that body, ending in a newline.
 fn function_of_lines(statements: usize) -> String {
     let mut source = String::from("/// Probe.\npub fn probe() {\n");
     for index in 0..statements {
@@ -45,12 +51,19 @@ fn function_of_lines(statements: usize) -> String {
 }
 
 /// A documented function taking the given number of parameters.
+///
+/// `count` is how many `u8` parameters the function takes, named `p0` upward.
+/// Returns the source of a doc-commented `pub fn probe` with those parameters and an empty body.
 fn function_with_parameters(count: usize) -> String {
     let params: Vec<String> = (0..count).map(|index| format!("p{index}: u8")).collect();
     format!("/// Probe.\npub fn probe({}) {{}}\n", params.join(", "))
 }
 
 /// A documented function of flat `if` statements that do work, so each adds one decision and one cognitive point.
+///
+/// `count` is how many `if` statements the body holds.
+/// Each compares the generated function's `flag` with its index and adds that index to a running total.
+/// Returns the source of a doc-commented `pub fn probe(flag: u32) -> u32` that returns that total.
 fn function_with_branches(count: usize) -> String {
     let mut source =
         String::from("/// Probe.\npub fn probe(flag: u32) -> u32 {\n    let mut total = 0;\n");
@@ -64,6 +77,9 @@ fn function_with_branches(count: usize) -> String {
 }
 
 /// A documented function whose `if` statements nest the given number of levels.
+///
+/// `depth` is how many `if flag` blocks nest around the innermost `return 1;`, and zero leaves no `if` at all.
+/// Returns the source of a doc-commented `pub fn probe(flag: bool) -> u32` whose final expression is `0`.
 fn function_nested_to(depth: usize) -> String {
     let mut source = String::from("/// Probe.\npub fn probe(flag: bool) -> u32 {\n");
     for _ in 0..depth {
@@ -78,6 +94,9 @@ fn function_nested_to(depth: usize) -> String {
 }
 
 /// A file of the given number of one-line functions under a module doc comment.
+///
+/// `count` is how many empty, undocumented functions follow the `//! Probe.` line, named `item_0` upward, one per line.
+/// Returns the file source, which is `count` plus one lines long.
 fn file_of_lines(count: usize) -> String {
     let mut source = String::from("//! Probe.\n");
     for index in 0..count {

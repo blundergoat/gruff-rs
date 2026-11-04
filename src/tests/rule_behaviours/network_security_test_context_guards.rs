@@ -47,6 +47,9 @@ const SEMANTIC_NEGATIVE_SOURCE: &str = concat!(
 );
 
 /// Write one analyzer input at the production, test, or fixture path under review.
+///
+/// `root` is the project directory, `relative_path` is joined onto it to place the file, and `source` is the text written there.
+/// Creates missing parent directories first and panics if the path has no parent or either filesystem call fails.
 fn write_policy_source(root: &Path, relative_path: &str, source: &str) {
     let source_path = root.join(relative_path);
     let parent = source_path
@@ -57,6 +60,9 @@ fn write_policy_source(root: &Path, relative_path: &str, source: &str) {
 }
 
 /// Return sorted finding paths for one rule so path-policy failures are explicit.
+///
+/// `report` is the analysed report and `rule_id` selects the rule whose findings are kept.
+/// Returns the borrowed file path of each matching finding, sorted, with duplicates kept; empty when none match.
 fn finding_paths_for_rule<'a>(report: &'a AnalysisReport, rule_id: &str) -> Vec<&'a str> {
     // Only the selected detector contributes paths to the policy assertion the user reviews.
     let mut finding_paths: Vec<&str> = report

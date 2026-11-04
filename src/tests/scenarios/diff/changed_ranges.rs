@@ -25,6 +25,9 @@ pub fn beta(seed: u32) -> u32 {
 }
 ";
 
+/// Create a temporary project holding a README and a `sample.rs` written from `UNDOCUMENTED_FUNCTIONS_FIXTURE`.
+///
+/// Returns the `TempDir` guard, which deletes the project when dropped; it panics if the directory or either file cannot be written.
 fn undocumented_functions_project() -> tempfile::TempDir {
     let dir = tempdir().expect("tempdir");
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
@@ -32,6 +35,9 @@ fn undocumented_functions_project() -> tempfile::TempDir {
     dir
 }
 
+/// Build analysis options that scan only `sample.rs` with config and baseline loading turned off.
+///
+/// Returns those options over `default_test_options`, the full-file run that changed-region results are compared against.
 fn full_file_options() -> AnalysisOptions {
     AnalysisOptions {
         paths: vec![PathBuf::from("sample.rs")],
@@ -41,6 +47,10 @@ fn full_file_options() -> AnalysisOptions {
     }
 }
 
+/// Build the full-file options with an explicit changed-range diff selection, so the run reports only the changed region.
+///
+/// `ranges` is the range text, such as `4-4`, and `scope` chooses whether a change keeps only its hunk or widens to the enclosing symbol.
+/// Returns `full_file_options` with `diff` set to `DiffSelection::ExplicitRanges` holding those two values.
 fn changed_region_options(ranges: &str, scope: ChangedScope) -> AnalysisOptions {
     AnalysisOptions {
         diff: Some(DiffSelection::ExplicitRanges {

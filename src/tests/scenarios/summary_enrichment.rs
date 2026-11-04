@@ -3,9 +3,14 @@ use serde_json::Value;
 use std::fs;
 use tempfile::tempdir;
 
-/// Build a synthetic project with enough Rust source to push findings past
-/// the 50-finding hint threshold. Each `fn x{n}` triggers
-/// `docs.missing-public-doc` and `dead-code.unused-private-item-candidate`.
+/// Writes a fixture file of undocumented empty public functions so scenario tests can control how many findings an analysis run reports.
+///
+/// `dir` is the directory that receives the fixture, written as `src.rs` and overwriting any existing file of that name.
+/// `function_count` is how many `pub fn item_{n}() {}` lines to write, numbered from 1 and each without a doc comment.
+/// Callers pass 60 to get at least 50 findings for the volume hint and 10 to stay below that threshold.
+///
+/// Returns the path of the written file, which is `dir` joined with `src.rs`.
+/// Panics if the file cannot be written.
 fn project_with_many_findings(dir: &Path, function_count: usize) -> PathBuf {
     let mut body = String::new();
     for index in 1..=function_count {

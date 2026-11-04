@@ -83,6 +83,9 @@ pub(crate) struct RuleRegistry {
 impl RuleRegistry {
     /// Build a sorted registry for scan and rule-detail consumers.
     /// Reject IDs or relationships that the resulting catalogue cannot serve.
+    ///
+    /// `definitions` holds the rule definitions to serve, in any order; the registry stores them sorted by rule id.
+    /// Returns the registry, or `Err` naming the id that uses the reserved `custom.` namespace, repeats, or lists an unknown related rule.
     pub(crate) fn new(mut definitions: Vec<RuleDefinition>) -> Result<Self, String> {
         definitions.sort_by(|left, right| left.id.cmp(right.id));
         let mut seen = BTreeSet::new();
@@ -126,6 +129,9 @@ impl RuleRegistry {
     }
 
     /// Look up a rule definition by stable rule id.
+    ///
+    /// `rule_id` is the exact id to find, matched by binary search over the definitions sorted in `new`.
+    /// Returns the matching definition, or `None` when no rule in the registry has that id.
     pub(crate) fn get(&self, rule_id: &str) -> Option<&RuleDefinition> {
         self.definitions
             .binary_search_by(|definition| definition.id.cmp(rule_id))
@@ -134,11 +140,17 @@ impl RuleRegistry {
     }
 
     /// Return whether the registry contains a rule id.
+    ///
+    /// `rule_id` is the exact rule id to look up, using the same binary search as `get`.
+    /// Returns `true` when the registry has a definition for that id, otherwise `false`.
     pub(crate) fn contains(&self, rule_id: &str) -> bool {
         self.get(rule_id).is_some()
     }
 
     /// Look up the declared value kind for a rule's option, if any.
+    ///
+    /// `rule_id` selects the rule and `option` is the option name to match among that rule's declared options.
+    /// Returns the option's `OptionValueKind`, or `None` when the rule is unknown or declares no option by that name.
     pub(crate) fn option_value_kind(&self, rule_id: &str, option: &str) -> Option<OptionValueKind> {
         self.get(rule_id).and_then(|definition| {
             definition
@@ -151,6 +163,9 @@ impl RuleRegistry {
 }
 
 /// Build the static registry of rules shipped with this binary.
+///
+/// Returns a new owned `RuleRegistry` holding every built-in definition sorted by rule id.
+/// Panics when the built-in definitions fail `RuleRegistry::new` validation, a catalogue defect rather than a user input error.
 pub(crate) fn builtin_registry() -> RuleRegistry {
     match RuleRegistry::new(builtin_definitions()) {
         Ok(registry) => registry,
@@ -166,6 +181,8 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
 /// every `--no-config` scan. Building the registry sorts and validates every
 /// definition, so rebuilding it per call is wasted work; callers that need an
 /// owned registry keep using [`builtin_registry`].
+///
+/// Returns the process-wide built-in `RuleRegistry`, built by `builtin_registry` on the first call and reused by every later call.
 pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
     static REGISTRY: OnceLock<RuleRegistry> = OnceLock::new();
     REGISTRY.get_or_init(builtin_registry)
@@ -175,6 +192,9 @@ pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
 /// instead of repeating the number, because `list-rules` and the config that
 /// `init` generates render the catalogue: a second literal can disagree with the
 /// shipped default and silently change what a scan reports.
+///
+/// `rule_id` is the built-in rule whose declared threshold default is read from the cached catalogue.
+/// Returns that default; panics when the catalogue has no such rule or the rule declares no threshold.
 pub(crate) fn builtin_threshold(rule_id: &str) -> f64 {
     match builtin_registry_cached()
         .get(rule_id)
@@ -189,6 +209,9 @@ pub(crate) fn builtin_threshold(rule_id: &str) -> f64 {
 
 /// Catalogue default severity for a configurable rule, kept single-sourced for
 /// the same reason as [`builtin_threshold`].
+///
+/// `rule_id` is the built-in rule whose default severity is read from the cached catalogue.
+/// Returns that `Severity`; panics when the catalogue does not ship a rule with that id.
 pub(crate) fn builtin_severity(rule_id: &str) -> Severity {
     match builtin_registry_cached().get(rule_id) {
         Some(definition) => definition.default_severity,
@@ -241,6 +264,9 @@ const DETECTOR_PARAMETERS: &[(&str, &[DetectorParameter])] = &[(
 )];
 
 /// Named detector parameters a rule declares; empty for every rubric and every other rule.
+///
+/// `rule_id` is matched exactly against the rule ids in `DETECTOR_PARAMETERS`.
+/// Returns that rule's static parameter list, or an empty slice when the table has no entry for it.
 pub(crate) fn detector_parameters(rule_id: &str) -> &'static [DetectorParameter] {
     DETECTOR_PARAMETERS
         .iter()
@@ -250,6 +276,9 @@ pub(crate) fn detector_parameters(rule_id: &str) -> &'static [DetectorParameter]
 }
 
 /// Catalogue default for one named detector parameter, single-sourced like [`builtin_threshold`].
+///
+/// `rule_id` selects the rule's declared parameters and `name` is the parameter to read, such as `minLength` or `entropy`.
+/// Returns that parameter's default; panics when the rule declares no parameter with that name, including an unknown `rule_id`.
 pub(crate) fn builtin_detector_parameter(rule_id: &str, name: &str) -> f64 {
     match detector_parameters(rule_id)
         .iter()
@@ -374,6 +403,9 @@ use structure_docs_reliability_definitions::{
 };
 use waste_definitions::WASTE_RULES;
 
+/// Concatenate the per-area built-in rule tables into one list, in table order, for `RuleRegistry::new` to sort and validate.
+///
+/// Returns every built-in definition in table order, unsorted and not yet checked for duplicate or reserved ids.
 fn builtin_definitions() -> Vec<RuleDefinition> {
     [
         ARCHITECTURE_RULES,
@@ -396,6 +428,9 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
     .collect()
 }
 
+/// Build a `ThresholdDefinition` in const context so each rule's threshold constant states only its default number.
+///
+/// Returns a threshold whose `default` field holds the given `default` value.
 const fn threshold(default: f64) -> ThresholdDefinition {
     ThresholdDefinition { default }
 }

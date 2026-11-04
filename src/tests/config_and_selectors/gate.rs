@@ -1,5 +1,9 @@
 use super::*;
 
+/// Builds a report `Summary` from per-severity counts so the gate tests can state exactly what a gate evaluates.
+///
+/// `advisory`, `warning` and `error` become the matching severity counts.
+/// Returns that `Summary` with `total` set to the sum of the three counts; panics if the sum overflows `usize` when overflow checks are enabled.
 fn summary(advisory: usize, warning: usize, error: usize) -> Summary {
     Summary {
         advisory,
@@ -160,6 +164,10 @@ pub(crate) fn gate_block_parses_strictly() {
     assert!(err.contains("gate.scope"), "{err}");
 }
 
+/// Builds a stand-in `BaselineReport` for the gate-scope test, leaving only the `generated` flag to the caller.
+///
+/// `generated` fills the report's `generated` flag; the test passes `true` for a generated baseline and `false` for an applied one.
+/// Returns a report for `gruff-baseline.json` with source `explicit` and every count, including `entries`, at zero.
 fn test_baseline_report(generated: bool) -> BaselineReport {
     BaselineReport {
         path: "gruff-baseline.json".to_string(),

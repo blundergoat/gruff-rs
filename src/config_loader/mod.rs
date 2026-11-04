@@ -30,6 +30,9 @@ pub(crate) const LEGACY_SECRET_PREVIEWS_ERROR: &str =
 
 /// Load the resolved config used by one analysis command.
 /// An absent config path falls back to project discovery, while `--no-config` keeps safe defaults.
+///
+/// `project_root` is where a default config file is looked up, and `options` supplies the explicit config path and the `--no-config` flag.
+/// Returns the default config with any found file's sections applied, or Err when the file cannot be read, parsed or validated.
 pub(crate) fn load_config(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -39,6 +42,12 @@ pub(crate) fn load_config(
 
 /// Load config from an explicit path or project default for both analysing and support commands.
 /// This keeps `check-ignore` explanations consistent with the settings users see in `analyse`.
+///
+/// `project_root` is searched for a default config file when `config_path`, an explicit user path, is None.
+/// `no_config` set to true returns the defaults without looking for any file.
+///
+/// Returns the defaults with the file's sections applied, or the plain defaults when no path is given and no default file exists.
+/// Err carries the message for a config file that cannot be read, parsed or validated.
 pub(crate) fn load_config_for(
     project_root: &Path,
     config_path: Option<&Path>,
@@ -60,6 +69,10 @@ pub(crate) fn load_config_for(
 
 /// Read and parse the explicit config file or the first supported project default.
 /// `None` means no config file exists; read errors explain practical issues such as a deleted or unreadable selected file.
+///
+/// `project_root` is searched for a default file when `config` is None; an explicit `config` path is resolved against the current directory.
+/// Returns the resolved path with its parsed value, or None when no path was given and no default file exists.
+/// Err also covers a current directory that cannot be resolved, invalid YAML and a retired `json` config extension.
 pub(crate) fn read_config_value(
     project_root: &Path,
     config: Option<&Path>,
@@ -118,6 +131,9 @@ const CONFIG_SECTIONS: &[(&str, ConfigSectionHandler)] = &[
 /// Apply the paired deep-analysis limits after validating their public shape.
 /// Missing members retain the defaults while the diagnostic still records that
 /// the effective budget came from configuration.
+///
+/// `value` is the `deepScanBudget` section, and `config` has its budget replaced only when every member is valid.
+/// Returns Err when the section is not an object or has an unknown key, a non-boolean `enabled`, or a limit that is not a positive integer.
 pub(crate) fn apply_deep_scan_budget_section(
     value: &Value,
     config: &mut Config,
@@ -155,6 +171,10 @@ pub(crate) fn apply_deep_scan_budget_section(
     Ok(())
 }
 
+/// Read one optional deep-scan limit that must be a positive integer when present.
+///
+/// `value` is the configured member if present, `path` is its full config key for the error, and `default` is used when it is absent.
+/// Returns the limit, `default` when `value` is None, or Err when the value is zero, negative, not an integer or too large for `usize`.
 fn parse_positive_budget_limit(
     value: Option<&Value>,
     path: &str,
@@ -173,6 +193,9 @@ fn parse_positive_budget_limit(
 
 /// Validate a parsed config root and apply each present section to the command settings.
 /// Missing required schema or unknown keys stop the user's command before analysis begins.
+///
+/// `path` names the config file in error messages, `value` is its parsed root, and `config` takes each section in `CONFIG_SECTIONS` order.
+/// Returns Err when the root is not an object, has an unknown key or no `schemaVersion`, or a section fails; earlier sections stay applied.
 pub(crate) fn apply_config_value(
     path: &Path,
     value: &Value,
@@ -202,6 +225,9 @@ pub(crate) fn apply_config_value(
 }
 
 /// Validate the required config schema before any user setting can affect analysis.
+///
+/// `value` is the `schemaVersion` entry, and `config` records it once it equals `SCHEMA_VERSION`.
+/// Returns Err when the entry is not a string or names a different schema version.
 pub(crate) fn apply_schema_version_section(
     value: &Value,
     config: &mut Config,
@@ -221,6 +247,9 @@ pub(crate) fn apply_schema_version_section(
 
 /// Apply the optional finding-count gate that determines the user's command outcome.
 /// A null gate leaves gating disabled; an empty object uses unlimited caps and the registered behavior.
+///
+/// `value` is the `gate` section, and `config` gets the parsed gate unless the section is null.
+/// Returns Err with the message from `parse_gate` when a non-null section is malformed.
 pub(crate) fn apply_gate_section(value: &Value, config: &mut Config) -> Result<(), String> {
     // A YAML null means the user has not enabled a finding-count gate.
     if !value.is_null() {
@@ -231,6 +260,9 @@ pub(crate) fn apply_gate_section(value: &Value, config: &mut Config) -> Result<(
 
 /// Parse one gate object into total, severity, outcome, and changed-scope limits.
 /// Missing members retain the defaults users see when the gate section is empty.
+///
+/// `value` is the `gate` section, which must be an object whose keys are only `total`, `severity`, `onMatch` and `scope`.
+/// Returns the gate, or Err when the section is not an object, has an unknown key, or any member fails its own check.
 fn parse_gate(value: &Value) -> Result<Gate, String> {
     let mapping = value
         .as_object()
@@ -257,6 +289,9 @@ fn parse_gate(value: &Value) -> Result<Gate, String> {
 
 /// Apply optional per-severity finding caps within the user's gate.
 /// Missing caps remain unlimited and do not change the command outcome.
+///
+/// `value` is the `gate.severity` object, and `gate` has its `error`, `warning` and `advisory` caps overwritten from it.
+/// Returns Err when `value` is not an object, has another key, or holds a cap that is not a non-negative integer.
 fn apply_gate_severity(value: &Value, gate: &mut Gate) -> Result<(), String> {
     let mapping = value
         .as_object()
@@ -270,6 +305,9 @@ fn apply_gate_severity(value: &Value, gate: &mut Gate) -> Result<(), String> {
 
 /// Parse one non-negative gate cap using its full config path for user errors.
 /// `None` means the user left that count unlimited.
+///
+/// `mapping` is the object holding the cap, `key` is the member to read, and `path` is the full config key quoted in the error.
+/// Returns the cap, None when `key` is absent, or Err when the value is not a non-negative integer.
 fn parse_gate_count(
     mapping: &serde_json::Map<String, Value>,
     key: &str,
@@ -286,6 +324,9 @@ fn parse_gate_count(
 }
 
 /// Parse whether a matched gate fails the command or only warns the user.
+///
+/// `value` is the `gate.onMatch` entry.
+/// Returns `GateOnMatch::Fail` for `fail`, `GateOnMatch::Warn` for `warn`, or Err for any other value.
 fn parse_gate_on_match(value: &Value) -> Result<GateOnMatch, String> {
     match value.as_str() {
         Some("fail") => Ok(GateOnMatch::Fail),
@@ -296,6 +337,9 @@ fn parse_gate_on_match(value: &Value) -> Result<GateOnMatch, String> {
 
 /// Parse whether the gate counts new findings or every finding in the user's report.
 /// An absent key is handled earlier and preserves the historical current-report scope.
+///
+/// `value` is the `gate.scope` entry.
+/// Returns `GateScope::New` for `new`, `GateScope::All` for `all`, or Err for any other value.
 fn parse_gate_scope(value: &Value) -> Result<GateScope, String> {
     match value.as_str() {
         Some("new") => Ok(GateScope::New),
@@ -306,6 +350,10 @@ fn parse_gate_scope(value: &Value) -> Result<GateScope, String> {
 
 /// Apply per-command severity thresholds that control whether findings produce a failing exit code.
 /// A null section means the user wants no config override for any command.
+///
+/// `value` is the `failOn` section, and `config` gets one `minimum_severity` entry per command, replacing any earlier one.
+/// Returns Err when the section is neither null nor an object, or an entry fails `parse_minimum_severity_entry`.
+/// Entries applied before the failing one stay in `config`.
 pub(crate) fn apply_minimum_severity_section(
     value: &Value,
     config: &mut Config,
@@ -329,6 +377,9 @@ pub(crate) fn apply_minimum_severity_section(
 ///
 /// The map form is the whole reason this exists: it is valid YAML that used to gate a build, and reading it as a
 /// display floor would change what a committed configuration does without changing what it says.
+///
+/// `value` is the `minimumSeverity` entry, and `config` gets its `display_floor` from it; null leaves it unchanged.
+/// Returns Err for a map, a non-string, or a string that does not parse as a severity.
 fn apply_display_floor_section(value: &Value, config: &mut Config) -> Result<(), String> {
     // YAML null leaves the report showing everything it found.
     if value.is_null() {
@@ -352,6 +403,9 @@ fn apply_display_floor_section(value: &Value, config: &mut Config) -> Result<(),
 
 /// Parse one supported command threshold from user config.
 /// Unknown commands fail because they cannot change an exit code and would otherwise mislead the user.
+///
+/// `command` is the `failOn` key, which must be `analyse` or `report`, and `threshold_value` is its configured threshold.
+/// Returns the parsed threshold, or Err for another command, a non-string value, or a string that does not parse as a threshold.
 fn parse_minimum_severity_entry(
     command: &str,
     threshold_value: &Value,
@@ -375,6 +429,9 @@ fn parse_minimum_severity_entry(
 
 /// Apply user path ignores and compile them for discovery and `check-ignore` explanations.
 /// A missing ignore list leaves project discovery on its registered defaults.
+///
+/// `paths_value` is the `paths` section, and `config` has its ignored paths and their compiled matchers replaced when `ignore` is present.
+/// Returns Err when the section is not an object, has a key other than `ignore`, or `ignore` is not an array of strings.
 pub(crate) fn apply_paths_section(paths_value: &Value, config: &mut Config) -> Result<(), String> {
     let paths = paths_value
         .as_object()
@@ -388,8 +445,12 @@ pub(crate) fn apply_paths_section(paths_value: &Value, config: &mut Config) -> R
     Ok(())
 }
 
-/// Apply active naming allowlists and validate the retained empty preview key.
+/// Apply active naming allowlists and reject the removed `secretPreviews` key, even when its list is empty.
 /// Invalid shapes stop the user's command before any setting can hide a finding.
+///
+/// `allowlists_value` is the `allowlists` section.
+/// `config` has its accepted abbreviations replaced by `acceptedAbbreviations`, ASCII-lowercased, when that key is present.
+/// Returns Err for a non-object section, an unknown key, an abbreviation list that is not an array of strings, or any `secretPreviews` key.
 pub(crate) fn apply_allowlists_section(
     allowlists_value: &Value,
     config: &mut Config,
@@ -419,6 +480,10 @@ pub(crate) fn apply_allowlists_section(
 
 /// Apply selectors, custom settings, and per-rule overrides from the user's `rules` object.
 /// Missing entries retain registry defaults, while unknown or malformed entries fail before analysis.
+///
+/// `rules_value` is the `rules` section, read against the built-in registry and the custom rules already in `config`.
+/// `config` receives the selectors and per-rule settings; keys other than `select`, `ignore` and `custom` are treated as rule IDs.
+/// Returns Err when the section is not an object or a selector or rule setting is invalid; earlier settings stay in `config`.
 pub(crate) fn apply_rules_section(rules_value: &Value, config: &mut Config) -> Result<(), String> {
     let registry = rules::builtin_registry();
     let rules = rules_value
@@ -457,8 +522,11 @@ pub(crate) fn apply_rules_section(rules_value: &Value, config: &mut Config) -> R
     Ok(())
 }
 
-/// Parse, deduplicate, and order the custom rules users added to project config.
+/// Parse the custom rules users added to project config, reject duplicate IDs, and order them by ID.
 /// An empty list means no project-defined rules are added to the built-in catalogue.
+///
+/// `custom_rules_value` is the `custom_rules` list, and `config` gets the parsed list as its custom rules only when every entry is valid.
+/// Returns Err when the section is not an array, an entry fails `parse_custom_rule`, or two entries share an ID.
 pub(crate) fn apply_custom_rules_section(
     custom_rules_value: &Value,
     config: &mut Config,
@@ -489,6 +557,9 @@ pub(crate) fn apply_custom_rules_section(
 
 /// Find the first supported default config file in the user's project root.
 /// `None` means the project has not created Gruff config yet.
+///
+/// `project_root` is joined with each name in `DEFAULT_CONFIG_FILES`, in order, until the joined path exists.
+/// Returns the first existing path, or None when no default file is present.
 pub(crate) fn default_config_path(project_root: &Path) -> Option<PathBuf> {
     DEFAULT_CONFIG_FILES
         .iter()
@@ -498,6 +569,9 @@ pub(crate) fn default_config_path(project_root: &Path) -> Option<PathBuf> {
 
 /// Parse YAML config selected by the user and reject the retired JSON format with a migration hint.
 /// Syntax errors can occur after a user edits indentation, quotes, or list structure in the config UI or editor.
+///
+/// `path` picks the format by its extension and names the file in errors, and `raw` is the file text to parse.
+/// Returns the parsed value, or Err for invalid YAML or a `json` extension in any letter case; every other extension is read as YAML.
 pub(crate) fn parse_config_value(path: &Path, raw: &str) -> Result<Value, String> {
     match path
         .extension()
@@ -519,6 +593,9 @@ pub(crate) fn parse_config_value(path: &Path, raw: &str) -> Result<Value, String
 
 /// Confirm a rule exposes a numeric threshold before accepting the user's override.
 /// Rules without that option fail closed so config never promises an unsupported UI control.
+///
+/// `registry` is the rule catalogue to search, and `rule_id` is the rule ID from the user's config.
+/// Returns Ok when the rule has a numeric threshold, or Err when the ID is unknown or the rule has no threshold.
 pub(crate) fn ensure_rule_supports_threshold(
     registry: &rules::RuleRegistry,
     rule_id: &str,
@@ -538,6 +615,9 @@ pub(crate) fn ensure_rule_supports_threshold(
 
 /// Reject config fields this build cannot interpret in the named user-facing section.
 /// An empty object is valid when the section itself permits it.
+///
+/// `object` is the config mapping to check, `allowed` lists its accepted keys, and `context` names the section in the error.
+/// Returns Ok when every key is allowed, or Err naming the first unknown key found.
 pub(crate) fn reject_unknown_keys(
     object: &serde_json::Map<String, Value>,
     allowed: &[&str],
@@ -555,6 +635,9 @@ pub(crate) fn reject_unknown_keys(
 
 /// Parse a user config list whose entries must all be strings.
 /// An empty array is valid and means the user configured no values for that setting.
+///
+/// `value` is the config entry to read, and `path` is its full config key quoted in errors.
+/// Returns the strings in list order, or Err when `value` is not an array or an entry is not a string, naming that entry's index.
 pub(crate) fn string_array(value: &Value, path: &str) -> Result<Vec<String>, String> {
     let array = value
         .as_array()

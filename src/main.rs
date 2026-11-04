@@ -156,6 +156,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_BASELINE: &str = "gruff-baseline.json";
 const DEFAULT_CONFIG_FILES: &[&str] = &[".gruff-rs.yaml"];
 
+/// Parse the command line and dispatch to the chosen subcommand's runner.
+///
+/// The analyse, report, dashboard and summary commands call `init::prompt_for_command` before they run; the other commands start directly.
+///
+/// Returns the selected subcommand's exit code, which becomes the process exit status.
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let global = cli.global;
@@ -191,6 +196,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// Run the `analyse` subcommand from parsed flags through setup, analysis and report rendering.
+///
+/// `args` holds the parsed analyse flags, and `writer` is where the report or the failure envelope is written.
+/// `project_root`, the current directory if known, and `no_interaction` only feed `init::prompt_for_command`; setup finds the scanned root.
+///
+/// Returns exit code 2 when setup or analysis fails, otherwise the outcome's exit code from the findings, the fail threshold and the gate.
 fn run_analyse_command(
     args: AnalyseArgs,
     writer: OutputWriter,
@@ -243,6 +254,10 @@ fn run_analyse_command(
 ///
 /// A configuration the run could not load is a run that could not start, so a caller who asked for a machine format
 /// gets the same v3 envelope a missing scan target already produces rather than an empty stdout.
+///
+/// `base` holds the options parsed from the flags, `cli_fail_on` any command-line fail threshold, and `deep_scan_budget` any budget override.
+/// `fallback` is the copy of the parsed options that builds the failure envelope, which is written through `writer` when setup fails.
+/// Returns the resolved project root, options and config, or an Err holding exit code 2 after the failure is reported.
 #[allow(clippy::result_large_err)]
 fn analyse_setup(
     base: AnalysisOptions,
@@ -280,6 +295,9 @@ fn analyse_setup(
 ///
 /// Every other port publishes its v3 envelope here, carrying one run-invalidating diagnostic, so a consumer reading
 /// JSON learns what failed rather than reading nothing at all. A human-readable format keeps the stderr line alone.
+///
+/// `project_root`, `options`, `config` and the failure message `error` build the report, rendered under `scope` and handed to `writer`.
+/// Returns exit code 2 in every case; a format other than JSON or SARIF returns before any envelope is built.
 fn emit_failed_run_report(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -306,6 +324,10 @@ fn emit_failed_run_report(
 ///
 /// The order matters: the score and the exit code are decided by what actually ran, and only then does the
 /// presentation filter hide anything, which is what keeps a hidden finding counted.
+///
+/// `report` gains the gate diagnostic and exit code, then loses hidden findings; `options` gives the fail threshold, selectors and format.
+/// `config` gives the gate and display floor, `scope` and `duration_ms` go to the renderer, and `writer` emits the result.
+/// Returns the exit code the outcome classified before any finding was hidden.
 fn emit_analyse_report(
     report: &mut AnalysisReport,
     options: &AnalysisOptions,
@@ -324,6 +346,9 @@ fn emit_analyse_report(
 }
 
 /// Narrow the config to what this run executes, folding in `--fail-on-new` before the selectors.
+///
+/// `config` is the loaded config to narrow, `options` supplies the execution selectors, and `fail_on_new` says whether the flag was given.
+/// Returns the narrowed config, whose gate is first forced to new-findings scope when `fail_on_new` is true.
 fn analyse_run_config(mut config: Config, options: &AnalysisOptions, fail_on_new: bool) -> Config {
     if fail_on_new {
         apply_fail_on_new(&mut config);
@@ -335,6 +360,9 @@ fn analyse_run_config(mut config: Config, options: &AnalysisOptions, fail_on_new
 ///
 /// The score, the counts and the exit code are already decided by the time this runs, which is what makes these
 /// filters presentation: a hidden finding still counted.
+///
+/// `report` loses the excluded findings, `selectors` are the display flags, and `configured_floor` is the config's display floor, if any.
+/// A minimum severity in `selectors` overrides `configured_floor`; no filtering is attempted when neither requests a filter.
 fn apply_display_selectors(
     report: &mut AnalysisReport,
     selectors: &DisplaySelectors,
@@ -368,6 +396,13 @@ pub(crate) fn apply_fail_on_new(config: &mut Config) {
     }
 }
 
+/// Map the parsed `analyse` flags onto the analysis options, choosing at most one changed-region selection.
+///
+/// `args` is consumed for its paths, config, baseline, selector and changed-region flags, and `fail_on` becomes the options' fail threshold.
+/// A `diff` value of `-` selects a patch at path `-`, and any other `diff` value is a Git mode, as `since` is.
+/// Panics through `unreachable!` if `args` sets more than one changed-region flag, which clap normally prevents.
+///
+/// Returns the options, with `diff` set to None when no changed-region flag was given.
 fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOptions {
     let execution = execution_selectors_from(&args);
     let display = display_selectors_from(&args);
@@ -415,6 +450,9 @@ fn options_from_analyse(args: AnalyseArgs, fail_on: FailThreshold) -> AnalysisOp
 }
 
 /// Collect the four flags that decide which rules run, so the score moves with them.
+///
+/// `args` supplies the include and exclude rule and pillar flags, which are cloned.
+/// Returns the execution selectors holding those four lists unchanged.
 fn execution_selectors_from(args: &AnalyseArgs) -> ExecutionSelectors {
     ExecutionSelectors {
         include_rules: args.include_rule.clone(),
@@ -425,6 +463,9 @@ fn execution_selectors_from(args: &AnalyseArgs) -> ExecutionSelectors {
 }
 
 /// Collect the five flags that decide what the report shows, none of which changes execution or the score.
+///
+/// `args` supplies the minimum severity and the show and hide rule and pillar flags.
+/// Returns the display selectors holding those five values unchanged.
 fn display_selectors_from(args: &AnalyseArgs) -> DisplaySelectors {
     DisplaySelectors {
         min_severity: args.min_severity,
@@ -435,6 +476,11 @@ fn display_selectors_from(args: &AnalyseArgs) -> DisplaySelectors {
     }
 }
 
+/// Map the parsed `report` flags onto analysis options, leaving diff, history, baseline path and selectors unset.
+///
+/// `args` supplies the paths, config flags, `include_ignored`, `no_baseline` and the HTML or JSON format; `fail_on` becomes the fail threshold.
+///
+/// Returns the options for a report run, with HTML or JSON output matching the requested report format.
 fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOptions {
     let format = match args.format {
         ReportFormat::Html => OutputFormat::Html,
@@ -459,6 +505,12 @@ fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOpt
     }
 }
 
+/// Run the `report` subcommand: resolve setup, analyse the project and publish the HTML or JSON report.
+///
+/// `args` holds the report flags, including the output target, and `writer` is handed to `emit_report_output` with that target.
+/// Unlike `analyse`, a failed setup or analysis prints the error to stderr and publishes no envelope.
+///
+/// Returns exit code 2 when setup, analysis or writing an output file fails, otherwise the outcome's code from the report, threshold and gate.
 fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     let cli_fail_on = args.fail_on;
     let output = args.output.clone();
@@ -501,6 +553,12 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     }
 }
 
+/// Run the rule-listing subcommand from the current directory, writing the catalogue, one rule's detail or a selector's expansion.
+///
+/// `args` picks the format, the optional rule id or selector, and the config to read custom rules from.
+/// `writer` emits the body through `emit_unconditional`.
+///
+/// Returns success once the body is written, or exit code 2 after printing the error when the current directory or rendering fails.
 fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
     let project_root = match std::env::current_dir() {
         Ok(project_root) => project_root,
@@ -520,6 +578,11 @@ fn run_list_rules(args: ListRulesArgs, writer: OutputWriter) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Render the rule-listing body: one rule's detail when `args` names a rule id, else a selector's expansion, else the full catalogue.
+///
+/// `project_root` is where the config holding custom rules is loaded from, and `args` supplies the rule id, selector, format and config flags.
+///
+/// Returns the rendered text, or Err with the message when loading the config, rendering the rule detail or expanding the selector fails.
 fn render_rule_list(project_root: &Path, args: &ListRulesArgs) -> Result<String, String> {
     let registry = rules::builtin_registry();
     let config = list_rules_config(project_root, args)?;
@@ -538,6 +601,11 @@ fn render_rule_list(project_root: &Path, args: &ListRulesArgs) -> Result<String,
     Ok(format_listed_rules(&rules, args.format))
 }
 
+/// Expand a rule selector into the rule ids it names, for the rule listing's selector mode.
+///
+/// `selector` is expanded against the built-in `registry` and the configured `custom_rules`, and `format` picks a JSON array or one id per line.
+///
+/// Returns the formatted ids, or Err when `expand_rule_selector_with_custom` rejects the selector.
 fn render_selector_output(
     selector: &str,
     registry: &rules::RuleRegistry,
@@ -558,6 +626,11 @@ struct RuleListing<'a> {
     rules: &'a [ListedRule],
 }
 
+/// Format the rule catalogue as the family JSON envelope or as text, one entry per rule in the order given.
+///
+/// `rules` are the listed rules in order, and `format` chooses pretty JSON under a `rules` key or the text rendering.
+///
+/// Returns the formatted catalogue, which for an empty `rules` is an empty string or a JSON object with an empty array.
 fn format_listed_rules(rules: &[ListedRule], format: RuleListFormat) -> String {
     match format {
         RuleListFormat::Json => {
@@ -582,6 +655,10 @@ const LISTING_THRESHOLD_KNOB_NAMES: &[(&str, &str)] = &[
 
 /// Project a built-in rule's default threshold into the family listing map. An integral default
 /// prints as an integer (`25`, not `25.0`) so a typed consumer reads one number shape across ports.
+///
+/// `definition` supplies the rule id and default threshold; a rule with detector parameters publishes each one's default under its own name.
+/// A lone threshold is published under its gruff-go knob name, or under `threshold` when gruff-go has none.
+/// Returns the knob map, or None when the rule has neither detector parameters nor a threshold.
 fn listing_thresholds(definition: &rules::RuleDefinition) -> Option<Map<String, Value>> {
     // A detector's named parameters are its knob map, published under the names config reads.
     let parameters = rules::detector_parameters(definition.id);
@@ -606,6 +683,8 @@ fn listing_thresholds(definition: &rules::RuleDefinition) -> Option<Map<String, 
 }
 
 /// An integral value prints as an integer (`25`, not `25.0`) so a typed consumer reads one number shape.
+///
+/// Returns `value` as a JSON integer when it has no fractional part, otherwise as a JSON float.
 fn listing_number(value: f64) -> Value {
     if value.fract() == 0.0 {
         json!(value as i64)
@@ -614,6 +693,11 @@ fn listing_number(value: f64) -> Value {
     }
 }
 
+/// Render the text rule catalogue, one entry per rule with its id, tier, pillar, default severity and description.
+///
+/// `rules` are rendered in the order given, and a description is written as is, so an embedded newline spreads its entry over several lines.
+///
+/// Returns the entries separated by newlines with trailing newlines trimmed, or an empty string for an empty `rules`.
 fn render_listed_rules_text(rules: &[ListedRule]) -> String {
     let mut out = String::new();
     for rule in rules {
@@ -625,6 +709,11 @@ fn render_listed_rules_text(rules: &[ListedRule]) -> String {
     out.trim_end_matches('\n').to_string()
 }
 
+/// Load the project config the rule listing reads custom rules from, with no baseline and no command-line selectors in the options.
+///
+/// `project_root` is where the config is looked up, and `args` supplies the explicit config path and the no-config flag.
+///
+/// Returns the loaded config, or Err with the loader's message when loading fails.
 fn list_rules_config(project_root: &Path, args: &ListRulesArgs) -> Result<Config, String> {
     load_config(
         project_root,
@@ -648,6 +737,11 @@ fn list_rules_config(project_root: &Path, args: &ListRulesArgs) -> Result<Config
     )
 }
 
+/// List every built-in rule in registry order followed by the configured custom rules, in the catalogue's shape.
+///
+/// `registry` supplies the built-in definitions and `custom_rules` the configured custom rules, which follow them.
+///
+/// Returns the built-in entries followed by one entry per custom rule.
 fn listed_rules(registry: &rules::RuleRegistry, custom_rules: &[CustomRule]) -> Vec<ListedRule> {
     let mut listed: Vec<ListedRule> = registry
         .definitions()
@@ -658,6 +752,11 @@ fn listed_rules(registry: &rules::RuleRegistry, custom_rules: &[CustomRule]) -> 
     listed
 }
 
+/// Describe one built-in rule as a catalogue entry, with its listing thresholds and no custom scope or pattern.
+///
+/// `definition` supplies the id, name, pillar, tier, kind, severity, confidence, options, enabled flag, description and false-positive shapes.
+///
+/// Returns the catalogue entry, whose thresholds come from `listing_thresholds` and are None for a rule without any.
 pub(crate) fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedRule {
     ListedRule {
         id: definition.id.to_string(),
@@ -677,6 +776,11 @@ pub(crate) fn listed_builtin_rule(definition: &rules::RuleDefinition) -> ListedR
     }
 }
 
+/// Describe one configured custom rule as a catalogue entry, enabled by default at tier `v0.1` with kind `custom`.
+///
+/// `rule` supplies the id, pillar, severity, confidence, scope, pattern and message, which becomes the description.
+///
+/// Returns the catalogue entry, named from the id by `custom_rule_name` and carrying no thresholds, options or false-positive shapes.
 pub(crate) fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
     ListedRule {
         id: rule.id.clone(),
@@ -696,6 +800,11 @@ pub(crate) fn listed_custom_rule(rule: &CustomRule) -> ListedRule {
     }
 }
 
+/// Name a rule kind the way the rule catalogue publishes it.
+///
+/// `kind` is the built-in rule's kind from its definition.
+///
+/// Returns `project`, `text` or `rust` for the matching kind.
 fn rule_kind_name(kind: rules::RuleKind) -> &'static str {
     match kind {
         rules::RuleKind::Project => "project",
@@ -704,6 +813,11 @@ fn rule_kind_name(kind: rules::RuleKind) -> &'static str {
     }
 }
 
+/// Derive a display name from a custom rule id, such as `custom.no-todo` becoming `No Todo`.
+///
+/// `rule_id` has any `custom.` prefix removed, then each non-empty hyphen-separated part gets an ASCII-uppercased first letter.
+///
+/// Returns the parts joined by single spaces, which is empty when `rule_id` holds only the prefix or hyphens.
 fn custom_rule_name(rule_id: &str) -> String {
     rule_id
         .strip_prefix("custom.")
@@ -725,6 +839,12 @@ fn custom_rule_name(rule_id: &str) -> String {
         .join(" ")
 }
 
+/// Run the `summary` subcommand: analyse the project and render the text or JSON summary of the report.
+///
+/// `args` supplies the paths, config flags, `include_ignored`, deep-scan budget, `top` count and format; `writer` emits the rendered summary.
+/// Neither a fail threshold nor the `gate:` block changes its exit code, because `summary` only reports.
+///
+/// Returns exit code 2 after printing the error when setup or analysis fails, otherwise the code classified with no threshold or gate.
 fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
     let deep_scan_budget = args.deep_scan_budget.clone();
     let output_format = match args.format {
@@ -776,6 +896,11 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
     }
 }
 
+/// Generate the shell completion script for the CLI and write it straight to stdout.
+///
+/// `args` names the target shell, and `writer` is only checked for silence: a silent writer suppresses the script.
+///
+/// Returns success, including when a silent writer suppresses the script.
 fn run_completion(args: CompletionArgs, writer: OutputWriter) -> ExitCode {
     if writer.is_silent() {
         return ExitCode::SUCCESS;
@@ -786,12 +911,24 @@ fn run_completion(args: CompletionArgs, writer: OutputWriter) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Run the per-source built-in and custom rules that `config` enables and that apply to one source unit, gathering their findings.
+///
+/// `unit` is the source unit to check, and `config` is the run's config, handed to both the built-in and the custom rule passes.
+///
+/// Returns the built-in findings followed by the custom-rule findings, which is empty when nothing matched.
 pub(crate) fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = built_in_rules::analyse(unit, config);
     findings.extend(custom_rules::analyse(unit, config));
     findings
 }
 
+/// Run the per-source built-in and custom rules that `config` enables and that apply to one source unit, keeping the built-in pass's artifacts.
+///
+/// `unit` is the source to check, and `config` is the run's config, handed to both the built-in and the custom rule passes.
+/// `retain_function_blocks` is forwarded unchanged to the built-in pass as its request to keep function blocks.
+///
+/// Returns the built-in pass's artifacts with the custom-rule findings appended to its findings.
+/// Their function blocks are None without a Rust syntax tree, or when neither an enabled rule nor `retain_function_blocks` asked for them.
 pub(crate) fn analyse_source_with_artifacts(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -810,6 +947,11 @@ pub(crate) use built_in_rules::FunctionBlock;
 
 mod custom_rules;
 
+/// Resolve a possibly relative path against a root directory without touching the filesystem.
+///
+/// `root` is the directory a relative `path` is joined onto, and an absolute `path` is kept as given.
+///
+/// Returns the resulting path with no `.` or `..` components removed and no symlinks resolved.
 pub(crate) fn absolutize(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -818,6 +960,11 @@ pub(crate) fn absolutize(root: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// Turn a path into the forward-slash, root-relative text reports display.
+///
+/// `root` is stripped from the front of `path` when it is a prefix, and otherwise `path` is kept whole.
+///
+/// Returns the path text with backslashes turned into forward slashes and leading `./` prefixes removed; non-UTF-8 bytes are replaced.
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)

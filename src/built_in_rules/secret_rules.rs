@@ -74,6 +74,9 @@ pub(crate) static HIGH_ENTROPY_STRING_REGEX: OnceLock<Regex> = OnceLock::new();
 
 /// Run every sensitive-data detector that applies to one discovered user file.
 /// A test or calibration path receives the same scan; only a reviewed sensitive exclusion may filter it later.
+///
+/// `unit` supplies the file's source text, path and optional syntax tree, and every finding is appended to `findings`.
+/// `config` reaches the regex and high-entropy detectors, which read the GCP rule's enablement and the entropy parameters from it.
 pub(crate) fn analyse_sensitive_data(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -91,6 +94,10 @@ pub(crate) fn analyse_sensitive_data(
 
 /// Emit generic pattern findings after detector-owned placeholder checks.
 /// Users receive a separate fixed-marker finding for every reportable match.
+///
+/// `rule` supplies the regex, id and message, `unit` the source, path and line starts, and `config` the suppression checks.
+/// A private-key header proven to be a native regex pattern constant is skipped as well.
+/// Each reportable match is appended to `findings` with a fixed preview marker and no symbol.
 fn push_regex_pattern_matches(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -129,6 +136,12 @@ fn push_regex_pattern_matches(
 }
 
 /// Prove a marker-only constant's native consumer using the existing bounded syntax tree.
+///
+/// `unit` supplies the parsed file and `capture` is the private-key header match being explained.
+/// Only the first top-level string `const` whose literal owns `capture` is tested for a `::regex::Regex::new(self::NAME)` call.
+///
+/// Returns true when that absolute call sits outside child modules and no `extern crate` aliases a crate as `regex`.
+/// Returns false without a syntax tree or an owning constant.
 fn private_key_is_native_pattern(unit: &SourceUnit<'_>, capture: &regex::Match<'_>) -> bool {
     // Missing Rust syntax cannot prove a native pattern consumer, so the private-key warning remains.
     let Some(ast) = unit.rust_ast else {
@@ -165,6 +178,10 @@ fn private_key_is_native_pattern(unit: &SourceUnit<'_>, capture: &regex::Match<'
 }
 
 /// Prove that this literal owns the matched header and has no embedded private-key body.
+///
+/// `unit` supplies line-start offsets, `literal` is a candidate string constant and `capture` is the matched private-key header.
+/// The literal's span must cover `capture`, and its text after the header must be empty or `.*?` followed by the matching END marker.
+/// Returns true when both hold, and false when line offsets are missing, the span or header does not match, or other text follows.
 fn is_private_key_pattern_match(
     unit: &SourceUnit<'_>,
     literal: &syn::LitStr,
@@ -207,6 +224,9 @@ struct NativePrivateKeyPatternUse {
 
 impl<'ast> syn::visit::Visit<'ast> for NativePrivateKeyPatternUse {
     /// Record qualifying native regex calls so a developer's format detector can stay quiet.
+    ///
+    /// `call` qualifies only outside child modules, as an absolute `::regex::Regex::new` call with exactly one argument.
+    /// That argument must be the path `self::` followed by the tracked constant name; a qualifying call sets `native_call`.
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         // Only a path-based call can establish the absolute native constructor required for a quiet result.
         if let syn::Expr::Path(function) = call.func.as_ref() {
@@ -239,6 +259,8 @@ impl<'ast> syn::visit::Visit<'ast> for NativePrivateKeyPatternUse {
     }
 
     /// Keep child-module calls from lending their same-named constants to the enclosing file's quiet-pattern proof.
+    ///
+    /// `item` is the visited module; the depth counter rises while its contents are walked and falls back afterwards.
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
         self.module_depth += 1;
         syn::visit::visit_item_mod(self, item);
@@ -246,6 +268,8 @@ impl<'ast> syn::visit::Visit<'ast> for NativePrivateKeyPatternUse {
     }
 
     /// Reject a regex crate alias that could make an unrelated constructor hide the key warning.
+    ///
+    /// `item` sets `aliased_crate` when it renames any crate to `regex`; the walk then continues into it.
     fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
         self.aliased_crate |= item
             .rename
@@ -257,6 +281,9 @@ impl<'ast> syn::visit::Visit<'ast> for NativePrivateKeyPatternUse {
 
 /// Choose a zero-payload marker from the rule and its regex-approved match shape.
 /// Generic provider-token patterns intentionally reveal no provider guess.
+///
+/// `rule_id` selects the marker class, and `matched_value` is read only to take a credential URL's scheme.
+/// Returns the rendered marker text, falling back to the generic marker for the API-key rule and any unknown rule id.
 fn regex_display_marker(rule_id: &str, matched_value: &str) -> String {
     match rule_id {
         // AWS has a dedicated rule, so the report can safely name its credential class.
@@ -276,6 +303,9 @@ fn regex_display_marker(rule_id: &str, matched_value: &str) -> String {
 
 /// Render a connection-string marker from the detector-approved URL scheme.
 /// A malformed match falls back to the generic marker instead of exposing source text.
+///
+/// `matched_value` is the credential URL match; only the text before its first `://` is used.
+/// Returns the connection-string marker for that scheme, or the generic marker when `://` is absent.
 fn connection_string_display_marker(matched_value: &str) -> String {
     // The URL regex normally guarantees `://`; absence means no safe public scheme is available.
     let Some((scheme, _)) = matched_value.split_once("://") else {
@@ -313,6 +343,9 @@ const DOCUMENTED_SAMPLE_DIGESTS: &[&str] = &[
 
 /// Decide whether a matched value is, exactly and whole, a vendor-documented sample such as AWS's example key.
 /// A value that merely contains one is compared whole, so it still reports.
+///
+/// `matched_value` is hashed with SHA-256, and its lowercase hex digest is looked up in `DOCUMENTED_SAMPLE_DIGESTS`.
+/// Returns true only when that digest is listed, and false for every other value.
 fn is_documented_sample(matched_value: &str) -> bool {
     let digest = format!("{:x}", Sha256::digest(matched_value.as_bytes()));
     DOCUMENTED_SAMPLE_DIGESTS.contains(&digest.as_str())
@@ -320,6 +353,10 @@ fn is_documented_sample(matched_value: &str) -> bool {
 
 /// Decide whether detector-owned placeholder, documented-sample or overlap policy already accounts for a regex match.
 /// Returning true keeps an intentionally safe example or duplicate finding out of the user's report.
+///
+/// `capture` is the match under review, and `rule_id` picks the rule-specific policy applied after the documented-sample check.
+/// `source` is the whole file text and `config` the rule settings, both used only by the GCP private-key overlap check.
+/// Returns true for a documented sample, a placeholder credential URL, an all-X AWS key body or a GCP-covered private key.
 fn regex_match_should_be_suppressed(
     source: &str,
     config: &Config,
@@ -346,6 +383,10 @@ fn regex_match_should_be_suppressed(
 
 /// Recognise safe credentials intentionally used in example or local-only URLs.
 /// This detector treats values such as password@localhost as placeholders under its reviewed URL policy.
+///
+/// `value` is lowercased and searched for an `@example.`, `@localhost` or `@127.0.0.1` host.
+/// It is also searched for `:password@`, `:changeme@` or `:placeholder@` as the password.
+/// Returns true when any of those markers appears, and false for every other credential URL.
 fn credential_url_is_placeholder(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
     lower.contains("@example.")
@@ -358,6 +399,9 @@ fn credential_url_is_placeholder(value: &str) -> bool {
 
 /// Check whether an enabled GCP finding covers the same private-key match.
 /// This prevents duplicate UI entries without dropping the user's only finding.
+///
+/// `config` must enable `sensitive-data.gcp-service-account-key`, and `source` is searched with the shared service-account pattern.
+/// Returns true when `capture` starts inside one such match, and false when the rule is disabled or no match covers it.
 fn gcp_finding_contains_private_key(
     source: &str,
     config: &Config,
@@ -377,6 +421,8 @@ fn gcp_finding_contains_private_key(
 }
 
 /// Run every protected-health identifier detector for one user-visible source file.
+///
+/// `unit` supplies the source text, and each labelled SSN, MRN or Medicare value that is not a placeholder is appended to `findings`.
 fn analyse_phi_patterns(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
     push_phi_matches(
         unit,
@@ -409,6 +455,9 @@ fn analyse_phi_patterns(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
 
 /// Emit one PHI finding per non-placeholder identifier found in user source.
 /// Metadata exposes only the detector-owned health-identifier category.
+///
+/// `regex` must capture the identifier in a group named `value`, and `category` names it in the message, metadata and placeholder check.
+/// `unit` supplies the source and line starts, and each finding is appended to `findings`.
 fn push_phi_matches(
     unit: &SourceUnit<'_>,
     category: &str,
@@ -446,6 +495,10 @@ fn push_phi_matches(
 }
 
 /// Recognise standards-reserved PHI examples that users can safely keep in fixtures.
+///
+/// `category` picks the test: an `ssn` starting `000`, `666` or `9`, or an `mrn` made only of `0`, `X` or `x`.
+/// A `medicare` value must equal one fixed sample number, ignoring ASCII case, and `value` has surrounding quotes trimmed first.
+/// Returns true for a placeholder in the given category, and false for other values or an unknown category.
 fn phi_value_is_placeholder(category: &str, value: &str) -> bool {
     let normalized = value.trim_matches('"').trim_matches('\'');
     match category {
@@ -467,6 +520,8 @@ const GCP_SERVICE_ACCOUNT_PATTERN: &str = r#"(?s)"type"\s*:\s*"service_account".
 
 /// Emit each GCP service-account finding with a fixed provider marker.
 /// Generic private-key coverage remains coordinated by `gcp_finding_contains_private_key`.
+///
+/// `unit` supplies the source searched with the shared service-account pattern, and one finding per match is appended to `findings`.
 fn analyse_gcp_service_account_keys(unit: &SourceUnit<'_>, findings: &mut Vec<Finding>) {
     let regex = GCP_SERVICE_ACCOUNT_REGEX.get_or_init(|| {
         ::regex::Regex::new(self::GCP_SERVICE_ACCOUNT_PATTERN)
@@ -498,6 +553,9 @@ const HIGH_ENTROPY_RULE_ID: &str = "sensitive-data.high-entropy-string";
 
 /// Report generated-looking string literals that survive detector-owned inert-shape checks.
 /// Project analysis reaches this after the structured sensitive-data detectors.
+///
+/// `config` supplies the rule's `minLength` and `entropy` parameters, and `unit` supplies the source whose quoted runs are scanned.
+/// Values inside public PEM blocks are skipped, and each reportable value is appended to `findings` as a generic-marker finding.
 pub(crate) fn analyse_high_entropy_strings(
     unit: &SourceUnit<'_>,
     config: &Config,
@@ -556,6 +614,9 @@ static PEM_BODY_LINE_REGEX: OnceLock<Regex> = OnceLock::new();
 /// Locate public PEM material that users need not review as an entropy warning.
 ///
 /// Only a matching next closing marker and a PEM-shaped body grant the exception; an empty result leaves all source scannable.
+///
+/// `source` is the whole file text; a block whose opening label contains `PRIVATE` is never returned.
+/// Returns byte ranges from each qualifying opening marker through its closing marker, or an empty vector when none qualify.
 fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
     let opening = static_regex(&PEM_ARMOUR_OPENING_REGEX, r"-----BEGIN ([A-Z0-9 ]+)-----");
     let marker = static_regex(
@@ -601,6 +662,9 @@ fn public_armour_spans(source: &str) -> Vec<std::ops::Range<usize>> {
 ///
 /// Split real and escaped line breaks and strip source wrappers so authored public material can stay quiet.
 /// Remaining code, placeholders or prose prevent the header from hiding the rest of the line.
+///
+/// `body` is the text between the markers, split on real newlines and on escaped newline, carriage-return or tab sequences.
+/// Returns true when every cleaned segment is empty, base64, a `=` checksum or a known armour header line, and false otherwise.
 fn is_pem_shaped_body(body: &str) -> bool {
     let line_breaks = static_regex(&PEM_BODY_LINE_BREAKS_REGEX, r"\n|\\[nrt]");
     let operators = static_regex(
@@ -621,6 +685,10 @@ fn is_pem_shaped_body(body: &str) -> bool {
 
 /// Return whether a high-entropy value should produce a finding.
 /// Detector-owned inert shapes stay silent without consulting user preview text.
+///
+/// `value` must pass `is_high_entropy` for `min_length` and `min_entropy`.
+/// It must also not be an integrity hash, a structured non-secret or a vendor-documented sample.
+/// Returns true only when all of those hold, and false when any check excludes the value.
 fn high_entropy_secret_should_report(value: &str, min_length: usize, min_entropy: f64) -> bool {
     // Values below the entropy bar, known inert shapes and vendor-documented samples are not secret findings.
     if !is_high_entropy(value, min_length, min_entropy)
@@ -635,6 +703,9 @@ fn high_entropy_secret_should_report(value: &str, min_length: usize, min_entropy
 
 /// Build a high-entropy finding carrying only the generic zero-payload marker.
 /// The matched text is used for detection alone and never reaches a serialized field.
+///
+/// `unit` supplies the display path and line starts, and `secret` gives the start offset that sets the reported line.
+/// Returns a medium-confidence `sensitive-data.high-entropy-string` finding with no symbol and a generic preview marker.
 fn high_entropy_finding(unit: &SourceUnit<'_>, secret: &regex::Match<'_>) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: HIGH_ENTROPY_RULE_ID.to_string(),

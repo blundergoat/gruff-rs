@@ -1,5 +1,11 @@
 use super::*;
 
+/// Serve the HTML dashboard on the requested host and port, running scans on request until the process is stopped.
+///
+/// `args` supplies the `host` and `port` to bind and the `project_root` that bounds and defaults every scan.
+/// Its optional `deep_scan_budget` is the default budget override, which a request's `deepScanBudget` query value may replace.
+///
+/// Returns exit code 2 when the address cannot be bound; otherwise it handles connections one at a time and never stops on its own.
 pub(crate) fn run_dashboard(args: DashboardArgs) -> ExitCode {
     let address = format!("{}:{}", args.host, args.port);
     let listener = match TcpListener::bind(&address) {
@@ -23,6 +29,10 @@ pub(crate) fn run_dashboard(args: DashboardArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Read one HTTP request from a dashboard connection, route its target, and write the response back on the same connection.
+///
+/// `stream` is the accepted connection; one read of at most 4096 bytes is parsed, and a read error drops it without a response.
+/// `default_root` is the dashboard root that bounds scans, and `deep_scan_budget` is the budget override used when a request omits one.
 fn handle_dashboard_request(
     mut stream: TcpStream,
     default_root: &Path,
@@ -61,6 +71,13 @@ pub(crate) fn dashboard_response(
     dashboard_response_with_budget(path, query, default_root, None)
 }
 
+/// Route one dashboard request path to the health check, scan, start page, or not-found response.
+///
+/// `path` is the request path without its query, and `query` is the raw query string, used only by `/scan`.
+/// `default_root` is the dashboard root that bounds scans and pre-fills the start page form.
+/// `deep_scan_budget` is the default budget override, also pre-filled in the start page form.
+///
+/// Returns `200 OK` HTML for `/`, plain `ok` for `/health`, the scan result for `/scan`, and a plain-text `404 Not Found` for any other path.
 fn dashboard_response_with_budget(
     path: &str,
     query: &str,
@@ -79,6 +96,9 @@ fn dashboard_response_with_budget(
     }
 }
 
+/// Build the dashboard's `/health` liveness response.
+///
+/// Returns a `200 OK` plain-text response whose body is `ok`.
 fn health_response() -> DashboardResponse {
     DashboardResponse {
         status: "200 OK",
@@ -87,6 +107,9 @@ fn health_response() -> DashboardResponse {
     }
 }
 
+/// Build the plain-text response for a dashboard path that has no handler.
+///
+/// Returns a `404 Not Found` plain-text response whose body is `not found`.
 fn not_found_response() -> DashboardResponse {
     DashboardResponse {
         status: "404 Not Found",
@@ -95,6 +118,13 @@ fn not_found_response() -> DashboardResponse {
     }
 }
 
+/// Run one analysis requested through the dashboard's `/scan` form and render it as the HTML report.
+///
+/// `query` is the raw query string carrying the optional `projectRoot`, `path`, and `deepScanBudget` values.
+/// `default_root` is the dashboard root a scan must stay inside, and `default_budget` is the budget override used when `deepScanBudget` is absent.
+///
+/// Returns `400 Bad Request` with the plain-text reason when the target or budget is invalid.
+/// Otherwise it returns `200 OK` HTML holding the dashboard report, or the escaped config or analysis error inside a `pre` element.
 fn scan_response(
     query: &str,
     default_root: &Path,
@@ -137,6 +167,12 @@ fn scan_response(
     }
 }
 
+/// Choose the deep-scan budget override for one dashboard scan from its query values.
+///
+/// `params` holds the decoded query values, and `default` is the server's override used when `deepScanBudget` is absent.
+///
+/// Returns `Ok(None)` for a blank value, dropping the default; the parsed override for any other value; or a clone of `default` when absent.
+/// A value that does not parse returns `Err` with the parse error message.
 fn dashboard_budget_override(
     params: &HashMap<String, String>,
     default: Option<&DeepScanBudgetOverride>,
@@ -148,6 +184,11 @@ fn dashboard_budget_override(
     }
 }
 
+/// Resolve the project root and scan path a dashboard request asks for, keeping both inside the dashboard root.
+///
+/// `params` holds the decoded `projectRoot` and `path` query values, and `default_root` is the dashboard root, canonicalized here before use.
+///
+/// Returns the canonical project root and the relative scan path, or `Err` with a user-facing message when either is invalid or out of bounds.
 fn dashboard_scan_target(
     params: &HashMap<String, String>,
     default_root: &Path,
@@ -160,6 +201,13 @@ fn dashboard_scan_target(
     Ok((root, scan_path))
 }
 
+/// Resolve the requested `projectRoot` and reject any directory outside the dashboard root.
+///
+/// `params` may hold a `projectRoot` value, either absolute or relative to `default_root`.
+/// `default_root` is the canonical dashboard root, used as the project root when no `projectRoot` is given.
+///
+/// Returns the canonical root when it is a directory inside `default_root`.
+/// An unresolvable path returns `Err` with `invalid projectRoot`; one outside the root or not a directory returns a containment error.
 fn resolve_dashboard_root(
     params: &HashMap<String, String>,
     default_root: &Path,
@@ -182,6 +230,11 @@ fn resolve_dashboard_root(
     Ok(root)
 }
 
+/// Validate the requested scan `path` so it names an existing location inside the project root.
+///
+/// `params` may hold a `path` value, defaulting to `.`, and `root` is the canonical project root it must resolve inside.
+///
+/// Returns the requested path as given, still relative, or `Err` when it is absolute, contains `..`, does not exist, or resolves outside `root`.
 fn resolve_dashboard_scan_path(
     params: &HashMap<String, String>,
     root: &Path,
@@ -209,6 +262,11 @@ fn resolve_dashboard_scan_path(
     Ok(scan_path)
 }
 
+/// Build dashboard scan options with HTML output, no fail threshold, and no explicit config, baseline, diff, or history file.
+///
+/// `scan_path` is the validated path, relative to the project root, that the scan covers.
+///
+/// Returns options whose `paths` holds only `scan_path`, with default execution and display selectors.
 fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
     AnalysisOptions {
         paths: vec![scan_path],
@@ -229,6 +287,11 @@ fn dashboard_scan_options(scan_path: PathBuf) -> AnalysisOptions {
     }
 }
 
+/// Render the dashboard start page with a form that submits a scan to `/scan`.
+///
+/// `root` pre-fills the `projectRoot` field, and `deep_scan_budget` pre-fills the budget field in its CLI form, or leaves it empty when `None`.
+///
+/// Returns the complete HTML page with both values HTML-escaped.
 fn dashboard_index(root: &Path, deep_scan_budget: Option<&DeepScanBudgetOverride>) -> String {
     let budget_value = deep_scan_budget
         .map(DeepScanBudgetOverride::as_cli_value)
@@ -266,6 +329,12 @@ fn dashboard_index(root: &Path, deep_scan_budget: Option<&DeepScanBudgetOverride
     )
 }
 
+/// Render a dashboard scan as the standard HTML report with a banner naming the project and linking back to the start page.
+///
+/// `report` holds the analysis results and `scope` the requested paths and diff label, both rendered by `html_report::render`.
+/// `root` is the project root shown, HTML-escaped, in the banner.
+///
+/// Returns the report HTML with the banner inserted just after the first `<body>` tag, or prepended when the report has no `<body>` tag.
 fn dashboard_shell(report: &AnalysisReport, scope: &RequestedScope, root: &Path) -> String {
     let report_html = html_report::render(report, scope);
     let banner = format!(
@@ -284,6 +353,11 @@ fn dashboard_shell(report: &AnalysisReport, scope: &RequestedScope, root: &Path)
     }
 }
 
+/// Write one complete HTTP/1.1 response that closes the connection and forbids caching.
+///
+/// `stream` receives the whole response, and a write error is silently ignored.
+/// `status` is the status text, such as `200 OK`, and `content_type` is the `Content-Type` header value.
+/// `body` is sent as given, with its byte length as `Content-Length`.
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
@@ -292,6 +366,11 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str)
     let _ = stream.write_all(response.as_bytes());
 }
 
+/// Split a URL query string into the decoded parameters a dashboard request supplies.
+///
+/// `query` is the raw text after `?`, split on `&` into `key=value` pairs.
+///
+/// Returns the percent-decoded pairs, dropping any pair without `=`; when a key repeats, the last value wins.
 fn parse_query(query: &str) -> HashMap<String, String> {
     query
         .split('&')
@@ -302,6 +381,11 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Decode URL percent escapes and plus signs in one query key or value.
+///
+/// `value` is the raw text; `%` followed by two hex digits becomes that byte, and `+` becomes a space.
+///
+/// Returns the decoded text, keeping malformed escapes as written and replacing invalid UTF-8 with U+FFFD.
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -324,10 +408,20 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&output).to_string()
 }
 
+/// Combine the two hex digits of one percent escape into a byte.
+///
+/// `high` and `low` are the ASCII digits after `%`, most significant first.
+///
+/// Returns the byte value, or `None` when either is not a hex digit.
 fn percent_hex(high: u8, low: u8) -> Option<u8> {
     Some(hex_nibble(high)? * 16 + hex_nibble(low)?)
 }
 
+/// Convert one ASCII hex digit to its numeric value.
+///
+/// `byte` is a character from a percent escape; upper- and lower-case letters are both accepted.
+///
+/// Returns the value 0 to 15, or `None` for any other byte.
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

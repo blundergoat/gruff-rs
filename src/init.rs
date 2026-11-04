@@ -40,6 +40,17 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
 
 /// Generate the user's default config on stdout or at the requested path.
 /// Existing ignores and severity choices survive `--force`; write failures return exit 2 with a practical diagnostic.
+///
+/// `args` supplies the destination `output` path, the `stdout` preview switch, and the `force` switch that allows overwriting an existing file.
+/// Unless it is silent, `writer` prints the rendered config in `--stdout` mode, or the confirmation and baseline hint after a successful write.
+/// `--stdout` leaves `output` untouched and skips the overwrite check.
+///
+/// `paths.ignore`, valid `failOn` entries and valid `deepScanBudget` members are read from `output` into the generated config.
+/// Ignore patterns are rewritten through `yaml_string`, so a quoted pattern such as `true` comes back unquoted.
+/// Other settings, such as allowlist additions and rule settings, are replaced by generated defaults.
+///
+/// Returns `ExitCode::SUCCESS` in `--stdout` mode or after writing the config; otherwise exit code 2 when the file exists without `force`
+/// or cannot be written.
 pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
     let output = &args.output;
     let preserved_ignores = read_existing_ignore_patterns(output);
@@ -82,6 +93,10 @@ pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
 
 /// Offer first-run config setup for analysis, summary, report, and dashboard commands.
 /// A missing project root means there is nowhere safe to create the user's config.
+///
+/// `project_root` is the resolved project directory that would hold `.gruff-rs.yaml`; `None` skips the prompt entirely.
+/// `config_override` is an explicit config path, and `no_config` and `no_interaction` are the user's opt-outs from config and prompts.
+/// These three are passed to `prompt_when_config_missing` with the root, where setting any of them suppresses the prompt.
 pub(crate) fn prompt_for_command(
     project_root: Option<&Path>,
     config_override: Option<&Path>,
@@ -96,6 +111,10 @@ pub(crate) fn prompt_for_command(
 
 /// Prompt to create `.gruff-rs.yaml` only during an interactive first run with no config choice.
 /// Declining or using non-interactive flags leaves the user's project unchanged.
+///
+/// `project_root` is the directory whose `.gruff-rs.yaml` is checked and, after a `y` or `yes` answer, written with the default config.
+/// `config_override` is an explicit config path, and `no_config` and `no_interaction` are the user's opt-outs from config and prompts.
+/// Setting any of them skips the prompt, as does an existing config file or a stdin or stderr that is not a terminal.
 pub(crate) fn prompt_when_config_missing(
     project_root: &Path,
     config_override: Option<&Path>,
@@ -116,6 +135,11 @@ pub(crate) fn prompt_when_config_missing(
 
 /// Decide whether the current command may show the first-run config prompt.
 /// False means config already exists, the user chose config behavior, or the terminal cannot answer safely.
+///
+/// `target` is the config file the prompt would create; an existing file blocks the prompt.
+/// A set `config_override`, a true `no_config`, or a true `no_interaction` blocks the prompt because the user already chose the behavior.
+///
+/// Returns `true` only when none of those apply and both stdin and stderr are terminals.
 fn should_offer_init(
     target: &Path,
     config_override: Option<&Path>,
@@ -135,6 +159,10 @@ fn should_offer_init(
 
 /// Ask whether the user wants a default config and accept only an explicit affirmative response.
 /// Input failure behaves like a decline so an interrupted terminal never creates a file.
+///
+/// `project_root` is shown in the stderr prompt as the directory missing `.gruff-rs.yaml`.
+///
+/// Returns `true` only when the trimmed stdin answer is `y` or `yes` in any letter case, and `false` for any other answer or a read error.
 fn should_write_default_config(project_root: &Path) -> bool {
     let mut stderr = std::io::stderr();
     let _ = write!(
@@ -155,6 +183,8 @@ fn should_write_default_config(project_root: &Path) -> bool {
 
 /// Write a confirmed first-run config and report the outcome in the terminal UI.
 /// Failures stay non-panicking because a permission change can occur after the user accepts the prompt.
+///
+/// `target` is the config file to write; any ignores, `failOn` thresholds, and deep-scan budget already in it are kept in the new content.
 fn write_default_config_at(target: &Path) {
     let mut stderr = std::io::stderr();
     let preserved_ignores = read_existing_ignore_patterns(target);
@@ -203,6 +233,12 @@ pub(crate) fn render_default_config(
     )
 }
 
+/// Render the complete generated config text from the rule registry and settings preserved from an existing file.
+///
+/// `registry` supplies every rule listed under `rules:`, and `extra_ignores` adds user ignore patterns after the built-in defaults.
+/// `preserved_min_severity` holds the `failOn` thresholds to keep active, and `deep_scan_budget` is written as the `deepScanBudget` block.
+///
+/// Returns the full YAML text: the header, schema version, `failOn`, budget, paths, allowlists, commented `sensitiveExclusions`, and rules.
 fn render_default_config_with_budget(
     registry: &RuleRegistry,
     extra_ignores: &[String],
@@ -230,6 +266,10 @@ fn render_default_config_with_budget(
     out
 }
 
+/// Append the active `deepScanBudget` block that bounds deep Rust analysis, preceded by its explanatory comments.
+///
+/// `out` is the config text being built and gains the block plus a trailing blank line.
+/// `budget` supplies the `enabled`, `maxLines`, and `maxBytes` values written into the block.
 fn append_deep_scan_budget_section(out: &mut String, budget: &DeepScanBudget) {
     out.push_str("# Bound only deep Rust analysis; text-level safety and size checks still run.\n");
     out.push_str("# CLI --deep-scan-budget LINES:BYTES|off overrides this block.\n");
@@ -240,12 +280,17 @@ fn append_deep_scan_budget_section(out: &mut String, budget: &DeepScanBudget) {
 }
 
 /// Append the schema value that tells the loader how to interpret the generated user config.
+///
+/// `out` is the config text being built and gains the `schemaVersion` line plus a trailing blank line.
 fn append_schema_version_section(out: &mut String) {
     out.push_str(&format!("schemaVersion: {SCHEMA_VERSION}\n\n"));
 }
 
 /// Append command exit thresholds, preserving values the user already selected.
 /// Missing values remain commented examples so they do not override binary defaults.
+///
+/// `out` is the config text being built and gains the `failOn` block plus a trailing blank line.
+/// `preserved` maps command names to thresholds kept from an existing config; only its `analyse` and `report` entries are read.
 fn append_minimum_severity_section(out: &mut String, preserved: &BTreeMap<String, FailThreshold>) {
     out.push_str("# failOn controls per-subcommand fail thresholds.\n");
     out.push_str("# Uncomment and edit to override the binary defaults. Valid values:\n");
@@ -258,6 +303,10 @@ fn append_minimum_severity_section(out: &mut String, preserved: &BTreeMap<String
 
 /// Append one active preserved threshold or one commented default example.
 /// `None` means the user had no value to preserve for this command.
+///
+/// `out` is the config text being built, and `command` is the `failOn` key written for this line, such as `analyse` or `report`.
+/// `preserved` is the user's kept threshold, written as an active entry when present.
+/// `placeholder` is the default value shown in the commented example when `preserved` is `None`.
 fn append_minimum_severity_entry(
     out: &mut String,
     command: &str,
@@ -274,6 +323,10 @@ fn append_minimum_severity_entry(
 
 /// Append built-in discovery ignores plus unique patterns preserved from the user's existing config.
 /// An empty preserved list leaves only the safe generated defaults.
+///
+/// `out` is the config text being built and gains the `paths:` block with its `ignore` list plus a trailing blank line.
+/// `extra_ignores` holds user patterns appended after the defaults, skipping any pattern already emitted.
+/// Every entry passes through `yaml_string`, which quotes only the patterns that `needs_quoting` flags.
 fn append_paths_section(out: &mut String, extra_ignores: &[String]) {
     out.push_str("paths:\n");
     out.push_str("  # Discovery-time do-not-read patterns. Use this for generated\n");
@@ -303,6 +356,8 @@ fn append_paths_section(out: &mut String, extra_ignores: &[String]) {
 }
 
 /// Append the naming seeds users retain when extending the replacement allowlist.
+///
+/// `out` is the config text being built and gains the `acceptedAbbreviations` list of `DEFAULT_ABBREVIATIONS` plus a trailing blank line.
 fn append_allowlists_section(out: &mut String) {
     out.push_str("allowlists:\n");
     out.push_str(
@@ -345,7 +400,11 @@ fn append_sensitive_exclusions_section(out: &mut String) {
 }
 
 /// Append one rule's description, enabled state, and supported numeric options for user editing.
-/// A missing threshold means the rule exposes no threshold or severity controls in generated config.
+/// Without `definition.threshold`, the scalar `threshold` and `severity` entries are omitted; named detector `thresholds` may still be emitted.
+///
+/// `out` is the config text being built and gains this rule's commented description and settings under `rules:`.
+/// `definition` supplies the id, description, and default enabled state, plus the default threshold and severity when the rule has a threshold.
+/// Named detector parameters for the rule id are also written as a `thresholds:` map of their defaults.
 fn append_rule_entry(out: &mut String, definition: &RuleDefinition) {
     out.push_str(&format!("  # {}\n", definition.description));
     out.push_str(&format!("  {}:\n", definition.id));
@@ -393,6 +452,10 @@ fn severity_name(severity: Severity) -> &'static str {
 }
 
 /// Format whole-number thresholds without a decimal while preserving fractional user-visible values.
+///
+/// `value` is a threshold default from the rule registry or a detector parameter.
+///
+/// Returns finite whole values as decimal integers capped at the `i64` bounds; other values use Rust's float text, including `NaN` and `inf`.
 fn format_threshold(value: f64) -> String {
     // Finite whole values are easier for users to read as integers in generated YAML.
     if value.fract() == 0.0 && value.is_finite() {
@@ -403,6 +466,10 @@ fn format_threshold(value: f64) -> String {
 }
 
 /// Quote and escape one generated YAML scalar only when its text could change meaning.
+///
+/// `value` is one path pattern written into the generated `paths.ignore` list.
+///
+/// Returns `value` unchanged when `needs_quoting` is false, otherwise wrapped in double quotes with backslashes and double quotes escaped.
 fn yaml_string(value: &str) -> String {
     // YAML-sensitive values need quotes so the user's path is loaded exactly as displayed.
     if needs_quoting(value) {
@@ -416,6 +483,11 @@ fn yaml_string(value: &str) -> String {
 const YAML_LEADING_INDICATORS: &[char] = &['*', '&', '?', '|', '>', '!', '%', '@', '`'];
 
 /// Decide whether a generated YAML value needs quotes to survive a user reload unchanged.
+///
+/// `value` is the raw scalar text, such as an ignore pattern, before any quoting.
+///
+/// Returns `true` when `value` starts with one of `YAML_LEADING_INDICATORS` or contains a colon then a space or a space then `#`.
+/// The checks are not exhaustive: for example, `true`, `null`, `{foo}`, and `#foo` return `false` yet change meaning unquoted.
 fn needs_quoting(value: &str) -> bool {
     let starts_with_indicator = value
         .chars()
@@ -426,6 +498,10 @@ fn needs_quoting(value: &str) -> bool {
 
 /// Read path ignores that should survive `gruff-rs init --force` regeneration.
 /// Missing, unreadable, malformed, or absent list data becomes empty so users can still repair the file.
+///
+/// `path` is the existing config file to read; a malformed file also prints a parse warning to stderr.
+///
+/// Returns the string entries of `paths.ignore` in file order, skipping non-string entries, or an empty list when none can be read.
 pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
     // No readable YAML means there are no safe existing ignore values to preserve.
     let Some(value) = read_existing_yaml(path, "ignore preservation") else {
@@ -445,6 +521,10 @@ pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
 
 /// Read valid command thresholds that should survive `gruff-rs init --force` regeneration.
 /// Missing or invalid entries are skipped so the user can repair a partly broken config.
+///
+/// `path` is the existing config file to read; a malformed file also prints a parse warning to stderr.
+///
+/// Returns the `failOn` entries for `analyse` and `report` whose values parse as thresholds, or an empty map when there is no readable block.
 pub(crate) fn read_existing_fail_on(path: &Path) -> BTreeMap<String, FailThreshold> {
     // No readable YAML means there are no safe threshold overrides to preserve.
     let Some(value) = read_existing_yaml(path, "failOn preservation") else {
@@ -459,6 +539,11 @@ pub(crate) fn read_existing_fail_on(path: &Path) -> BTreeMap<String, FailThresho
 
 /// Preserve a valid existing deep-scan budget during `init --force` regeneration.
 /// Invalid members fall back independently so regeneration can repair a broken file.
+///
+/// `path` is the existing config file to read; a malformed file also prints a parse warning to stderr.
+///
+/// Returns `DeepScanBudget::default()` when no `deepScanBudget` mapping can be read.
+/// Otherwise each valid member is kept, other members take their defaults, and `override_state` is set to `config`.
 fn read_existing_deep_scan_budget(path: &Path) -> DeepScanBudget {
     let Some(value) = read_existing_yaml(path, "deepScanBudget preservation") else {
         return DeepScanBudget::default();
@@ -484,6 +569,11 @@ fn read_existing_deep_scan_budget(path: &Path) -> DeepScanBudget {
     }
 }
 
+/// Read one positive integer member of an existing `deepScanBudget` mapping so regenerated config can keep it.
+///
+/// `mapping` is the parsed `deepScanBudget` block and `key` is the member name, such as `maxLines` or `maxBytes`.
+///
+/// Returns the value when it is a positive integer that fits `usize`, or `None` when it is missing, not an unsigned integer, zero, or too large.
 fn preserved_positive_usize(mapping: &serde_yaml::Mapping, key: &str) -> Option<usize> {
     mapping
         .get(serde_yaml::Value::from(key))
@@ -507,6 +597,10 @@ fn parse_preserved_entry(
 
 /// Read an existing YAML file for best-effort setting preservation during regeneration.
 /// `None` means the file is absent, unreadable, or malformed; malformed YAML also gives the user a repair warning.
+///
+/// `path` is the config file to read, and `purpose` names the preserved setting in the stderr warning for malformed YAML.
+///
+/// Returns the parsed YAML document when the file exists, reads as text, and parses, or `None` otherwise.
 fn read_existing_yaml(path: &Path, purpose: &str) -> Option<serde_yaml::Value> {
     // A missing destination is a normal first-run state with nothing to preserve.
     if !path.exists() {

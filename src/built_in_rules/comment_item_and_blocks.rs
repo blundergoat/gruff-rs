@@ -4,6 +4,10 @@
 
 use super::*;
 
+/// Run the commented-out-code check on one Rust source file, skipping a clippy or rustc UI test file.
+///
+/// `source` is the file's text; string literals are masked before comments are extracted from it.
+/// `file` supplies the report path, and each finding is appended to `findings`.
 pub(crate) fn analyse_comment_rules(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
     let masked = strip_rust_string_literals(source);
     let comments = extract_rust_comments(&masked);
@@ -18,6 +22,9 @@ pub(crate) fn analyse_comment_rules(file: &SourceFile, source: &str, findings: &
 /// lines starting at it. A trailing `//` comment inside the disabled code is not part of it. A
 /// Markdown-fenced example is documentation and placeholder pseudocode such as `if .. { insert }` is prose, so
 /// neither is reported; the caller skips a clippy UI test file.
+///
+/// `comments` holds every comment extracted from the file, doc comments included; only non-doc comments are judged.
+/// `file` supplies the report path, and each finding is appended to `findings`.
 pub(crate) fn analyse_commented_out_code(
     file: &SourceFile,
     comments: &[RustComment],
@@ -53,6 +60,8 @@ pub(crate) fn analyse_commented_out_code(
 /// 16 KiB, or holding more than 256 tokens that can open a nested expression (a bracket, a prefix operator, a
 /// closure bar, or `return`, `break`, `yield`, `move` or `box`), counts as prose. A comment such as
 /// `// let x = ((((…1))));` nested thousands deep would otherwise overflow the stack and abort the run.
+///
+/// Returns true when `lines`, joined with newlines, stay within both limits, hold no placeholder and parse as Rust items or statements.
 fn is_snippet(lines: &[&str]) -> bool {
     const MAX_SNIPPET_BYTES: usize = 16 * 1024;
     const MAX_NESTING_TOKENS: usize = 256;
@@ -81,6 +90,9 @@ fn is_snippet(lines: &[&str]) -> bool {
 /// Report whether a snippet that parses starts at `start`, trying the shortest window first, so prose after it
 /// in the same comment run does not hide it. A snippet ends where code does, so only a window whose last line
 /// ends in `;`, `}`, `)` or `]` is parsed; a run of `{`-ending lines costs no parse at all.
+///
+/// `code` holds a comment run's lines with trailing comments removed, and each window is at most 24 lines long.
+/// Returns true when one of those windows passes `is_snippet`, and false when none does.
 fn is_snippet_start(code: &[&str], start: usize) -> bool {
     const WINDOW_LINES: usize = 24;
     (start + 1..=code.len().min(start + WINDOW_LINES))
@@ -91,6 +103,9 @@ fn is_snippet_start(code: &[&str], start: usize) -> bool {
 /// Report whether a file is a clippy or rustc UI test: some line's own first comment is an annotation such as
 /// `//~^ ERROR` or `//~v lint_name`. A `//~` mentioned inside another comment, a doc comment or a block comment,
 /// and a `//~~~~` or `//~ Helpers` banner, do not count.
+///
+/// `masked` is the file's text with its string literals masked, as the caller passes it.
+/// Returns true when any line carries such an annotation; the caller then skips the commented-out-code check.
 fn is_ui_test_source(masked: &str) -> bool {
     static UI_ANNOTATION_REGEX: OnceLock<Regex> = OnceLock::new();
     let annotation = static_regex(
@@ -106,6 +121,9 @@ fn is_ui_test_source(masked: &str) -> bool {
 
 /// Split non-doc comments into runs on consecutive lines, leaving out Markdown-fenced lines, so each run
 /// can be judged as one snippet. A fence never reaches past the end of its run.
+///
+/// `comments` holds one file's extracted comments, doc comments included; only non-doc comments enter a run.
+/// Returns the runs in order, each non-empty; empty when no non-doc comment remains outside a fence.
 fn contiguous_comment_blocks(comments: &[RustComment]) -> Vec<Vec<&RustComment>> {
     let mut blocks: Vec<Vec<&RustComment>> = Vec::new();
     let mut in_fence = false;
@@ -130,6 +148,8 @@ fn contiguous_comment_blocks(comments: &[RustComment]) -> Vec<Vec<&RustComment>>
 }
 
 /// Report whether text parses as Rust items or as statements inside a block.
+///
+/// Returns true when `text` parses as a whole file of items or, wrapped in braces, as a block; false when both parses fail.
 fn is_parseable_rust(text: &str) -> bool {
     syn::parse_str::<syn::File>(text).is_ok()
         || syn::parse_str::<syn::Block>(&format!("{{\n{text}\n}}")).is_ok()
@@ -137,6 +157,9 @@ fn is_parseable_rust(text: &str) -> bool {
 
 /// Report a placeholder that marks pseudocode outside string literals: `...`, `…`, or a bare `..` standing
 /// for an elided expression.
+///
+/// `text` is a candidate snippet; its string literals are masked first, so `...` inside a string is not a placeholder.
+/// Returns true when a placeholder is found, which makes the caller treat the snippet as prose.
 fn has_code_placeholder(text: &str) -> bool {
     let code = crate::strip_rust_string_literals(text);
     code.contains("...")
@@ -150,6 +173,10 @@ fn has_code_placeholder(text: &str) -> bool {
 /// operator or the line start, as in `if .. {` or `x = ..;`. A spaced range (`0 .. n`, `start .. end`), a rest
 /// pattern (`Some(..)`, `{ x, .. }`, `(first, ..)`), a slice (`[..]`) and a struct update
 /// (`..Default::default()`) are code.
+///
+/// `code` is the snippet text with string literals masked, and `index` is the byte offset of the `..` being judged.
+/// Returns true for an elided expression, and false for the code forms above or for a `..` that is not spaced.
+/// Spaced means whitespace or the snippet start before the `..`, and whitespace, `;` or the snippet end after it.
 fn is_elided_expression(code: &str, index: usize) -> bool {
     const KEYWORDS: &[&str] = &[
         "if", "match", "while", "for", "in", "return", "else", "let", "loop",
@@ -180,6 +207,8 @@ fn is_elided_expression(code: &str, index: usize) -> bool {
 }
 
 /// Emit one commented-out-code finding for a comment the caller has judged to be disabled code.
+///
+/// The finding is advisory with medium confidence, reported at the line of `comment` in `file` and appended to `findings`.
 pub(crate) fn analyse_commented_out_code_comment(
     file: &SourceFile,
     comment: &RustComment,
@@ -202,6 +231,10 @@ pub(crate) fn analyse_commented_out_code_comment(
             }));
 }
 
+/// Judge whether one comment line looks like a disabled Rust statement or item rather than prose.
+///
+/// `text` is one comment line's payload; its prefixes are keywords such as `let `, `fn ` and `impl `, plus `self.`.
+/// Returns true when the trimmed text is at least five bytes long, opens with such a prefix and ends in `;`, `{` or `}`; false otherwise.
 pub(crate) fn is_disabled_rust_code(text: &str) -> bool {
     let trimmed = text.trim();
     if trimmed.is_empty() || trimmed.len() < 5 {
@@ -242,12 +275,18 @@ pub(crate) fn is_disabled_rust_code(text: &str) -> bool {
     matches!(last, b';' | b'}' | b'{')
 }
 
+/// Report externally public structs, enums, traits and inline modules without a doc comment, walking every item of a parsed file.
+///
+/// `ast` is the parsed file, `file` supplies the report path, and each finding is appended to `findings`.
 pub(crate) fn analyse_item_rules(file: &SourceFile, ast: &syn::File, findings: &mut Vec<Finding>) {
     for item in &ast.items {
         analyse_public_item(file, item, findings);
     }
 }
 
+/// Check one item for a missing public doc, recursing into an inline module's items; only structs, enums, traits and modules are checked.
+///
+/// `item` is the item to check, `file` supplies the report path, and each finding is appended to `findings`.
 pub(crate) fn analyse_public_item(file: &SourceFile, item: &Item, findings: &mut Vec<Finding>) {
     match item {
         Item::Mod(item_mod) => analyse_public_module_item(file, item_mod, findings),
@@ -291,6 +330,9 @@ pub(crate) fn analyse_public_item(file: &SourceFile, item: &Item, findings: &mut
     }
 }
 
+/// Check an inline module's own doc and then each item inside it; a `mod name;` declaration with no body is skipped.
+///
+/// `item_mod` is the module item, `file` supplies the report path, and each finding is appended to `findings`.
 pub(crate) fn analyse_public_module_item(
     file: &SourceFile,
     item_mod: &syn::ItemMod,
@@ -322,6 +364,9 @@ pub(crate) struct PublicItemDoc<'a> {
     pub(crate) span: proc_macro2::Span,
 }
 
+/// Report a named item that is externally public yet carries no doc attribute.
+///
+/// `item` holds the visibility, attributes, name and name span to judge; `file` gives the report path, and a finding goes to `findings`.
 pub(crate) fn analyse_public_named_item_doc(
     file: &SourceFile,
     item: PublicItemDoc<'_>,
@@ -332,6 +377,10 @@ pub(crate) fn analyse_public_named_item_doc(
     }
 }
 
+/// Append one advisory `docs.missing-public-doc` finding asking for a one-line intent description above a public item.
+///
+/// `name` is the item's name, shown in the message and used as the finding's symbol; `span` gives the reported line.
+/// `file` supplies the report path, and the finding is pushed onto `findings`.
 pub(crate) fn push_missing_public_item_doc(
     file: &SourceFile,
     name: String,
@@ -358,6 +407,9 @@ pub(crate) fn push_missing_public_item_doc(
 }
 
 /// Collect trait methods that carry a default body, for the size and complexity rules only.
+///
+/// `ast` is the parsed file whose traits, inline modules included, are walked; `source` is its text, split into lines for the blocks.
+/// Returns one block per default method in item order; empty when no trait has a default body.
 pub(crate) fn rust_trait_default_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
@@ -368,6 +420,9 @@ pub(crate) fn rust_trait_default_blocks(ast: &syn::File, source: &str) -> Vec<Fu
 }
 
 /// Walk traits and inline modules for default method bodies, carrying a `#[cfg(test)]` module's test context down.
+///
+/// `item` is the item to inspect, `lines` holds the file's source lines, and `test_context` says whether an enclosing module is test code.
+/// Each default method found is pushed onto `blocks`.
 fn collect_trait_default_blocks(
     item: &Item,
     lines: &[&str],
@@ -415,6 +470,9 @@ fn collect_trait_default_blocks(
 
 /// Collect closures assigned to `const` items, such as `const AREA: fn() -> u32 = || { ... };`, which the size and
 /// complexity rules measure like functions (FAMILY-CONTRACT section 12, search `closure assigned to a const item`).
+///
+/// `ast` is the parsed file whose `const` items, inline modules included, are walked; `source` is its text, split into lines.
+/// Returns one block per block-bodied closure in item order; empty when there is none.
 pub(crate) fn rust_const_closure_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
@@ -426,6 +484,9 @@ pub(crate) fn rust_const_closure_blocks(ast: &syn::File, source: &str) -> Vec<Fu
 
 /// Walk `const` items and inline modules for closures with a block body, carrying a `#[cfg(test)]` module's test
 /// context down; an expression-bodied closure has no body block to measure.
+///
+/// `item` is the item to inspect, `lines` holds the file's source lines, and `test_context` says whether an enclosing module is test code.
+/// Each measured closure is pushed onto `blocks`.
 fn collect_const_closure_blocks(
     item: &Item,
     lines: &[&str],
@@ -469,6 +530,9 @@ fn collect_const_closure_blocks(
 /// Collect closures assigned to `const` and `static` items, such as `const DOUBLE: fn(u32) -> u32 = |n| n * 2;`, as
 /// callables for the documentation rules, which check them only under a rule's `everyCallable` switch. Each block's
 /// body is the closure's signature written as a `fn`, so the rules read its parameters and return type as a fn's.
+///
+/// `ast` is the parsed file whose `const` and `static` items, inline modules included, are walked; `source` is its text, split into lines.
+/// Returns one block per assigned closure in item order; empty when there is none.
 pub(crate) fn rust_closure_item_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
@@ -480,6 +544,9 @@ pub(crate) fn rust_closure_item_blocks(ast: &syn::File, source: &str) -> Vec<Fun
 
 /// Walk `const` and `static` items and inline modules for assigned closures, expression- or block-bodied,
 /// carrying a `#[cfg(test)]` module's test context down.
+///
+/// `item` is the item to inspect, `lines` holds the file's source lines, and `test_context` says whether an enclosing module is test code.
+/// Each closure found is pushed onto `blocks` with its body replaced by the closure's signature written as a `fn`.
 fn collect_closure_item_blocks(
     item: &Item,
     lines: &[&str],
@@ -524,6 +591,9 @@ fn collect_closure_item_blocks(
 }
 
 /// Walk an inline module's items for assigned closures; a `#[cfg(test)]` module marks everything inside it as test code.
+///
+/// `item_mod` is the module, skipped without an inline body; `lines` holds the source lines; `test_context` is the outer test context.
+/// Closures found are pushed onto `blocks`.
 fn collect_module_closure_blocks(
     item_mod: &syn::ItemMod,
     lines: &[&str],
@@ -539,6 +609,8 @@ fn collect_module_closure_blocks(
 }
 
 /// The closure an item's value is, seen through `&` and parentheses (`static F: &dyn Fn() = &|| {};`).
+///
+/// Returns the closure that `expr` is or wraps, or `None` when the value is any other expression.
 fn assigned_closure(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
     match expr {
         syn::Expr::Closure(closure) => Some(closure),
@@ -550,6 +622,8 @@ fn assigned_closure(expr: &syn::Expr) -> Option<&syn::ExprClosure> {
 
 /// The closure's written return type, else the one its item type declares, such as `u32` in `fn(u32) -> u32` or
 /// `bool` in `&dyn Fn(&str) -> bool`; `None` when neither declares one.
+///
+/// Returns the type after the arrow of `closure` if written, else the output `item_type` declares, or `None` when neither has one.
 fn closure_return_type<'a>(
     closure: &'a syn::ExprClosure,
     item_type: &'a syn::Type,
@@ -558,6 +632,8 @@ fn closure_return_type<'a>(
 }
 
 /// The return type a fn-pointer or `Fn`-trait-object type declares, seen through `&` and parentheses.
+///
+/// Returns the type after the arrow of a fn-pointer or `Fn`-style `item_type`; `None` for any other type or an omitted output.
 fn callable_type_output(item_type: &syn::Type) -> Option<&syn::Type> {
     match item_type {
         syn::Type::BareFn(function) => written_return_type(&function.output),
@@ -569,6 +645,8 @@ fn callable_type_output(item_type: &syn::Type) -> Option<&syn::Type> {
 }
 
 /// The type an output writes after its arrow; None for an omitted output.
+///
+/// Returns the type after the arrow of `output`, or `None` when `output` has no arrow.
 fn written_return_type(output: &ReturnType) -> Option<&syn::Type> {
     match output {
         ReturnType::Type(_, returned) => Some(returned.as_ref()),
@@ -577,6 +655,8 @@ fn written_return_type(output: &ReturnType) -> Option<&syn::Type> {
 }
 
 /// The output of the first bound written with parenthesized arguments, such as `Fn(&str) -> bool`.
+///
+/// Returns the output of the first bound in `object` with parenthesized arguments, possibly an omitted one; `None` when there is none.
 fn trait_object_output(object: &syn::TypeTraitObject) -> Option<&ReturnType> {
     object.bounds.iter().find_map(|bound| {
         let syn::TypeParamBound::Trait(bound) = bound else {
@@ -591,6 +671,10 @@ fn trait_object_output(object: &syn::TypeTraitObject) -> Option<&ReturnType> {
 
 /// Write the closure's signature as `fn NAME(count: _) -> u32 {}`: each named parameter as `name: _`, any other
 /// pattern as `_: _`, and the return type in its source text.
+///
+/// `name` is the item's name and `closure` supplies the parameters; `returned` is the return type to print, if any.
+/// `lines` holds the file's source lines, from which the return type's text is copied.
+/// Returns the signature text with an empty body, and without a `->` part when `returned` is `None`.
 fn closure_signature_text(
     name: &str,
     closure: &syn::ExprClosure,
@@ -609,6 +693,8 @@ fn closure_signature_text(
 }
 
 /// The name a closure parameter binds, or `_` for a destructuring or wildcard pattern.
+///
+/// Returns the identifier that `input` binds, looking through a type annotation, or `_` for any other pattern.
 fn closure_param_name(input: &syn::Pat) -> String {
     let pattern = match input {
         syn::Pat::Type(typed) => typed.pat.as_ref(),
@@ -621,6 +707,8 @@ fn closure_param_name(input: &syn::Pat) -> String {
 }
 
 /// The source text a span covers, read from the file's lines; a multi-line span's lines are joined with spaces.
+///
+/// Returns the text of `lines` that `span` covers, columns counted in characters; a line outside `lines` is skipped, so the text may be empty.
 fn span_source_text(lines: &[&str], span: proc_macro2::Span) -> String {
     let (start, end) = (span.start(), span.end());
     let mut parts = Vec::new();
@@ -648,6 +736,10 @@ fn span_source_text(lines: &[&str], span: proc_macro2::Span) -> String {
     parts.join(" ")
 }
 
+/// Collect a parsed file's free functions and impl methods as the blocks that the function-level rules check.
+///
+/// `ast` is the parsed file and `source` is its text, split into lines for the blocks.
+/// Returns one block per function or method in item order; empty when the file has none.
 pub(crate) fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<FunctionBlock> {
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
@@ -659,6 +751,10 @@ pub(crate) fn rust_function_blocks(ast: &syn::File, source: &str) -> Vec<Functio
     blocks
 }
 
+/// Add the function blocks for one item: a free function, each method of an impl block, or the contents of a module.
+///
+/// `item` is the item to inspect, and other item kinds add nothing; a module goes to `collect_module_function_blocks`.
+/// `lines` holds the file's source lines, `test_context` says whether an enclosing module is test code, and blocks are pushed onto `blocks`.
 pub(crate) fn collect_function_blocks(
     item: &Item,
     lines: &[&str],
@@ -676,6 +772,9 @@ pub(crate) fn collect_function_blocks(
 }
 
 /// Build a standalone function record so the user's findings point to that function's declaration.
+///
+/// `item_fn` is the parsed function, `lines` holds the file's source lines, and `test_context` says whether an enclosing module is test code.
+/// The record is pushed onto `blocks`.
 pub(crate) fn push_item_function_block(
     item_fn: &syn::ItemFn,
     lines: &[&str],
@@ -698,6 +797,9 @@ pub(crate) fn push_item_function_block(
 }
 
 /// Collect implementation methods before the user's function-level checks run.
+///
+/// `item_impl` is the impl block; its methods are test code when `test_context` is set or the impl has a test or `cfg(test)` attribute.
+/// `lines` holds the file's source lines, and one record per method is pushed onto `blocks`.
 pub(crate) fn push_impl_function_blocks(
     item_impl: &syn::ItemImpl,
     lines: &[&str],
@@ -715,6 +817,9 @@ pub(crate) fn push_impl_function_blocks(
 }
 
 /// Build a method record while preserving its declaration as the report anchor.
+///
+/// `method` is the parsed impl method, `lines` holds the file's source lines, and `test_context` says whether its impl is test code.
+/// The record is pushed onto `blocks`.
 pub(crate) fn push_impl_method_function_block(
     method: &syn::ImplItemFn,
     lines: &[&str],

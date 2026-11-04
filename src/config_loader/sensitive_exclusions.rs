@@ -37,6 +37,10 @@ pub(crate) struct SensitiveExclusionRule {
 
 /// Validate every configured sensitive exclusion and store the resolved scopes.
 /// An empty list means the user suppresses no sensitive-data finding.
+///
+/// `section_value` is the raw `sensitiveExclusions` value and must be an array of entry objects.
+/// `config` supplies the custom rules that resolve rule ids, and its `sensitive_exclusions` list is replaced only when every entry passes.
+/// Returns `Err` naming the first non-array value, invalid entry or duplicate scope, leaving `config` unchanged; otherwise `Ok(())`.
 pub(crate) fn apply_sensitive_exclusions_section(
     section_value: &Value,
     config: &mut Config,
@@ -60,6 +64,10 @@ pub(crate) fn apply_sensitive_exclusions_section(
 
 /// Parse one entry into a validated rule, path, optional symbol, and rationale.
 /// Any key outside the four supported names fails before analysis begins.
+///
+/// `index` is the entry's list position used to name it in diagnostics, and `entry_value` is the raw entry, which must be an object.
+/// `registry` and `custom_rules` resolve the rule id to its pillar.
+/// Returns the validated exclusion, or `Err` when the entry is not an object, carries an unknown key, or has an invalid field.
 fn parse_sensitive_exclusion(
     index: usize,
     entry_value: &Value,
@@ -86,6 +94,12 @@ fn parse_sensitive_exclusion(
 
 /// Accept exactly one registered sensitive-data rule id.
 /// Patterns, pillar selectors, unknown ids, and other pillars each fail with their own diagnostic.
+///
+/// `entry` is the parsed entry object whose `rule` key is read, and `entry_path` names that entry in diagnostics.
+/// `registry` holds the built-in rules and `custom_rules` the project-defined ones consulted when the id is not built in.
+///
+/// Returns the accepted rule id, or `Err` when `rule` is missing, not a string or empty, or names a pattern or pillar selector.
+/// An unknown id or a rule outside the sensitive-data pillar also returns `Err`.
 fn parse_sensitive_rule_id(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -109,6 +123,9 @@ fn parse_sensitive_rule_id(
 
 /// Reject any rule value that selects more than one rule.
 /// A blanket suppression would hide findings nobody reviewed.
+///
+/// `rule_id` is the configured rule value, and `key_path` names its config key in diagnostics.
+/// Returns `Err` when `rule_id` contains a `RULE_PATTERN_CHARACTERS` character or parses as a pillar selector; otherwise `Ok(())`.
 fn reject_rule_pattern(rule_id: &str, key_path: &str) -> Result<(), String> {
     // Wildcard, glob, and regular-expression syntax all name a set rather than one rule.
     if rule_id.contains(RULE_PATTERN_CHARACTERS) {
@@ -127,6 +144,9 @@ fn reject_rule_pattern(rule_id: &str, key_path: &str) -> Result<(), String> {
 
 /// Find the pillar of one built-in or project-defined rule id.
 /// `None` means the user named a rule this build does not know.
+///
+/// `rule_id` is looked up in `registry` first, then by id in `custom_rules`, so a built-in definition wins over a custom one.
+/// Returns the matching rule's pillar, or `None` when neither source defines `rule_id`.
 fn rule_pillar(
     rule_id: &str,
     registry: &rules::RuleRegistry,
@@ -145,6 +165,10 @@ fn rule_pillar(
 
 /// Accept one project-relative file path and return it in report display form.
 /// Absolute paths, parent traversals, and globs each fail before analysis begins.
+///
+/// `entry` is the parsed entry object whose `path` key is read, and `entry_path` names that entry in diagnostics.
+/// Returns the normalised display path, or `Err` when the configured `path` is missing, not a string, empty or only whitespace.
+/// An absolute path, a `..` component or glob characters also return `Err`; an empty normalised path is not rejected.
 fn parse_sensitive_path(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -175,6 +199,8 @@ fn parse_sensitive_path(
 
 /// Decide whether a normalised display path is absolute on any platform gruff-rs reports for.
 /// A leading separator covers POSIX and UNC forms; a single-letter drive prefix covers Windows.
+///
+/// Returns `true` when `path` starts with `/` or with one ASCII letter followed by `:/`; any other value, including a relative path, gives `false`.
 fn is_absolute_display_path(path: &str) -> bool {
     path.starts_with('/')
         || path.split_once(":/").is_some_and(|(drive, _)| {
@@ -184,6 +210,9 @@ fn is_absolute_display_path(path: &str) -> bool {
 
 /// Accept the optional symbol that narrows an entry further.
 /// `None` means every occurrence of the rule in the named file is in scope.
+///
+/// `entry` is the parsed entry object whose optional `symbol` key is read, and `entry_path` names that entry in diagnostics.
+/// Returns `Ok(None)` when the key is absent, the symbol for any string value, even an empty one, and `Err` for any other value, including null.
 fn parse_sensitive_symbol(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -202,6 +231,9 @@ fn parse_sensitive_symbol(
 
 /// Reject a second entry claiming a scope an earlier entry already owns.
 /// Two entries over one scope would split the audit count arbitrarily.
+///
+/// `existing` holds the entries accepted so far, `candidate` is the entry being added, and `index` is its list position named in the diagnostic.
+/// Returns `Err` naming the earliest entry with the same rule, path and symbol, or `Ok(())` when the scope is new.
 fn reject_duplicate_scope(
     existing: &[SensitiveExclusionRule],
     candidate: &SensitiveExclusionRule,
