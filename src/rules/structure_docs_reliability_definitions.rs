@@ -4,10 +4,11 @@
 
 use super::*;
 
-/// Default-off switch that widens a documentation rule from public functions to every callable.
+/// Switch that widens a documentation rule from public functions to every callable; false narrows it back.
+/// Its value when config leaves it unset, true for the three documentation rules, comes from `Config::boolean_option_default`.
 const EVERY_CALLABLE_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
     name: "everyCallable",
-    description: "Check every callable, not only public functions; false by default.",
+    description: "Check every callable, not only public functions; true by default, false checks public functions only.",
     value_kind: OptionValueKind::Boolean,
 }];
 

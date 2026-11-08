@@ -295,15 +295,28 @@ impl Config {
             .unwrap_or_else(|| rules::builtin_detector_parameter(rule_id, name))
     }
 
-    /// Return whether the user switched on a boolean rule option; an option left unset reads as false.
+    /// Return whether a boolean rule option is on; an option left unset takes its native default.
     ///
     /// `rule_id` is the rule whose settings are searched and `option` is the boolean option name under its `options`.
-    /// Returns the configured boolean, or false when the rule has no settings or never set `option`.
+    /// Returns the configured boolean, or `boolean_option_default` when the rule has no settings or never set `option`.
     pub(crate) fn is_rule_option_enabled(&self, rule_id: &str, option: &str) -> bool {
         self.rule_settings
             .get(rule_id)
             .and_then(|setting| setting.boolean_options.get(option).copied())
-            .unwrap_or(false)
+            .unwrap_or_else(|| Self::boolean_option_default(rule_id, option))
+    }
+
+    /// Return the value a boolean rule option takes when config leaves it unset. `everyCallable` is on by default
+    /// for the three documentation rules, so every callable is checked unless a project sets it to false.
+    ///
+    /// `rule_id` names the rule and `option` the boolean option under its `options`.
+    /// Returns true for `everyCallable` on the three documentation rules, and false for every other option.
+    pub(crate) fn boolean_option_default(rule_id: &str, option: &str) -> bool {
+        option == "everyCallable"
+            && matches!(
+                rule_id,
+                "docs.missing-public-doc" | "docs.missing-param-doc" | "docs.missing-return-doc"
+            )
     }
 }
 

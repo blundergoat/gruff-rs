@@ -643,6 +643,12 @@ const EVERY_CALLABLE_ON: &str = "rules:
       everyCallable: true
 ";
 
+/// Project config that turns `everyCallable` off for the same three rules, keeping them public-only.
+/// Returns the `EVERY_CALLABLE_ON` text with each `true` replaced by `false`.
+fn every_callable_off() -> String {
+    EVERY_CALLABLE_ON.replace("true", "false")
+}
+
 /// Analyse one undocumented and one under-documented function at each visibility under `config`, and list
 /// the missing-public, missing-param and missing-return findings as sorted (rule id, symbol, severity,
 /// message) rows. `Combines both inputs.` names neither parameter nor the return value, so the param and
@@ -725,12 +731,12 @@ fn documentation_rule_rows(source: &str, config: &str) -> Vec<(String, String, S
     rows
 }
 
-/// Control: with `everyCallable` unset, the documentation rules still see only public functions and still
+/// Control: with `everyCallable` set to false, the documentation rules still see only public functions and still
 /// call them public.
 #[test]
 pub(crate) fn every_callable_off_keeps_documentation_rules_public_only() {
     let _guard = analysis_lock();
-    let rows = every_callable_rows("");
+    let rows = every_callable_rows(&every_callable_off());
     let scoped: Vec<(&str, &str)> = rows
         .iter()
         .map(|row| (row.0.as_str(), row.1.as_str()))
@@ -753,11 +759,13 @@ pub(crate) fn every_callable_off_keeps_documentation_rules_public_only() {
 }
 
 /// With `everyCallable` on, private and crate-visible functions join the public ones in all three
-/// documentation rules, at the severity each rule gives its public finding.
+/// documentation rules, at the severity each rule gives its public finding. A config that leaves the
+/// switch unset gets the same rows, because it is on by default.
 #[test]
 pub(crate) fn every_callable_brings_private_and_crate_functions_in_at_public_severity() {
     let _guard = analysis_lock();
     let rows = every_callable_rows(EVERY_CALLABLE_ON);
+    assert_eq!(every_callable_rows(""), rows);
     let scoped: Vec<(&str, &str)> = rows
         .iter()
         .map(|row| (row.0.as_str(), row.1.as_str()))
@@ -854,12 +862,12 @@ pub fn public_add(left: u32, right: u32) -> u32 {
     )
 }
 
-/// Control: with `everyCallable` unset, the parameter and return rules still skip bridge functions, while
+/// Control: with `everyCallable` set to false, the parameter and return rules still skip bridge functions, while
 /// the plain public function keeps both findings.
 #[test]
 pub(crate) fn every_callable_off_keeps_skipping_bridge_functions() {
     let _guard = analysis_lock();
-    let rows = bridge_rows("");
+    let rows = bridge_rows(&every_callable_off());
     let scoped: Vec<(&str, &str)> = rows
         .iter()
         .map(|row| (row.0.as_str(), row.1.as_str()))
@@ -977,12 +985,12 @@ pub(crate) fn unit_and_never_returns_need_no_return_doc() {
     );
 }
 
-/// Control: with `everyCallable` unset, a function returning `Result` is still outside the return rule.
+/// Control: with `everyCallable` set to false, a function returning `Result` is still outside the return rule.
 #[test]
 pub(crate) fn every_callable_off_still_skips_result_returns() {
     let _guard = analysis_lock();
     assert_eq!(
-        messages_for_return_shapes(""),
+        messages_for_return_shapes(&every_callable_off()),
         vec![COUNT_ITEMS_RETURN.to_string()]
     );
 }
@@ -1031,12 +1039,12 @@ pub fn open_control(file_name: &str) {
     .collect()
 }
 
-/// Control: with `everyCallable` unset, a contract keyword still excuses a lone parameter the rustdoc never
+/// Control: with `everyCallable` set to false, a contract keyword still excuses a lone parameter the rustdoc never
 /// names, so only the keyword-free control is reported.
 #[test]
 pub(crate) fn every_callable_off_keeps_single_parameter_keyword_escape() {
     let _guard = analysis_lock();
-    let rows = keyword_escape_rows("");
+    let rows = keyword_escape_rows(&every_callable_off());
     let symbols: Vec<(&str, &str)> = rows
         .iter()
         .map(|row| (row.0.as_str(), row.1.as_str()))
@@ -1154,12 +1162,12 @@ fn rule_symbol_pairs(rows: &[(String, String, String, String)]) -> Vec<(&str, &s
         .collect()
 }
 
-/// Control: with `everyCallable` unset, closures assigned to `const` and `static` items stay unchecked, so only
+/// Control: with `everyCallable` set to false, closures assigned to `const` and `static` items stay unchecked, so only
 /// the public fn control is reported.
 #[test]
 pub(crate) fn every_callable_off_leaves_closure_items_unchecked() {
     let _guard = analysis_lock();
-    let rows = closure_item_rows("");
+    let rows = closure_item_rows(&every_callable_off());
     assert_eq!(
         rule_symbol_pairs(&rows),
         [("docs.missing-param-doc", "open_control")],

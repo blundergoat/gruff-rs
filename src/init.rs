@@ -4,8 +4,8 @@
 //! The retired secret-preview key is always emitted as an inert empty list.
 
 use crate::cli::{FailThreshold, InitArgs, OutputWriter};
-use crate::config::{DeepScanBudget, DEFAULT_ABBREVIATIONS, SCHEMA_VERSION};
-use crate::rules::{builtin_registry, RuleDefinition, RuleRegistry};
+use crate::config::{Config, DeepScanBudget, DEFAULT_ABBREVIATIONS, SCHEMA_VERSION};
+use crate::rules::{builtin_registry, OptionValueKind, RuleDefinition, RuleRegistry};
 use crate::Severity;
 use std::collections::BTreeMap;
 use std::fs;
@@ -404,7 +404,8 @@ fn append_sensitive_exclusions_section(out: &mut String) {
 ///
 /// `out` is the config text being built and gains this rule's commented description and settings under `rules:`.
 /// `definition` supplies the id, description, and default enabled state, plus the default threshold and severity when the rule has a threshold.
-/// Named detector parameters for the rule id are also written as a `thresholds:` map of their defaults.
+/// Named detector parameters for the rule id are also written as a `thresholds:` map of their defaults, and boolean
+/// options as an `options:` map of the values `Config::boolean_option_default` gives them.
 fn append_rule_entry(out: &mut String, definition: &RuleDefinition) {
     out.push_str(&format!("  # {}\n", definition.description));
     out.push_str(&format!("  {}:\n", definition.id));
@@ -437,6 +438,22 @@ fn append_rule_entry(out: &mut String, definition: &RuleDefinition) {
                 "      {}: {}\n",
                 parameter.name,
                 format_threshold(parameter.default)
+            ));
+        }
+    }
+    // Boolean options are written at their native defaults, so a user sees each switch and can set it to false.
+    let mut boolean_options = definition
+        .options
+        .iter()
+        .filter(|option| option.value_kind == OptionValueKind::Boolean)
+        .peekable();
+    if boolean_options.peek().is_some() {
+        out.push_str("    options:\n");
+        for option in boolean_options {
+            out.push_str(&format!(
+                "      {}: {}\n",
+                option.name,
+                Config::boolean_option_default(definition.id, option.name)
             ));
         }
     }

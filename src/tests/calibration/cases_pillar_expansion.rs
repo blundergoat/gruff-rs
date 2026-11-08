@@ -94,7 +94,7 @@ pub(crate) fn cases() -> Vec<CalibrationCase> {
             Box::new(|root| {
                 baseline_with_lib(
                     root,
-                    "/// Processes caller input.\n///\n/// Returns the byte length.\npub fn process(payload: &str) -> usize { payload.len() }\n",
+                    "/// Processes `payload`, the caller input.\n///\n/// Returns the byte length.\npub fn process(payload: &str) -> usize { payload.len() }\n",
                 )
             }),
         ),

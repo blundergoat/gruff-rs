@@ -879,10 +879,10 @@ pub(crate) fn analyse_closure_item_docs(
 }
 
 /// Read `rules.<rule_id>.options.everyCallable`, the switch that widens a documentation rule past
-/// public functions; an unset switch reads as false.
+/// public functions; an unset switch reads as true, so only an explicit false keeps the rule public-only.
 ///
 /// `config` is the loaded configuration and `rule_id` a documentation rule id such as `docs.missing-param-doc`.
-/// Returns true when that option is enabled for the rule, false otherwise.
+/// Returns false when config sets the option to false for the rule, true otherwise.
 fn is_every_callable(config: &Config, rule_id: &str) -> bool {
     config.is_rule_option_enabled(rule_id, "everyCallable")
 }

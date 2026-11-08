@@ -5,7 +5,7 @@
 
 use super::*;
 
-use crate::config::DEFAULT_ABBREVIATIONS;
+use crate::config::{Config, DEFAULT_ABBREVIATIONS};
 use crate::init::{read_existing_fail_on, read_existing_ignore_patterns, render_default_config};
 use std::collections::BTreeMap;
 
@@ -76,6 +76,39 @@ pub(crate) fn generated_config_reproduces_builtin_rule_defaults() {
             definition.default_severity,
             "generated config severity drifts from the catalogue for `{}`",
             definition.id,
+        );
+    }
+    // Each boolean option is written out, not left to the fallback, so the file shows the switch to turn off.
+    for definition in registry.definitions() {
+        for option in definition
+            .options
+            .iter()
+            .filter(|option| option.value_kind == rules::OptionValueKind::Boolean)
+        {
+            assert_eq!(
+                config.rule_settings[definition.id]
+                    .boolean_options
+                    .get(option.name)
+                    .copied(),
+                Some(Config::boolean_option_default(definition.id, option.name)),
+                "generated config does not seed `{}.options.{}` at its default",
+                definition.id,
+                option.name,
+            );
+        }
+    }
+    for rule_id in [
+        "docs.missing-public-doc",
+        "docs.missing-param-doc",
+        "docs.missing-return-doc",
+    ] {
+        assert_eq!(
+            config.rule_settings[rule_id]
+                .boolean_options
+                .get("everyCallable")
+                .copied(),
+            Some(true),
+            "{rule_id}"
         );
     }
 }

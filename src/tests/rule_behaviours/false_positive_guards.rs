@@ -539,7 +539,8 @@ pub fn well_documented(name: String) -> String {
 /// `pub(super)`, or `pub(in path)` items. Those are crate-visible (so
 /// dead-code / reachability rules still see them as reachable) but they
 /// are NOT part of the external API surface, so reportable rules stay
-/// silent. The corresponding `pub` bare positives are covered by the
+/// silent while `docs.missing-public-doc` keeps `everyCallable` false.
+/// The corresponding `pub` bare positives are covered by the
 /// existing fixture-based proofs.
 #[test]
 pub(crate) fn external_public_rules_skip_crate_visible_items() {
@@ -573,11 +574,14 @@ pub(crate) fn entry_m() {}
 pub(crate) fn entry_n() {}
 "##,
     );
+    write_config(
+        dir.path(),
+        "rules:\n  docs.missing-public-doc:\n    options:\n      everyCallable: false\n",
+    );
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
