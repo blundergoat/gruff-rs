@@ -50,7 +50,7 @@ pub(crate) fn analyse_project(
 
     findings
         .into_iter()
-        .map(|finding| apply_configured_severity(finding, config))
+        .map(|finding| apply_configured_severity(rules::with_builtin_confidence(finding), config))
         .collect()
 }
 

@@ -20,7 +20,7 @@ pub(crate) const WASTE_RULES: &[RuleDefinition] = &[
         Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Advisory,
-        Confidence::High,
+        Confidence::Medium,
         None,
         "Flags unwrap and expect calls outside test attributes.",
         false_positives: &[

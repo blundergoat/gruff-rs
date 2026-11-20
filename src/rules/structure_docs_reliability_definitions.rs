@@ -52,7 +52,7 @@ pub(crate) const COMPLEXITY_RULES: &[RuleDefinition] = &[
         Pillar::Complexity,
         RuleKind::Rust,
         Severity::Warning,
-        Confidence::High,
+        Confidence::Low,
         COMPLEXITY_COGNITIVE_THRESHOLD,
         "Flags functions with high cognitive complexity.",
         false_positives: &[
@@ -101,7 +101,7 @@ pub(crate) const DEAD_CODE_RULES: &[RuleDefinition] = &[
         Pillar::DeadCode,
         RuleKind::Rust,
         Severity::Advisory,
-        Confidence::Low,
+        Confidence::High,
         None,
         "Flags private functions with no same-file call sites.",
         false_positives: &[
@@ -207,7 +207,7 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Pillar::Documentation,
         RuleKind::Rust,
         Severity::Advisory,
-        Confidence::Medium,
+        Confidence::High,
         None,
         "Flags public Rust API items without attached outer `///` or `/** */` rustdoc; with `everyCallable`, also private and crate-visible functions and impl methods, trait implementation methods included, and closures bound to `const` or `static` items, outside test code.",
         options: EVERY_CALLABLE_OPTIONS,
@@ -252,7 +252,7 @@ pub(crate) const DOCUMENTATION_AND_DESIGN_RULES: &[RuleDefinition] = &[
         Pillar::Documentation,
         RuleKind::Rust,
         Severity::Advisory,
-        Confidence::Medium,
+        Confidence::High,
         None,
         "Flags unsafe blocks whose nearby SAFETY: rationale is too short or vague.",
         false_positives: &[
@@ -379,9 +379,20 @@ pub(crate) const ERROR_HANDLING_RULES: &[RuleDefinition] = &[
         Pillar::Maintainability,
         RuleKind::Rust,
         Severity::Warning,
-        Confidence::High,
+        Confidence::Medium,
         None,
         "Flags panic! calls in non-test functions without a local invariant comment.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A `panic!` whose trigger is already explained in rustdoc or a nearby comment can still be reported because the rule looks for `PANIC:` or `INVARIANT:` in the function body.",
+                mitigation: "State the documented condition beside the `panic!` in a `// PANIC:` or `// INVARIANT:` comment.",
+            },
+            FalsePositiveShape {
+                shape: "A `panic!` in a test helper can be reported when the rule’s file path and test-context checks treat the helper as production code.",
+                mitigation: "Put `#[cfg(test)]` on the helper itself when it is only used by tests.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "error-handling.unimplemented-placeholder",

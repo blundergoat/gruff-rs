@@ -137,6 +137,51 @@ Threshold defaults are anchored to documented peer analyzers where one exists, a
 | `size.parameter-count` | 7 | Clippy `too_many_arguments` 7 | Aligned to Clippy, the default Rust devs calibrate to; idiomatic Rust tolerates 6-7 params (builders, context structs). |
 | `test-quality.long-test` | 120 | RuboCop RSpec/ExampleLength 25 (unit only) | Gruff-specific; counts code lines from the first assertion, or across the whole test when it has none, so setup-heavy integration tests are not penalised for fixture construction. |
 
+## Confidence evidence
+
+A rule's confidence follows its measured precision: high at an error-adjusted score of 0.85 or more, medium from 0.70, low below, and a raise needs the lower bound of its 95% interval to clear the new band. Every built-in finding carries its rule's confidence. These default-on rules have no measurement that sets their confidence, so the value below is inherited, not measured:
+
+| Rule | Confidence | Measurement |
+|---|---|---|
+| `architecture.large-module` | high | insufficient |
+| `architecture.module-fan-out` | high | insufficient |
+| `architecture.public-api-surface` | high | insufficient |
+| `concurrency.blocking-call-in-async` | medium | unmeasured |
+| `concurrency.lock-across-await` | medium | unmeasured |
+| `dead-code.unused-private-item-candidate` | medium | insufficient |
+| `dependency.git-source` | high | unmeasured |
+| `dependency.git-unpinned-revision` | high | unmeasured |
+| `dependency.missing-package-metadata` | high | unmeasured |
+| `dependency.wildcard-version` | high | unmeasured |
+| `docs.missing-panics-section` | high | insufficient |
+| `docs.missing-readme` | high | unmeasured |
+| `docs.missing-safety-section` | high | unmeasured |
+| `modernisation.manual-contains` | medium | unmeasured |
+| `modernisation.manual-strip-prefix` | medium | unmeasured |
+| `modernisation.manual-unwrap-or-default` | medium | unmeasured |
+| `modernisation.question-mark-candidate` | medium | unmeasured |
+| `naming.identifier-shadow` | high | insufficient |
+| `performance.regex-in-loop` | high | unmeasured |
+| `security.github-actions-pull-request-target` | medium | unmeasured |
+| `security.github-actions-remote-shell` | high | too-few |
+| `security.github-actions-secrets-in-pr` | medium | unmeasured |
+| `security.insecure-rng-for-secrets` | medium | unmeasured |
+| `security.template-injection-xss` | medium | unmeasured |
+| `security.tls-verification-disabled` | high | too-few |
+| `security.weak-crypto` | medium | too-few |
+| `security.xxe-candidate` | medium | unmeasured |
+| `sensitive-data.api-key-pattern` | high | unmeasured |
+| `sensitive-data.aws-access-key` | high | unmeasured |
+| `sensitive-data.gcp-service-account-key` | high | unmeasured |
+| `sensitive-data.jwt-token` | high | unmeasured |
+| `sensitive-data.phi-pattern` | high | unmeasured |
+| `sensitive-data.pii-test-fixture` | high | unmeasured |
+| `sensitive-data.url-embedded-credentials` | high | too-few |
+| `size.parameter-count` | high | too-few |
+| `test-quality.ignored-without-reason` | high | unmeasured |
+| `test-quality.long-test` | high | unmeasured |
+| `test-quality.trivial-assertion` | high | unmeasured |
+
 ## Deferred
 
 - Type-aware unused symbol and call-graph dead-code certainty. Peer unlocks:

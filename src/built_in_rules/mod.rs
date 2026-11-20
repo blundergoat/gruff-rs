@@ -268,7 +268,7 @@ pub(crate) fn analyse_with_artifacts(
     let findings = findings
         .into_iter()
         .filter(|finding| config.is_rule_enabled(&finding.rule_id))
-        .map(|finding| apply_configured_severity(finding, config))
+        .map(|finding| apply_configured_severity(rules::with_builtin_confidence(finding), config))
         .collect();
     SourceAnalysisArtifacts {
         findings,

@@ -109,7 +109,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         Pillar::Naming,
         RuleKind::Rust,
         Severity::Advisory,
-        Confidence::Medium,
+        Confidence::High,
         None,
         "Flags two-letter `let` bindings and function parameters outside accepted abbreviations, except conventional typed `cx` context parameters.",
         false_positives: &[
@@ -219,7 +219,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Pillar::Security,
         RuleKind::Text,
         Severity::Warning,
-        Confidence::Medium,
+        Confidence::High,
         None,
         "Flags third-party workflow or composite-action dependencies that are not pinned to a full commit SHA.",
         false_positives: &[
@@ -322,7 +322,7 @@ pub(crate) const PERFORMANCE_AND_SECURITY_RULES: &[RuleDefinition] = &[
         Pillar::Security,
         RuleKind::Rust,
         Severity::Warning,
-        Confidence::High,
+        Confidence::Medium,
         None,
         "Flags unsafe blocks without a nearby SAFETY rationale.",
         false_positives: &[
@@ -511,9 +511,20 @@ pub(crate) const SENSITIVE_DATA_RULES: &[RuleDefinition] = &[
         Pillar::SensitiveData,
         RuleKind::Text,
         Severity::Warning,
-        Confidence::High,
+        Confidence::Medium,
         None,
         "Flags private key block markers.",
+        false_positives: &[
+            FalsePositiveShape {
+                shape: "A literal PEM begin marker labeled `PRIVATE KEY`, `RSA PRIVATE KEY`, or `EC PRIVATE KEY` in a shell array of `git grep` search patterns matches the rule’s regex without a key body or end marker.",
+                mitigation: "Build each search pattern from its PEM label with `printf -- '-----BEGIN %s-----' \"$1\"` in a shell helper, then pass the resulting patterns to `git grep`.",
+            },
+            FalsePositiveShape {
+                shape: "The rule matches the PEM begin marker in rustdoc format notes, placeholder examples, and empty parsing fixtures without checking for a key body.",
+                mitigation: "Name the PEM header by its label in rustdoc prose and construct example and fixture headers with `concat!(\"-----BEGIN \", \"RSA PRIVATE KEY-----\")`, keeping each header’s original label and line breaks.",
+            },
+        ],
+        related: &[],
     ),
     rule_definition!(
         "sensitive-data.url-embedded-credentials",

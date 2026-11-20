@@ -220,6 +220,20 @@ pub(crate) fn builtin_severity(rule_id: &str) -> Severity {
     }
 }
 
+/// Give a built-in finding its rule's catalogue confidence, kept single-sourced for the same reason as
+/// [`builtin_severity`]: `list-rules`, the hook gate and the score must read one value, so a detector's own literal
+/// must not override it.
+///
+/// `finding` is a finding whose rule id may name a built-in rule.
+/// Returns `finding` with its rule's catalogue confidence, or unchanged when the id is not a built-in rule, such as a
+/// custom rule.
+pub(crate) fn with_builtin_confidence(mut finding: crate::Finding) -> crate::Finding {
+    if let Some(definition) = builtin_registry_cached().get(&finding.rule_id) {
+        finding.confidence = definition.confidence;
+    }
+    finding
+}
+
 /// A named numeric knob a detector reads, as opposed to a rubric's single threshold. ADR-011 keeps
 /// every rubric at one `threshold`; a detector with independent knobs names each one under
 /// `rules.<id>.thresholds`, spelled as the sibling ports spell it.
