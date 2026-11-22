@@ -1,6 +1,6 @@
 # Glossary - gruff-rs
 
-Last reviewed 2026-07-13.
+Last reviewed 2026-11-23.
 
 This glossary defines terms used by `gruff-rs`, its public reports, and local project memory. Keep shared gruff-family terms aligned with the sibling implementations; keep Rust-specific differences explicit rather than making them look identical.
 
@@ -16,7 +16,7 @@ The complete result of one scan: schema version, tool metadata, run metadata, pa
 
 ### Baseline
 
-A reviewed-finding suppression file. `gruff-rs` writes and reads `gruff.baseline.v1`; entries match findings by fingerprint, rule ID, and file path.
+A reviewed-finding suppression file. `gruff-rs` writes and reads `gruff.baseline.v3`, whose rows store a line-free finding identity (`src/baseline_identity.rs`) and an occurrence count, so reformatting keeps a review and extra occurrences stay visible. Sensitive findings are counted, never stored. A 0.5 baseline is refused for suppression; `analyse --migrate-baseline <old> --generate-baseline <new>` converts it into a separate file.
 
 ### Changed-Code Scan
 
@@ -48,7 +48,7 @@ One rule-produced result with rule ID, message, severity, confidence, pillar, lo
 
 ### Fingerprint
 
-A stable 16-character hash derived from finding identity fields. Baselines and downstream tooling key on it together with rule ID and file path.
+A stable 16-character hash derived from finding identity fields. Analysis and hook JSON carry it, analysis deduplicates findings on it, and downstream tooling may key on it; baselines match on the separate line-free identity instead.
 
 ### Gruff Config
 

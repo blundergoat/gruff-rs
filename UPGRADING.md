@@ -91,7 +91,7 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
     `match` in its baseline identity and SARIF fingerprint. Such findings could not be baselined before, so
     regenerate the baseline once to review them.
 
-14. **an empty `--changed-ranges` is refused instead of scanning everything** — `--changed-ranges=` asks for a scoped run and names no range, and it was read as "no filter": the run silently widened to the whole tree and exited `0`. It now exits `2` with one `changed-region` diagnostic and no findings, on analyse and on the hook. A caller that passes a computed range which can legitimately come back empty must skip the run rather than pass the empty value; the shipped `gruff-code-quality.sh` wrapper already does.
+14. **an empty `--changed-ranges` is refused instead of scanning everything** — `--changed-ranges=` asks for a scoped run and names no range, and it was read as "no filter": the run silently widened to the whole tree and exited `0`. It now exits `2` with one `changed-region` diagnostic and no findings, on analyse and on the hook. A caller that passes a computed range which can legitimately come back empty must skip the run rather than pass the empty value; the shipped goat-flow `gruff-code-quality` hook already does.
 
 15. **`sensitive-data.high-entropy-string` no longer reports in package-manager lockfiles** — Nine lockfile names are skipped for that rule alone, at any depth, and each skip is published as an audit row carrying `source: "built-in"`. A project that relied on those findings loses them; every other sensitive-data rule still reads the file, so a credential pasted into a lockfile is still reported.
 

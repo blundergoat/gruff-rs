@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-11-22
+last_reviewed: 2026-11-23
 ---
 
 ## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
@@ -122,9 +122,10 @@ kept passing because `bin/$target` was still in the list, only no longer first.
 `.goat-flow/config.yaml` now pins `hooks.gruff-code-quality.binaries.rs` to
 `bin/gruff-rs`, which the playbook treats as project authority and the hook
 honours, and `scripts/preflight-checks.sh` (search: `rs: bin/gruff-rs`) asserts
-the pin. The hook itself never searched `target/`
-(`.goat-flow/hooks/gruff-code-quality.sh`,
-search: `auto-executing a name-matched binary`).
+the pin. The hook itself never searched `target/`, and its goat-flow 1.19.0 Node
+form still does not: after the `GRUFF_RS_BIN` override and the configured pin it
+searches only `vendor/bin`, `node_modules/.bin`, `bin`, `.venv/bin`, `~/.local/bin`
+and `PATH` (`.goat-flow/hooks/gruff/analyzer.mjs`, search: `export function discoverAnalyzer`).
 
 **2026-11-22 extension:** The PR 7 before/after benchmark shared a Cargo
 target directory across two checkouts. After building the PR head, the next

@@ -55,8 +55,8 @@ Usage: scripts/preflight-checks.sh [options]
 Runs the local gruff-rs preflight suite:
   - bash syntax check for tracked and untracked shell scripts
   - shellcheck for shell scripts when shellcheck is installed
-  - deny-dangerous hook policy self-test (smoke tier)
-  - post-turn safety hook exit-contract self-test
+  - deny-dangerous and deny-git-mutations hook policy self-tests (smoke tier; needs node)
+  - post-turn safety hook exit-contract self-test (needs node)
   - Claude permission pairing, plus goat-flow template deny coverage when the package is installed
   - local goat-flow hook and doc deltas, and goat-flow learning-loop stats when the package is installed
   - cargo fmt, clippy, and tests
@@ -444,14 +444,15 @@ release_version_is_newer() {
 # Security fixes this repository carries on top of the managed goat-flow hook templates, as "hook<TAB>anchor<TAB>reason"
 # rows. Each upgrade has silently reverted at least one of them, so presence is asserted rather than assumed. Anchors
 # are semantic on purpose: byte comparison would trip on an upstream reflow and would also fail once upstream adopts a
-# fix, which is the outcome we want to keep passing - so `goat-flow audit --check-drift` reporting these hooks as
-# drifted is the expected state, not a repair signal. Every reason states what breaks without the fix, because this
-# table is the only place that harm is recorded; the hook files themselves are tracked, so git is the recovery source.
+# fix, which is the outcome we want to keep passing - so `goat-flow hooks list` reporting an edited hook as
+# `installation-stale` is the expected state, not a repair signal. Every reason states what breaks without the fix,
+# because this table is the only place that harm is recorded; the hook files themselves are tracked, so git is the
+# recovery source.
 MANAGED_HOOK_DELTAS=(
-  $'post-turn-safety.sh\tis_line_allowlisted\tline-scoped goat-flow-allow-secret marker (ADR-022); without it every turn touching fixtures/sample.rs blocks on a calibration token the repository must keep'
-  $'post-turn-safety.sh\t"@@ "*)\tonly a real hunk header is skipped; without it an added line rendering as "+++" under --unified=0 is dropped and a credential on it ends the turn with exit 0'
-  $'run-with-bash.mjs\tlaunchedModulePath = realpathSync(resolvedLaunchPath)\tlauncher resolves symlinks before comparing its own path (adopted upstream in 1.17.0); without it a symlinked project directory loads the launcher, runs no hook, and exits 0 as "guard passed"'
-  $'deny-dangerous/deny-dangerous-self-test.sh\tfor command_wrapper in watch parallel env\tregression cases requiring an unknown watch/parallel option to block (adopted upstream in 1.17.0, which fails closed); without them a wrapper parser that skips or abandons on an unknown option lets "watch --any-unknown-flag rm -rf /" through and still passes --self-test=full'
+  $'post-turn/scanner.mjs\tif (line.includes("goat-flow-allow-secret"))\tline-scoped goat-flow-allow-secret marker (ADR-022), a local addition no upstream release ships; without it any turn that adds or edits the token line in fixtures/sample.rs blocks on a calibration token the repository must keep'
+  $'post-turn/scanner.mjs\tif (!section.isExpectingHeader || !line.startsWith("+++ "))\tonly the destination header right after a diff --git line is skipped (adopted upstream in 1.19.0); without it an added line rendering as "+++ ..." is taken for a header and a credential on it ends the turn with exit 0'
+  $'hook-launch.mjs\tcontainmentHookScriptPath = realpathSync(hookScriptPath)\tlauncher resolves symlinks before its containment test (adopted upstream in 1.17.0, kept by the 1.19.0 Node launcher); without it a symlinked project directory loads the launcher, runs no hook, and exits 0 as "guard passed"'
+  $'deny-dangerous/corpus.json\t"label": "uncertain wrapper options"\tregression cases requiring an unknown watch/parallel/env option to block (adopted upstream in 1.17.0, kept by the 1.19.0 corpus); without them a wrapper parser that skips or abandons on an unknown option lets "watch --any-unknown-flag rm -rf /" through and still passes --self-test=full'
 )
 
 # Prove every local hook delta is still present in the installed managed hooks. A goat-flow install or hooks sync
@@ -780,11 +781,14 @@ check_shellcheck() {
   shellcheck "${shell_files[@]}"
 }
 
-# Exercise the deny hook's policy corpus so a regression in the command guard
-# fails the build rather than silently widening what agents may run. Smoke is the
-# per-change tier; run --self-test=full when the hook or its policy modules change.
+# Exercise both deny hooks' policy cases so a regression in either command guard
+# fails the build rather than silently widening what agents may run. Since
+# goat-flow 1.19.0 each hook's --self-test runs only its own policy's rows of the
+# shared deny-dangerous/corpus.json, so both must run. Smoke is the per-change
+# tier; run --self-test=full when a hook or its policy modules change.
 deny_dangerous_self_test() {
-  bash "$REPO_ROOT/.goat-flow/hooks/deny-dangerous.sh" --self-test=smoke
+  node "$REPO_ROOT/.goat-flow/hooks/deny-dangerous.mjs" --self-test=smoke \
+    && node "$REPO_ROOT/.goat-flow/hooks/deny-git-mutations.mjs" --self-test=smoke
 }
 
 # Exercise the Stop-hook fail-closed contract in isolated temporary repositories.
@@ -1007,14 +1011,32 @@ focused_github_metadata_scan() {
   printf 'analysed exact GitHub metadata paths: %s\n' "${metadata_paths[*]}"
 }
 
-# Prove users can request deterministic JSON findings from the fixture project.
+# Prove users can request deterministic JSON findings from the fixture project. `.gruff-rs.yaml` ignores `fixtures/**`
+# so the dogfood scan skips them, and config ignores bind explicit paths too (ADR-018), so both fixture smokes run
+# without the project config. An empty report would otherwise pass while no rule ran.
 fixture_json_smoke() {
-  cargo run --quiet -- analyse fixtures --format json --fail-on none >"$WORK_DIR/fixtures.json"
+  local report_file="$WORK_DIR/fixtures.json"
+
+  cargo run --quiet -- analyse fixtures --no-config --format json --fail-on none >"$report_file" || return $?
+  # Zero analysed files or zero findings means the smoke proved nothing about the analyzer.
+  jq -e '.summary.analysedFiles > 0 and .summary.findings.total > 0' "$report_file" >/dev/null || {
+    printf 'fixture JSON scan: analysedFiles=%s findings=%s; expected both above zero\n' \
+      "$(jq -r '.summary.analysedFiles' "$report_file")" \
+      "$(jq -r '.summary.findings.total' "$report_file")" >&2
+    return 1
+  }
 }
 
 # Prove users can request SARIF suitable for a code-scanning upload step.
 fixture_sarif_smoke() {
-  cargo run --quiet -- analyse fixtures --format sarif --fail-on none >"$WORK_DIR/fixtures.sarif"
+  local report_file="$WORK_DIR/fixtures.sarif"
+
+  cargo run --quiet -- analyse fixtures --no-config --format sarif --fail-on none >"$report_file" || return $?
+  # A SARIF run with no results cannot show that findings survive the renderer.
+  jq -e '[.runs[].results[]] | length > 0' "$report_file" >/dev/null || {
+    printf 'fixture SARIF scan: no results in %s\n' "$report_file" >&2
+    return 1
+  }
 }
 
 # Prove integrations can enumerate the complete rule registry as JSON.
@@ -1686,11 +1708,15 @@ docs_drift_check() {
   local code_map_doc="$REPO_ROOT/.goat-flow/code-map.md"
   local analysis_source="$REPO_ROOT/src/analysis.rs"
   local summary_source="$REPO_ROOT/src/machine_contract.rs"
+  local baseline_source="$REPO_ROOT/src/baseline.rs"
+  local hook_source="$REPO_ROOT/src/hook.rs"
   local catalogue_file="$WORK_DIR/list-rules.json"
   local backtick='`'
   local package_version
   local live_schema
   local live_summary_schema
+  local live_baseline_schema
+  local live_hook_schema
   local expected_schema
   local orientation_doc
   local document_schema
@@ -1708,19 +1734,26 @@ docs_drift_check() {
     && -f "$glossary_doc" \
     && -f "$code_map_doc" \
     && -f "$analysis_source" \
-    && -f "$summary_source" ]] || {
-    printf 'docs drift: expected architecture.md, glossary.md, code-map.md, src/analysis.rs, and src/machine_contract.rs\n' >&2
+    && -f "$summary_source" \
+    && -f "$baseline_source" \
+    && -f "$hook_source" ]] || {
+    printf 'docs drift: expected architecture.md, glossary.md, code-map.md, src/analysis.rs, src/machine_contract.rs, src/baseline.rs, and src/hook.rs\n' >&2
     return 1
   }
 
-  # Schema-version drift: the orientation docs must not name a stale gruff.analysis.v* or gruff.summary.v* that
-  # differs from the live schema string in the code. Both envelopes are family-contracted, so a stale version sends
-  # a reader to the wrong contract.
+  # Schema-version drift: the orientation docs must not name a stale gruff.analysis.v*, gruff.summary.v*,
+  # gruff.baseline.v*, or gruff.hook.v* that differs from the live schema string in the code. All four envelopes are
+  # family-contracted, so a stale version sends a reader to the wrong contract. The baseline and hook versions come
+  # from their named constants because src/baseline.rs also holds the legacy migration-input schema.
   live_schema=$(grep -oE 'gruff\.analysis\.v[0-9]+' "$analysis_source" | sort -u | head -1)
   live_summary_schema=$(grep -oE 'gruff\.summary\.v[0-9]+' "$summary_source" | sort -u | head -1)
+  live_baseline_schema=$(grep -E '^pub\(crate\) const BASELINE_SCHEMA_VERSION' "$baseline_source" \
+    | grep -oE 'gruff\.baseline\.v[0-9]+' | head -1)
+  live_hook_schema=$(grep -E '^pub\(crate\) const HOOK_CONTRACT_VERSION' "$hook_source" \
+    | grep -oE 'gruff\.hook\.v[0-9]+' | head -1)
   # An empty schema means the gate cannot tell users which report contract is current.
-  if [[ -z "$live_schema" || -z "$live_summary_schema" ]]; then
-    printf 'docs drift: could not read live analysis and summary schemas from src/analysis.rs and src/machine_contract.rs\n' >&2
+  if [[ -z "$live_schema" || -z "$live_summary_schema" || -z "$live_baseline_schema" || -z "$live_hook_schema" ]]; then
+    printf 'docs drift: could not read live analysis, summary, baseline, and hook schemas from src/analysis.rs, src/machine_contract.rs, src/baseline.rs, and src/hook.rs\n' >&2
     return 1
   fi
   # Every orientation document must name only the schemas users receive now.
@@ -1730,6 +1763,8 @@ docs_drift_check() {
       # Each mention is judged against the live version of its own envelope.
       case "$document_schema" in
         gruff.summary.*) expected_schema=$live_summary_schema ;;
+        gruff.baseline.*) expected_schema=$live_baseline_schema ;;
+        gruff.hook.*) expected_schema=$live_hook_schema ;;
         *) expected_schema=$live_schema ;;
       esac
       # Empty grep output has no contract, while the live schema is already correct.
@@ -1737,7 +1772,7 @@ docs_drift_check() {
         continue
       fi
       stale_schemas+=("${orientation_doc##*/}:$document_schema")
-    done < <(grep -oE 'gruff\.(analysis|summary)\.v[0-9]+' "$orientation_doc" | sort -u)
+    done < <(grep -oE 'gruff\.(analysis|summary|baseline|hook)\.v[0-9]+' "$orientation_doc" | sort -u)
   done
 
   # Command-surface drift: every command the binary exposes must be named in
@@ -1761,9 +1796,11 @@ docs_drift_check() {
   if ((${#stale_schemas[@]} > 0 || ${#missing_commands[@]} > 0)); then
     # Stale schema entries tell maintainers which report-contract references to update.
     if ((${#stale_schemas[@]} > 0)); then
-      printf 'docs drift: stale schema (live=%s, %s): %s\n' \
+      printf 'docs drift: stale schema (live=%s, %s, %s, %s): %s\n' \
         "$live_schema" \
         "$live_summary_schema" \
+        "$live_baseline_schema" \
+        "$live_hook_schema" \
         "${stale_schemas[*]}" >&2
     fi
     # Missing commands tell maintainers which user-visible mode lacks orientation.
@@ -1774,9 +1811,11 @@ docs_drift_check() {
     return 1
   fi
 
-  printf '%s + %s + %d CLI commands match orientation docs\n' \
+  printf '%s + %s + %s + %s + %d CLI commands match orientation docs\n' \
     "$live_schema" \
     "$live_summary_schema" \
+    "$live_baseline_schema" \
+    "$live_hook_schema" \
     "$checked_command_count"
 }
 
@@ -1855,7 +1894,7 @@ run_preflight_suite() {
 
   run_preflight_check "shell syntax" check_shell_syntax
   run_preflight_check "shellcheck" check_shellcheck
-  run_preflight_check "deny-dangerous policy" deny_dangerous_self_test
+  run_preflight_check "deny hook policies" deny_dangerous_self_test
   run_preflight_check "post-turn safety" post_turn_safety_self_test
   run_preflight_check "permission rule hygiene" permission_rule_hygiene
   run_preflight_check "managed hook deltas" managed_hook_deltas_present

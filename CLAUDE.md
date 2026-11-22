@@ -1,6 +1,6 @@
-# gruff-rs - goat-flow 1.18.0
+# gruff-rs - goat-flow 1.19.0
 
-Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, safe to run against untrusted source trees, and true to the family-contracted `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3` and `gruff.hook.v2` envelopes that `FAMILY-CONTRACT.md` owns in this target repository.
+Rust CLI quality analyzer for Rust and text projects. Primary invariant: reports must stay deterministic, safe to run against untrusted source trees, and true to the family-contracted `gruff.analysis.v3`, `gruff.summary.v3`, `gruff.baseline.v3` and `gruff.hook.v2` envelopes that `FAMILY-CONTRACT.md` owns at the gruff-workspace root (`../../FAMILY-CONTRACT.md` from here, outside this repository).
 
 ## Mission
 
@@ -52,11 +52,11 @@ Concise Conventional Commits when a commit is requested (e.g. `feat: add baselin
 ```bash
 bash scripts/preflight-checks.sh
 cargo build
-cargo run -- analyse fixtures --format json --fail-on none
-shellcheck scripts/*.sh .goat-flow/hooks/*.sh .goat-flow/hooks/*/*.sh
+cargo run -- analyse fixtures --no-config --format json --fail-on none
+shellcheck scripts/*.sh .goat-flow/hooks/*/*.sh
 ```
 
-Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.
+The fixture scan needs `--no-config`: `.gruff-rs.yaml` ignores `fixtures/**` for the dogfood scan, and config ignores bind explicit paths too (ADR-018), so without it the scan analyses zero files and still exits 0. Use `bash scripts/start-dev.sh` only when the dashboard needs manual browser testing.
 
 ## Execution Loop: READ -> SCOPE -> ACT -> VERIFY
 
@@ -74,9 +74,11 @@ Declare intent, complexity tier, mode, files allowed to change, non-goals, and b
 
 Declare `State: [MODE] | Goal: [one line] | Exit: [condition]`. Mode must be Plan, Implement, Explain, Debug, or Review.
 
+For milestone work, load `goat-plan`; run `goat-flow plans time start <milestone-file> --category <product|proof|other>` before the first source edit, `goat-flow plans time stop <milestone-file>` at human gates, and add `--finalize` at exit. Resume with start after release. The CLI writes measured `Actual`; never invent it.
+
 ### VERIFY
 
-Run required checks for changed files. Check cross-references after renames. Tick milestone checkboxes immediately. Stop the line when tests break, builds fail, or behaviour regresses. If VERIFY caught a failure or corrected course, update the learning loop before DoD.
+Run required checks for changed files. Check cross-references after renames. Tick each finished milestone task `- [x]` immediately, never in a batch at the end. Stop the line when tests break, builds fail, or behaviour regresses. If VERIFY caught a failure or corrected course, update the learning loop before DoD.
 
 **Hallucination red-flags:**
 1. **Checks passed.** Do not claim tests pass or any check passed (shellcheck, typecheck, preflight, audit) without showing the literal pass/fail line copied verbatim from this session's run. Paraphrase, cached output, or prior-session results do not count.

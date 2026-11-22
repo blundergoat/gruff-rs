@@ -17,9 +17,12 @@
 
 `src/` = Rust source directory.
 `src/main.rs` = Entry point and command dispatch: `main`, `run_summary`, `run_report`, `options_from_analyse`/`options_from_report`, the `analyse_source` rule-dispatch shim, scan-timing instrumentation (`Instant::now()` around `run_analysis`), and a few orchestration helpers (`changed_files`, etc.). Most subsystem responsibilities live in dedicated modules below.
-`src/cli/` = Clap argument structs (`AnalyseArgs`, `ReportArgs`, `SummaryArgs`, `DashboardArgs`, `ListRulesArgs`, `CheckIgnoreArgs`, `CompletionArgs`, `InitArgs`) in `args.rs`; CLI enum, `GlobalOptions`, `OutputWriter`, and `RunOutcome::classify` in `mod.rs`. Owns the `--help` template and the `paths` positional whose default is the current directory.
+`src/cli/` = Clap argument structs (`AnalyseArgs`, `HookArgs`, `ReportArgs`, `SummaryArgs`, `DashboardArgs`, `ListRulesArgs`, `CheckIgnoreArgs`, `CompletionArgs`, `MigrateConfigArgs`, `InitArgs`) in `args.rs`; CLI enum, `GlobalOptions`, `OutputWriter`, and `RunOutcome::classify` in `mod.rs`. Owns the `--help` template and the `paths` positional whose default is the current directory.
 `src/analysis.rs` = `run_analysis` entry point: builds `AnalysisOptions`, drives discovery + per-source analysis + project-wide analysis, assembles the final `AnalysisReport` (schema `gruff.analysis.v3`).
+`src/command_setup.rs` = Scan preparation shared by `analyse`, `report`, and `summary` before any source file opens.
 `src/discovery.rs` = Git-ignore-aware source discovery; `resolve_input_paths` defaults empty paths to `["."]` and routes through the `ignore` crate's `WalkBuilder`.
+`src/ignore_policy.rs` = Ignore-decision reasons (`config`, `default`, `gitignore`); config `paths.ignore` stays authoritative for explicit paths and `--include-ignored` (ADR-018).
+`src/check_ignore.rs` = `check-ignore` command: reports why a path did or did not reach a scan without running the analyzer.
 `src/source.rs` = `SourceFile` and `SourceUnit` types plus parser invocation.
 `src/parser/` = Rust file parsing via `syn` (`mod.rs`) and comment/string masking (`comments.rs`); emits `parse-error` diagnostics on failure while preserving text-only rule coverage.
 `src/project/` = Project-wide aggregation (`mod.rs` builds `ProjectContext` and the identifier-count index used by cross-file dead-code analysis via `count_rust_identifiers`; `items.rs` collects project-wide item definitions; `manifest.rs`/`lockfile.rs` parse `Cargo.toml`/`Cargo.lock`).
@@ -28,9 +31,20 @@
 `src/custom_rules.rs` = Regex-based custom rule evaluator (config-loaded; `custom.<slug>` namespace).
 `src/config.rs` = `Config`, `AnalysisOptions`, `RequestedScope` (the empty-paths→`["."]` default also lives here for renderer view-models), `FailThreshold`, `DiffSelection`.
 `src/config_loader/` = YAML config loading (`mod.rs`) plus split modules for `custom_rules`, `exclusions`, `rule_settings`, and `selectors` (selector DSL).
+`src/config/` = `deep_scan.rs`: the paired deep-scan budget and its command-line override.
+`src/selectors.rs` = Applies caller-supplied selectors that choose which rules run and which findings the report shows.
+`src/init.rs` = `init` command: writes or regenerates `.gruff-rs.yaml` from the built-in rule registry.
+`src/migrate_config.rs` = `migrate-config` command: upgrades a 0.5 config into a new file.
 `src/diff.rs` = Patch-input diff filtering for `--diff-patch`/`--diff` modes (post-analysis filter, preserves finding identity).
-`src/baseline.rs` = `gruff-baseline.json` read/write and finding match logic.
+`src/changed_region.rs` = Limits findings to the changed code a developer or hook asked to check.
+`src/baseline.rs` = Applies and generates `gruff.baseline.v3` baselines; refuses a 0.5 baseline for suppression and migrates it to a separate file.
+`src/baseline_file.rs` = On-disk `gruff-baseline.json` shape: reviewed identity/count rows and the sensitive-finding count.
+`src/baseline_identity.rs` = Line-free finding identity from the family finding-identity contract, used by baselines and hook comparisons.
+`src/inline_suppressions.rs` = Applies and audits the local inline suppressions that `FAMILY-CONTRACT.md` (gruff-workspace root) section 13c recognises.
+`src/gate.rs` = `gate:` config evaluation: per-severity and total caps, `scope` (`new`/`all`, default unset), and the non-fatal `gate` diagnostic (ADR-003).
 `src/report.rs` = Public report types: `AnalysisReport`, `Finding`, `Summary`, `PathSummary`, `RunInfo`, `ToolInfo`, `ScoreReport`, `RunDiagnostic`, `BaselineReport`, and finding fingerprinting.
+`src/report_identity.rs` = Finding scope inference (line, symbol, file, project) and stable-identity hashing.
+`src/hook.rs` = `hook` command: scans for a coding-agent hook (full target, changed code, or baseline comparison) and returns the `gruff.hook.v2` result.
 `src/scoring.rs` = Composite scoring, per-pillar scoring, grade-letter mapping, and top-offenders selection.
 `src/summary.rs` = `gruff-rs summary` digest renderer: text scan card + per-pillar / top-rules / top-files digest; `--format json` delegates to `src/machine_contract.rs` for the findings-free `gruff.summary.v3` envelope.
 `src/machine_contract.rs` = Serializers for the family-contracted machine envelopes: `render_analysis`/`serialize_analysis` emit `gruff.analysis.v3` and `render_summary` emits `gruff.summary.v3`.
@@ -38,6 +52,7 @@
 `src/html_report/` = HTML inspection report renderer module (`mod.rs` orchestrator, `sections.rs` view-model, `styles.rs` CSS); builds the renderer-only view-model (pillar grade letters, per-pillar severity counts, cyclomatic distribution buckets), drives `analyse --format html` and the dashboard iframe body.
 `src/dashboard.rs` = Dashboard HTTP server: TcpListener loop, request parsing, `/`, `/scan`, and `/health` routes, a plain-text 404 fallback, and the form/iframe shell.
 `src/rules/` = Rule metadata contracts and the sorted built-in rule registry (split by concern across `structure_docs_reliability_definitions.rs`, `idiom_security_size_test_definitions.rs`, and `waste_definitions.rs`, re-exported from `mod.rs`) used by config validation and `list-rules`; reserves the `custom.` namespace for config-defined regex rules.
+`src/rules_detail.rs` = Single-rule detail card for `list-rules`, resolving built-in then `custom.<slug>` ids and suggesting near matches for an unknown id.
 `src/tests/` = Unit and integration tests grouped by concern (`scenarios/`, `rule_behaviours/`, `project_tests/`, `config_and_selectors/`, `renderers/`, `calibration/`).
 
 ## Fixtures
@@ -87,6 +102,12 @@
 `.goat-flow/hooks/` = Installed deny + quality hooks and deny-dangerous policy modules.
 `.goat-flow/plans/` = Local milestone/task tracking path; contents are mostly local state.
 `.goat-flow/logs/` = Local session, quality, critique, and security log paths.
+
+## Claude Harness
+
+`CLAUDE.md` = Claude Code instruction file for this repository.
+`.claude/settings.json` = Claude permission denies and hook registrations pointing at the shared `.goat-flow/hooks/` scripts.
+`.claude/skills/` = Installed goat-flow skills for Claude Code.
 
 ## Codex Harness
 

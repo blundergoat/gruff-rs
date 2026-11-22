@@ -23,8 +23,12 @@ The marker is safe here because the analyzer and the hook have independent
 allowlists. `gruff` has no inline allow-marker handling at all: no
 `gitleaks:allow`, `pragma: allowlist secret`, or `goat-flow-allow-secret` appears
 anywhere in `src/`. Only the hook honours the marker
-(`.goat-flow/hooks/post-turn-safety.sh`, search: `is_line_allowlisted`), so a
-hook exception cannot silently suppress an analyzer finding.
+(`.goat-flow/hooks/post-turn/scanner.mjs`, search: `goat-flow-allow-secret`), so a
+hook exception cannot silently suppress an analyzer finding. No goat-flow release
+ships the marker: it was carried in the Bash hook, then ported into the Node
+scanner on 2026-11-23, when this project's goat-flow 1.19.0 upgrade retired that hook, and the
+`MANAGED_HOOK_DELTAS` row in `scripts/preflight-checks.sh` fails the build if an
+upgrade drops it again.
 
 Verified before and after the marker landed with
 `cargo run -- analyse fixtures --format json --fail-on none --no-config --no-baseline`:
@@ -43,7 +47,7 @@ its payload redacted to `[redacted:aws-access-key]`.
 ## Threat Boundary
 
 The marker suppresses the *hook's* line-level **secret** judgement, nothing
-else. Merge-conflict detection runs before it on both scan paths, so a conflict
+else. Merge-conflict detection runs before it, so a conflict
 marker carrying the comment still blocks the turn. It does not affect analyzer
 findings, baselines, fingerprints, or report output. Its
 blast radius is exactly one line, and adding it to a second line is a reviewable
@@ -53,11 +57,14 @@ treat it as a claim requiring justification, the same as a suppression comment.
 ## Reversibility
 
 Fully reversible: delete the trailing comment from the fixture line. Doing so
-restores the pre-decision behaviour, in which any turn touching
-`fixtures/sample.rs` blocks at Stop. Regression coverage lives in
+restores the pre-decision behaviour, in which a turn that adds or edits the
+fixture's token line blocks at Stop. The goat-flow 1.19.0 hook scans only added
+lines of a tracked file (measured 2026-11-23), so other edits to
+`fixtures/sample.rs` pass either way. Regression
+coverage lives in
 `.goat-flow/hooks/post-turn-safety/post-turn-safety-self-test.sh` (search:
 `fixture-marked`), which asserts both directions: the marked line passes and the
-identical token without a marker still blocks, on both dispatch paths. A second
+identical token without a marker still blocks. A second
 case (search: `conflict-marked`) pins the boundary above by opening a conflict
 triplet on a marked line and requiring the turn to block anyway.
 
