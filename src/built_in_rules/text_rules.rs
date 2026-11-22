@@ -1,4 +1,5 @@
 //! General deterministic text-rule orchestration and file-size checks.
+//!
 //! The analyzer reaches this module after source discovery; GitHub workflow and
 //! explicit action metadata checks are delegated to their focused sibling module.
 
@@ -123,13 +124,19 @@ fn push_oversized_test_module_findings(
     }
 }
 
-/// Code-line counts for one Rust file: the lines outside its inline `#[cfg(test)]` modules, and each module's own.
+/// Substantive line counts the size rule uses for a Rust file.
+///
+/// Production code and inline `#[cfg(test)]` modules are counted separately.
+/// A reviewer can see whether production code or a test module crossed the configured limit.
 struct RustFileLengths {
     production_lines: usize,
     test_modules: Vec<InlineTestModule>,
 }
 
-/// One inline `#[cfg(test)]` module: its name, the 0-based line of its `mod` keyword, and its code lines.
+/// The evidence for one inline test module's size.
+///
+/// The module name and `mod` line let the finding point the reviewer at the relevant module.
+/// The count includes only substantive lines in that module.
 struct InlineTestModule {
     name: String,
     mod_line: usize,
@@ -163,7 +170,10 @@ fn rust_file_lengths(source: &str) -> RustFileLengths {
     }
 }
 
-/// Where one inline `#[cfg(test)]` module sits, as 0-based lines from its attribute to its closing brace.
+/// Locate the lines of one inline `#[cfg(test)]` module before counting them.
+///
+/// The outer bounds keep the module's lines out of the production count.
+/// The `mod` line is the location a size finding reports to the reviewer.
 struct InlineTestModuleSpan {
     name: String,
     first_line: usize,
@@ -185,19 +195,25 @@ fn inline_test_module_spans(source: &str, code_view: &str) -> Vec<InlineTestModu
     );
     let starts = line_starts(source);
     let line_of = |byte: usize| byte_line_from_starts(&starts, byte).saturating_sub(1);
+    let candidates: Vec<_> = pattern
+        .captures_iter(code_view)
+        .filter_map(|captures| Some((captures.get(0)?, captures.get(1)?, captures.get(2)?)))
+        .collect();
+    let opens = candidates
+        .iter()
+        .map(|(whole, _, _)| whole.end() - 1)
+        .collect();
+    let closes = matched_module_closes(code_view.as_bytes(), &opens);
     let mut spans = Vec::new();
-    let mut resume_at = 0usize;
-    for captures in pattern.captures_iter(code_view) {
-        let (Some(whole), Some(keyword), Some(name)) =
-            (captures.get(0), captures.get(1), captures.get(2))
-        else {
-            continue;
-        };
-        if whole.start() < resume_at {
+    let mut last_counted_close = 0usize;
+    // Count each outer module once so test code is subtracted only once from the production total.
+    for (whole, keyword, name) in candidates {
+        // A nested test module already belongs to the outer module's size finding.
+        if whole.start() < last_counted_close {
             continue;
         }
         // A module whose braces never close is left to the production count.
-        let Some(close) = matching_brace(code_view.as_bytes(), whole.end() - 1) else {
+        let Some(&close) = closes.get(&(whole.end() - 1)) else {
             continue;
         };
         spans.push(InlineTestModuleSpan {
@@ -206,37 +222,42 @@ fn inline_test_module_spans(source: &str, code_view: &str) -> Vec<InlineTestModu
             mod_line: line_of(keyword.start()),
             last_line: line_of(close),
         });
-        resume_at = close;
+        last_counted_close = close;
     }
     spans
 }
 
-/// Byte index of the brace that closes the one at `open`, counting only the braces the code view keeps.
-///
-/// `code` is the code view's bytes, where braces inside comments and literals are already blank.
-/// Returns the closing brace's byte index, or `None` when the brace at `open` is never closed.
-fn matching_brace(code: &[u8], open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (index, byte) in code.iter().enumerate().skip(open) {
+/// Match candidate module braces in one backwards scan over comment- and literal-masked `code`.
+/// Returns the closing offset for each matched opening offset in `opens`, or an empty map when no candidate closes.
+fn matched_module_closes(code: &[u8], opens: &BTreeSet<usize>) -> BTreeMap<usize, usize> {
+    let mut matches = BTreeMap::new();
+    // With no test modules, the caller can count production lines without walking any braces.
+    let Some(&first_open) = opens.first() else {
+        return matches;
+    };
+    let mut pending_close_offsets = Vec::new();
+    // Pair braces in one pass so an unfinished edit with several unclosed modules does not repeatedly scan the file.
+    for (index, byte) in code.iter().enumerate().skip(first_open).rev() {
         match byte {
-            b'{' => depth += 1,
-            b'}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(index);
+            b'}' => pending_close_offsets.push(index),
+            b'{' => {
+                // Other blocks consume their own closing braces. Only test modules become separate report rows.
+                if let Some(close) = pending_close_offsets
+                    .pop()
+                    .filter(|_| opens.contains(&index))
+                {
+                    matches.insert(index, close);
                 }
             }
             _ => {}
         }
     }
-    None
+    matches
 }
 
-/// Count lines that carry code or data: blank lines and comment-only lines are free (family
-/// ratification, 2026-08-05), so required documentation cannot push a file over the size bar.
-/// Rust sources drop `//` lines and nested `/* */` blocks via the string-aware comment
-/// projection; hash-comment formats drop full-line `#` (and `;` for ini-style) comments; other
-/// formats count every non-blank line.
+/// Count lines with code or data so documentation does not push a file over the size limit.
+/// Rust ignores line and nested block comments. Hash-comment formats ignore `#` lines and INI also ignores `;` lines.
+/// Other formats count each non-blank line.
 ///
 /// `display_path` picks the format by its lowercased extension, with backslashes read as slashes; `source` is the text measured.
 /// Returns the number of substantive lines, 0 for an empty source; a comment-only source counts 0 only for Rust, YAML, TOML and INI.
@@ -280,11 +301,8 @@ fn rust_substantive_line_count(source: &str) -> usize {
 
 /// Mark which lines of a Rust source hold code (FAMILY-CONTRACT section 12, search `Code lines in every line count`).
 ///
-/// A line is code when it carries a byte outside every comment and outside every attribute (`#[...]` or `#![...]`),
-/// so blank, comment-only, doc-comment and attribute-only lines are free. The custom-rule comment projection is
-/// string- and raw-string-aware and tracks nested block comments, so a comment marker inside a string stays code and
-/// a trailing comment cannot hide the statement in front of it. A line inside a multi-line string literal is data and
-/// stays code. Callers pass a lexically whole slice, such as a file or one function's lines.
+/// Count each line carrying Rust code or data outside comments and attributes, using a complete file or function as input.
+/// Comment-like text in strings and text inside multiline literals still count. A trailing comment leaves its preceding statement visible.
 ///
 /// Returns one flag per line of `source`, in order, true when that line holds code.
 pub(crate) fn rust_code_line_flags(source: &str) -> Vec<bool> {

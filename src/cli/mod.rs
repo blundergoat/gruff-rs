@@ -1,3 +1,8 @@
+//! Define CLI flags, output modes, and exit status for the commands in `gruff-rs --help`.
+//!
+//! Command handlers use these types to turn the caller's request into scan and display options.
+//! Shell scripts and CI use the final exit status to tell a clean run, a failed gate, and an invalid scan apart.
+
 use super::*;
 
 mod args;
@@ -39,6 +44,10 @@ const HELP_TEMPLATE: &str = "\
 \x1b[1m\x1b[33mOptions:\x1b[0m\n{options}\n\n\
 \x1b[1m\x1b[33mAvailable commands:\x1b[0m\n{subcommands}{after-help}";
 
+// Start with one subcommand and the shared flags from the shell invocation.
+//
+// Help and argument validation are settled here before a command opens a project.
+// The dispatcher gets one validated request with its matching command arguments.
 #[derive(Parser)]
 #[command(
     name = "gruff-rs",
@@ -57,13 +66,10 @@ pub(crate) struct Cli {
     pub(crate) command: Commands,
 }
 
-// Symfony-Console-style global flags shared by every subcommand.
-// `--silent` and `-q/--quiet` gate the primary stdout writer. `--ansi`/`--no-ansi`
-// is reserved for the text renderer's future colour mode; today the text renderer
-// emits no ANSI, so these flags accept and store but otherwise do not change
-// output. `-v/-vv/-vvv` is a count flag the analyzer can opt into for stderr
-// debug traces. `-n/--no-interaction` is accepted for parity and ignored;
-// gruff-rs is non-interactive.
+// Shared flags that apply before or after the subcommand name.
+//
+// Use `--quiet` or `--silent` to control stdout, and `--no-interaction` when a script cannot answer prompts.
+// The ANSI flags are accepted for compatibility. Command handlers can use the verbosity count for extra detail.
 #[derive(Args, Clone, Debug, Default)]
 pub(crate) struct GlobalOptions {
     /// Do not output any message.
@@ -106,6 +112,10 @@ impl GlobalOptions {
     }
 }
 
+/// Control what a command sends to stdout.
+///
+/// Quiet mode suppresses successful analysis output. Silent mode also suppresses listings and other ungated output.
+/// A command can still print errors to stderr or write to an explicitly requested file.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OutputWriter {
     silent: bool,
@@ -119,18 +129,22 @@ impl OutputWriter {
     /// Silent mode prints nothing whatever the outcome.
     /// Panics, as `println!` does, when writing to stdout fails.
     pub(crate) fn emit(self, outcome: RunOutcome, body: &str) {
+        // Scripts requesting silence receive no standard output even when the scan reports a failure.
         if self.silent {
             return;
         }
+        // Quiet mode keeps output that explains why a scan or configured gate failed.
         if self.quiet && !outcome.is_failure() {
             return;
         }
         println!("{body}");
     }
 
-    /// Emit a body that is not gated by the success/failure outcome of an
-    /// analysis run (e.g. completion scripts, list-rules output).
+    /// Print output that has no analysis outcome, such as completion scripts or `list-rules`.
+    ///
+    /// An empty `body` prints a blank line. `--silent` suppresses even this output.
     pub(crate) fn emit_unconditional(self, body: &str) {
+        // A caller can suppress rule listings even though the command has no finding gate.
         if self.silent {
             return;
         }
@@ -145,6 +159,10 @@ impl OutputWriter {
     }
 }
 
+/// The exit result a shell or CI runner sees from a scan.
+///
+/// A finding gate and an invalid scan use separate statuses.
+/// Output writers use the result when deciding whether quiet mode still prints the report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RunOutcome {
     Success,
@@ -164,17 +182,29 @@ impl RunOutcome {
         fail_on: FailThreshold,
         gate: Option<&Gate>,
     ) -> Self {
+        Self::classify_with_confidence(report, fail_on, gate, Confidence::Low)
+    }
+
+    /// Apply the confidence floor to severity-based failure after checking diagnostics and count gates.
+    /// Classify `report` using `gate` and the two limits `fail_on` and `min_confidence`.
+    /// Returns the outcome to publish as the process exit status.
+    pub(crate) fn classify_with_confidence(
+        report: &AnalysisReport,
+        fail_on: FailThreshold,
+        gate: Option<&Gate>,
+        min_confidence: Confidence,
+    ) -> Self {
         if report.diagnostics.iter().any(RunDiagnostic::is_failure) {
             return Self::DiagnosticsFailed;
         }
         if gate.is_some_and(|gate| gate.evaluate_report(report).fails) {
             return Self::ThresholdHit;
         }
-        if report
-            .findings
-            .iter()
-            .any(|finding| fail_on.is_triggered_by_severity(finding.severity))
-        {
+        // The severity gate honours the confidence floor the caller set for this scan.
+        if report.findings.iter().any(|finding| {
+            finding.confidence >= min_confidence
+                && fail_on.is_triggered_by_severity(finding.severity)
+        }) {
             return Self::ThresholdHit;
         }
         Self::Success
@@ -206,6 +236,10 @@ impl RunOutcome {
     }
 }
 
+// Map each supported command to its own set of arguments.
+//
+// A caller who wants only config or rule information can choose a command that does not scan files.
+// The dispatcher routes each validated request to the matching handler.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Commands {
     /// Run gruff analysis.
@@ -231,6 +265,10 @@ pub(crate) enum Commands {
     MigrateConfig(MigrateConfigArgs),
 }
 
+// Formats accepted by the full analysis command.
+//
+// A caller selects a format for a terminal, browser, or automated consumer.
+// The selected renderer uses the same underlying analysis result.
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, PartialEq, Eq)]
 pub(crate) enum OutputFormat {
     Text,
@@ -259,24 +297,40 @@ impl OutputFormat {
     }
 }
 
+// Formats for a caller who asks for the scan digest.
+//
+// Text is the quick terminal view. JSON keeps the compact machine contract.
+// Both omit the complete finding list.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum SummaryFormat {
     Text,
     Json,
 }
 
+// Formats `report` accepts for stdout or a requested file.
+//
+// Use HTML to review the full result in a browser.
+// Use JSON when another program needs the same scan data.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum ReportFormat {
     Html,
     Json,
 }
 
+// How `list-rules` presents rule metadata without running a scan.
+//
+// Text is suitable for reading rule names and options in a terminal.
+// JSON lets tools query the same catalogue by rule ID.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum RuleListFormat {
     Text,
     Json,
 }
 
+// The finding severity at which a command returns exit 1.
+//
+// Callers can set it with `--fail-on` or a command's `failOn` config value.
+// `None` disables the severity gate. Invalid scans can still exit with status 2.
 #[derive(Clone, Copy, Debug, ValueEnum, Serialize, PartialEq, Eq)]
 pub(crate) enum FailThreshold {
     None,
@@ -313,6 +367,10 @@ impl FailThreshold {
     }
 }
 
+/// A threshold the CLI or config loader could not recognize.
+///
+/// The message names the supplied value and the accepted alternatives.
+/// Callers can correct the flag or config before rerunning the command.
 #[derive(Debug, Clone)]
 pub(crate) struct FailThresholdParseError {
     pub(crate) value: String,
@@ -364,15 +422,21 @@ impl<'de> Deserialize<'de> for FailThreshold {
     where
         D: serde::Deserializer<'de>,
     {
+        /// Read the threshold string supplied by a project's config.
+        ///
+        /// A valid value lets the command apply the requested exit policy.
+        /// An invalid value becomes a config error before analysis begins.
         struct FailThresholdVisitor;
 
         impl serde::de::Visitor<'_> for FailThresholdVisitor {
             type Value = FailThreshold;
 
+            /// Tell a caller which threshold strings a config value can use.
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str("a fail-on threshold (advisory, warning, error, or none)")
             }
 
+            /// Accept a supported `value` or return the threshold error with the rejected text.
             fn visit_str<E>(self, value: &str) -> Result<FailThreshold, E>
             where
                 E: serde::de::Error,
@@ -389,6 +453,7 @@ impl<'de> Deserialize<'de> for FailThreshold {
 mod tests {
     use super::*;
 
+    /// Keep the documented gate levels usable from a CLI flag.
     #[test]
     fn fail_threshold_from_str_accepts_canonical_values() {
         assert!(matches!(
@@ -409,6 +474,7 @@ mod tests {
         ));
     }
 
+    /// Ensure a stored threshold can be written back and parsed as the same policy.
     #[test]
     fn fail_threshold_round_trips_via_as_str() {
         for value in [
@@ -422,6 +488,7 @@ mod tests {
         }
     }
 
+    /// Accept threshold text copied with different casing or surrounding whitespace.
     #[test]
     fn fail_threshold_from_str_is_case_insensitive_and_trims() {
         assert!(matches!(
@@ -438,6 +505,7 @@ mod tests {
         ));
     }
 
+    /// Show the supported way to disable severity gating when a caller supplies `never`.
     #[test]
     fn fail_threshold_from_str_rejects_never_with_documented_message() {
         let err = "never"
@@ -449,6 +517,7 @@ mod tests {
         );
     }
 
+    /// Reject unsupported threshold spellings rather than switching to a different exit policy.
     #[test]
     fn fail_threshold_from_str_rejects_legacy_and_typo_values() {
         for bogus in [
@@ -464,6 +533,7 @@ mod tests {
         }
     }
 
+    /// Keep the documented threshold strings usable in project config.
     #[test]
     fn fail_threshold_deserialize_accepts_canonical_lowercase() {
         let parsed: FailThreshold =
@@ -471,6 +541,7 @@ mod tests {
         assert!(matches!(parsed, FailThreshold::None));
     }
 
+    /// Let config users vary threshold casing without changing the chosen level.
     #[test]
     fn fail_threshold_deserialize_is_case_insensitive() {
         let parsed: FailThreshold =
@@ -478,6 +549,7 @@ mod tests {
         assert!(matches!(parsed, FailThreshold::Advisory));
     }
 
+    /// Give a config user an actionable threshold error for the unsupported `never` value.
     #[test]
     fn fail_threshold_deserialize_yaml_rejects_never() {
         let err = serde_yaml::from_str::<FailThreshold>("never")
@@ -489,6 +561,7 @@ mod tests {
         );
     }
 
+    /// Reject a misspelled config threshold before starting a scan.
     #[test]
     fn fail_threshold_deserialize_yaml_rejects_bogus() {
         let err = serde_yaml::from_str::<FailThreshold>("bogus")

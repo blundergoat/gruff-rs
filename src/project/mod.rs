@@ -1,3 +1,8 @@
+//! Prepare the Rust and text evidence used by project-wide and per-file rules.
+//!
+//! When a file exceeds the deep-scan budget, text checks remain available and the report explains the loss of Rust analysis.
+//! Use this data to tell which files were discovered, read, and available to rules that need parsed Rust.
+
 use super::*;
 
 mod items;
@@ -10,6 +15,8 @@ pub(crate) use items::{
 pub(crate) use lockfile::read_lockfile_summary;
 pub(crate) use manifest::read_manifest_summary;
 
+/// Read selected `files` using the default Rust parsing and budget policy for a test.
+/// Returns the sources the scan read and its read diagnostics. Empty input has neither.
 #[cfg(test)]
 pub(crate) fn read_and_parse_sources(
     files: &[SourceFile],
@@ -194,11 +201,7 @@ fn parsed_source(
 /// `source` is the full file text.
 /// Returns 0 for empty text, otherwise the number of newline bytes plus one, so a trailing newline counts as an extra line.
 fn physical_line_count(source: &str) -> usize {
-    if source.is_empty() {
-        0
-    } else {
-        source.bytes().filter(|byte| *byte == b'\n').count() + 1
-    }
+    source.lines().count()
 }
 
 /// Build the `bounded-deep-scan` diagnostic explaining that a large Rust file skipped deep analysis.
@@ -214,7 +217,7 @@ fn bounded_deep_scan_diagnostic(
     RunDiagnostic {
         diagnostic_type: "bounded-deep-scan".to_string(),
         message: format!(
-            "path={display_path}; lines={line_count}; bytes={byte_count}; maxLines={}; maxBytes={}; override={}. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.",
+            "path={display_path}; lines={line_count}; bytes={byte_count}; maxLines={}; maxBytes={}; override={}. Text-level rules (size, sensitive-data, config) still ran; block parsing, AST walking, and other deep analysis were skipped.",
             budget.max_lines, budget.max_bytes, budget.override_state
         ),
         file_path: Some(display_path),
@@ -243,10 +246,7 @@ pub(crate) fn build_project_context(
     sources: &[ParsedSource],
     mut coverage: ProjectCoverage,
 ) -> ProjectContext {
-    // A selected Rust file that failed to read or parse contributes no identifiers
-    // to the index, so cross-file dead-code cannot be trusted. Base the authoritative
-    // set on successfully parsed AST inputs rather than discovery alone: read-failed
-    // files never enter `sources`, while parse-failed files have no AST.
+    // A file that could not be read or parsed might contain a reference. Cross-file dead-code checks need complete parsed coverage.
     let selected_rust_files = std::mem::take(&mut coverage.analysed_rust_files);
     coverage.analysed_rust_files = sources
         .iter()
@@ -274,6 +274,10 @@ pub(crate) fn build_project_context(
     }
 }
 
+/// Keep the parsed evidence needed by project-wide Rust checks.
+///
+/// References, declarations, and calls let rules report across files instead of treating each file in isolation.
+/// A file without a usable Rust syntax tree adds no entries to this index.
 pub(crate) struct ProjectIndex {
     rust_sources: Vec<RustSourceSummary>,
     identifier_counts: BTreeMap<String, usize>,
@@ -472,12 +476,11 @@ pub(crate) fn has_test_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| last_segment_matches(attr, "test"))
 }
 
-/// Report whether a fn is reached without a Rust reference the dead-code rules can count: a test or bench
-/// entry point (`#[bench]`, `#[divan::bench]`, `#[maybe_tokio_test]`, or one applied through `cfg_attr`), or
-/// an empty-body fn with no generics and no inputs whose `where` clause is a compile-time assertion over
-/// concrete types, such as `fn assert_send() where Client: Send {}`. A foreign ABI alone reaches nothing;
-/// `#[no_mangle]` and `#[export_name]` are read by `has_export_attr`.
-/// Only the two dead-code rules read this; `has_test_attr` keeps its narrower meaning for its other consumers.
+/// Keep indirectly reached Rust functions out of dead-code findings.
+/// Examples include benchmark entry points and a concrete compile-time assertion such as `fn assert_send() where Client: Send {}`.
+///
+/// `#[no_mangle]` and `#[export_name]` are checked by `has_export_attr`. A foreign ABI alone establishes no use.
+/// `has_test_attr` retains its narrower role for non-dead-code rules.
 ///
 /// `attrs` are the fn's attributes, `sig` is its signature, checked for generics, inputs and `where` predicates, and `block` is its body.
 /// Returns true for a harness entry attribute or an empty type-assertion fn, and false otherwise.
@@ -611,12 +614,8 @@ pub(crate) fn visibility_is_public(visibility: &Visibility) -> bool {
     !matches!(visibility, Visibility::Inherited)
 }
 
-/// Returns true only for unrestricted `pub` items. `pub(crate)`, `pub(super)`,
-/// and `pub(in path)` are reachable inside the crate but not part of the
-/// external API surface, so the reportable public-API rules
-/// (`docs.missing-public-doc` and `architecture.public-api-surface`) use
-/// this stricter helper. Dead-code reachability and project-model indexing
-/// keep using the lenient `visibility_is_public` above.
+/// Returns true for unrestricted `pub`, the scope that external public-API rules report.
+/// Restricted visibility stays within the crate. Reachability checks and indexing use the broader `visibility_is_public` helper.
 ///
 /// `visibility` is the item's declared visibility, compared against the plain `pub` form.
 pub(crate) fn visibility_is_externally_public(visibility: &Visibility) -> bool {

@@ -1,5 +1,14 @@
+//! Choose the files a scan is allowed to open from the targets named on the command line.
+//!
+//! Directory scans apply project and Git ignores. Naming an individual file uses the explicit-file policy.
+//! Record skipped paths and their reasons so users can explain why an expected finding is absent.
+
 use super::*;
 
+/// Record which requested source files can reach analysis.
+///
+/// The report uses the missing and ignored paths to explain gaps in the scan.
+/// The file list is only discovery evidence. Reading or parsing a file can still fail later.
 #[derive(Clone)]
 pub(crate) struct DiscoveryResult {
     pub(crate) files: Vec<SourceFile>,
@@ -8,6 +17,10 @@ pub(crate) struct DiscoveryResult {
     pub(crate) ignored_path_details: Vec<IgnoredPath>,
 }
 
+/// Carry the caller's scan options and config through discovery of all requested targets.
+///
+/// A shared ignored-path record keeps the explanation available when several targets overlap.
+/// The project root gives each reported path a consistent starting point.
 pub(crate) struct DiscoverySession<'a> {
     pub(crate) project_root: &'a Path,
     pub(crate) options: &'a AnalysisOptions,
@@ -15,6 +28,10 @@ pub(crate) struct DiscoverySession<'a> {
     pub(crate) ignored_paths: &'a Arc<Mutex<BTreeMap<String, IgnoredPath>>>,
 }
 
+/// Apply a scan's path policy to an entry before opening it.
+///
+/// `--include-ignored` can relax ordinary ignores, while discovery still checks protected paths.
+/// Captured skip reasons let people see what the scan excluded by policy.
 pub(crate) struct DiscoveryFilters<'a> {
     pub(crate) project_root: &'a Path,
     pub(crate) config: &'a Config,
@@ -176,8 +193,8 @@ pub(crate) fn collect_directory_sources(
 
 /// Configure the walker for one input directory so hidden files are visited and ignored directories are pruned before descent.
 ///
-/// `absolute` is where the walk starts, and `session` supplies the project root, config and ignored-path record the entry filter copies.
-/// `include_ignored` turns off `.ignore`, `.gitignore` and Git exclude files; global gitignore and parent ignore-file rules are never applied.
+/// `absolute` is the requested directory, and `session` supplies the project root and config.
+/// `include_ignored` turns off `.ignore`, `.gitignore` and Git exclude files. Only in-project ignore files apply.
 ///
 /// Returns the configured builder, whose entry filter runs `should_descend` on each entry below the walk root that the ignore rules keep.
 fn directory_walk_builder(
@@ -188,7 +205,15 @@ fn directory_walk_builder(
     let filter_root = session.project_root.to_path_buf();
     let filter_config = session.config.clone();
     let filter_ignored_paths = Arc::clone(session.ignored_paths);
-    let mut builder = WalkBuilder::new(absolute);
+    let requested = absolute.to_path_buf();
+    let walk_root = if absolute.starts_with(session.project_root) {
+        session.project_root
+    } else {
+        absolute
+    };
+    // Begin at the project root to load ancestor ignore files, while descending
+    // only through ancestors of the requested directory and its own subtree.
+    let mut builder = WalkBuilder::new(walk_root);
     builder
         .hidden(false)
         .parents(false)
@@ -197,6 +222,10 @@ fn directory_walk_builder(
         .git_global(false)
         .git_exclude(!include_ignored)
         .filter_entry(move |entry| {
+            // Read ancestor ignore files on the route to a typed subdirectory without scanning that directory's siblings.
+            if !entry.path().starts_with(&requested) {
+                return requested.starts_with(entry.path());
+            }
             let filters = DiscoveryFilters {
                 project_root: &filter_root,
                 config: &filter_config,
@@ -296,14 +325,12 @@ pub(crate) fn config_ignore_match<'a>(
         .find(|matcher| matcher.matches(relative))
 }
 
-/// Classify whether `relative` is ignored and why. Precedence:
-/// 1. Config `paths.ignore` — authoritative; neither explicit paths nor
-///    `--include-ignored` can override it.
-/// 2. VCS internals (`.git`/`.hg`/`.svn`) — always blocked, even with
-///    `--include-ignored` ("VCS internals remain blocked").
-/// 3. Third-party, build-output and minified names — never defer to a `.gitignore`
-///    (FAMILY-CONTRACT.md section 7, precision-floor M04); opt-out via `--include-ignored`.
-/// 4. No-gitignore fallback directories — opt-out via `--include-ignored`.
+/// Explain the first path policy that applies to `relative`, in precedence order.
+///
+/// - Config `paths.ignore` applies even when a caller names the path directly or uses `--include-ignored`.
+/// - VCS internals such as `.git` remain blocked even with `--include-ignored`.
+/// - Third-party, build-output, and minified names are excluded by default even with a governing `.gitignore`.
+/// - Fallback directory rules apply without a governing `.gitignore`; `--include-ignored` can bypass both default groups.
 ///
 /// gitignore exclusions are applied by the discovery walk's `ignore`-crate
 /// matchers and are not re-derived here, keeping a single ignore engine (ADR-018).
@@ -475,6 +502,11 @@ pub(crate) fn is_minified_name(relative: &str) -> bool {
 /// Returns false when any checked directory holds a `.gitignore` file, and true otherwise.
 pub(crate) fn should_apply_fallback_at(project_root: &Path, path: &Path) -> bool {
     let absolute = absolutize(project_root, path);
+    // A directory can declare its own ignore policy before discovery decides whether to enter it.
+    if absolute.is_dir() && absolute.join(".gitignore").is_file() {
+        return false;
+    }
+    // A filesystem root with no ignore file has no parent policy to prefer over defaults.
     let Some(parent) = absolute.parent() else {
         return true;
     };

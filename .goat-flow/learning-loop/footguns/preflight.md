@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-10-03
+last_reviewed: 2026-11-22
 ---
 
 ## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
@@ -125,6 +125,13 @@ honours, and `scripts/preflight-checks.sh` (search: `rs: bin/gruff-rs`) asserts
 the pin. The hook itself never searched `target/`
 (`.goat-flow/hooks/gruff-code-quality.sh`,
 search: `auto-executing a name-matched binary`).
+
+**2026-11-22 extension:** The PR 7 before/after benchmark shared a Cargo
+target directory across two checkouts. After building the PR head, the next
+worktree build returned success and the binary hash still matched the head
+receipt. `scripts/test-performance.sh` (search: `PERF_BUILD_TARGET`) now uses
+an explicit per-checkout benchmark target for both building and execution.
+When comparing revisions, check each receipt against its build artifact.
 
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 

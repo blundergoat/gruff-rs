@@ -1,3 +1,8 @@
+//! Build the HTML report shown by `report --format html` and the browser dashboard.
+//!
+//! Use the scan's findings, score, and requested scope to show where a reviewer can start looking.
+//! Render finding text and paths as page content so scanned source cannot supply HTML markup.
+
 use crate::{
     grade, summary::pillar_digests, AnalysisReport, FileScore, Finding, Pillar, RequestedScope,
     Severity,
@@ -24,6 +29,10 @@ pub(crate) fn render(report: &AnalysisReport, scope: &RequestedScope) -> String 
     sections::document(&view)
 }
 
+/// Gather what the reviewer sees in the HTML report or dashboard.
+///
+/// Page sections share one view of the scope, overall grade, and ranked findings.
+/// The formatting fields let each section show the same result without calculating it again.
 pub(crate) struct ReportView<'a> {
     pub(crate) report: &'a AnalysisReport,
     pub(crate) scope: &'a RequestedScope,
@@ -38,6 +47,10 @@ pub(crate) struct ReportView<'a> {
     pub(crate) findings_total: usize,
 }
 
+/// Show one quality area's grade and counts on the report page.
+///
+/// The score can be absent when the run cannot grade that area.
+/// Severity counts tell a reviewer what each area contains before inspecting individual findings.
 pub(crate) struct PillarRow {
     pub(crate) pillar: Pillar,
     pub(crate) score: Option<f64>,
@@ -49,18 +62,30 @@ pub(crate) struct PillarRow {
     pub(crate) errors: usize,
 }
 
+/// Show one ranked file in the report's top-offender section.
+///
+/// The file result provides the path and finding count a reviewer needs.
+/// The display grade uses the same styling as the other score sections.
 pub(crate) struct OffenderRow<'a> {
     pub(crate) file: &'a FileScore,
     pub(crate) grade_letter: String,
     pub(crate) grade_class: char,
 }
 
+/// One bar in the displayed complexity distribution.
+///
+/// The label is the complexity range a reviewer sees. The count determines the bar size.
+/// The class controls the visual distinction between ranges.
 pub(crate) struct DistributionBar {
     pub(crate) label: &'static str,
     pub(crate) count: usize,
     pub(crate) class: &'static str,
 }
 
+/// Define one complexity range before grouping the run's findings.
+///
+/// Its label becomes a bar label in the report.
+/// Its class lets the report mark flagged ranges consistently.
 pub(crate) struct DistributionBucket {
     pub(crate) label: &'static str,
     pub(crate) class: &'static str,
@@ -95,7 +120,10 @@ impl<'a> ReportView<'a> {
         let summary_line = verdict_summary(&report.findings, &report.summary);
 
         let pillar_rows = build_pillar_rows(report);
-        let offender_rows = build_offender_rows(&report.score.top_offenders);
+        let offenders = &report.score.top_offenders;
+        let offender_rows = build_offender_rows(
+            &offenders[..offenders.len().min(crate::scoring::TOP_OFFENDER_LIMIT)],
+        );
         let (distribution, distribution_summary) = build_distribution(&report.findings);
 
         ReportView {

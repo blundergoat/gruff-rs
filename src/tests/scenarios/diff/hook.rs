@@ -1,9 +1,11 @@
 //! Hook capability, changed-region, and native new-only comparison contracts.
+//!
 //! These tests keep serialized hook findings stable while line shifts and
 //! duplicate identities are matched by occurrence count.
 
 use super::*;
 
+/// Let hook consumers distinguish an invalid change selection from a config they cannot load.
 #[test]
 pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_config() {
     // A scope the run could not read carries one family type on every surface (FAMILY-CONTRACT.md section 6).
@@ -11,8 +13,10 @@ pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_con
         "invalid changed range `=abc`: line numbers must be integers",
         "--changed-ranges must include at least one line or range",
     ] {
-        let value: Value = serde_json::from_str(&crate::hook::render_run_failure(message))
-            .expect("run failure json");
+        let value: Value = serde_json::from_str(&crate::hook::render_run_failure(
+            &RunFailure::ChangedRegion(message.to_string()),
+        ))
+        .expect("run failure json");
 
         assert_eq!(
             value["diagnostics"][0]["type"], "changed-region",
@@ -24,7 +28,7 @@ pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_con
 
     // A configuration the loader refused keeps the payload's own config block, which points at the right file.
     let refused: Value = serde_json::from_str(&crate::hook::render_run_failure(
-        "config schema is not recognised",
+        &RunFailure::Config("config schema is not recognised".to_string()),
     ))
     .expect("config failure json");
 
@@ -32,6 +36,7 @@ pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_con
     assert_eq!(refused["config"]["schemaOk"], false);
 }
 
+/// A hook can check which machine contract the installed binary supports before asking it to scan.
 #[test]
 pub(crate) fn hook_capabilities_advertise_gruff_hook_v2() {
     let value: Value =
@@ -65,6 +70,7 @@ pub(crate) fn hook_capabilities_advertise_gruff_hook_v2() {
     assert_eq!(value["flagOrder"], "any");
 }
 
+/// Accept the argument ordering callers commonly use when constructing hook commands.
 #[test]
 pub(crate) fn hook_accepts_flags_before_and_after_paths() {
     let before = Cli::try_parse_from([
@@ -99,6 +105,7 @@ pub(crate) fn hook_accepts_flags_before_and_after_paths() {
     assert_eq!(before.changed_ranges.as_deref(), Some("1-1"));
 }
 
+/// A full-scan consumer can locate findings and display their available remediation.
 #[test]
 pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_metadata() {
     let _guard = analysis_lock();
@@ -140,6 +147,7 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
     assert_eq!(value["config"]["schemaOk"], true);
 }
 
+/// A line-only edit must not make the hook block on an unrelated file-wide finding.
 #[test]
 pub(crate) fn hook_changed_region_drops_file_scope_without_anchor_residual() {
     let _guard = analysis_lock();
@@ -183,6 +191,7 @@ pub(crate) fn hook_changed_region_drops_file_scope_without_anchor_residual() {
     assert!(findings.iter().any(|finding| finding["scope"] == "line"));
 }
 
+/// Avoid renaming the underlying issue when a developer moves code or changes its measured size.
 #[test]
 pub(crate) fn hook_stable_identity_survives_line_shift_and_measured_value_change() {
     let line_ten = Finding::new(FindingDescriptor {
@@ -210,6 +219,7 @@ pub(crate) fn hook_stable_identity_survives_line_shift_and_measured_value_change
     assert_eq!(six_oh_one.scope, FindingScope::File);
 }
 
+/// Keep reviewed file findings quiet while reporting a newly crossed threshold.
 #[test]
 pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_new_threshold_crossing(
 ) {
@@ -258,6 +268,7 @@ pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_ne
     assert_has_rule(&newly_crossed, "size.file-length");
 }
 
+/// Compare file-level warnings across a Git edit without relying on moved line numbers.
 #[test]
 pub(crate) fn hook_diff_new_only_uses_stable_identity_for_file_scope_thresholds() {
     let _guard = analysis_lock();
@@ -299,6 +310,7 @@ pub(crate) fn hook_diff_new_only_uses_stable_identity_for_file_scope_thresholds(
     assert_has_rule(&current, "size.file-length");
 }
 
+/// Keep skip reasons and config failures available to consumers that read only hook JSON.
 #[test]
 pub(crate) fn hook_reports_ignored_paths_and_config_errors_in_band() {
     let _guard = analysis_lock();
@@ -333,6 +345,7 @@ pub(crate) fn hook_reports_ignored_paths_and_config_errors_in_band() {
         .is_some_and(|text| text.contains("configuration")));
 }
 
+/// Ask for an explicit opt-in before entering a Git-backed hook comparison.
 #[test]
 pub(crate) fn hook_diff_requires_the_unsafe_git_opt_in() {
     // `--diff` executes Git on the target repo, so per ADR-019 it must be a
@@ -382,6 +395,7 @@ pub(crate) fn hook_diff_requires_the_unsafe_git_opt_in() {
     .expect("hook --changed-ranges parses without the unsafe opt-in");
 }
 
+/// A reviewed file remains comparable when its path uses characters outside ASCII.
 #[test]
 pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
     let _guard = analysis_lock();
@@ -408,6 +422,7 @@ pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
     );
 }
 
+/// A newline in a filename stays part of the path during the Git comparison.
 #[test]
 pub(crate) fn hook_diff_base_export_handles_newline_filenames() {
     let _guard = analysis_lock();
@@ -432,6 +447,7 @@ pub(crate) fn hook_diff_base_export_handles_newline_filenames() {
     );
 }
 
+/// A reviewed occurrence cannot hide a second occurrence introduced by the edit.
 #[test]
 pub(crate) fn hook_diff_new_only_keeps_a_newly_added_duplicate_line_finding() {
     let _guard = analysis_lock();

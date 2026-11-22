@@ -1,3 +1,8 @@
+//! Group the analyzer's native regression, contract, and precision tests.
+//!
+//! The fixtures give each test a known input and the shared helpers run it through the relevant scan path.
+//! The analysis lock keeps cases that share process-wide test state from interfering with one another.
+
 use super::*;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tempfile::tempdir;
@@ -80,7 +85,7 @@ fn run_project_analysis(
     options: AnalysisOptions,
 ) -> Result<AnalysisReport, String> {
     let config = load_config(project_root, &options)?;
-    run_analysis_in_project(project_root, &options, &config)
+    run_analysis_in_project(project_root, &options, &config).map_err(|error| error.to_string())
 }
 
 /// Builds a high-confidence test finding with a placeholder message, symbol and remediation.
@@ -106,6 +111,10 @@ fn test_finding(
     )
 }
 
+/// Set the finding categories a test sends to a renderer or gate.
+///
+/// Explicit severity, pillar, and confidence let a case explain why the fixture is included or hidden.
+/// Other finding fields come from the shared fixture constructor.
 pub(crate) struct TestFindingClassification {
     pub(crate) severity: Severity,
     pub(crate) pillar: Pillar,

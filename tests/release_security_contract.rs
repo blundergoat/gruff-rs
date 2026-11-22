@@ -1,7 +1,7 @@
-//! Supply-chain contract tests for workflows maintainers and contributors run.
-//! They reject moving action references, unexpected GitHub write authority,
-//! floating Rust/Cargo tools, and incomplete platform pins before hosted CI can
-//! execute them. A negative mutation proves the action-ref guard really fires.
+//! Check the supply-chain settings used by contributors and release maintainers.
+//!
+//! Reject floating action or tool versions, unexpected GitHub write authority, and incomplete platform pins before CI executes them.
+//! A deliberately unpinned action proves the reference guard can catch the failure.
 
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeSet;
@@ -606,31 +606,12 @@ fn codex_env_permissions_use_supported_access_modes() {
         .and_then(toml::Value::as_table)
         .expect("Codex project config must define workspace filesystem rules");
 
-    const REQUIRED_ENV_DENIES: &[&str] = &[
-        "**/.env",
-        "**/.env.local",
-        "**/.env.development",
-        "**/.env.production",
-        "**/.env.staging",
-        "**/.env.test",
-        "**/.envrc",
-        "**/.env.*.local",
-    ];
-    for pattern in REQUIRED_ENV_DENIES {
-        assert_eq!(
-            workspace_rules.get(*pattern).and_then(toml::Value::as_str),
-            Some("deny"),
-            "Codex config must deny the supported env pattern {pattern}"
-        );
-    }
-
-    assert!(
-        !workspace_rules.contains_key("**/.env*"),
-        "a broad env deny would also shadow the reviewed sample"
-    );
-    assert!(
-        !workspace_rules.contains_key("**/.env.example"),
-        "the non-secret sample must inherit normal workspace editing access"
+    assert_eq!(
+        workspace_rules
+            .get("**/.env*")
+            .and_then(toml::Value::as_str),
+        Some("deny"),
+        "native tools must deny the full dotenv filename family"
     );
     for (pattern, access) in workspace_rules {
         let access = access

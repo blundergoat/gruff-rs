@@ -1,5 +1,14 @@
+//! Read the unified patch a developer passes to `analyse --diff-patch` or supplies through standard input.
+//!
+//! Keep the new-side paths and line ranges so the report can show findings relevant to the edit.
+//! A deletion with no new lines contributes no line range to inspect.
+
 use super::*;
 
+/// Record the new-side lines a patch lets a changed-code scan inspect.
+///
+/// File-only entries cover changes with no usable hunk context. A file can also have no added lines.
+/// Callers can list the changed files even when none contributes a line to filter.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct DiffPatchLineMap {
     pub(crate) lines_by_file: BTreeMap<String, BTreeSet<usize>>,
@@ -37,12 +46,20 @@ pub(crate) fn read_diff_patch(project_root: &Path, path: &Path) -> Result<String
         .map_err(|error| format!("unable to read --diff-patch {}: {error}", path.display()))
 }
 
+/// Track where the patch reader is in the file and new-side hunk.
+///
+/// Until a file and line have been read, there is no changed line for a finding to match.
+/// The reader resets the position when the next file or hunk begins.
 #[derive(Default)]
 pub(crate) struct DiffPatchState {
     current_file: Option<String>,
     current_new_line: Option<usize>,
 }
 
+/// Decide how a patch line affects the location of a finding on the new side.
+///
+/// Added lines enter the changed region. Context advances the new-side location without marking it changed.
+/// Old-side lines and the newline marker contribute no new-side locations.
 pub(crate) enum DiffHunkLineKind {
     Added,
     Context,
@@ -328,6 +345,22 @@ pub(crate) fn normalize_report_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
+/// Returns whether `path` consists of project-relative components without parent traversal.
+pub(crate) fn is_relative_scan_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\0')
+        && Path::new(path).components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+}
+
+/// Exercise the hunk-only behavior of `--diff-patch` on an existing report in a test.
+///
+/// `patch` selects changed lines, `analysed_files` records what was scanned, and `config` supplies score settings.
+/// Returns the filtered `report` with the updated counts and diagnostic.
 #[cfg(test)]
 pub(crate) fn apply_diff_patch_filter(
     report: AnalysisReport,
@@ -456,6 +489,10 @@ fn unanalysed_patch_files(
         .collect()
 }
 
+/// Separate findings that belong in a changed-code report from those filtered out.
+///
+/// The kept rows are presented to the caller for review.
+/// The excluded rows support the audit of what stayed outside this edit's scope.
 struct DiffPatchPartition {
     kept: Vec<Finding>,
     suppressed: Vec<Finding>,

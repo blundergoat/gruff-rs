@@ -21,7 +21,8 @@ pub(crate) use rule_settings::{
 #[cfg(test)]
 pub(crate) use selectors::expand_rule_selector;
 pub(crate) use selectors::{
-    expand_rule_selector_with_custom, expand_rule_selectors, parse_pillar_selector,
+    exact_rule_selector, expand_rule_selector_with_custom, expand_rule_selectors,
+    parse_pillar_selector, pillar_rule_selector, rule_selector_catalog,
 };
 pub(crate) use sensitive_exclusions::{apply_sensitive_exclusions_section, SensitiveExclusionRule};
 

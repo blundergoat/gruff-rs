@@ -1,11 +1,7 @@
-//! Reconcile a fresh scan against the debt a user already reviewed, so only genuinely new problems stop the run.
+//! Apply the reviewed findings a caller supplied with `analyse --baseline`.
 //!
-//! This is the engine behind `gruff-rs analyse --baseline gruff-baseline.json`. A baseline row stores one line-free
-//! identity and a count and nothing positional, so everyday reformatting never re-flags accepted debt, while a
-//! second occurrence beyond the reviewed count is still reported as new.
-//!
-//! Sensitive-data findings are counted here and never stored: withholding their identity is what stops a durable
-//! review from hiding a secret. A 0.5 baseline is refused with the command that carries its reviews forward.
+//! Rows store line-free identities and occurrence counts. Reformatting preserves a review, and extra occurrences remain visible.
+//! Generation counts sensitive findings without storing their identities. A 0.5 baseline gives the caller a migration command.
 
 use super::*;
 
@@ -41,7 +37,7 @@ pub(crate) struct BaselineApplication {
     pub(crate) counts: BaselineCounts,
     pub(crate) deltas: Vec<RuleDelta>,
     pub(crate) collisions: Vec<BaselineCollision>,
-    pub(crate) resolved: Vec<BaselineEntry>,
+    pub(crate) entries: usize,
 }
 
 /// One identity that covers two declarations, so neither of them can be hidden.
@@ -56,7 +52,7 @@ pub(crate) struct BaselineCollision {
     pub(crate) subjects: Vec<String>,
 }
 
-/// The six-way classification of one run against one baseline (ADR-002 addendum, extended for v3).
+/// Counts that tell a caller what happened when a scan applied a baseline.
 ///
 /// `new`, `collision`, and `not_eligible` all still fail the run; only `unchanged` is hidden, and `absent` counts
 /// the reviewed occurrences the user has since fixed.
@@ -69,7 +65,10 @@ pub(crate) struct BaselineCounts {
     pub(crate) not_eligible: usize,
 }
 
-/// What a migration wrote, so the command can tell the user what carried across.
+/// Outcome of migrating a reviewed 0.5 baseline.
+///
+/// The command uses these counts to explain how many entries carry forward.
+/// Sensitive findings are counted apart from the entries a later scan can apply.
 #[derive(Debug)]
 pub(crate) struct BaselineMigration {
     pub(crate) entries: usize,
@@ -159,35 +158,37 @@ fn baseline_document(
     })
 }
 
-/// Refuse to write a baseline over a 0.5 file at the shared default path.
-///
-/// All five ports write and auto-discover the same filename, so without this an ordinary upgrade-then-generate
-/// destroys the 0.5 baseline that is the user's documented retreat path, before they know they need it.
-/// Regenerating v3 over v3 is not destructive, because v3 is what the tool now reads.
+/// Protect an older, unreadable, or unrecognized baseline at the shared default path during an upgrade.
 ///
 /// `output_path` is where the baseline will be written, and only a file with the default baseline name is checked; `force` skips the check.
-/// Returns an error naming the migrate command when that file is JSON whose `schemaVersion` names another schema.
-/// A missing, unreadable, non-JSON, or unversioned file passes.
+/// Returns success for an absent file or the current schema, or an error directing the caller to migrate or choose another output path.
 fn require_overwritable_default_path(output_path: &Path, force: bool) -> Result<(), String> {
-    // Any other destination is the user's own choice of file, and any v3 file is what this version already reads.
+    // A caller can choose a distinct destination or use `--force` to opt into replacing a baseline.
     if force || output_path.file_name().and_then(|name| name.to_str()) != Some(DEFAULT_BASELINE) {
         return Ok(());
     }
-    // Nothing there to protect, or nothing this can classify, which is the ordinary first-generate case.
-    let Ok(existing) = fs::read_to_string(output_path) else {
-        return Ok(());
+    let existing = match fs::read_to_string(output_path) {
+        Ok(existing) => existing,
+        // A first-time generation has no accepted review file to protect.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        // An unreadable file, such as one owned by another user, may still contain accepted reviews.
+        Err(error) => {
+            return Err(format!(
+                "unable to verify existing baseline {}: {error}",
+                output_path.display()
+            ))
+        }
     };
-    let Ok(document) = serde_json::from_str::<Value>(&existing) else {
-        return Ok(());
-    };
+    let document = serde_json::from_str::<Value>(&existing).unwrap_or(Value::Null);
     let schema = document.get("schemaVersion").and_then(Value::as_str);
-    if schema.is_none() || schema == Some(BASELINE_SCHEMA_VERSION) {
+    // A current baseline can be regenerated in place. A legacy or unidentified one keeps its rollback value.
+    if schema == Some(BASELINE_SCHEMA_VERSION) {
         return Ok(());
     }
     Err(format!(
         "{} is a {:?} baseline, not {BASELINE_SCHEMA_VERSION:?}; generating over it would destroy the retreat path. Migrate it with `gruff-rs analyse --migrate-baseline {} --generate-baseline <new path>`, or pass --force to overwrite it",
         output_path.display(),
-        schema.unwrap_or_default(),
+        schema.unwrap_or("unrecognized"),
         output_path.display(),
     ))
 }
@@ -232,6 +233,8 @@ fn load_baseline(path: &Path) -> Result<BaselineData, String> {
 /// Returns an error for the first violation found; text that does not parse as JSON skips the forbidden-key check.
 fn validate_rows(path: &Path, raw: &str, entries: &[BaselineEntry]) -> Result<(), String> {
     let raw_rows: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let mut identities = BTreeSet::new();
+    let mut total = 0usize;
     for (index, entry) in entries.iter().enumerate() {
         // An identity that is not the ratified digest shape cannot have come from a generator.
         if entry.identity.len() != 16
@@ -252,6 +255,20 @@ fn validate_rows(path: &Path, raw: &str, entries: &[BaselineEntry]) -> Result<()
                 path.display()
             ));
         }
+        // Reject duplicate review rows so a caller's accepted count cannot depend on which row is read last.
+        if !identities.insert(entry.identity.as_str()) {
+            return Err(format!(
+                "baseline {} occurrences[{index}].identity is duplicated",
+                path.display()
+            ));
+        }
+        // A malformed total must surface as a baseline error before the comparison calculates resolved debt.
+        total = total.checked_add(entry.count).ok_or_else(|| {
+            format!(
+                "baseline {} occurrence counts exceed the supported total",
+                path.display()
+            )
+        })?;
     }
 
     let Some(rows) = raw_rows.get("occurrences").and_then(Value::as_array) else {
@@ -326,7 +343,7 @@ pub(crate) fn apply_baseline(
         },
         deltas,
         collisions: collisions_by_identity,
-        resolved,
+        entries: document.occurrences.as_ref().map_or(0, Vec::len),
     })
 }
 
@@ -554,7 +571,10 @@ fn row_text(row: &Value, key: &str) -> String {
         .to_string()
 }
 
-/// Where one finding stands against the baseline, in the ratified precedence order.
+/// What a reviewed baseline means for a current finding.
+///
+/// A matched occurrence can be hidden. A new, ambiguous, or ineligible occurrence stays visible.
+/// The spelling is part of the machine report and hook contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BaselineStatus {
     New,
@@ -811,6 +831,10 @@ pub(crate) fn rule_deltas_from_counts(
         .collect()
 }
 
+/// Publish the result of applying or generating a baseline.
+///
+/// The report explains how the baseline was used. Per-rule deltas compare with earlier reviews when available.
+/// Collisions give callers an actionable diagnostic when two declarations cannot be distinguished.
 pub(crate) struct BaselineResolution {
     pub(crate) report: BaselineReport,
     /// Per-rule introduced/removed counts versus the applied baseline.
@@ -820,11 +844,9 @@ pub(crate) struct BaselineResolution {
     pub(crate) collisions: Vec<BaselineCollision>,
 }
 
-/// Resolve the baseline AND capture the severity summary of the full finding set
-/// *before* baseline suppression drops `unchanged` findings, so the gate's
-/// `scope: all` can count the pre-baseline set (ADR-003 addendum). The summary is
-/// taken up front because `resolve_baseline_inner` mutates `findings` in place.
+/// Apply or generate the caller's baseline. Capture the full severity tally first so `gate.scope: all` can still include reviewed debt.
 ///
+/// `findings` is updated in place when the selected baseline covers a reviewed occurrence.
 /// `project_root` anchors relative baseline paths, and `options` decides whether to generate, migrate, apply, or skip a baseline.
 /// `declaration_position` gives each finding's declaration position for identity naming.
 /// Returns the resolution, None when no baseline applies, paired with the pre-baseline summary, or the error from the chosen action.
@@ -930,7 +952,7 @@ fn generate_baseline_report(
 
     Ok(BaselineResolution {
         report: BaselineReport {
-            path: display_path(project_root, &baseline_path),
+            path: baseline_display_path(project_root, &baseline_path),
             source: source.to_string(),
             suppressed: 0,
             new_count: 0,
@@ -1000,7 +1022,7 @@ fn select_baseline_path(
 ///
 /// `baseline_path` is the file to apply, shown relative to `project_root` when under it, and `source` says explicit or default.
 /// `findings` is changed in place as `apply_baseline` describes, and `declaration_position` gives each finding's declaration position.
-/// Returns the report, deltas, and collisions, with entries counted as resolved rows plus unchanged findings, or the error from applying.
+/// Returns the report, deltas, and collisions, or the error from applying the baseline.
 fn apply_selected_baseline(
     project_root: &Path,
     baseline_path: &Path,
@@ -1011,7 +1033,7 @@ fn apply_selected_baseline(
     let application = apply_baseline(baseline_path, findings, declaration_position)?;
     Ok(BaselineResolution {
         report: BaselineReport {
-            path: display_path(project_root, baseline_path),
+            path: baseline_display_path(project_root, baseline_path),
             source: source.to_string(),
             suppressed: application.counts.unchanged,
             new_count: application.counts.new,
@@ -1020,12 +1042,20 @@ fn apply_selected_baseline(
             collision_count: application.counts.collision,
             not_eligible_count: application.counts.not_eligible,
             sensitive_counted: 0,
-            entries: application.resolved.len() + application.counts.unchanged,
+            entries: application.entries,
             generated: false,
         },
         deltas: application.deltas,
         collisions: application.collisions,
     })
+}
+
+/// Returns the baseline `path` relative to `project_root` after resolving filesystem components when possible.
+fn baseline_display_path(project_root: &Path, path: &Path) -> String {
+    match (project_root.canonicalize(), path.canonicalize()) {
+        (Ok(root), Ok(resolved)) => display_path(&root, &resolved),
+        _ => display_path(project_root, path),
+    }
 }
 
 /// Append this run's finding count and composite score to the JSON history file, keeping only the newest 100 entries.

@@ -1,14 +1,13 @@
-//! Answers "would gruff ignore this path?" without analysing anything.
+//! Find out why a path did or did not reach a scan without running the analyzer.
+//! `check-ignore` uses the target project's config and reports the rule that excluded a requested path.
 //!
-//! An operator reaches this from `gruff-rs check-ignore <path>` after a file produced no findings and they need to know
-//! whether discovery skipped it or it simply had nothing to report. The verdict comes from the same config resolution and
-//! ignore engine `analyse` uses, so an answer here is the answer discovery would have given. Exit codes mirror
-//! `git check-ignore`, letting a shell caller branch on the status instead of parsing output.
+//! Use it after a path produces no findings. Exit codes follow `git check-ignore` so scripts can act without parsing text.
 
 use super::*;
 
-/// One `check-ignore` verdict. `source`/`pattern` are populated only when the
-/// path is ignored. This is the JSON contract agent consumers read.
+/// One verdict in the `check-ignore --format json` response.
+/// `source` names the policy for an ignored path, and `pattern` names its matching entry when available.
+/// A caller can use `ignored` for the decision even when there is no pattern to display.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckIgnoreEntry {
@@ -18,14 +17,8 @@ struct CheckIgnoreEntry {
     pattern: Option<String>,
 }
 
-/// `check-ignore` reports whether gruff would ignore each path and why, using the
-/// same config resolution (`load_config_for`) and ignore engine
-/// (`classify_ignored_path`) as `analyse` — no analysis is performed. Exit codes
-/// mirror `git check-ignore`: 0 when at least one path is ignored, 1 when none
-/// are, 2 on error.
-///
-/// Passing no paths is not an error: it exits 1, the same status as "nothing here is ignored", so a script that branches on the exit code
-/// cannot tell the two apart. Unless `writer` is silent, text mode prints a blank line and JSON mode an empty array.
+/// Explain whether analysis would skip the requested paths without running any rules.
+/// With no paths, a caller gets the same exit status as a request that matched no ignore rule. JSON returns an empty array.
 ///
 /// `args` carries the paths, config choice, and output format; `verbose` appends each ignored path's source and pattern in text output.
 /// `writer` receives the rendered verdicts, while errors are printed to standard error.
@@ -35,37 +28,43 @@ pub(crate) fn run_check_ignore(
     verbose: bool,
     writer: OutputWriter,
 ) -> ExitCode {
-    // e.g. the operator ran `gruff-rs check-ignore --format json src/generated.rs` from the project root after that file
-    // produced no findings.
-    let project_root = match std::env::current_dir() {
-        Ok(project_root) => project_root,
-        // The shell handed us a deleted or unreadable working directory, so no path can be resolved relative to a project
-        // and the run stops before answering anything.
+    // For example, a caller can check `src/generated.rs` from a sibling directory by typing its relative path.
+    let caller_root = match std::env::current_dir() {
+        Ok(launch_directory) => launch_directory,
+        // A deleted working directory prevents reliable lookup of the paths the caller typed.
         Err(error) => {
             eprintln!("gruff-rs: unable to resolve current directory: {error}");
             return ExitCode::from(2);
         }
     };
+    let (project_root, paths) =
+        match crate::command_setup::resolve_scan_context(&caller_root, &args.paths) {
+            Ok(context) => context,
+            // For example, targets on different drives cannot share an ignore policy for one request.
+            Err(error) => {
+                eprintln!("gruff-rs: {error}");
+                return ExitCode::from(2);
+            }
+        };
     let config = match load_config_for(&project_root, args.config.as_deref(), args.no_config) {
         Ok(config) => config,
-        // A broken or unreadable config would answer with different ignore rules than `analyse` uses, so the operator gets
-        // the parse error instead of a verdict they cannot trust.
+        // An invalid `paths.ignore` entry stops the request instead of returning a verdict from different settings than `analyse`.
         Err(error) => {
             eprintln!("gruff-rs: {error}");
             return ExitCode::from(2);
         }
     };
 
-    let entries: Vec<CheckIgnoreEntry> = args
-        .paths
+    // An empty request has no verdicts, even though setup uses the current directory to find config.
+    let entries: Vec<CheckIgnoreEntry> = paths
         .iter()
+        .take(args.paths.len())
         .map(|path| check_ignore_entry(&project_root, path, &config))
         .collect();
     let any_ignored = entries.iter().any(|entry| entry.ignored);
 
     writer.emit_unconditional(&render_check_ignore(&entries, args.format, verbose));
-    // Git's convention: a hit is success. One ignored path among many still exits 0, so a caller checking a single path
-    // gets a usable boolean and a caller checking several must read the output.
+    // With several paths, exit 0 means at least one was ignored. Read the verdicts to see which ones.
     if any_ignored {
         ExitCode::SUCCESS
     } else {
@@ -73,9 +72,7 @@ pub(crate) fn run_check_ignore(
     }
 }
 
-/// Decide one path's verdict and record which layer claimed it.
-/// Config `paths.ignore` is consulted before `.gitignore` so the reported source names the rule the operator can actually
-/// edit; an unignored path still returns an entry, carrying `ignored: false`.
+/// Find the first policy that excludes the requested path so the caller can see where to change it.
 ///
 /// `project_root` anchors `path`, the path to check as given, and `config` supplies the ignore policy that discovery uses.
 /// An existing file is judged by the explicit-file policy alone; only another path falls through to the `.gitignore` lookup.
@@ -83,13 +80,13 @@ pub(crate) fn run_check_ignore(
 fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> CheckIgnoreEntry {
     let absolute = absolutize(project_root, path);
     let explicit_file = absolute.is_file();
-    // Config ignores win, and they already carry the matching pattern, so the operator is told which `.gruff-rs.yaml` entry
-    // to change rather than being sent to Git.
+    // Naming an existing file directly uses the explicit-file policy, which does not apply ordinary Git ignores.
     let policy_decision = if explicit_file {
         crate::discovery::classify_explicit_file(project_root, &absolute, config)
     } else {
         classify_ignored_path(project_root, &absolute, config, false)
     };
+    // A configured ignore can name the exact pattern to change without consulting another policy.
     if let Some(ignored) = policy_decision {
         return CheckIgnoreEntry {
             path: ignored.path,
@@ -99,6 +96,7 @@ fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> Chec
         };
     }
     let relative = display_path(project_root, &absolute);
+    // With no explicit-file exclusion, analysis would accept this file as a target.
     if explicit_file {
         return CheckIgnoreEntry {
             path: relative,
@@ -108,8 +106,7 @@ fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> Chec
         };
     }
     let gitignore = gitignore_for_path(project_root, &absolute);
-    // No config rule claimed it, so Git's own ignore hierarchy decides, and the reported pattern is the `.gitignore` line
-    // to change.
+    // For a path still subject to Git ignores, show the original pattern so the caller can locate the rule.
     if let Some(pattern) = gitignore_match(&gitignore, &relative, &absolute) {
         return CheckIgnoreEntry {
             path: relative,
@@ -118,7 +115,7 @@ fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> Chec
             pattern: Some(pattern),
         };
     }
-    // Nothing ignores this path, so a missing finding is a genuine clean result rather than a skip.
+    // No ignore policy matched. The caller can now check other causes, such as file type or rule selection.
     CheckIgnoreEntry {
         path: relative,
         ignored: false,
@@ -127,14 +124,8 @@ fn check_ignore_entry(project_root: &Path, path: &Path, config: &Config) -> Chec
     }
 }
 
-/// The discovery walk applies gitignore via the `ignore` crate during traversal;
-/// check-ignore queries the same crate's matcher per path so it can report the
-/// gitignore source for an arbitrary path. Build the same hierarchy of
-/// `.gitignore` files that the walk would encounter from project root to the
-/// queried path's parent.
-///
-/// A direct query has no traversal context, so this rebuild is what stops a nested policy such as `src/.gitignore` from
-/// being missed and the operator being told a genuinely ignored file is not.
+/// Build the `.gitignore` hierarchy a directory scan would see before it reached the requested path.
+/// This lets a direct query account for a nested policy such as `src/.gitignore`.
 ///
 /// `project_root` is the matcher root and top of the hierarchy, and `absolute` is the queried path whose parent directories are searched.
 /// Returns one matcher over every `.gitignore` found on that route, or an empty matcher that ignores nothing when building fails.
@@ -143,19 +134,16 @@ pub(crate) fn gitignore_for_path(
     absolute: &Path,
 ) -> ignore::gitignore::Gitignore {
     let mut builder = ignore::gitignore::GitignoreBuilder::new(project_root);
-    // Root first, then each directory on the way down, so a deeper `.gitignore` overrides a shallower one exactly as it
-    // would during a walk.
+    // Load parent rules first so a deeper `.gitignore` can override them just as it does during a scan.
     for directory in gitignore_directories(project_root, absolute) {
         let gitignore_path = directory.join(".gitignore");
         // Most directories have no `.gitignore`; those that do contribute their rules to one matcher.
         if gitignore_path.is_file() {
-            // A malformed line is dropped rather than failing the query: Git itself skips lines it cannot parse, and
-            // reporting a hard error here would block an answer the operator can still act on.
+            // For example, a malformed glob should not discard the usable patterns in the same ignore file.
             let _error = builder.add(gitignore_path);
         }
     }
-    // An unbuildable matcher answers "not ignored" for everything rather than aborting; the operator sees the same verdict
-    // discovery would reach with no usable gitignore rules.
+    // If the ignore patterns cannot form a matcher, the result has no Git ignore match to report.
     builder
         .build()
         .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty())
@@ -174,9 +162,9 @@ fn gitignore_directories(project_root: &Path, absolute: &Path) -> Vec<PathBuf> {
     let mut current = project_root.to_path_buf();
     // A path directly in the root has no parent segments, so the root's own `.gitignore` is the whole hierarchy.
     if let Some(relative_parent) = relative.parent() {
+        // Visit each named directory in order so the reported match comes from the same hierarchy as a scan.
         for component in relative_parent.components() {
-            // Only real directory names carry a `.gitignore`; a `.` or `..` segment is a traversal artifact and would build
-            // a path Git never consults.
+            // `.` and `..` are path navigation, not directories with their own ignore rules to apply.
             let std::path::Component::Normal(component) = component else {
                 continue;
             };
@@ -199,9 +187,8 @@ fn gitignore_match(
     relative: &str,
     absolute: &Path,
 ) -> Option<String> {
-    // `matched_path_or_any_parents` panics unless the path is under the matcher
-    // root, so only query paths that resolved to a project-relative form.
-    if relative.is_empty() || relative.starts_with('/') || relative.starts_with("..") {
+    // Reject paths outside the matcher root. A name such as `..cache` is a directory name, not the `..` component.
+    if !crate::diff::is_relative_scan_path(relative) {
         return None;
     }
     // Only an ignore match carries a pattern worth reporting; an explicit un-ignore (`!rule`) and a plain miss both leave
@@ -231,18 +218,13 @@ fn render_check_ignore(
     }
 }
 
-/// Text output mirrors `git check-ignore`: emit only the ignored paths, one per
-/// line. `-v/--verbose` appends `\t<source>:<pattern>` so an operator can see why.
-///
-/// With nothing ignored the result is an empty string, which is why the exit code rather than the output is what a shell
-/// caller should test.
+/// Write an ignored-path list suitable for a shell pipeline. A script can check the exit code when the list is empty.
 ///
 /// `entries` are the verdicts to filter, and `verbose` adds the tab-separated `source:pattern` suffix to each line.
 /// Returns the ignored paths joined by newlines with no trailing newline; a missing source or pattern prints as empty.
 fn render_check_ignore_text(entries: &[CheckIgnoreEntry], verbose: bool) -> String {
     let mut output = String::new();
-    // Unignored paths are dropped here so the output can be piped straight into another command, the way
-    // `git check-ignore` output is.
+    // Ignore hits alone go to text output so scripts can use it like `git check-ignore`.
     for entry in entries.iter().filter(|entry| entry.ignored) {
         // Separator goes before each entry after the first, leaving no trailing newline for a caller reading the last line.
         if !output.is_empty() {
@@ -252,8 +234,7 @@ fn render_check_ignore_text(entries: &[CheckIgnoreEntry], verbose: bool) -> Stri
         // Verbose mode names the rule that claimed the path, which is what the operator edits to change the verdict.
         if verbose {
             output.push('\t');
-            // A verdict always carries its source and pattern, but an empty field prints as empty rather than aborting,
-            // keeping the line shape stable for downstream parsers.
+            // A missing pattern, such as a built-in skip, leaves an empty field so callers can still split the line at the colon.
             output.push_str(entry.source.map(IgnoreSource::as_str).unwrap_or_default());
             output.push(':');
             output.push_str(entry.pattern.as_deref().unwrap_or_default());

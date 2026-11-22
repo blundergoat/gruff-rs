@@ -1,4 +1,7 @@
-//! Project native Rust analysis state into the shared v3 machine contracts.
+//! Build v3 JSON for automation reading `analyse`, `report`, or `summary`.
+//!
+//! This is where the shared field names, counts, and project-relative paths are decided.
+//! A failed scan still needs a diagnostic and an exit code so downstream tools can tell it apart from a clean scan.
 
 use super::*;
 use serde::Serializer;
@@ -6,12 +9,20 @@ use serde::Serializer;
 const ANALYSIS_SCHEMA_VERSION: &str = "gruff.analysis.v3";
 const SUMMARY_SCHEMA_VERSION: &str = "gruff.summary.v3";
 
+/// Record the changed-code input that narrowed an analysis.
+///
+/// The mode identifies the source of the changes, such as a patch file or explicit ranges.
+/// Changed files let downstream tools see what the caller asked to compare.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MachineDiffContext {
     pub(crate) mode: String,
     pub(crate) changed_files: Vec<String>,
 }
 
+/// Keep the settings and outcome needed to build a machine report.
+///
+/// Input and config paths tell automation what the scan used, when they can be represented under the project root.
+/// Exit status and optional diff metadata let callers interpret the result without reading terminal output.
 #[derive(Debug, Clone)]
 pub(crate) struct MachineReportContext {
     pub(crate) project_root: String,
@@ -59,18 +70,77 @@ pub(crate) fn report_context(
                 .map(|path| path.display().to_string())
                 .collect()
         },
-        config_path: if options.no_config {
-            None
-        } else {
-            options
-                .config
-                .as_ref()
-                .map(|path| path.display().to_string())
-        },
+        config_path: options
+            .config
+            .as_ref()
+            .filter(|_| !options.no_config)
+            .and_then(|path| {
+                let caller = std::env::current_dir().ok()?;
+                let absolute = absolutize(&caller, path);
+                Some(
+                    absolute
+                        .canonicalize()
+                        .unwrap_or(absolute)
+                        .display()
+                        .to_string(),
+                )
+            }),
         include_ignored: options.include_ignored,
         exit_code: 0,
         diff,
     }
+}
+
+/// Reject a required path when JSON cannot express it without publishing an outside path.
+/// Returns success for a representable `report` or an error naming only the invalid path's last component.
+pub(crate) fn validate_required_paths(report: &AnalysisReport) -> Result<(), String> {
+    let root = &report.machine_context.project_root;
+    let paths = report
+        .findings
+        .iter()
+        .map(|finding| finding.file_path.as_str())
+        .chain(
+            report
+                .score
+                .top_offenders
+                .iter()
+                .map(|row| row.file_path.as_str()),
+        )
+        .chain(
+            report
+                .paths
+                .ignored_path_details
+                .iter()
+                .map(|row| row.path.as_str()),
+        )
+        .chain(report.paths.missing_paths.iter().map(String::as_str))
+        .chain(
+            report
+                .suppressions
+                .iter()
+                .flat_map(|row| row.paths.iter().map(String::as_str)),
+        )
+        .chain(
+            report
+                .machine_context
+                .diff
+                .iter()
+                .flat_map(|diff| diff.changed_files.iter().map(String::as_str)),
+        );
+    // A machine caller gets a structured error instead of a partial document or a host-specific path.
+    if let Some(path) = paths
+        .into_iter()
+        .find(|path| relative_machine_path(path, root).is_none())
+    {
+        let name = Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        return Err(format!(
+            "unable to express report path {name:?} relative to the project"
+        ));
+    }
+    Ok(())
 }
 
 /// Render the analysis v3 envelope for a finished report as pretty-printed JSON text.
@@ -131,7 +201,7 @@ pub(crate) fn analysis_value(report: &AnalysisReport) -> Value {
             finding_value(finding, &report.machine_context.project_root)
         }).collect::<Vec<_>>(),
         "paths": {
-            "analysedFiles": report.paths.analysed_files,
+            "analysedFiles": analysed_file_count(report),
             "details": details,
             "ignoredPaths": ignored_paths,
             "missingPaths": machine_paths(
@@ -192,13 +262,18 @@ fn run_value(report: &AnalysisReport) -> Value {
 /// Build the `summary` counts section of the analysis envelope.
 ///
 /// `report` supplies the file, diagnostic, finding, pillar, missing-path, and parse-error counts and any suppressed-finding count.
-/// `ignored_count` is the number of ignored paths, published as both `ignoredPaths` and `skippedFiles`.
-/// Returns the counts object, where analysed, discovered, and parsed files all report the analysed-file count.
+/// `ignored_count` is the number of ignored paths. Read and parse failures reduce coverage counts.
 ///
-/// `suppressedFindings` appears only when the report carries a suppressed count.
+/// Returns the summary object. `suppressedFindings` appears only when the report carries a suppressed count.
 fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value {
+    let analysed = analysed_file_count(report);
+    let parse_errors = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.diagnostic_type == "parse-error")
+        .count();
     let mut payload = json!({
-        "analysedFiles": report.paths.analysed_files,
+        "analysedFiles": analysed,
         "diagnostics": report.diagnostics.len(),
         "discoveredFiles": report.paths.analysed_files,
         "exitCode": report.machine_context.exit_code,
@@ -208,14 +283,12 @@ fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value 
             "error": report.summary.error,
             "total": report.summary.total,
         },
-        "findingsByPillar": findings_by_pillar(&report.findings),
+        "findingsByPillar": findings_by_pillar(&report.score.pillars),
         "ignoredPaths": ignored_count,
         "missingPaths": report.paths.missing_paths.len(),
-        "parseErrors": report.diagnostics.iter()
-            .filter(|diagnostic| diagnostic.diagnostic_type == "parse-error")
-            .count(),
-        "parsedFiles": report.paths.analysed_files,
-        "skippedFiles": ignored_count,
+        "parseErrors": parse_errors,
+        "parsedFiles": analysed.saturating_sub(parse_errors),
+        "skippedFiles": ignored_count + (report.paths.analysed_files - analysed),
     });
     if let Some(count) = report.suppressed_count {
         payload
@@ -226,61 +299,62 @@ fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value 
     payload
 }
 
+/// Return the number of discovered files for which `report` has no read failure or skip.
+fn analysed_file_count(report: &AnalysisReport) -> usize {
+    let unread = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.diagnostic_type.as_str(),
+                "read-error" | "read-skip-non-utf8"
+            )
+        })
+        .count();
+    report.paths.analysed_files.saturating_sub(unread)
+}
+
 /// Tally findings by their primary pillar for the summary's `findingsByPillar` map.
 ///
-/// `findings` are the findings to count, each under the label of its own pillar.
+/// `pillars` contains the counts computed before display filtering.
 /// Returns a map from pillar label to count, sorted by label; a pillar without findings has no key, so no findings give an empty map.
-fn findings_by_pillar(findings: &[Finding]) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::new();
-    for finding in findings {
-        *counts
-            .entry(pillar_label(finding.pillar).to_string())
-            .or_insert(0) += 1;
-    }
-    counts
+fn findings_by_pillar(pillars: &[PillarScore]) -> BTreeMap<String, usize> {
+    pillars
+        .iter()
+        .filter(|pillar| pillar.findings != 0)
+        .map(|pillar| (pillar_label(pillar.pillar).to_string(), pillar.findings))
+        .collect()
 }
 
 /// Build the ignored-path details and the deduplicated ignored-path list for the envelope's `paths` section.
 ///
 /// `report` supplies the ignored paths, their details, and the machine-context project root they are made relative to.
-/// Returns the detail objects in detail order and the ignored paths in first-seen order, both project-relative.
-///
-/// Panics unless the deduplicated ignored paths equal the detail paths in the same order.
-/// It also panics when any of these paths has no project-relative form, or when a default ignore has a pattern with no canonical reason.
+/// Returns the detail rows and their paths in matching order after normalization and deduplication.
 fn path_details(report: &AnalysisReport) -> (Vec<Value>, Vec<String>) {
     let root = &report.machine_context.project_root;
-    let details: Vec<Value> = report
-        .paths
-        .ignored_path_details
-        .iter()
-        .map(|detail| path_detail_value(detail, root))
-        .collect();
-    let ignored_paths = machine_paths(&report.paths.ignored_paths, root);
-    let detail_paths: Vec<String> = details
-        .iter()
-        .map(|detail| {
-            detail["path"]
-                .as_str()
-                .expect("path detail has a path")
-                .to_string()
-        })
-        .collect();
-    assert_eq!(
-        ignored_paths, detail_paths,
-        "ignored paths and details must describe identical paths"
-    );
+    let mut seen = BTreeSet::new();
+    let mut details = Vec::new();
+    let mut ignored_paths = Vec::new();
+    // Build both lists together so a repeated target cannot inflate the ignored count or lose its explanation.
+    for detail in &report.paths.ignored_path_details {
+        let path = machine_path(&detail.path, root);
+        // The first reason for this normalized path supplies the audit row.
+        if seen.insert(path.clone()) {
+            details.push(path_detail_value(detail, &path));
+            ignored_paths.push(path);
+        }
+    }
     (details, ignored_paths)
 }
 
 /// Describe one ignored path for the envelope's `paths.details` list.
 ///
-/// `detail` supplies the path, its ignore source, and any matching pattern; `root` is the project root the path is made relative to.
+/// `detail` supplies the ignore source and any matching pattern. `path` is the normalized report path.
 /// Returns an object with `path`, `reason`, and `source`, plus `pattern` only when the detail carries a non-empty one.
 ///
-/// Panics when the path has no project-relative form under `root`, or when a default ignore has a pattern with no canonical reason.
-fn path_detail_value(detail: &IgnoredPath, root: &str) -> Value {
+fn path_detail_value(detail: &IgnoredPath, path: &str) -> Value {
     let mut payload = json!({
-        "path": machine_path(&detail.path, root),
+        "path": path,
         "reason": ignored_reason(detail),
         "source": detail.source.as_str(),
     });
@@ -418,7 +492,7 @@ fn score_value(report: &AnalysisReport) -> Value {
         "evaluatedFiles": report.score.evaluated_files,
         "scoredPillars": report.score.scored_pillars,
         "pillars": report.score.pillars.iter().map(pillar_score_value).collect::<Vec<_>>(),
-        "topOffenders": report.score.top_offenders.iter().map(|score| {
+        "topOffenders": report.score.top_offenders.iter().take(scoring::TOP_OFFENDER_LIMIT).map(|score| {
             top_offender_value(score, root)
         }).collect::<Vec<_>>(),
     })
@@ -524,7 +598,7 @@ fn baseline_value(baseline: &BaselineReport, report: &AnalysisReport) -> Value {
         "applied": !baseline.generated,
         "entries": baseline.entries,
         "generated": baseline.generated,
-        "newFindings": baseline.new_count + baseline.collision_count + baseline.not_eligible_count,
+        "newFindings": if baseline.generated { baseline.new_count } else { report.summary.total },
         "resolvedFindings": baseline.absent_count,
         "source": baseline.source,
         "suppressedFindings": baseline.suppressed,
@@ -606,10 +680,8 @@ fn machine_paths(values: &[String], root: &str) -> Vec<String> {
 
 /// Publish the inputs that have a project-relative form and leave out the rest.
 ///
-/// A run that could not start never resolved a project root, so its envelope is rooted at the launch directory,
-/// and a target named from a sibling directory, such as `analyse ../proj`, has no form under it. A host path may
-/// not be published, so the input is left out the way `insert_optional_path` leaves out such a config path, and the
-/// way gruff-go leaves out the same input, instead of failing the one envelope that says why the run could not start.
+/// Failure envelopes recover the attempted project root when possible. An input outside that root is omitted,
+/// just as an external config path is omitted by `insert_optional_path`.
 ///
 /// `values` are the run's inputs as given, and `root` is the project root they are made relative to.
 /// Returns the relative inputs in first-seen order without duplicates, and an empty list when none has a project-relative form.
@@ -634,32 +706,24 @@ fn machine_path(value: &str, root: &str) -> String {
 
 /// Convert a path into the slash-separated project-relative form the machine envelopes publish.
 ///
-/// `value` is the path to convert, and `root` is the project root it must lie under.
-/// An absolute `value` has `root` stripped after both are canonicalised where possible; a relative one is taken as already relative to `root`.
-/// Returns the normalised path, or `.` for the root itself.
+/// An absolute `value` must start with `root`. A relative path is already relative to that root. No filesystem lookup is needed.
+/// Returns the normalized path, or `.` for the root itself.
 ///
-/// Returns None for an empty value, a backslash or drive letter, an absolute path outside `root`, a climb above it, or non-UTF-8 text.
-fn relative_machine_path(value: &str, root: &str) -> Option<String> {
-    if value.is_empty() || value.contains('\\') || is_windows_drive_path(value) {
+/// Returns None for empty input, an absolute path outside `root`, a climb above the root, or an invalid relative component.
+pub(crate) fn relative_machine_path(value: &str, root: &str) -> Option<String> {
+    // An empty value means there is no path to publish. A real project-root path is shown as `.` instead.
+    if value.is_empty() {
         return None;
     }
     let root_path = Path::new(root);
     let candidate = Path::new(value);
+    // An absolute path is safe to publish only after removing the matching project root.
     let relative = if candidate.is_absolute() {
-        let canonical_root = root_path
-            .canonicalize()
-            .unwrap_or_else(|_| root_path.to_path_buf());
-        let canonical_candidate = candidate
-            .canonicalize()
-            .unwrap_or_else(|_| candidate.to_path_buf());
-        canonical_candidate
-            .strip_prefix(canonical_root)
-            .ok()?
-            .to_path_buf()
+        candidate.strip_prefix(root_path).ok()?
     } else {
-        candidate.to_path_buf()
+        candidate
     };
-    normalize_relative_path(&relative)
+    normalize_relative_path(relative)
 }
 
 /// Resolve `.` and `..` segments in a relative path and join what remains with forward slashes.
@@ -684,13 +748,4 @@ fn normalize_relative_path(path: &Path) -> Option<String> {
     } else {
         parts.join("/")
     })
-}
-
-/// Detect a path that starts with a Windows drive letter, which can never be published as project-relative.
-///
-/// `value` is the path text to inspect.
-/// Returns true when its first byte is an ASCII letter and its second is a colon, and false otherwise.
-fn is_windows_drive_path(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }

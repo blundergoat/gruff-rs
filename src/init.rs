@@ -1,7 +1,7 @@
 //! Create or regenerate the user-visible `.gruff-rs.yaml` configuration.
 //!
 //! Generated settings mirror the rule registry and retain safe family seeds.
-//! The retired secret-preview key is always emitted as an inert empty list.
+//! Use `init --force` to refresh an existing config while retaining supported settings such as its display floor.
 
 use crate::cli::{FailThreshold, InitArgs, OutputWriter};
 use crate::config::{Config, DeepScanBudget, DEFAULT_ABBREVIATIONS, SCHEMA_VERSION};
@@ -61,6 +61,7 @@ pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
         &preserved_ignores,
         &preserved_min_severity,
         &preserved_deep_scan_budget,
+        read_existing_display_floor(output),
     );
 
     // `--stdout` lets the user preview or redirect config without changing a project file.
@@ -197,6 +198,7 @@ fn write_default_config_at(target: &Path) {
             &preserved_ignores,
             &preserved_min_severity,
             &preserved_deep_scan_budget,
+            read_existing_display_floor(target),
         ),
     ) {
         Ok(()) => {
@@ -230,13 +232,15 @@ pub(crate) fn render_default_config(
         extra_ignores,
         preserved_min_severity,
         &DeepScanBudget::default(),
+        None,
     )
 }
 
 /// Render the complete generated config text from the rule registry and settings preserved from an existing file.
 ///
 /// `registry` supplies every rule listed under `rules:`, and `extra_ignores` adds user ignore patterns after the built-in defaults.
-/// `preserved_min_severity` holds the `failOn` thresholds to keep active, and `deep_scan_budget` is written as the `deepScanBudget` block.
+/// `preserved_min_severity` holds the `failOn` thresholds, `display_floor` holds the scalar `minimumSeverity`,
+/// and `deep_scan_budget` is written as the `deepScanBudget` block.
 ///
 /// Returns the full YAML text: the header, schema version, `failOn`, budget, paths, allowlists, commented `sensitiveExclusions`, and rules.
 fn render_default_config_with_budget(
@@ -244,6 +248,7 @@ fn render_default_config_with_budget(
     extra_ignores: &[String],
     preserved_min_severity: &BTreeMap<String, FailThreshold>,
     deep_scan_budget: &DeepScanBudget,
+    display_floor: Option<Severity>,
 ) -> String {
     // Rendering begins empty so every visible line comes from the current registry and preserved user settings.
     let mut out = String::new();
@@ -251,6 +256,10 @@ fn render_default_config_with_budget(
     out.push('\n');
 
     append_schema_version_section(&mut out);
+    // Preserve the report's display floor if the caller already set one before running `init --force`.
+    if let Some(severity) = display_floor {
+        out.push_str(&format!("minimumSeverity: {}\n\n", severity_name(severity)));
+    }
     append_minimum_severity_section(&mut out, preserved_min_severity);
     append_deep_scan_budget_section(&mut out, deep_scan_budget);
     append_paths_section(&mut out, extra_ignores);
@@ -403,9 +412,8 @@ fn append_sensitive_exclusions_section(out: &mut String) {
 /// Without `definition.threshold`, the scalar `threshold` and `severity` entries are omitted; named detector `thresholds` may still be emitted.
 ///
 /// `out` is the config text being built and gains this rule's commented description and settings under `rules:`.
-/// `definition` supplies the id, description, and default enabled state, plus the default threshold and severity when the rule has a threshold.
-/// Named detector parameters for the rule id are also written as a `thresholds:` map of their defaults, and boolean
-/// options as an `options:` map of the values `Config::boolean_option_default` gives them.
+/// `definition` supplies the ID, description, enabled state, and any threshold and severity defaults.
+/// Named limits appear under `thresholds` and configurable boolean defaults under `options`.
 fn append_rule_entry(out: &mut String, definition: &RuleDefinition) {
     out.push_str(&format!("  # {}\n", definition.description));
     out.push_str(&format!("  {}:\n", definition.id));
@@ -552,6 +560,13 @@ pub(crate) fn read_existing_fail_on(path: &Path) -> BTreeMap<String, FailThresho
         .and_then(|v| v.as_mapping())
         .map(|mapping| mapping.iter().filter_map(parse_preserved_entry).collect())
         .unwrap_or_default()
+}
+
+/// Read the scalar display floor from an existing config at `path`.
+/// Returns no floor if the field is absent or is a legacy command map.
+fn read_existing_display_floor(path: &Path) -> Option<Severity> {
+    let value = read_existing_yaml(path, "minimumSeverity preservation")?;
+    value.get("minimumSeverity")?.as_str()?.parse().ok()
 }
 
 /// Preserve a valid existing deep-scan budget during `init --force` regeneration.

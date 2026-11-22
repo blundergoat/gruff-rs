@@ -1,4 +1,27 @@
+//! Turn evaluated files and their findings into a composite score, pillar scores, and ranked files.
+//!
+//! Use the same rule weights across those views so a caller can see what drove the grade.
+//! If no Rust files qualify for scoring, the report shows that there is no grade to interpret.
+
 use super::*;
+
+/// Return the count of Rust `files` that could be evaluated, excluding failures in `diagnostics`.
+pub(crate) fn evaluated_rust_files(files: &[SourceFile], diagnostics: &[RunDiagnostic]) -> usize {
+    let failed: BTreeSet<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.diagnostic_type.as_str(),
+                "read-error" | "parse-error"
+            )
+        })
+        .filter_map(|diagnostic| diagnostic.file_path.as_deref())
+        .collect();
+    files
+        .iter()
+        .filter(|file| file.is_rust && !failed.contains(file.display_path.as_str()))
+        .count()
+}
 
 /// Count findings by severity for the report summary.
 ///
@@ -26,11 +49,7 @@ pub(crate) fn summarize(findings: &[Finding]) -> Summary {
     }
 }
 
-/// Cross-port canonical composite-score block. Shared verbatim by the `analyse`
-/// text header (`render::text`) and the `summary` text view (`summary`) so the two
-/// surfaces render byte-identical score lines (they previously diverged on
-/// separator, severity order, decimals, and the `/100` denominator). Emits exactly
-/// two lines, each terminated with `\n`:
+/// Give `analyse` and `summary` the same two-line score and finding block, with each line terminated by `\n`.
 ///
 /// ```text
 /// Composite: <GRADE> (<score> / 100)
@@ -60,11 +79,8 @@ pub(crate) fn render_composite_block(out: &mut String, report: &AnalysisReport) 
     );
 }
 
-/// Ratified family scoring parameters. The shape `bounded-normalized-density-floored` was ratified
-/// 2026-09-01 and these values 2026-09-03; all five ports carry the same numbers, so changing either
-/// is a family decision rather than a gruff-rs one. `SCORE_FLOOR` bounds how far one saturated pillar
-/// can drag the composite; `DENSITY_SCALE` is the per-file finding density at which a pillar sits half
-/// way between the floor and 100.
+/// Keep the scoring curve aligned across Gruff ports so a reviewer can interpret the grade consistently.
+/// `SCORE_FLOOR` limits a saturated pillar's effect. `DENSITY_SCALE` is the density halfway from 100 to the floor.
 pub(crate) const SCORE_FLOOR: f64 = 50.0;
 pub(crate) const DENSITY_SCALE: f64 = 0.1;
 
@@ -125,29 +141,37 @@ pub(crate) fn round_score(value: f64) -> f64 {
 /// `findings` are the findings to weigh, and `config` decides which rules are left out of pillar penalties.
 /// `evaluated_files` normalizes pillar penalties; file penalties use a denominator of one, and zero leaves every score and grade as `None`.
 ///
-/// Returns a `ScoreReport` holding pillar scores, the composite and grade, up to ten top offenders, correlated clusters, and rule weights.
+/// Returns pillar scores, the composite, the full file ranking, correlated clusters, and rule weights for the selected renderer.
 pub(crate) fn score_report(
     findings: &[Finding],
     config: &Config,
     evaluated_files: usize,
 ) -> ScoreReport {
-    let pillars = pillar_scores(findings, config, evaluated_files);
+    let penalties = clustered_penalties(findings, config);
+    let pillars = pillar_scores(findings, &penalties, evaluated_files);
     let composite = composite_score(&pillars);
-    let top_offenders = top_file_scores(findings, evaluated_files);
+    let top_offenders = rank_file_scores(findings, &penalties, evaluated_files);
 
     ScoreReport {
         composite,
         grade: composite.map(grade),
         evaluated_files,
-        scored_pillars: pillars.iter().map(|pillar| pillar.pillar).collect(),
-        clusters: correlated_clusters(findings),
-        rule_attribution: rule_attribution(findings),
+        scored_pillars: pillars
+            .iter()
+            .filter(|pillar| pillar.score.is_some())
+            .map(|pillar| pillar.pillar)
+            .collect(),
+        clusters: correlated_clusters(findings, &penalties),
+        rule_attribution: rule_attribution(findings, &penalties),
         pillars,
         top_offenders,
     }
 }
 
-/// One correlated concept whose members share a single score weight.
+/// List correlated findings that counted as one scoring penalty.
+///
+/// The file and symbol tell the caller which code the rules agreed on.
+/// The shared weight shows how much they changed the grade together.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScoreCluster {
@@ -160,7 +184,10 @@ pub(crate) struct ScoreCluster {
     pub(crate) weight: f64,
 }
 
-/// One native rule's contribution to the score.
+/// Attribute the score's penalty to a rule ID the caller can look up.
+///
+/// A finding still contributes to the count when config excludes its rule from scoring and leaves its weight at zero.
+/// Use this attribution to explain which rules changed the grade most.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuleWeight {
@@ -174,18 +201,21 @@ pub(crate) struct RuleWeight {
 /// runs over unchanged input publish the same bytes.
 ///
 /// `findings` is the full finding list; only findings with a symbol and a rule in `CORRELATED_COMPLEXITY_RULES` can join a cluster.
+/// `penalties` contains the weight already assigned to each finding, in matching order.
 ///
 /// Returns one `ScoreCluster` per file and symbol with two or more such findings, or an empty list when none qualify.
 /// Each cluster lists its rule ids sorted and a `weight` equal to its worst member's penalty, rounded to two decimals.
-pub(crate) fn correlated_clusters(findings: &[Finding]) -> Vec<ScoreCluster> {
-    let penalties = clustered_penalties(findings);
+fn correlated_clusters(findings: &[Finding], penalties: &[f64]) -> Vec<ScoreCluster> {
     let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
 
     for (index, finding) in findings.iter().enumerate() {
         let Some(symbol) = finding.symbol.as_deref() else {
             continue;
         };
-        if !CORRELATED_COMPLEXITY_RULES.contains(&finding.rule_id.as_str()) {
+        // A finding omitted from scores cannot reduce or share another rule's penalty, even on the same function.
+        if penalties[index] == 0.0
+            || !CORRELATED_COMPLEXITY_RULES.contains(&finding.rule_id.as_str())
+        {
             continue;
         }
         groups
@@ -217,13 +247,13 @@ pub(crate) fn correlated_clusters(findings: &[Finding]) -> Vec<ScoreCluster> {
 
 /// Report each rule's summed post-clustering finding weight, sorted by rule identifier, including rules excluded from pillar penalties.
 ///
-/// `findings` is the full finding list, weighed after correlated clusters share their penalty.
+/// `findings` is the full finding list. `penalties` holds the weight each finding contributes after clustering.
 ///
 /// Returns one `RuleWeight` per rule id with its finding count and summed weight rounded to two decimals, or an empty list for no findings.
-pub(crate) fn rule_attribution(findings: &[Finding]) -> Vec<RuleWeight> {
-    let penalties = clustered_penalties(findings);
+fn rule_attribution(findings: &[Finding], penalties: &[f64]) -> Vec<RuleWeight> {
     let mut totals: BTreeMap<String, (usize, f64)> = BTreeMap::new();
 
+    // Keep counts even at zero weight so a reviewer can see why a visible rule did not affect the grade.
     for (index, finding) in findings.iter().enumerate() {
         let entry = totals.entry(finding.rule_id.clone()).or_insert((0, 0.0));
         entry.0 += 1;
@@ -242,17 +272,16 @@ pub(crate) fn rule_attribution(findings: &[Finding]) -> Vec<RuleWeight> {
 
 /// Score each standard pillar, plus any other pillar a finding belongs to, from the clustered finding weights.
 ///
-/// `findings` are grouped by pillar, and `config` names rules whose weight is left out of a pillar's penalty.
+/// `findings` are grouped by pillar, and `penalties` contains their assigned weights in matching order.
 /// `evaluated_files` divides each pillar's penalty before the curve is applied; zero leaves every row's score and grade as `None`.
 ///
 /// Returns a `PillarScore` for every `SCORE_PILLARS` entry in order, even without findings, then for any other pillar a finding uses.
-pub(crate) fn pillar_scores(
+fn pillar_scores(
     findings: &[Finding],
-    config: &Config,
+    penalties: &[f64],
     evaluated_files: usize,
 ) -> Vec<PillarScore> {
-    let weighted: Vec<(&Finding, f64)> =
-        findings.iter().zip(clustered_penalties(findings)).collect();
+    let weighted: Vec<(&Finding, f64)> = findings.iter().zip(penalties.iter().copied()).collect();
     let mut by_pillar: BTreeMap<Pillar, Vec<&(&Finding, f64)>> = BTreeMap::new();
     for entry in &weighted {
         by_pillar.entry(entry.0.pillar).or_default().push(entry);
@@ -267,37 +296,36 @@ pub(crate) fn pillar_scores(
 
     pillar_order
         .into_iter()
-        .map(|pillar| pillar_score_row(pillar, by_pillar.get(&pillar), config, evaluated_files))
+        .map(|pillar| pillar_score_row(pillar, by_pillar.get(&pillar), evaluated_files))
         .collect()
 }
 
 /// Score one pillar from its findings and their clustered weights.
 ///
 /// `pillar` is the pillar being scored, and `pillar_findings` holds its findings paired with clustered weights, `None` when it has none.
-/// `config` drops excluded rules from the penalty, and `evaluated_files` is the file count the penalty is divided by.
+/// `evaluated_files` is the file count the penalty is divided by.
 ///
 /// Returns an applicable `PillarScore` whose score and grade are `None` when no files were evaluated.
 /// Its rounded penalty skips excluded rules, but its finding count still includes them.
 fn pillar_score_row(
     pillar: Pillar,
     pillar_findings: Option<&Vec<&(&Finding, f64)>>,
-    config: &Config,
     evaluated_files: usize,
 ) -> PillarScore {
     let empty: Vec<&(&Finding, f64)> = Vec::new();
     let findings = pillar_findings.unwrap_or(&empty);
-    let penalty: f64 = findings
-        .iter()
-        .filter(|(finding, _)| !config.is_rule_excluded_from_score(&finding.rule_id))
-        .map(|(_, weight)| *weight)
-        .sum();
+    let penalty: f64 = findings.iter().map(|(_, weight)| *weight).sum();
+    let applicable = SCORE_PILLARS.contains(&pillar);
+    let score = if applicable {
+        curve_score(penalty, evaluated_files)
+    } else {
+        None
+    };
     PillarScore {
         pillar,
-        // Every pillar in SCORE_PILLARS is reachable by this port's rule set; a pillar a finding
-        // introduced from outside that set is reachable by definition, having just been reached.
-        applicable: true,
-        score: curve_score(penalty, evaluated_files),
-        grade: curve_score(penalty, evaluated_files).map(grade),
+        applicable,
+        score,
+        grade: score.map(grade),
         penalty: round_score(penalty),
         findings: findings.len(),
     }
@@ -325,30 +353,20 @@ pub(crate) fn composite_score(pillars: &[PillarScore]) -> Option<f64> {
     }
 }
 
-/// List the worst-scoring files for the report's top-offender section, capped at ten.
-///
-/// `findings` supplies each file's weighted findings, and `evaluated_files` of zero leaves every file score `None`.
-///
-/// Returns at most ten `FileScore` rows from `top_file_scores_with_limit`, or an empty list when there are no findings.
-pub(crate) fn top_file_scores(findings: &[Finding], evaluated_files: usize) -> Vec<FileScore> {
-    top_file_scores_with_limit(findings, 10, evaluated_files)
-}
+/// Number of ranked files published in standard reports.
+pub(crate) const TOP_OFFENDER_LIMIT: usize = 10;
 
-/// Rank the files that have findings by their own score so the worst offenders come first.
-///
-/// `findings` are grouped by file with their clustered weights, and `limit` caps how many rows are kept.
-/// `evaluated_files` of zero leaves every file score `None`; otherwise each file is scored as one file from its own penalty.
-///
-/// Returns up to `limit` `FileScore` rows sorted by lowest score, then most findings, then path, with ungraded files sorted as if they scored 100.
-pub(crate) fn top_file_scores_with_limit(
+/// Rank files by their clustered scoring penalties. Keep counts for visible findings in ranked files.
+/// `findings` and `penalties` pair each finding with its weight. `evaluated_files` normalizes the penalty.
+/// Returns files with positive penalties, ordered by worst score, then most findings, then path.
+fn rank_file_scores(
     findings: &[Finding],
-    limit: usize,
+    penalties: &[f64],
     evaluated_files: usize,
 ) -> Vec<FileScore> {
     let mut file_counts: BTreeMap<String, (usize, f64)> = BTreeMap::new();
-    // File scores charge the clustered weight too, so a top-offender list ranks one over-large
-    // function once rather than once per symptom.
-    for (finding, weight) in findings.iter().zip(clustered_penalties(findings)) {
+    // Use the same clustered weights as the composite so the file ranking points to what drove the grade.
+    for (finding, weight) in findings.iter().zip(penalties) {
         let entry = file_counts
             .entry(finding.file_path.clone())
             .or_insert((0, 0.0));
@@ -357,6 +375,7 @@ pub(crate) fn top_file_scores_with_limit(
     }
     let mut top_offenders: Vec<FileScore> = file_counts
         .into_iter()
+        .filter(|(_, (_, penalty))| *penalty > 0.0)
         .map(|(file_path, (findings, penalty))| FileScore {
             file_path,
             // A file's density is its own weighted findings, so file and project scores share one
@@ -378,14 +397,11 @@ pub(crate) fn top_file_scores_with_limit(
             .then_with(|| right.findings.cmp(&left.findings))
             .then_with(|| left.file_path.cmp(&right.file_path))
     });
-    top_offenders.truncate(limit);
     top_offenders
 }
 
-/// Size and complexity rules that describe one over-large function from different angles: too long,
-/// too nested, too branchy, too many parameters. The ratified contract bills one penalty per
-/// correlated concept, so when two or more of these land on the same symbol they share a single
-/// weight instead of charging the grade once per symptom.
+/// Size and complexity rules that can describe the same underlying problem in one function.
+/// Their findings remain visible, while the score counts one shared weight for that symbol.
 pub(crate) const CORRELATED_COMPLEXITY_RULES: [&str; 5] = [
     "complexity.cognitive",
     "complexity.cyclomatic",
@@ -396,28 +412,41 @@ pub(crate) const CORRELATED_COMPLEXITY_RULES: [&str; 5] = [
 
 /// Weigh every finding, then share one weight across each correlated cluster.
 ///
-/// The cluster key is project-relative file and symbol, without line identity: correlated rules do
-/// not agree on which line to report, and a line in the key splits one root cause into two. The
-/// contract's key is the *qualified* symbol; gruff-rs emits an unqualified one, so two same-named
-/// functions in one file share a key and bill one penalty between them. That under-penalises rather
-/// than over-penalises, and qualifying the symbol would change finding identity.
+/// Group by project-relative file and symbol so rules pointing at different lines of the same function can share a penalty.
+/// Rust's unqualified symbols can also group same-named functions in one file. Qualifying them would change finding identity.
 ///
 /// Each member of a cluster of two or more contributes `max(member weight) / len`, so the cluster
 /// bills the single worst member once. Every finding still renders and still counts toward its
 /// pillar; only its scoring weight is shared.
 ///
 /// `findings` is the full finding list; each starts from `finding_penalty` before clustering.
+/// `config` specifies the rules to leave out of scoring.
 ///
 /// Returns one penalty per finding in the same order as `findings`, so callers can zip or index the two lists together.
-pub(crate) fn clustered_penalties(findings: &[Finding]) -> Vec<f64> {
-    let mut penalties: Vec<f64> = findings.iter().map(finding_penalty).collect();
+fn clustered_penalties(findings: &[Finding], config: &Config) -> Vec<f64> {
+    let mut penalties: Vec<f64> = findings
+        .iter()
+        .map(|finding| {
+            if SCORE_PILLARS.contains(&finding.pillar)
+                && !config.is_rule_excluded_from_score(&finding.rule_id)
+            {
+                finding_penalty(finding)
+            } else {
+                0.0
+            }
+        })
+        .collect();
     let mut clusters: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
 
     for (index, finding) in findings.iter().enumerate() {
+        // A file-level finding has no function to share its weight with.
         let Some(symbol) = finding.symbol.as_deref() else {
             continue;
         };
-        if !CORRELATED_COMPLEXITY_RULES.contains(&finding.rule_id.as_str()) {
+        // A rule excluded from scoring cannot change the weight of an included finding.
+        if penalties[index] == 0.0
+            || !CORRELATED_COMPLEXITY_RULES.contains(&finding.rule_id.as_str())
+        {
             continue;
         }
         clusters

@@ -1,16 +1,14 @@
-//! Narrows a scan to the lines a change touched, so a gate reports the work in hand rather than the
-//! whole tree.
+//! Limit findings to the changed code a developer or hook asked to check.
 //!
-//! An operator arrives here through a coding-agent hook passing `--changed-ranges 3-3,8-10`, a CI step passing
-//! `--diff-patch` a saved unified diff, or the `--diff-git-unsafe` modes that shell out to Git. The first two never execute
-//! Git, which is why they are the paths a hook is expected to use; the Git modes carry the extra hardening in
-//! `git_command` and `git_diff_patch` because they read an untrusted tree. Everything here decides which findings survive,
-//! never whether a finding was correct.
+//! A hook can pass `--changed-ranges 3-3,8-10` or `--diff-patch` without invoking Git.
+//! Git-backed modes invoke Git explicitly. All modes use the selected hunk or symbol scope to decide which findings remain visible.
 
 use super::*;
 
-/// Whether a touched line pulls in its whole enclosing symbol (`Symbol`) or only
-/// the changed hunk (`Hunk`) when scoping findings to a change.
+/// Choose how far a changed-code scan looks beyond a touched line.
+///
+/// `Symbol` includes the enclosing declaration. `Hunk` keeps findings within the edited lines.
+/// The CLI and hook use this setting to explain the scope in their output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ChangedScope {
     Symbol,
@@ -70,6 +68,14 @@ pub(crate) fn resolve_diff_filter(
 fn parse_patch_selection(project_root: &Path, path: &Path) -> Result<DiffPatchLineMap, String> {
     let patch_text = read_diff_patch(project_root, path)?;
     let patch = parse_unified_diff(&patch_text);
+    // A patch from a different layout can name an outside path. Reject it before reporting a misleading changed-file scope.
+    if patch
+        .changed_files()
+        .iter()
+        .any(|path| !crate::diff::is_relative_scan_path(path))
+    {
+        return Err("--diff-patch contains a path outside the project".to_string());
+    }
     // Neither a hunk nor a filename came out, so the file is not a diff at all - usually a log or an empty capture. Failing
     // here matters: a silently empty patch would filter away every finding and report a clean scan.
     if !patch.saw_hunk && patch.changed_files().is_empty() {
@@ -130,10 +136,9 @@ pub(crate) fn explicit_ranges_patch(
     Ok(line_map)
 }
 
-/// Build a `DiffPatchLineMap` by running `git diff` for `mode` (a ref or one of
-/// `working-tree`/`staged`/`unstaged`). Executes Git, so it is only reached from
-/// the `--diff-git-unsafe`-gated modes. `working-tree` also folds in untracked
-/// files as whole-file changes.
+/// Read changes for a caller who explicitly enabled Git-backed scanning with `--diff-git-unsafe`.
+/// With `working-tree`, new untracked files enter the report as whole-file changes.
+/// `mode` selects `working-tree`, `staged`, `unstaged`, or a Git ref to compare against.
 ///
 /// `project_root` is the repository Git runs in, and `paths` are the operands passed after `--` to both the diff and the untracked-file listing.
 /// Returns the parsed diff; an `Err` carries a spawn failure or Git's stderr when `git diff` or `git ls-files` fails.
@@ -244,16 +249,10 @@ pub(crate) fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<Str
         .collect()
 }
 
-/// Build a `git -C <root> <args>` command without running it. Arguments go to
-/// git as argv entries, never through a shell, so a ref or path in `args` is
-/// inert data git receives rather than an interpreted command line - the reason
-/// this is safe despite the dynamic arguments. Construction is split from
-/// execution so the call site stays a plain builder.
+/// Prepare `git -C <root> <args>` for an explicitly requested Git operation. Refs and paths are passed as separate arguments.
 ///
-/// The environment hardening below neutralises the environment, not the scanned repository. A tree can still point git at
-/// an external diff driver through its own committed `diff.external` or a `.gitattributes` `diff=` mapping, and no setting
-/// here disables that. `git_diff_patch` passes `--no-ext-diff`/`--no-textconv` for exactly that reason; those are diff-only
-/// options that `cat-file` and `ls-tree` reject, so they cannot be hoisted into this shared builder.
+/// Git can still get diff drivers from repository settings and attributes. `git_diff_patch` disables external diff and text conversion separately.
+/// Keep those flags off other Git commands because `cat-file` and `ls-tree` reject them.
 ///
 /// `project_root` is passed as the `-C` directory, so Git runs inside the scanned repository.
 /// Returns the unspawned `Command` with system and global config, system attributes, hooks, pager and the external-diff variable disabled.
@@ -297,10 +296,8 @@ pub(crate) fn git_output_bytes(project_root: &Path, args: &[String]) -> Result<V
     git_output_bytes_with_stdin(project_root, args, &[])
 }
 
-/// Run a git command, optionally feeding it a query on stdin, and hand back its raw stdout.
-/// Use the `stdin` form for batched subcommands such as `cat-file --batch`; pass an empty slice and git is run without a
-/// stdin pipe at all. Any non-zero exit becomes an `Err` carrying git's own stderr, so the operator reads git's wording
-/// rather than a message invented here.
+/// Run an opted-in Git query for changed-code scanning and return its raw output.
+/// Pass stdin for batch queries such as `cat-file --batch`. Empty input runs without a pipe, and nonzero exits report Git's own stderr.
 ///
 /// `project_root` is the repository Git runs in and `args` the argv after git's global options, its first entry naming the subcommand in errors.
 /// Returns raw stdout; an `Err` also reports a failed spawn, an unavailable stdin pipe, or a failure waiting for git's output.
@@ -381,10 +378,8 @@ fn git_untracked_files(project_root: &Path, paths: &[PathBuf]) -> Result<Vec<Str
         .collect())
 }
 
-/// Decide whether a finding falls inside the changed region, honouring the
-/// symbol/hunk scope. Under `Symbol`, a finding on an unchanged line still counts
-/// when its enclosing function block overlaps a changed line (so a signature
-/// finding survives a body-only edit); under `Hunk`, only the changed lines do.
+/// Check which findings the caller should see for their change.
+/// For example, a signature finding stays visible after a body-only edit in symbol scope. Hunk scope keeps only the edited lines.
 ///
 /// `finding` first goes through `patch_intersects_finding` with `patch` and `changed_files` under both scopes; `scope` only governs widening.
 /// `function_blocks_by_file` maps a normalised report path to its parsed function blocks, searched only for a line-bearing finding.

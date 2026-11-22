@@ -1,5 +1,11 @@
+//! Run representative source trees through the normal analysis entry points.
+//!
+//! Use these cases to verify discovery, bounded scanning, and the findings or diagnostics a caller gets back.
+//! Each case describes a scan contract without relying on the full project layout.
+
 use super::*;
 
+/// A representative Rust scan still reports findings from several core rule families.
 #[test]
 pub(crate) fn analysis_finds_core_rust_smells() {
     let _guard = analysis_lock();
@@ -44,6 +50,7 @@ fn test_no_assert() {
     assert!(!rule_ids.contains("test-quality.sleep-in-test"));
 }
 
+/// Keep the shipped sample useful for checking a fresh CLI install.
 #[test]
 pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
     let _guard = analysis_lock();
@@ -119,6 +126,7 @@ pub(crate) fn fixture_scan_contract_preserves_existing_sample_findings() {
     }
 }
 
+/// Point a reviewer to the source item they need to inspect, even after blank lines move.
 #[test]
 pub(crate) fn block_findings_anchor_on_the_item_not_the_blank_line_above_it() {
     let _guard = analysis_lock();
@@ -179,6 +187,7 @@ fn third() {
     );
 }
 
+/// Parse ordinary Rust constructs without treating their embedded text as separate items.
 #[test]
 pub(crate) fn parser_handles_raw_strings_macros_impls_and_test_attributes() {
     let _guard = analysis_lock();
@@ -201,6 +210,7 @@ pub(crate) fn parser_handles_raw_strings_macros_impls_and_test_attributes() {
     assert_eq!(parameter_count.line, Some(12));
 }
 
+/// Verify that the size rule reports the first count above the configured boundary.
 #[test]
 pub(crate) fn parameter_count_threshold_allows_seven_and_flags_eight() {
     let _guard = analysis_lock();
@@ -247,6 +257,7 @@ pub fn eight(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> 
     );
 }
 
+/// Show a syntax error to the caller while preserving checks that only need text.
 #[test]
 pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
     let _guard = analysis_lock();
@@ -272,6 +283,7 @@ pub(crate) fn invalid_rust_reports_parse_error_and_keeps_text_rules() {
     assert!(!rule_ids.contains("size.function-length"));
 }
 
+/// Report which requested inputs were scannable, ignored, or unavailable.
 #[test]
 pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     let _guard = analysis_lock();
@@ -549,6 +561,7 @@ pub(crate) fn source_discovery_covers_ignores_text_files_and_missing_paths() {
     assert_eq!(missing.diagnostics[0].diagnostic_type, "missing-path");
 }
 
+/// Keep the configured pillar set and finding weights visible to a score reader.
 #[test]
 pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
     let clean = score_report(&[], &Config::default(), 10);
@@ -608,6 +621,7 @@ pub(crate) fn scoring_includes_all_static_pillars_and_weights_findings() {
     assert_eq!(grade(59.9), "F");
 }
 
+/// Keep text safety findings visible when the deep-scan budget rules out AST checks.
 #[test]
 pub(crate) fn bounded_rust_source_keeps_text_safety_and_drops_deep_analysis() {
     let _guard = analysis_lock();
@@ -659,7 +673,9 @@ pub(crate) fn bounded_rust_source_keeps_text_safety_and_drops_deep_analysis() {
     assert_eq!(diagnostic.invalidates_run, Some(false));
     assert!(!diagnostic.is_failure());
     assert!(diagnostic.message.contains("path=large.rs"));
-    assert!(diagnostic.message.contains("lines=5"));
+    assert!(diagnostic
+        .message
+        .contains(&format!("lines={}", source.lines().count())));
     assert!(diagnostic
         .message
         .contains(&format!("bytes={}", source.len())));
@@ -673,6 +689,7 @@ pub(crate) fn bounded_rust_source_keeps_text_safety_and_drops_deep_analysis() {
     assert_missing_rule(&report, "security.process-command");
 }
 
+/// Exercise the line and byte boundaries, including what a caller gets when the limit is off.
 #[test]
 pub(crate) fn deep_scan_budget_honours_both_boundaries_disable_and_source_classification() {
     let _guard = analysis_lock();
@@ -705,7 +722,7 @@ pub(crate) fn deep_scan_budget_honours_both_boundaries_disable_and_source_classi
     );
     equal.deep_scan_budget = DeepScanBudget {
         enabled: true,
-        max_lines: rust_source.bytes().filter(|byte| *byte == b'\n').count() + 1,
+        max_lines: rust_source.lines().count(),
         max_bytes: rust_source.len(),
         override_state: "config",
     };

@@ -22,12 +22,8 @@ pub(crate) fn missing_path_diagnostics(missing_paths: &[String]) -> Vec<RunDiagn
         .collect()
 }
 
-// ADR-014: when excludeFromScore is set on a Security or SensitiveData
-// rule, surface a non-fatal warning so the choice is user-visible.
-// rule_settings is a HashMap, so sort matched rule ids before emitting
-// for deterministic output. Custom rules can't reach this state — the
-// config loader rejects excludeFromScore outside `enabled` for them.
 /// Warn about each Security or SensitiveData built-in rule set to `excludeFromScore: true`, so the score exclusion stays visible.
+/// Config rejects this option on custom rules. Built-in warnings follow rule ID order so report diffs stay useful.
 ///
 /// `config` supplies the per-rule settings to inspect.
 /// Returns one `excluded-security-rule-from-score` diagnostic per such rule, sorted by rule id; with none configured the list is empty.
@@ -152,10 +148,8 @@ pub(crate) fn apply_report_exclusions(
 /// Remove the entropy rule's findings from package-manager lockfiles and append one audit row per lockfile that
 /// had any, after the configured rows.
 ///
-/// A lockfile digest is a published integrity hash and a real project carries thousands of them, so the family
-/// skips that one rule by file name. It is counted on every surface rather than applied in silence, and a lockfile
-/// with nothing to skip publishes no row (FAMILY-CONTRACT.md section 13a). Every other sensitive-data rule still
-/// reads the lockfile, because a credential pasted into one is as live as anywhere else.
+/// A lockfile has legitimate integrity hashes, so its high-entropy findings are counted and suppressed under `FAMILY-CONTRACT.md` section 13a.
+/// A file with no such finding gets no audit row. More specific sensitive-data rules can still report on that file.
 ///
 /// `findings` holds the findings still to filter; `summaries` gains one row per lockfile in path order, indexed from 0.
 /// Returns the kept findings and each skipped finding paired with its lockfile's row; with nothing skipped, `summaries` is unchanged.
@@ -304,7 +298,8 @@ fn split_test_path_findings(
     for finding in findings {
         // Every security-pillar finding, `dependency.git-source` included, and every sensitive-data finding but the
         // fixture-PII rule's is skipped in test code.
-        let skipped_rule = matches!(finding.pillar, Pillar::Security)
+        let skipped_rule = (matches!(finding.pillar, Pillar::Security)
+            && !finding.rule_id.starts_with("custom."))
             || (finding.rule_id.starts_with("sensitive-data.")
                 && finding.rule_id != BUILT_IN_TEST_PATH_EXEMPT_RULE);
         if skipped_rule && is_built_in_test_path(&finding.file_path) {
@@ -516,11 +511,12 @@ pub(crate) fn run_analysis_in_project(
     project_root: &Path,
     options: &AnalysisOptions,
     config: &Config,
-) -> Result<AnalysisReport, String> {
+) -> Result<AnalysisReport, RunFailure> {
     let mut discovery = discover_sources(project_root, options, config);
     let mut diagnostics = missing_path_diagnostics(&discovery.missing_paths);
     diagnostics.extend(excluded_security_rule_diagnostics(config));
-    let diff_filter = resolve_diff_filter(project_root, options, &discovery.files)?;
+    let diff_filter = resolve_diff_filter(project_root, options, &discovery.files)
+        .map_err(RunFailure::ChangedRegion)?;
     let pre_diff_rust_paths = rust_display_paths(&discovery.files);
     apply_diff_file_selection(&mut discovery, diff_filter.as_ref());
     let coverage = project_coverage(
@@ -539,8 +535,12 @@ pub(crate) fn run_analysis_in_project(
         diagnostics,
         coverage,
         diff_filter.as_ref(),
-    )?;
+    )
+    .map_err(RunFailure::Baseline)?;
     let mut report = build_report(project_root, options, config, inputs);
+    if matches!(options.format, OutputFormat::Json) {
+        machine_contract::validate_required_paths(&report).map_err(RunFailure::ReportPath)?;
+    }
     record_history_if_requested(project_root, options, config, &mut report);
     Ok(report)
 }
@@ -594,6 +594,12 @@ fn collect_report_inputs(
     )?;
     let (findings, summaries, suppressed_findings) =
         crate::inline_suppressions::apply_all_suppressions(findings, config, project_root);
+    let (all_findings, all_findings_summary) = crate::inline_suppressions::gate_scope_findings(
+        project_root,
+        config,
+        all_findings,
+        all_findings_summary,
+    );
     let inputs = ReportInputs {
         discovery,
         diagnostics,
@@ -699,11 +705,8 @@ fn report_suppressions(
     }
 }
 
-/// Run the changed-region filter over an already-assembled report and re-pack
-/// the filtered findings, suppressions, deltas, and suppressed-count back into
-/// `ReportInputs`. With no diff filter the inputs pass through untouched.
-/// `discovery` and `baseline_report` pass through unchanged - the filter only
-/// narrows findings to the changed region.
+/// Apply a caller's changed-code scope to findings, suppressions, and counts before building the final report.
+/// An absent diff filter keeps the whole result. Discovery and baseline metadata still describe what the run used.
 ///
 /// `project_root`, `options` and `config` rebuild the report from `inputs`, and `diff_filter` supplies the patch and changed-region scope.
 /// `analysed_paths` lists the analysed files; `function_blocks_by_file` holds the parsed functions the changed-region filter reads.
@@ -947,6 +950,10 @@ fn discover_project_rust_universe(
     rust_display_paths(&discover_sources(project_root, &universe_options, config).files)
 }
 
+/// Check whether a caller's targets cover enough of the project to run project-wide rules in a test.
+///
+/// `project_root`, `options`, and `config` describe the requested scan and discovery policies.
+/// Returns project coverage, or the diagnostic for an invalid diff selection.
 #[cfg(test)]
 pub(crate) fn project_coverage_for_test(
     project_root: &Path,
@@ -967,6 +974,10 @@ pub(crate) fn project_coverage_for_test(
     ))
 }
 
+/// Evidence retained after reading the requested sources.
+///
+/// Findings feed the report. Parsed function blocks let a baseline or changed-symbol scan tie a finding to its declaration.
+/// The block map stays empty when a caller does not request it.
 pub(crate) struct AnalysisArtifacts {
     pub(crate) findings: Vec<Finding>,
     pub(crate) function_blocks_by_file: BTreeMap<String, Vec<FunctionBlock>>,
@@ -1119,6 +1130,10 @@ fn external_test_declarations(parent: &ParsedSource) -> Option<(String, Vec<bool
     (!declarations.is_empty()).then_some((child_path, declarations))
 }
 
+/// Work needed to honour the selected rules.
+///
+/// A caller who selects only text rules can finish without parsing Rust.
+/// Project-wide rules can request the additional context needed to report results across files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AnalysisCapabilities {
     parse_rust: bool,
@@ -1215,6 +1230,10 @@ pub(crate) fn record_history_if_requested(
     }
 }
 
+/// Gather the scan results needed to assemble a report.
+///
+/// Findings, diagnostics, and suppressions explain what happened. Discovery records what the run could see.
+/// Baseline and changed-region sections are present when the caller requested those comparisons.
 pub(crate) struct ReportInputs {
     pub(crate) discovery: DiscoveryResult,
     pub(crate) diagnostics: Vec<RunDiagnostic>,
@@ -1254,49 +1273,24 @@ fn report_path_summary(discovery: DiscoveryResult) -> PathSummary {
     }
 }
 
-/// The one type every port publishes when it cannot read the changed-region scope it was asked to analyse,
-/// whatever flag asked for it (FAMILY-CONTRACT.md section 6).
-pub(crate) const CHANGED_REGION_DIAGNOSTIC_TYPE: &str = "changed-region";
-
-/// The type every port publishes when it cannot load the configuration it was given.
-pub(crate) const CONFIG_ERROR_DIAGNOSTIC_TYPE: &str = "config-error";
-
-/// Choose the diagnostic type a failed run publishes from the failure itself.
-///
-/// A scope the run could not read and a configuration it could not load are the two ways a run cannot start
-/// once its arguments parsed; any failure the changed-region check does not match is published as a configuration error.
-///
-/// `error` is the failure message; containing `changed range`, `--changed-ranges` or `diff` anywhere marks a changed-region failure.
-/// Returns `changed-region` for such a message and `config-error` for every other one.
-pub(crate) fn failed_run_diagnostic_type(error: &str) -> &'static str {
-    if error.contains("changed range")
-        || error.contains("--changed-ranges")
-        || error.contains("diff")
-    {
-        return CHANGED_REGION_DIAGNOSTIC_TYPE;
-    }
-    CONFIG_ERROR_DIAGNOSTIC_TYPE
-}
-
 /// Build the v3 envelope a run that could not start still owes a caller who asked for a machine format.
 ///
 /// A run that never started has no findings and nothing discovered, so the envelope carries one
 /// run-invalidating diagnostic and empty everything else. Printing only to stderr would leave a JSON consumer
 /// with no diagnostic, no type and no run block to read, where every other port publishes all three.
 ///
-/// `project_root`, `options` and `config` fill the run block, score and machine context as for any report.
-/// `error` becomes the diagnostic's message, and its text picks the diagnostic type through `failed_run_diagnostic_type`.
+/// `project_root` and `options` fill the run block and machine context.
+/// `error` supplies the diagnostic category and message.
 /// Returns the report with that single run-invalidating diagnostic and no findings, discovered paths, suppressions, baseline or deltas.
 pub(crate) fn failed_run_report(
     project_root: &Path,
     options: &AnalysisOptions,
-    config: &Config,
-    error: &str,
+    error: &RunFailure,
 ) -> AnalysisReport {
-    build_report(
+    let mut report = build_report(
         project_root,
         options,
-        config,
+        &Config::default(),
         ReportInputs {
             discovery: DiscoveryResult {
                 files: Vec::new(),
@@ -1305,8 +1299,8 @@ pub(crate) fn failed_run_report(
                 ignored_path_details: Vec::new(),
             },
             diagnostics: vec![RunDiagnostic {
-                diagnostic_type: failed_run_diagnostic_type(error).to_string(),
-                message: error.to_string(),
+                diagnostic_type: error.diagnostic_type().to_string(),
+                message: error.message().to_string(),
                 file_path: None,
                 line: None,
                 invalidates_run: Some(true),
@@ -1323,7 +1317,9 @@ pub(crate) fn failed_run_report(
             all_findings: Vec::new(),
             machine_diff: None,
         },
-    )
+    );
+    report.machine_context.exit_code = RunOutcome::DiagnosticsFailed.numeric_code();
+    report
 }
 
 /// Assemble the `gruff.analysis.v3` report from the collected inputs, computing the summary and score from the kept findings.
@@ -1351,7 +1347,7 @@ pub(crate) fn build_report(
     let summary = summarize(&findings);
     // Only Rust files carry code to score, so the ratified denominator is narrower than
     // analysed_files, which also counts the text inputs the raw-text rules read.
-    let evaluated_files = discovery.files.iter().filter(|file| file.is_rust).count();
+    let evaluated_files = scoring::evaluated_rust_files(&discovery.files, &diagnostics);
     let score = score_report(&findings, config, evaluated_files);
     let machine_context = machine_contract::report_context(project_root, options, machine_diff);
     AnalysisReport {

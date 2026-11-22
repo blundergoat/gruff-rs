@@ -1,4 +1,5 @@
 //! Output renderer contracts for reports assembled directly or through analysis.
+//!
 //! These tests let CLI users trust that each format preserves report data while
 //! applying only the escaping required by its own output protocol.
 
@@ -107,6 +108,7 @@ pub(crate) fn github_renderer_is_unchanged_for_hostile_markdown_report() {
     );
 }
 
+/// Keep report content safe to display while preserving the fields consumers use.
 #[test]
 pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     let report = sample_report();
@@ -202,6 +204,7 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     assert_eq!(hotspot["files"][0]["filePath"], "src/lib.rs");
 }
 
+/// Leave missing source locations out of a JSON finding rather than giving it an invented line.
 #[test]
 pub(crate) fn report_json_emits_optional_locations_only_when_present() {
     let mut finding = test_finding(
@@ -229,6 +232,7 @@ pub(crate) fn report_json_emits_optional_locations_only_when_present() {
     );
 }
 
+/// Tell a terminal or Markdown reader why a path was skipped or how to handle baseline input.
 #[test]
 pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
     let mut report = sample_report();
@@ -265,6 +269,7 @@ pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
     assert!(analyse_text.contains("Baseline: default gruff-baseline.json; suppressed 1 findings"));
 }
 
+/// Ensure commas, percent signs, and other reserved characters stay inside the annotation field they came from.
 #[test]
 pub(crate) fn github_renderer_escapes_annotation_properties() {
     let report = sample_report_with(
@@ -291,6 +296,7 @@ pub(crate) fn github_renderer_escapes_annotation_properties() {
     assert!(github.ends_with("Message with 100%25 and%0Anewline"));
 }
 
+/// Keep the JSON finding order stable for reviewers and comparison tools.
 #[test]
 pub(crate) fn report_json_keeps_deterministic_finding_order() {
     let _guard = analysis_lock();
@@ -319,6 +325,7 @@ pub(crate) fn report_json_keeps_deterministic_finding_order() {
     assert_eq!(ordered_paths, vec!["a.rs", "a.rs", "b.rs", "b.rs"]);
 }
 
+/// Let automation switch to JSON summary and keep the same scan metadata and counts.
 #[test]
 pub(crate) fn summary_json_is_the_exact_findings_free_analysis_projection() {
     let findings: Vec<Finding> = (0..12)
@@ -355,6 +362,7 @@ pub(crate) fn summary_json_is_the_exact_findings_free_analysis_projection() {
     assert!(top_one.get("findings").is_none());
 }
 
+/// Surface the reduced scan coverage wherever a caller reads the result.
 #[test]
 pub(crate) fn bounded_deep_scan_note_reaches_every_supported_output_surface() {
     let diagnostic = RunDiagnostic {
@@ -409,6 +417,7 @@ pub(crate) fn bounded_deep_scan_note_reaches_every_supported_output_surface() {
         .is_some_and(|message| message.contains("override=cli")));
 }
 
+/// A failure report with an unresolved project root must not publish an outside input path.
 #[test]
 pub(crate) fn failed_run_envelope_leaves_out_a_target_named_from_a_sibling_directory() {
     // A run whose config cannot load never resolves a project root, so its envelope is rooted at the launch
@@ -421,8 +430,7 @@ pub(crate) fn failed_run_envelope_leaves_out_a_target_named_from_a_sibling_direc
             config: Some(PathBuf::from("../c.yaml")),
             ..default_test_options()
         },
-        &Config::default(),
-        "unable to read config ../c.yaml",
+        &RunFailure::Config("unable to read config ../c.yaml".to_string()),
     );
 
     let envelope: Value =
@@ -432,4 +440,5 @@ pub(crate) fn failed_run_envelope_leaves_out_a_target_named_from_a_sibling_direc
     assert!(envelope["run"].get("config").is_none());
     assert_eq!(envelope["diagnostics"][0]["type"], "config-error");
     assert_eq!(envelope["diagnostics"][0]["invalidatesRun"], true);
+    assert_eq!(envelope["summary"]["exitCode"], 2);
 }

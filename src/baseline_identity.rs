@@ -1,15 +1,10 @@
-//! The one line-free identity a baseline stores for a finding, ratified for the family in
-//! `contracts/core/finding-identity.v1.json`.
+//! Identify findings across scans using the family contract in `contracts/core/finding-identity.v1.json`.
 //!
-//! When a user runs `gruff-rs analyse --generate-baseline`, every ordinary finding is named by this identity
-//! and nothing positional. On the next `analyse --baseline` a finding that moved lines still matches, while a
-//! new sibling of the same rule never inherits the review.
+//! Use this when generating or applying a baseline and when comparing hook scans. A blank line added above a function preserves its review.
+//! Separate same-named declarations by ordinal and retain occurrence counts when no declaration identifies the finding.
 //!
-//! Four decisions live here:
-//! - a symbol-bearing finding is named by its symbol plus a declaration ordinal, so two same-named functions stay apart;
-//! - a finding naming no symbol falls back to its message with measured values normalised, so a grown file keeps its review;
-//! - a sensitive finding receives no identity at all, because a stored identity is what would let a review hide a secret;
-//! - a finding whose symbol carries the separator receives none either, and stays visible as not eligible.
+//! Use the message with measured values normalized for findings without a declaration, including custom rules with byte offsets.
+//! Withhold identities for sensitive findings and ambiguous symbols so an unsafe match cannot hide either finding.
 
 use super::*;
 
@@ -81,16 +76,13 @@ pub(crate) fn normalise_measured_values(message: &str) -> String {
 ///
 /// The ordinal keeps two same-named functions apart; without it, reviewing one silently baselines the other.
 ///
-/// `finding` supplies the symbol, with raw `r#` prefixes stripped, or else its message when it names no symbol.
+/// `finding` supplies the symbol without raw `r#` prefixes, or its message when it has no declaration name.
 /// `ordinal` is the declaration's 1-based rank among same-named declarations in its file; it is unused for a message subject.
 /// Returns the subject; an `Err` names a finding with neither symbol nor message, a symbol still containing `#`, or an `ordinal` below 1.
 pub(crate) fn baseline_subject(finding: &Finding, ordinal: usize) -> Result<String, String> {
-    let Some(symbol) = finding
-        .symbol
-        .as_deref()
-        .filter(|symbol| !symbol.is_empty())
-    else {
-        // A file-level finding has nothing but its message to name it, so its measurement is stripped first.
+    // A custom rule's byte offset can move after an unrelated edit. Use the message if there is no declaration name.
+    let Some(symbol) = named_symbol(finding) else {
+        // A finding with neither a usable symbol nor a message cannot safely inherit a review.
         if finding.message.is_empty() {
             return Err(format!(
                 "finding {} in {} names neither a symbol nor a message",
@@ -166,10 +158,8 @@ pub(crate) fn compute_identity_for(
 
 /// Name every eligible finding in one run, ranking same-named declarations as it goes.
 ///
-/// This is the single entry point baseline generation and matching both use, so a written identity and a matched
-/// identity can never be computed two different ways. A sensitive finding maps to `None` and joins no group, and
-/// so does a finding whose symbol carries the separator: the family withholds its identity rather than inventing
-/// one, and it never costs its neighbours theirs or aborts the run.
+/// Use the same identity rules when a caller writes a baseline and when a later scan matches it.
+/// Sensitive findings and symbols containing the separator stay visible without an identity. Other findings can still be compared.
 ///
 /// `findings` are the run's findings, named in input order without the same-named inventory.
 /// `declaration_position` maps a finding to its declaration's start position, used to rank namesakes and to key collision checks.
@@ -299,7 +289,7 @@ fn declaration_key(finding: &Finding, declaration_position: &dyn Fn(&Finding) ->
     }
 }
 
-/// Read a finding's symbol only when it actually names one, so an empty string never becomes a declaration.
+/// Read the semantic symbol of a finding. A custom rule's byte offset identifies a location without naming a declaration.
 ///
 /// Returns the non-empty symbol of `finding`, or `None` when it has none, has an empty one, or is not baseline-eligible.
 fn named_symbol(finding: &Finding) -> Option<&str> {
@@ -309,7 +299,7 @@ fn named_symbol(finding: &Finding) -> Option<&str> {
     finding
         .symbol
         .as_deref()
-        .filter(|symbol| !symbol.is_empty())
+        .filter(|symbol| !symbol.is_empty() && !symbol.starts_with("byte:"))
 }
 
 /// Build the resolver that maps a finding to the line its declaration begins on, from this run's parsed functions.

@@ -1,7 +1,16 @@
+//! Define what one analysis records before text, JSON, SARIF, or HTML renders it.
+//!
+//! Findings name individual rule results. Diagnostics tell callers what prevented or limited the run.
+//! The same report carries summaries, scores, baseline outcomes, and the suppression audit.
+
 use super::*;
 use crate::report_identity::{compute_stable_identity, infer_finding_scope, FindingScope};
 use serde::ser::{SerializeStruct, Serializer};
 
+/// How serious a finding is in the report.
+///
+/// The caller can choose a display floor or an exit threshold using these levels.
+/// A severity gate can fail even when the display filter hides the finding.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Severity {
@@ -10,6 +19,10 @@ pub(crate) enum Severity {
     Error,
 }
 
+/// How certain a rule is about a finding.
+///
+/// A reviewer sees this alongside severity. The two describe different parts of the result.
+/// A caller can set a confidence floor to limit which findings fail a severity gate.
 #[derive(Debug, Clone, Copy, Serialize, ValueEnum, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Confidence {
@@ -61,6 +74,10 @@ impl Confidence {
     }
 }
 
+/// The quality area a rule reports against.
+///
+/// Callers use pillars to select rules and read grouped results.
+/// The score uses the applicable standard pillars when it can grade a run.
 #[derive(Debug, Clone, Copy, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Pillar {
@@ -113,6 +130,10 @@ pub(crate) fn pillar_label(pillar: Pillar) -> &'static str {
     }
 }
 
+/// One result a rule asks the caller to review.
+///
+/// Rule, location, message, severity, and confidence describe the issue. A finding without a line applies more broadly.
+/// The analysis attaches review identity and baseline status when that information is available.
 #[derive(Debug, Clone)]
 pub(crate) struct Finding {
     pub(crate) rule_id: String,
@@ -131,15 +152,11 @@ pub(crate) struct Finding {
     pub(crate) metadata: Value,
     pub(crate) scope: FindingScope,
     pub(crate) fingerprint: String,
-    /// The ratified durable identity this run computed, which SARIF publishes as the code-scanning
-    /// fingerprint. `None` for a sensitive finding, which has no durable name, and for a finding built
-    /// outside the analysis pipeline. Never serialized: the envelope publishes it through SARIF only.
+    /// Line-free identity for baseline matching and supported report projections, including SARIF and the hook.
+    /// `None` means the finding has no publishable baseline identity or has not been through analysis yet.
     pub(crate) baseline_identity: Option<String>,
-    /// Line-insensitive identity intended for external diff tooling.
-    /// Computed from `rule_id`, `file_path`, and a stable subject based on
-    /// scope/symbol. Independent of `fingerprint`, which
-    /// remains line-sensitive so the baseline matcher in
-    /// `src/baseline.rs` keeps its existing semantics.
+    /// A line-free native identity based on rule, path, and scope or symbol.
+    /// Internal hook comparisons can use it when the baseline identity is unavailable. The legacy fingerprint still includes location.
     pub(crate) stable_identity: String,
     /// The subject the ratified identity hashed, carrying the declaration ordinal a consumer needs to recompute it.
     /// `None` for a sensitive finding, which is never named, and for a finding built outside the analysis pipeline.
@@ -181,6 +198,10 @@ impl Serialize for Finding {
     }
 }
 
+/// Give the report the evidence a rule collected about one finding.
+///
+/// The constructor uses these fields to attach scope and the native fingerprint consistently.
+/// An absent line or symbol leaves the result at file or project scope where appropriate.
 pub(crate) struct FindingDescriptor {
     pub(crate) rule_id: String,
     pub(crate) message: String,
@@ -269,6 +290,10 @@ fn line_sensitive_fingerprint(
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
+/// Explain a run-level problem a caller may need to act on before trusting the findings.
+///
+/// A diagnostic can name a source location or apply to the whole run, such as a config error.
+/// Fatal diagnostics invalidate the scan. A budget note can accompany a completed result.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RunDiagnostic {
@@ -281,13 +306,11 @@ pub(crate) struct RunDiagnostic {
 }
 
 impl RunDiagnostic {
-    /// Classify this diagnostic as a run failure by its type, unless its `invalidates_run` field is `Some(false)`.
-    ///
-    /// Returns `true` for the nine error types it lists, such as `missing-path`, `parse-error` and `gate-config-error`.
-    /// Returns `false` for every other type, such as `gate`, even when `invalidates_run` is `Some(true)`.
+    /// Returns whether the diagnostic invalidates the run, honoring an explicit flag before the type default.
     pub(crate) fn is_failure(&self) -> bool {
-        if self.invalidates_run == Some(false) {
-            return false;
+        // An explicit marker lets a budget note stay non-fatal and a setup failure stay fatal across formats.
+        if let Some(invalidates_run) = self.invalidates_run {
+            return invalidates_run;
         }
         matches!(
             self.diagnostic_type.as_str(),
@@ -304,6 +327,10 @@ impl RunDiagnostic {
     }
 }
 
+/// The results and audit record for a single scan.
+///
+/// Renderers read this to show findings, counts, scores, and diagnostic context.
+/// A result can include a baseline or diff comparison when the caller requested one.
 #[derive(Debug)]
 pub(crate) struct AnalysisReport {
     pub(crate) schema_version: String,
@@ -317,15 +344,12 @@ pub(crate) struct AnalysisReport {
     pub(crate) suppressed_count: Option<usize>,
     pub(crate) score: ScoreReport,
     pub(crate) baseline: Option<BaselineReport>,
-    /// Per-rule introduced/removed/net counts when a baseline or diff
-    /// comparison context is active. The v3 machine adapter publishes these
-    /// under `extensions.rs.topLevel.perRuleDeltas` and omits the extension on
-    /// full-tree runs. Populated by `apply_baseline` and `apply_diff_patch_filter`.
+    /// Per-rule change counts from a baseline or diff comparison, published in `extensions.rs.topLevel.perRuleDeltas` by v3 JSON.
+    /// `None` means there was no comparison result to show.
     pub(crate) per_rule_deltas: Option<Vec<RuleDelta>>,
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
-    /// Severity summary over the full finding set *before* baseline suppression,
-    /// consumed by `gate.scope: all`. Internal only (`#[serde(skip)]`) so the JSON
-    /// schema is unchanged; equals `summary` when no baseline dropped findings.
+    /// The `gate.scope: all` tally keeps reviewed baseline occurrences in scope and respects audited suppressions.
+    /// This internal total can differ from the report's visible finding counts.
     pub(crate) all_findings_summary: Option<Summary>,
     pub(crate) machine_context: MachineReportContext,
 }
@@ -336,8 +360,7 @@ impl Serialize for AnalysisReport {
     /// `serializer` is the serde backend, passed through unchanged.
     /// Returns whatever that function returns: the serializer's success value or its error.
     ///
-    /// Building the envelope panics if a required path has no project-relative form or the ignored paths and their details disagree.
-    /// It also panics when a default ignore has no canonical reason.
+    /// Building the envelope assumes required paths were validated and any default ignore has a canonical reason.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -346,6 +369,10 @@ impl Serialize for AnalysisReport {
     }
 }
 
+/// Show what changed for one rule after comparison with a baseline or diff.
+///
+/// The caller can see introduced and removed occurrences separately.
+/// The net count helps a reviewer understand the overall direction without losing either count.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RuleDelta {
@@ -355,12 +382,20 @@ pub(crate) struct RuleDelta {
     pub(crate) net: i64,
 }
 
+/// Identify the analyzer that produced a report.
+///
+/// The tool name and version let automation match the output to the installed binary.
+/// Use these fields when comparing results from different invocations.
 #[derive(Debug, Serialize)]
 pub(crate) struct ToolInfo {
     pub(crate) name: String,
     pub(crate) version: String,
 }
 
+/// Record the settings and timestamp that describe a scan.
+///
+/// Use the project root, format, and failure threshold to interpret the result.
+/// The timestamp tells the caller when the report was produced.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RunInfo {
@@ -370,6 +405,10 @@ pub(crate) struct RunInfo {
     pub(crate) generated_at: String,
 }
 
+/// The finding counts used by the report and exit gates.
+///
+/// Each severity has its own count so callers can interpret a configured threshold.
+/// Zero counts mean no findings reached this tally. Diagnostic status is recorded alongside it.
 #[derive(Debug, Serialize, Clone, Copy)]
 pub(crate) struct Summary {
     pub(crate) advisory: usize,
@@ -378,6 +417,10 @@ pub(crate) struct Summary {
     pub(crate) total: usize,
 }
 
+/// Explain which paths the scan found, skipped, or could not locate.
+///
+/// Use ignored-path details to trace skips with known reasons.
+/// The discovered file count can exceed the number successfully read or parsed.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PathSummary {
@@ -391,6 +434,10 @@ pub(crate) struct PathSummary {
     pub(crate) missing_paths: Vec<String>,
 }
 
+/// Show which reviewed baseline a scan read or generated and how it was used.
+///
+/// Occurrence counts distinguish reviewed findings, new findings, and reviews that are no longer needed.
+/// `entries` counts rows in the baseline itself. A row can cover more than one occurrence.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BaselineReport {
@@ -406,7 +453,7 @@ pub(crate) struct BaselineReport {
     pub(crate) absent_count: usize,
     /// Findings whose identity could not separate two declarations; reported, never hidden.
     pub(crate) collision_count: usize,
-    /// Sensitive findings, which no reviewed row may ever hide.
+    /// Findings a baseline cannot hide, including sensitive findings and findings with no eligible identity.
     pub(crate) not_eligible_count: usize,
     /// Sensitive findings a generated baseline counted rather than stored; 0 on an apply run.
     pub(crate) sensitive_counted: usize,
@@ -415,6 +462,10 @@ pub(crate) struct BaselineReport {
     pub(crate) generated: bool,
 }
 
+/// Record a rule or attribute that hid findings and explain why it applied.
+///
+/// The caller sees the rule, scope, reason, and count. A zero count means the configured row matched nothing in this run.
+/// Source metadata distinguishes built-in or inline suppressions from a caller's config entry.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SuppressionSummary {
@@ -431,29 +482,36 @@ pub(crate) struct SuppressionSummary {
     /// or comment produced (FAMILY-CONTRACT.md section 13c); absent on a configured entry's row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) source: Option<&'static str>,
-    /// What authored this row: config key `exclude` or `sensitiveExclusions`, or text label `builtInLockfile`,
-    /// `builtInTestPath` or `inline` for built-in skips and section 13c comments and attributes.
-    /// The text labels are not keys a user can edit.
-    /// `index` is section-local, so this pair is what identifies one row and lets text
-    /// output name a config entry the user can edit. Internal only (`#[serde(skip)]`)
-    /// because the family audit shape in FAMILY-CONTRACT.md section 13a fixes the
-    /// published keys, and four other ports copy that shape.
+    /// The owning config key or built-in audit label. Text can show `exclude[0]` and `sensitiveExclusions[0]` as separate entries.
+    /// Section 13a of `FAMILY-CONTRACT.md` keeps this label internal and fixes the published audit keys.
     #[serde(skip)]
     pub(crate) config_key: &'static str,
 }
 
+/// Pair a hidden finding with the audit row that explains why it was suppressed.
+///
+/// Renderers can describe the reason without displaying the hidden finding as active.
+/// Changed-code filtering can keep this evidence only for findings within the requested scope.
 #[derive(Debug, Clone)]
 pub(crate) struct SuppressedFinding {
     pub(crate) finding: Finding,
     pub(crate) suppression: SuppressionSummary,
 }
 
+/// Gather the audit summaries and the findings they suppressed.
+///
+/// Count summaries for the caller's report, and keep finding-level evidence for filtering and renderers that need it.
+/// Both lists can be empty when no applicable suppression exists.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReportSuppressions {
     pub(crate) summaries: Vec<SuppressionSummary>,
     pub(crate) suppressed_findings: Vec<SuppressedFinding>,
 }
 
+/// Explain how the report reached its grade.
+///
+/// The composite, pillar scores, and highest-penalty files show where the caller can start reviewing.
+/// With no evaluated Rust files, the report has no composite grade.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScoreReport {
@@ -462,11 +520,9 @@ pub(crate) struct ScoreReport {
     pub(crate) composite: Option<f64>,
     /// Letter grade derived from `composite`, `None` whenever `composite` is.
     pub(crate) grade: Option<String>,
-    /// Ratified scoring denominator: Rust files that survived discovery. Published so a reader can
-    /// reproduce the composite without guessing which of the file counts it used.
+    /// Rust files used as the scoring denominator. Unread or unsuccessfully parsed Rust does not inflate this count.
     pub(crate) evaluated_files: usize,
-    /// Every pillar this run could reach, so the composite's denominator is visible rather than
-    /// inferred from the rows that happened to carry findings.
+    /// Standard pillars that contributed a numeric score to the composite. Empty when the run could not be graded.
     pub(crate) scored_pillars: Vec<Pillar>,
     /// Correlated concepts that billed one shared weight, so a reader can see which findings the
     /// grade counted once rather than inferring it from a total lower than the sum of its parts.
@@ -478,6 +534,10 @@ pub(crate) struct ScoreReport {
     pub(crate) top_offenders: Vec<FileScore>,
 }
 
+/// Show one quality area's score and finding count.
+///
+/// A caller can distinguish a reachable pillar with no findings from one with no applicable checks.
+/// A pillar can have findings but no numeric score when the run has no evaluated Rust files.
 #[derive(Debug, Serialize)]
 pub(crate) struct PillarScore {
     pub(crate) pillar: Pillar,
@@ -490,6 +550,10 @@ pub(crate) struct PillarScore {
     pub(crate) findings: usize,
 }
 
+/// Rank one source file by the scoring penalties assigned to its findings.
+///
+/// The count tells the caller how many findings the file contributed. The penalty explains its position in the ranking.
+/// The grade can be absent when there is no file count available for scoring.
 #[derive(Debug)]
 pub(crate) struct FileScore {
     pub(crate) file_path: String,
@@ -500,9 +564,9 @@ pub(crate) struct FileScore {
 }
 
 impl Serialize for FileScore {
-    /// Serialize this file score as a four-field struct, writing `file_path` under both `file` and `filePath`.
+    /// Serialize the hotspot score with both v1 file path spellings.
     ///
-    /// `serializer` is the serde backend that receives `file`, `filePath`, `score` and `findings`; `penalty` is never written.
+    /// `serializer` receives `file`, `filePath`, `score`, and `findings`.
     /// Returns the serializer's success value, or the first error from starting the struct, writing a field or closing it with `end`.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

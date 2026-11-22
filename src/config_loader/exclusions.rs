@@ -1,3 +1,8 @@
+//! Validate the exclusions a project writes in `.gruff-rs.yaml` before analysis starts.
+//!
+//! Ordinary exclusions hide reviewed findings by rule and scope, with a reason in the report.
+//! Sensitive-data exclusions need their dedicated section so callers can audit exactly what was removed.
+
 use super::*;
 
 /// Parses the config's `exclude` array into exclusion rules and installs them on the loaded config.
@@ -87,6 +92,12 @@ fn parse_exclusion_selector(
         custom_rules,
         &format!("{entry_path}.rule"),
     )?;
+    // A broad selector cannot silently hide a sensitive finding. Ask for the exact rule and path in its own audit section.
+    if rule_ids.iter().any(|id| id.starts_with("sensitive-data.")) {
+        return Err(format!(
+            "`{entry_path}.rule` matches a sensitive-data rule; use `sensitiveExclusions` with an exact rule and path"
+        ));
+    }
     Ok((selector, rule_ids))
 }
 
@@ -100,7 +111,7 @@ fn parse_exclusion_paths(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
 ) -> Result<Vec<String>, String> {
-    Ok(entry
+    let paths: Vec<String> = entry
         .get("paths")
         .map(|value| {
             string_array(value, &format!("{entry_path}.paths")).map(|paths| {
@@ -111,7 +122,17 @@ fn parse_exclusion_paths(
             })
         })
         .transpose()?
-        .unwrap_or_default())
+        .unwrap_or_default();
+    // An exclusion such as `../other-project/**` cannot describe a scope in this report.
+    if paths
+        .iter()
+        .any(|path| !crate::diff::is_relative_scan_path(path))
+    {
+        return Err(format!(
+            "`{entry_path}.paths` must contain project-relative patterns"
+        ));
+    }
+    Ok(paths)
 }
 
 /// Reads an exclusion entry's optional `message_contains` filter, rejecting a value that is not a string or is empty.

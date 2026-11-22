@@ -11,6 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 readonly PERF_DIR="${REPO_ROOT}/target/perf"
+readonly PERF_BUILD_TARGET="${PERF_DIR}/build"
 PLATFORM_SLUG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 readonly PLATFORM_SLUG
 readonly DEFAULT_BASELINE="${REPO_ROOT}/scripts/performance-baselines/${PLATFORM_SLUG}.json"
@@ -20,7 +21,8 @@ readonly SCRATCH_HISTORY="${PERF_DIR}/scratch-history.json"
 readonly SCRATCH_PATCH="${PERF_DIR}/scratch-empty.patch"
 readonly SCRATCH_EXACT_RUST_CONFIG="${PERF_DIR}/scratch-exact-rust-rule.yaml"
 readonly TIME_LOG="${PERF_DIR}/time.log"
-readonly BIN="${REPO_ROOT}/target/release/gruff-rs"
+readonly BIN="${PERF_BUILD_TARGET}/release/gruff-rs"
+readonly PERF_SCHEMA="gruff-rs.perf.v1"
 
 ITERS="${GRUFF_PERF_ITERS:-5}"
 TIME_BUDGET_PCT="${GRUFF_PERF_TIME_BUDGET_PCT:-15}"
@@ -87,16 +89,23 @@ sha256_stream() {
     die "missing required tool: sha256sum or shasum"
 }
 
-runtime_source_identity() {
-    local manifest digest count
+path_identity() {
+    local declared_paths="$1"
+    shift
+    local manifest digest count input
     manifest="$({
-        find "${REPO_ROOT}/src" \( -type f -o -type l \) -print0
-        printf '%s\0' "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/Cargo.lock"
+        for input in "$@"; do
+            if [[ -L "$input" || -f "$input" ]]; then
+                printf '%s\0' "$input"
+            elif [[ -d "$input" ]]; then
+                find "$input" \( -type f -o -type l \) -print0
+            fi
+        done
     } | LC_ALL=C sort -z | while IFS= read -r -d '' source_path; do
         local relative bytes_digest
         relative="${source_path#"${REPO_ROOT}/"}"
         if [[ -L "${source_path}" ]]; then
-            bytes_digest="$(readlink "${source_path}" | tr -d '\n' | sha256_stream)"
+            bytes_digest="$(readlink "${source_path}" | sha256_stream)"
         else
             bytes_digest="$(sha256_file "${source_path}")"
         fi
@@ -105,10 +114,20 @@ runtime_source_identity() {
     digest="$(printf '%s\n' "${manifest}" | sha256_stream)"
     count="$(jq 'length' <<< "${manifest}")"
     jq -nc \
-        --argjson includedPaths '["src", "Cargo.toml", "Cargo.lock"]' \
+        --argjson includedPaths "$declared_paths" \
         --argjson fileCount "${count}" \
         --arg digest "${digest}" \
         '{includedPaths: $includedPaths, fileCount: $fileCount, digest: $digest}'
+}
+
+runtime_source_identity() {
+    path_identity '["src", "Cargo.toml", "Cargo.lock"]' \
+        "${REPO_ROOT}/src" "${REPO_ROOT}/Cargo.toml" "${REPO_ROOT}/Cargo.lock"
+}
+
+workload_source_identity() {
+    path_identity '["fixtures", ".gruff-rs.yaml", ".gitignore", ".ignore"]' \
+        "${REPO_ROOT}/fixtures" "${REPO_ROOT}/.gruff-rs.yaml" "${REPO_ROOT}/.gitignore" "${REPO_ROOT}/.ignore"
 }
 
 usage() {
@@ -151,7 +170,7 @@ Scenarios (each runs ITERS times; the first run is warmup and discarded):
 Exit codes:
   0  Run succeeded; no regressions in --check mode.
   1  Regression detected (--check only).
-  2  Missing baseline (--check) or dirty tree on --update-baseline.
+  2  Missing or incompatible baseline (--check), or dirty tree on --update-baseline.
   3  Build or scenario invocation failed.
 USAGE
 }
@@ -190,6 +209,23 @@ require_tool jq
 require_tool awk
 require_tool git
 
+HARNESS_SHA256="$(sha256_file "${REPO_ROOT}/scripts/test-performance.sh")"
+WORKLOAD_SOURCE_JSON="$(workload_source_identity)"
+if [[ "${MODE}" == "check" ]]; then
+    if [[ ! -r "${BASELINE_PATH}" ]]; then
+        log "error: baseline not found at ${BASELINE_PATH}"
+        exit "${EXIT_BASELINE_PROBLEM}"
+    fi
+    BASELINE_JSON="$(cat "${BASELINE_PATH}")"
+    if ! jq -e --arg schema "${PERF_SCHEMA}" --arg harness "${HARNESS_SHA256}" \
+        --argjson workload "${WORKLOAD_SOURCE_JSON}" \
+        '.schemaVersion == $schema and .source.harnessSha256 == $harness and .source.workload == $workload' \
+        <<< "${BASELINE_JSON}" >/dev/null; then
+        log "error: baseline schema, harness or workload differs. Regenerate the baseline with the current harness and inputs."
+        exit "${EXIT_BASELINE_PROBLEM}"
+    fi
+fi
+
 mkdir -p "${PERF_DIR}"
 
 GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -225,14 +261,14 @@ fi
 
 log "Building release binary..."
 build_start="$(now_seconds)"
-(cd "${REPO_ROOT}" && cargo build --release --locked --quiet) || die "cargo build --release --locked failed"
+(cd "${REPO_ROOT}" && cargo build --target-dir "${PERF_BUILD_TARGET}" --release --locked --quiet) \
+    || die "cargo build --release --locked failed"
 build_end="$(now_seconds)"
 BUILD_SECONDS="$(awk -v s="${build_start}" -v e="${build_end}" 'BEGIN { printf "%.3f", e - s }')"
 [[ -x "${BIN}" ]] || die "binary not found at ${BIN}"
 
 VERSION="$("${BIN}" --version 2>/dev/null | awk '{print $2}')"
 [[ -n "${VERSION}" ]] || VERSION="unknown"
-HARNESS_SHA256="$(sha256_file "${REPO_ROOT}/scripts/test-performance.sh")"
 ARTIFACT_SHA256="$(sha256_file "${BIN}")"
 RUNTIME_SOURCE_JSON="$(runtime_source_identity)"
 
@@ -454,13 +490,14 @@ run_scenario() {
 
 SCENARIO_JSONS=()
 for idx in "${!SCENARIO_NAMES[@]}"; do
-    SCENARIO_JSONS+=("$(run_scenario "${SCENARIO_NAMES[$idx]}" "${SCENARIO_CMDS[$idx]}")")
+    SCENARIO_JSONS+=("$(cd "${REPO_ROOT}" && run_scenario "${SCENARIO_NAMES[$idx]}" "${SCENARIO_CMDS[$idx]}")")
 done
 
 # Aggregate.
 SCENARIOS_JSON="[$(IFS=,; echo "${SCENARIO_JSONS[*]}")]"
 
 RESULT_JSON="$(jq -n \
+    --arg schema "${PERF_SCHEMA}" \
     --arg version "${VERSION}" \
     --arg commit "${GIT_COMMIT}" \
     --argjson dirty "${GIT_DIRTY}" \
@@ -471,16 +508,19 @@ RESULT_JSON="$(jq -n \
     --arg harness_sha256 "${HARNESS_SHA256}" \
     --arg artifact_sha256 "${ARTIFACT_SHA256}" \
     --argjson runtime_source "${RUNTIME_SOURCE_JSON}" \
+    --argjson workload_source "${WORKLOAD_SOURCE_JSON}" \
     --argjson build_seconds "${BUILD_SECONDS}" \
     --argjson iters "${ITERS}" \
     --argjson scenarios "${SCENARIOS_JSON}" \
     --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{
+        schemaVersion: $schema,
         tool: { name: "gruff-rs", version: $version },
         git: { commit: $commit, dirty: $dirty },
         machine: { platform: $platform, uname: $uname, cpu: $cpu, host_tag: $host_tag },
         source: {
             runtimeSource: $runtime_source,
+            workload: $workload_source,
             artifact: { kind: "fresh-binary", sha256: $artifact_sha256 },
             harnessSha256: $harness_sha256
         },
@@ -540,13 +580,6 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ "${MODE}" == "check" ]]; then
-    if [[ ! -r "${BASELINE_PATH}" ]]; then
-        log "error: baseline not found at ${BASELINE_PATH}"
-        log "       run 'scripts/test-performance.sh --update-baseline' first."
-        exit "${EXIT_BASELINE_PROBLEM}"
-    fi
-    BASELINE_JSON="$(cat "${BASELINE_PATH}")"
-
     # Warn if machine metadata differs.
     BASE_UNAME="$(jq -r '.machine.uname // ""' <<< "${BASELINE_JSON}")"
     BASE_HOST="$(jq -r '.machine.host_tag // ""' <<< "${BASELINE_JSON}")"

@@ -1,3 +1,8 @@
+//! Format findings as GitHub Actions annotations for CI runs using `analyse --format github`.
+//!
+//! Diagnostics come first so a broken scan is visible before individual findings.
+//! Findings with a position can link a reviewer straight to the affected file and line.
+
 use super::*;
 
 /// Renders `report` as GitHub Actions workflow command lines, one per diagnostic and finding, with run diagnostics listed first.
@@ -48,7 +53,7 @@ fn github_diagnostic(diagnostic: &RunDiagnostic) -> String {
                 diagnostic.line.unwrap_or(1)
             )
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| " ".to_string());
     format!(
         "::{level}{location}title={}::{}",
         escape_command_property(&diagnostic.diagnostic_type),

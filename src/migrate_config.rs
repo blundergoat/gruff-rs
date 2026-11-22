@@ -1,25 +1,22 @@
-//! Carries a 0.5 configuration forward to the 0.6 schema, out of place and line by line.
+//! Upgrade a 0.5 config into a new file before running gruff-rs 0.6 with it.
+//! The per-command gate moves to `failOn`. Section 5 of `FAMILY-CONTRACT.md` makes category markers unconditional, so `secretPreviews` is removed.
 //!
-//! Two keys moved in 0.6.0 and a user's committed file still spells them the old way: the per-command exit gate
-//! left `minimumSeverity:` for `failOn:`, and `allowlists.secretPreviews` was removed outright because
-//! FAMILY-CONTRACT.md section 5 makes category markers unconditional. A file carrying either is refused by the
-//! loader, so a user upgrading needs a way across that does not mean re-typing their configuration.
-//!
-//! The rewrite is line-oriented rather than a parse-and-re-render, which keeps every comment, blank line and value
-//! the user wrote exactly as written; anything the migration does not understand passes through untouched.
+//! Keep comments when the line edit produces the correct YAML. The caller always keeps the original config as a reference.
 
 use std::fs;
-use std::path::Path;
+use std::io::Write;
 use std::process::ExitCode;
+
+use serde_yaml::{Mapping, Value};
 
 use crate::cli::{MigrateConfigArgs, OutputWriter};
 use crate::config::SCHEMA_VERSION;
 
-/// What the removal tells the user, written once because the loop only varies the line number.
+/// Explain why the migrated config drops `allowlists.secretPreviews`.
 const REMOVED_KEY_CHANGE: &str =
     "allowlists.secretPreviews removed; section 5 makes category markers unconditional";
 
-/// What the rename tells the user, for the same reason.
+/// Explain where to adjust the command's failure threshold after migration.
 const RENAMED_GATE_CHANGE: &str =
     "minimumSeverity: renamed to failOn:, the key that gates the exit code in 0.6";
 
@@ -31,7 +28,8 @@ fn change_line(index: usize, description: &str) -> String {
     format!("line {}: {description}", index + 1)
 }
 
-/// What one migration produced: the destination's text, and one readable line per rewrite.
+/// The upgraded config text and the reasons shown by `migrate-config`.
+/// A caller can preview the same change list with `--dry-run` before choosing an output path.
 ///
 /// An empty `changes` list means the input was already current and `text` is the input byte for byte.
 pub(crate) struct ConfigMigration {
@@ -39,28 +37,94 @@ pub(crate) struct ConfigMigration {
     pub(crate) changes: Vec<String>,
 }
 
-/// Rewrite one configuration's text for the current schema, leaving alone everything the migration does not know.
-///
-/// Stable contract: a line the migration does not rewrite is copied through unchanged, so a user's comments and
-/// their own keys survive a migration intact.
-///
-/// It removes an indented `secretPreviews` block, renames a block-opening `minimumSeverity:` to `failOn:`, and pins `schemaVersion`.
-/// `original` is the configuration file's text, split on newlines and rewritten one line at a time.
-///
-/// Returns the migrated text and one change line per rewrite; when nothing needed changing, `changes` is empty and `text` equals `original`.
-pub(crate) fn migrate_config_text(original: &str) -> ConfigMigration {
+/// Rewrite legacy keys in `original`, preserving formatting when the result parses as the intended mapping.
+/// Returns migrated YAML and a change list, or an error if the input cannot be migrated unambiguously.
+pub(crate) fn migrate_config_text(original: &str) -> Result<ConfigMigration, String> {
+    // For example, a missing quote can make an old config unreadable. Show the YAML error before opening a destination.
+    let document: Value =
+        serde_yaml::from_str(original).map_err(|error| format!("invalid YAML: {error}"))?;
+    let mut mapping = match document {
+        // An empty file has no legacy settings to keep, so migration can add the required version on its own.
+        Value::Null => Mapping::new(),
+        Value::Mapping(mapping) => mapping,
+        _ => return Err("config must be a YAML mapping".to_string()),
+    };
+    let mut changes = Vec::new();
+    rename_legacy_gate(&mut mapping, &mut changes)?;
+    // Preserve all other allowlists and any unrelated occurrence of the same key name.
+    if let Some(Value::Mapping(allowlists)) = mapping.get_mut("allowlists") {
+        // Current scans use category markers automatically, so users no longer need this option.
+        if allowlists.remove("secretPreviews").is_some() {
+            changes.push(REMOVED_KEY_CHANGE.to_string());
+            // The removed setting may have been the only allowlist. Leave no empty section behind in that case.
+            if allowlists.is_empty() {
+                mapping.remove("allowlists");
+            }
+        }
+    }
+    // Older config files may have no schema version, which the new loader rejects.
+    if mapping.get("schemaVersion").and_then(Value::as_str) != Some(SCHEMA_VERSION) {
+        mapping.insert(Value::from("schemaVersion"), Value::from(SCHEMA_VERSION));
+        changes.push(format!("schemaVersion set to {SCHEMA_VERSION}"));
+    }
+    // A user can rerun migration against a current config without losing its original formatting.
+    if changes.is_empty() {
+        return Ok(ConfigMigration {
+            text: original.to_string(),
+            changes,
+        });
+    }
+    let intended = Value::Mapping(mapping);
+    let comment_preserving_rewrite = migrate_config_lines(original);
+    // The original layout is safe to keep only when it retains the settings from the parsed rewrite.
+    if serde_yaml::from_str::<Value>(&comment_preserving_rewrite.text)
+        .is_ok_and(|parsed| parsed == intended)
+    {
+        return Ok(comment_preserving_rewrite);
+    }
+    let text = serde_yaml::to_string(&intended)
+        .map_err(|error| format!("unable to render migrated config: {error}"))?;
+    changes
+        .push("YAML formatting was regenerated. Comments remain in the original file.".to_string());
+    Ok(ConfigMigration { text, changes })
+}
+
+/// Move the legacy gate map in `mapping` and record the rename in `changes`.
+/// Returns success when the old key is absent or scalar, or when the gate is renamed without conflict.
+fn rename_legacy_gate(mapping: &mut Mapping, changes: &mut Vec<String>) -> Result<(), String> {
+    // A scalar `minimumSeverity` controls display in 0.6, so only the old per-command map moves.
+    if !mapping
+        .get("minimumSeverity")
+        .is_some_and(Value::is_mapping)
+    {
+        return Ok(());
+    }
+    // An upgrade may already contain `failOn`. Refuse two candidate gates rather than guessing which one the user meant.
+    if mapping.contains_key("failOn") {
+        return Err("config contains both a legacy minimumSeverity map and failOn".to_string());
+    }
+    if let Some(gate) = mapping.remove("minimumSeverity") {
+        mapping.insert(Value::from("failOn"), gate);
+        changes.push(RENAMED_GATE_CHANGE.to_string());
+    }
+    Ok(())
+}
+
+/// Try a line rewrite of `original` that keeps whitespace and comments for conventional block mappings.
+/// Returns the candidate YAML and the changes made by the line rewrite.
+fn migrate_config_lines(original: &str) -> ConfigMigration {
     let lines: Vec<&str> = original.split('\n').collect();
     let mut migrated: Vec<String> = Vec::with_capacity(lines.len());
     let mut changes: Vec<String> = Vec::new();
     let mut index = 0;
 
     while index < lines.len() {
-        let skipped = removed_key_block_length(&lines, index);
+        let removed_line_count = legacy_preview_block_length(&lines, index);
 
         // The removed key takes its whole indented block with it, or an empty list stays behind meaning nothing.
-        if skipped > 0 {
+        if removed_line_count > 0 {
             changes.push(change_line(index, REMOVED_KEY_CHANGE));
-            index += skipped;
+            index += removed_line_count;
             drop_emptied_parent(&mut migrated, &lines, index);
             continue;
         }
@@ -80,21 +144,22 @@ pub(crate) fn migrate_config_text(original: &str) -> ConfigMigration {
     with_schema_version(migrated, changes, original)
 }
 
-/// Report how many lines the removed redaction key occupies, counting the indented lines beneath it up to the first blank line.
+/// Locate the obsolete preview setting in a block-style config so the rewrite can keep adjacent comments.
 ///
 /// `lines` are the original file's lines and `index` is the line to test, which must be in range or the lookup panics.
 /// Returns 0 unless the line is an indented `secretPreviews` key, otherwise 1 plus the run of deeper-indented lines after it.
-fn removed_key_block_length(lines: &[&str], index: usize) -> usize {
+fn legacy_preview_block_length(lines: &[&str], index: usize) -> usize {
     let line = lines[index];
     let trimmed = line.trim_start();
     let indent = line.len() - trimmed.len();
 
-    // Only the nested allowlists entry is removed, so a root key of that name is left for the loader to refuse.
+    // A top-level key belongs to the user's own config. The YAML check verifies the section before this line edit is accepted.
     if indent == 0 || !key_is(trimmed, "secretPreviews") {
         return 0;
     }
 
     let mut length = 1;
+    // Old preview lists can span several lines. Remove their indented values with the key.
     while index + length < lines.len() && is_deeper_than(lines[index + length], indent) {
         length += 1;
     }
@@ -111,11 +176,12 @@ fn renamed_gate_line(lines: &[&str], index: usize) -> Option<String> {
     let trimmed = line.trim_start();
     let indent = line.len() - trimmed.len();
 
+    // Unrelated keys keep their exact spelling in the migrated file.
     if !key_is(trimmed, "minimumSeverity") {
         return None;
     }
 
-    // A key with a value on the same line is the 0.6 display floor and keeps its name.
+    // Leave inline values to the YAML rewrite. For example, `minimumSeverity: warning` is already a valid display floor.
     let tail = trimmed
         .split_once(':')
         .map(|(_, rest)| rest.trim())
@@ -129,13 +195,12 @@ fn renamed_gate_line(lines: &[&str], index: usize) -> Option<String> {
     opens_block.then(|| format!("{}failOn:", &line[..indent]))
 }
 
-/// Drop a bare block header left directly above the removed block, because a key with nothing under it is not a valid mapping.
-///
-/// The header stays only when the next original line is non-blank and indented beneath it; a later child after a blank line does not count.
+/// Remove the now-empty header from a block-style rewrite. The parsed mapping verifies that a blank line hid no later settings.
 ///
 /// `migrated` is the output built so far, whose last line is the candidate header.
 /// `lines` are the original file's lines and `index` is the first line after the removed block.
 fn drop_emptied_parent(migrated: &mut Vec<String>, lines: &[&str], index: usize) {
+    // If the removed setting came first, there is no preceding header to consider.
     let Some(header) = migrated.last() else {
         return;
     };
@@ -208,6 +273,7 @@ fn with_schema_version(
         Some(_) => {}
     }
 
+    // Keep the exact input if the user had already migrated it.
     if changes.is_empty() {
         return ConfigMigration {
             text: original.to_string(),
@@ -223,14 +289,13 @@ fn with_schema_version(
 
 /// Read the named config, rewrite it, and put the result where the user asked.
 ///
-/// The input is only ever read, barring a hard-link destination: a user who regrets the migration still has the configuration they started with,
-/// which is what section 8's migration rule requires. Exits 2 when the input cannot be read and, outside a dry run, when no destination was
-/// named or the destination resolves to the input's canonical path.
+/// The input is only read. The destination must be a new file so a migration cannot write through an alias.
 ///
 /// `args` names the config to read, the optional `--output` destination and whether this is a dry run; `writer` prints the change summary.
 ///
 /// Returns success after a dry run or a completed write, and exit code 2 for non-UTF-8 input, the cases above, or a failed write.
 pub(crate) fn run_migrate_config(args: MigrateConfigArgs, writer: &OutputWriter) -> ExitCode {
+    // A moved config or legacy non-UTF-8 file stops the command before it creates an output.
     let Ok(original) = fs::read_to_string(&args.config) else {
         eprintln!(
             "gruff-rs: config to migrate does not exist or could not be read: {}",
@@ -239,7 +304,18 @@ pub(crate) fn run_migrate_config(args: MigrateConfigArgs, writer: &OutputWriter)
         return ExitCode::from(2);
     };
 
-    let migration = migrate_config_text(&original);
+    let migration = match migrate_config_text(&original) {
+        Ok(migration) => migration,
+        // For example, a config with both gate keys needs a user decision before it can be migrated.
+        Err(error) => {
+            eprintln!(
+                "gruff-rs: unable to migrate {}: {error}",
+                args.config.display()
+            );
+            return ExitCode::from(2);
+        }
+    };
+    // An empty change list tells the caller they already use the current keys.
     let summary = if migration.changes.is_empty() {
         format!(
             "{} is already current; no changes.\n",
@@ -257,6 +333,7 @@ pub(crate) fn run_migrate_config(args: MigrateConfigArgs, writer: &OutputWriter)
     };
     writer.emit_unconditional(&summary);
 
+    // `--dry-run` lets callers review the changes before they name a destination.
     if args.dry_run {
         writer.emit_unconditional("Dry run: nothing written.\n");
         return ExitCode::SUCCESS;
@@ -265,16 +342,11 @@ pub(crate) fn run_migrate_config(args: MigrateConfigArgs, writer: &OutputWriter)
     write_migrated(&args, &migration.text, writer)
 }
 
-/// Write the migrated text to the destination the user named, refusing a destination whose canonical path is the input's.
-///
-/// `args` supplies the `--output` destination and the input config path, and `migrated` is the text written.
-/// `writer` prints the confirmation; an existing destination that passes that check is overwritten.
-///
-/// Returns success once written, or exit code 2 after an error on stderr when no destination was named, it is refused, or the write fails.
-/// A hard link to the input has a different canonical path, so it is not refused and writing it overwrites the input.
+/// Create the destination and write the migrated text, refusing any existing file, link or directory.
+/// `args` supplies the input and output paths, and `writer` publishes where `migrated` was written.
+/// Returns exit code 0 after a successful write or 2 if the destination is missing or cannot be written.
 fn write_migrated(args: &MigrateConfigArgs, migrated: &str, writer: &OutputWriter) -> ExitCode {
-    // Without a destination there is nowhere to put the result, and writing over the input is the one thing
-    // migration must never do; refusing is better than choosing a path the user did not name.
+    // With no destination, ask for `--output` and leave the original available for rollback.
     let Some(output) = args.output.as_ref() else {
         eprintln!(
             "gruff-rs: migrate-config needs --output <path>, or --dry-run to print the changes."
@@ -282,17 +354,17 @@ fn write_migrated(args: &MigrateConfigArgs, migrated: &str, writer: &OutputWrite
         return ExitCode::from(2);
     };
 
-    if is_same_file(output, &args.config) {
+    let result = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .and_then(|mut file| file.write_all(migrated.as_bytes()));
+    // A reused destination or a read-only parent directory leaves the original config available.
+    if let Err(error) = result {
         eprintln!(
-            "gruff-rs: --output must name a different file from --config; {} is the copy you may want back.",
-            args.config.display()
+            "gruff-rs: unable to create migration output {}: {error}",
+            output.display()
         );
-        return ExitCode::from(2);
-    }
-
-    // A destination gruff cannot write is reported rather than swallowed, so the user does not believe it migrated.
-    if let Err(error) = fs::write(output, migrated) {
-        eprintln!("gruff-rs: unable to write {}: {error}", output.display());
         return ExitCode::from(2);
     }
 
@@ -302,16 +374,4 @@ fn write_migrated(args: &MigrateConfigArgs, migrated: &str, writer: &OutputWrite
         args.config.display()
     ));
     ExitCode::SUCCESS
-}
-
-/// True when both paths exist and resolve to one canonical path, so a migration cannot be pointed back at its input by name or symlink.
-///
-/// `left` and `right` are the two paths, each canonicalized on disk before they are compared.
-/// Returns true when both canonicalize to the same path, and false when they differ or either cannot be canonicalized, as for a new file.
-/// Distinct hard links to one file canonicalize to different paths, so they compare false.
-fn is_same_file(left: &Path, right: &Path) -> bool {
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(resolved_left), Ok(resolved_right)) => resolved_left == resolved_right,
-        _ => false,
-    }
 }

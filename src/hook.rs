@@ -1,5 +1,9 @@
+//! Run a scan for a coding-agent hook and return the `gruff.hook.v2` result.
+//!
+//! A hook caller can scan the full target, check changed code, or compare findings against a reviewed baseline.
+//! The result reports findings and diagnostics with the exit status that tells the caller whether to continue.
+
 use super::*;
-use crate::analysis::{failed_run_diagnostic_type, CHANGED_REGION_DIAGNOSTIC_TYPE};
 use crate::changed_region::{git_args_with_paths, git_output, git_output_bytes_with_stdin};
 use crate::cli::HookArgs;
 
@@ -8,7 +12,7 @@ pub(crate) const HOOK_CONTRACT_VERSION: &str = "gruff.hook.v2";
 /// The one baseline schema this hook accepts; anything else is refused rather than read under the wrong rules.
 pub(crate) const HOOK_BASELINE_SCHEMA_VERSION: &str = "gruff.baseline.v3";
 
-/// Run the `hook` subcommand: analyse the requested paths and publish one hook payload for the calling agent.
+/// Answer a capabilities request or scan the requested paths for a coding-agent hook.
 ///
 /// `args` carries the parsed hook flags and paths; when `args.capabilities` is set, only the capabilities document is written.
 /// `writer` receives every payload, including the failure payload of a run that could not happen.
@@ -16,9 +20,19 @@ pub(crate) const HOOK_BASELINE_SCHEMA_VERSION: &str = "gruff.baseline.v3";
 /// Returns success after the capabilities document and exit code 2 when the project, its configuration or the analysis fails.
 /// Otherwise it returns the code `emit_hook_report` decides from the published payload.
 pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode {
+    // Hook integrations can check the supported contract before asking for a scan.
     if args.capabilities {
         writer.emit_unconditional(&render_capabilities());
         return ExitCode::SUCCESS;
+    }
+
+    // A new-only gate needs an earlier scan or baseline. Without one, it cannot tell the agent what changed.
+    if args.fail_on_new && args.baseline.is_none() && args.diff.is_none() {
+        writer.emit_unconditional(&render_fatal(
+            "baseline",
+            "--fail-on-new requires --baseline or --diff",
+        ));
+        return ExitCode::from(2);
     }
 
     let changed_region_active = args.changed_ranges.is_some();
@@ -27,8 +41,9 @@ pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode
     let (project_root, options, config) =
         match resolve_project_root_and_config(options, args.deep_scan_budget.as_ref()) {
             Ok(triple) => triple,
+            // For example, a retired rule in the project's config prevents the agent from getting a trustworthy scan.
             Err(error) => {
-                writer.emit_unconditional(&render_run_failure(&error));
+                writer.emit_unconditional(&render_config_error(&error));
                 eprintln!("gruff-rs: {error}");
                 return ExitCode::from(2);
             }
@@ -47,6 +62,7 @@ pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode
             },
             &writer,
         ),
+        // A missing reviewed baseline or an invalid changed path still gives the hook a machine-readable error.
         Err(error) => {
             writer.emit_unconditional(&render_run_failure(&error));
             eprintln!("gruff-rs: {error}");
@@ -55,9 +71,7 @@ pub(crate) fn run_hook_command(args: HookArgs, writer: OutputWriter) -> ExitCode
     }
 }
 
-/// Apply the new-only base, publish the payload, and tell the calling agent what it means.
-///
-/// The gate reads the payload rather than the raw scan, so what blocks an edit is exactly what the agent was shown.
+/// Publish the hook payload and gate only the findings the calling agent can see.
 ///
 /// `report` is the finished scan; the new-only base may drop findings from it, and its findings and diagnostics move into the payload.
 /// `run` names the flags, project root, options, configuration and active selectors, and `writer` receives whichever payload is published.
@@ -69,6 +83,7 @@ fn emit_hook_report(
     writer: &OutputWriter,
 ) -> ExitCode {
     let args = run.args;
+    // A failed comparison, such as an unavailable Git ref, prevents a reliable new-only decision.
     if let Err(error) = apply_hook_new_only(
         report,
         args,
@@ -77,7 +92,6 @@ fn emit_hook_report(
         run.config,
         run.changed_region_active,
     ) {
-        // A baseline this port cannot read would otherwise suppress findings under rules nobody ratified.
         writer.emit_unconditional(&render_fatal("baseline", &error));
         eprintln!("gruff-rs: {error}");
         return ExitCode::from(2);
@@ -86,15 +100,19 @@ fn emit_hook_report(
     let has_fatal_diagnostic = report.diagnostics.iter().any(RunDiagnostic::is_failure);
     let context = HookRunContext {
         mode: hook_run_mode(args),
+        changed_scope: run.changed_region_active.then_some(args.changed_scope),
         paths: args
             .paths
             .iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
-        baseline_path: args
-            .baseline
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string()),
+        baseline_path: run.options.baseline.as_ref().and_then(|path| {
+            let path = absolutize(run.project_root, path).canonicalize().ok()?;
+            crate::machine_contract::relative_machine_path(
+                &path.to_string_lossy(),
+                &run.project_root.to_string_lossy(),
+            )
+        }),
     };
     let payload = render_hook_report_for(
         report,
@@ -112,21 +130,15 @@ fn emit_hook_report(
 
 /// Render the payload for a run that could not happen, naming which kind of failure it was.
 ///
-/// A baseline this port cannot read is not a configuration problem, and saying so would send the user to the wrong
-/// file. Neither is a changed-region scope the run could not read: that carries one family type on every surface,
-/// so the hook and the analyse envelope name the same failure the same way. Everything else is a configuration
-/// failure and keeps the payload's `config` block.
+/// Use the same diagnostic type as `analyse` so a hook caller knows whether to fix config, a baseline, or the changed-code selection.
 ///
-/// `error` is the failure message, classified by the substring `baseline` and by its family diagnostic type, and quoted in the payload.
+/// `error` carries the category assigned by the failed operation.
 /// Returns the pretty-printed hook JSON carrying one fatal `baseline`, changed-region or `config` diagnostic.
-pub(crate) fn render_run_failure(error: &str) -> String {
-    if error.contains("baseline") {
-        return render_fatal("baseline", error);
+pub(crate) fn render_run_failure(error: &RunFailure) -> String {
+    match error {
+        RunFailure::Config(message) => render_config_error(message),
+        _ => render_fatal(error.diagnostic_type(), error.message()),
     }
-    if failed_run_diagnostic_type(error) == CHANGED_REGION_DIAGNOSTIC_TYPE {
-        return render_fatal(CHANGED_REGION_DIAGNOSTIC_TYPE, error);
-    }
-    render_config_error(error)
 }
 
 /// Name which region selector chose the work, so a consumer can tell a targeted run from a whole-tree one.
@@ -138,19 +150,17 @@ fn hook_run_mode(args: &HookArgs) -> String {
     if args.changed_ranges.is_some() {
         return "changed-ranges".to_string();
     }
+    // When a hook names a Git comparison without explicit ranges, report that mode in the audit.
     if args.diff.is_some() {
         return "diff".to_string();
     }
     "full".to_string()
 }
 
-/// Decide what the hook tells the calling agent, from the findings it actually published.
-///
-/// The gate reads the payload rather than the raw scan, so what blocks an edit is exactly what the agent was shown:
-/// a finding the changed-region filter or the baseline removed is not in the payload and does not block.
+/// Decide whether visible hook output should block the agent from continuing.
 ///
 /// `payload` is the published hook JSON, and `args` supplies `fail_on_diagnostics`, `fail_on_new` and the severity and confidence floors.
-/// Returns 1 when `fail_on_diagnostics` meets any diagnostic, `fail_on_new` meets a new finding, or a finding reaches both floors.
+/// Returns 1 when the requested diagnostic, unreviewed-finding, or severity and confidence gate matches.
 /// It returns 0 otherwise, including when `payload` is not valid JSON or has no findings array.
 fn hook_exit_code(payload: &str, args: &HookArgs) -> u8 {
     let Ok(parsed) = serde_json::from_str::<Value>(payload) else {
@@ -166,15 +176,23 @@ fn hook_exit_code(payload: &str, args: &HookArgs) -> u8 {
         return 1;
     }
 
+    // With no finding rows, only the diagnostic gate above can stop this request.
     let Some(rows) = parsed["findings"].as_array() else {
         return 0;
     };
 
+    // Any visible finding can block the request under one of the gates the caller turned on.
     for row in rows {
         // The baseline dimension is independent of both floors: an unreviewed finding blocks whatever its severity.
-        if args.fail_on_new && row["baselineStatus"].as_str() == Some("new") {
+        if args.fail_on_new
+            && matches!(
+                row["baselineStatus"].as_str(),
+                Some("new" | "collision" | "notEligible")
+            )
+        {
             return 1;
         }
+        // A hook can also block by severity and confidence, regardless of whether it asked for a comparison.
         if is_hook_gate_reached(row, args) {
             return 1;
         }
@@ -332,7 +350,8 @@ fn apply_hook_changed_region_new_only(
         diff: None,
         ..options.clone()
     };
-    let mut full_report = run_analysis_in_project(project_root, &full_options, config)?;
+    let mut full_report = run_analysis_in_project(project_root, &full_options, config)
+        .map_err(|error| error.to_string())?;
     if let Some(mode) = &args.diff {
         let base_identities = match &diff_base_identities {
             Some(base_identities) => base_identities.clone(),
@@ -351,14 +370,8 @@ fn apply_hook_changed_region_new_only(
     Ok(())
 }
 
-/// Drop findings that already existed in the base, keyed on stable identity but
-/// honouring how many times each identity occurred. Stable identities are not
-/// unique: several findings can share `(rule_id, file_path, subject)` - e.g. two
-/// secret matches with the same constant message in one file, or one crate
-/// flagged in two manifest sections. A plain set-membership check would then
-/// drop a newly added duplicate as if it were pre-existing, hiding a real new
-/// finding. Consuming per-identity counts keeps `current - base` occurrences of
-/// each identity, so a freshly introduced one still surfaces.
+/// Remove reviewed occurrences from a hook comparison while retaining any newly added duplicates.
+/// For example, two occurrences of one rule in the current file still report once when the Git base had just one.
 ///
 /// `report` is changed in place: for each stable identity, its first findings up to the base count are removed and the rest kept in order.
 /// `base_counts` maps each stable identity to how often the base held it; it is cloned, not consumed.
@@ -366,21 +379,33 @@ pub(crate) fn apply_stable_identity_new_only(
     report: &mut AnalysisReport,
     base_counts: &BTreeMap<String, usize>,
 ) {
-    let mut remaining = base_counts.clone();
-    report.findings.retain(
-        |finding| match remaining.get_mut(&finding.stable_identity) {
+    let mut remaining_base_counts = base_counts.clone();
+    report.findings.retain_mut(|finding| {
+        match remaining_base_counts.get_mut(hook_comparison_identity(finding)) {
+            // An earlier occurrence can cover one current occurrence of the same finding.
             Some(count) if *count > 0 => {
                 *count -= 1;
                 false
             }
-            _ => true,
-        },
-    );
+            // With no earlier occurrence available, mark the finding for callers using `--fail-on-new`.
+            _ => {
+                finding.baseline_status = Some("new".to_string());
+                true
+            }
+        }
+    });
 }
 
-/// Count occurrences of each stable identity in the base tree at `mode`, so
-/// [`apply_stable_identity_new_only`] can suppress exactly the pre-existing
-/// count and let genuinely new duplicates through.
+/// Use the finding's published v2 identity where available.
+/// Returns the private comparison key for `finding` when the schema withholds its identity.
+fn hook_comparison_identity(finding: &Finding) -> &str {
+    finding
+        .baseline_identity
+        .as_deref()
+        .unwrap_or(&finding.stable_identity)
+}
+
+/// Scan the pre-edit revision so a Git-backed hook can distinguish earlier findings from newly added ones.
 ///
 /// `project_root` is the repository the base tree is exported from, and `options` supplies the paths to export and scan.
 /// `config` is the configuration the base scan runs under.
@@ -413,10 +438,14 @@ pub(crate) fn diff_base_stable_identities(
         execution: ExecutionSelectors::default(),
         display: DisplaySelectors::default(),
     };
-    let base_report = run_analysis_in_project(base_tree.path(), &base_options, config)?;
+    let base_report = run_analysis_in_project(base_tree.path(), &base_options, config)
+        .map_err(|error| error.to_string())?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    // Preserve duplicate counts so an added repeat can still appear in the caller's result.
     for finding in base_report.findings {
-        *counts.entry(finding.stable_identity).or_default() += 1;
+        *counts
+            .entry(hook_comparison_identity(&finding).to_string())
+            .or_default() += 1;
     }
     Ok(counts)
 }
@@ -444,10 +473,8 @@ fn export_git_base_tree(
     paths: &[PathBuf],
     output_root: &Path,
 ) -> Result<(), String> {
-    // `-z` makes git emit NUL-separated, unquoted paths. Without it git applies
-    // `core.quotePath` and C-quotes non-ASCII names (e.g. `"caf\303\251.rs"`),
-    // whose backslashes `safe_git_tree_path` rejects and which `git show` cannot
-    // resolve - hard-erroring the hook on any tree with a non-ASCII filename.
+    // Ask Git for NUL-separated paths so a file such as `café.rs` reaches the comparison by its real name.
+    // Git's display quoting can otherwise turn it into a name the path validator rejects.
     let listed = git_base_tree_paths(project_root, base_ref, paths)?;
     let base_paths = listed.iter().map(String::as_str).collect::<Vec<_>>();
     let blobs = git_cat_file_batch(project_root, base_ref, &base_paths)?;
@@ -529,6 +556,10 @@ fn write_base_tree_blob(output_root: &Path, safe: &Path, content: &[u8]) -> Resu
     })
 }
 
+/// Read the base revision's source files from one Git batch response.
+///
+/// Verify each blob length and terminator before the hook compares against it.
+/// An incomplete response stops the comparison before missing files could be treated as clean.
 struct CatFileBatchParser<'a> {
     output: &'a [u8],
     cursor: usize,
@@ -647,6 +678,10 @@ fn safe_git_tree_path(path: &str) -> Result<PathBuf, String> {
     Ok(safe)
 }
 
+/// Hold an exported revision for a Git-backed comparison.
+///
+/// The hook scans this separate tree so an agent's working files can stay in place.
+/// Cleanup runs when the comparison finishes or exits early.
 struct TempBaseTree {
     path: PathBuf,
 }
@@ -821,7 +856,10 @@ pub(crate) fn render_hook_report(
     )
 }
 
-/// Everything one hook run was asked to do, so publishing it is one decision rather than eight arguments.
+/// Keep the caller's targets, config, and options with the hook scan.
+///
+/// The comparison flags determine which findings reach the payload.
+/// The same request supplies the audit and the gate that tells the agent whether to continue.
 pub(crate) struct HookRun<'a> {
     pub(crate) args: &'a HookArgs,
     pub(crate) project_root: &'a Path,
@@ -831,11 +869,16 @@ pub(crate) struct HookRun<'a> {
     pub(crate) new_only_active: bool,
 }
 
-/// What one hook run did, so the payload's audit block reports it rather than assuming it.
+/// Describe the scope and comparison the hook reports to its caller.
+///
+/// The audit includes the requested paths and the changed scope when applicable.
+/// An absent baseline path means there is no project-relative baseline path to publish.
 #[derive(Default)]
 pub(crate) struct HookRunContext {
-    /// Which region selector chose the work: changed-ranges, diff, since, or full.
+    /// Scan mode reported to the caller: `changed-ranges`, `diff`, or `full`.
     pub(crate) mode: String,
+    /// Requested scope used when a changed region is active.
+    pub(crate) changed_scope: Option<ChangedScope>,
     /// The operands as the caller gave them.
     pub(crate) paths: Vec<String>,
     /// Project-relative baseline that classified the run, or None when none applied.
@@ -847,7 +890,7 @@ pub(crate) struct HookRunContext {
 /// `report` is changed in place: the changed-region filter may drop findings, and its findings and diagnostics are moved into the payload.
 /// `changed_region_active` and `new_only_active` steer that filter; `context` gives the audit block its mode, operands and baseline path.
 ///
-/// Returns the pretty-printed JSON payload, whose run scope is `file` for a `full` mode and `symbol` otherwise.
+/// Returns the JSON payload with `file` for a full run, `hunk` for explicit hunk scope, and `symbol` for other changed scans.
 /// An empty `context.mode` is reported as `full`.
 pub(crate) fn render_hook_report_for(
     report: &mut AnalysisReport,
@@ -864,12 +907,17 @@ pub(crate) fn render_hook_report_for(
     let diagnostics = hook_diagnostics(std::mem::take(&mut report.diagnostics));
     let suppressions = hook_suppressions(&report.suppressions);
     let analysed_files = report.paths.analysed_files;
+    // A caller without a selected comparison mode sees a full run in the audit.
     let mode = if context.mode.is_empty() {
         "full".to_string()
     } else {
         context.mode.clone()
     };
-    let scope = if mode == "full" { "file" } else { "symbol" };
+    let scope = match (mode.as_str(), context.changed_scope) {
+        ("full", _) => "file",
+        (_, Some(ChangedScope::Hunk)) => "hunk",
+        _ => "symbol",
+    };
     let findings = hook_findings(std::mem::take(&mut report.findings), &registry);
 
     serde_json::to_string_pretty(&json!({
@@ -892,16 +940,14 @@ pub(crate) fn render_hook_report_for(
     .expect("hook report serialize")
 }
 
-/// Project the run's sensitive-exclusion audit into the section 13a rows the hook publishes.
-///
-/// A surface that applies an exclusion must report its count on that same surface: a hook may decline to filter, but
-/// it may never filter in silence, because a consumer who cannot see the exclusion reads a clean payload as a clean file.
+/// Publish sensitive exclusions and built-in or inline suppression rows so the agent can explain why findings are absent.
 ///
 /// `suppressions` is the run's exclusion audit; only each summary's first path is published, as an empty string when it has none.
-/// Returns one row per summary with its rule, path, symbol, reason and suppressed count, plus `source` whenever the summary sets one.
+/// Returns one row per eligible summary with the rule, path, symbol, reason, count, and source when present.
 fn hook_suppressions(suppressions: &[SuppressionSummary]) -> Vec<Value> {
     suppressions
         .iter()
+        .filter(|row| row.config_key == "sensitiveExclusions" || row.source.is_some())
         .map(|summary| {
             let mut row = json!({
                 "rule": summary.rule,
@@ -911,7 +957,7 @@ fn hook_suppressions(suppressions: &[SuppressionSummary]) -> Vec<Value> {
                 "reason": summary.reason,
                 "suppressed": summary.suppressed,
             });
-            // Only a built-in row names its source; a configured row omits the key rather than nulling it.
+            // A built-in or inline suppression names its source. A configured sensitive exclusion leaves the key absent.
             if let Some(source) = summary.source {
                 row.as_object_mut()
                     .expect("suppression row is an object")
@@ -925,7 +971,7 @@ fn hook_suppressions(suppressions: &[SuppressionSummary]) -> Vec<Value> {
 /// Project the run's diagnostics into hook diagnostic rows, giving each an explicit severity.
 ///
 /// `diagnostics` are the run's diagnostics, consumed in order.
-/// Returns one row per diagnostic, with severity `warning` when it states it does not invalidate the run and `fatal` otherwise.
+/// Returns one row per diagnostic. The same classification that determines exit status selects `warning` or `fatal`.
 /// A row carries `invalidatesRun` only when the diagnostic sets it.
 fn hook_diagnostics(diagnostics: Vec<RunDiagnostic>) -> Vec<Value> {
     diagnostics
@@ -933,13 +979,13 @@ fn hook_diagnostics(diagnostics: Vec<RunDiagnostic>) -> Vec<Value> {
         .map(|diagnostic| {
             let mut value = json!({
                 "type": diagnostic.diagnostic_type,
-                // v1 left a consumer to infer severity from the type, so a budget note and a run that could not
-                // happen looked alike.
-                "severity": if diagnostic.invalidates_run == Some(false) { "warning" } else { "fatal" },
+                // A budget note can accompany a valid scan. A fatal diagnostic means the scan cannot support a decision.
+                "severity": if diagnostic.is_failure() { "fatal" } else { "warning" },
                 "message": diagnostic.message,
                 "file": diagnostic.file_path,
                 "line": diagnostic.line,
             });
+            // Include this flag only when the scan explicitly says whether the diagnostic invalidates it.
             if let Some(invalidates_run) = diagnostic.invalidates_run {
                 value
                     .as_object_mut()

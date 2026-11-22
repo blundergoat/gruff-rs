@@ -1,5 +1,11 @@
+//! Confirm report and summary views expose the same pillar counts and scoring decisions.
+//!
+//! These cases protect the fields automation reads and the sections a developer sees while reviewing a score.
+//! A hidden finding can still affect the count and grade shown for its pillar.
+
 use super::*;
 
+/// Publish the counts and raw penalty machine-report readers use to explain a pillar score.
 #[test]
 pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty() {
     // The Rust projection supplies the four native fields accepted by the shared v3
@@ -74,6 +80,7 @@ pub(crate) fn summary_json_pillar_shape_includes_canonical_fields_with_penalty()
     assert_eq!(security["score"].as_f64(), Some(100.0));
 }
 
+/// Keep findings outside the standard score from changing the composite.
 #[test]
 pub(crate) fn non_score_pillars_are_inapplicable_and_excluded_from_composite() {
     // A custom rule emitting `Pillar::Waste` (not in SCORE_PILLARS) must surface in the
@@ -88,8 +95,6 @@ pub(crate) fn non_score_pillars_are_inapplicable_and_excluded_from_composite() {
     );
     let report = sample_report_with(vec![waste], Vec::new());
 
-    // Composite must ignore Waste's 8.0 penalty: every SCORE_PILLARS pillar is 100.0,
-    // and Waste is filtered out before averaging.
     assert_eq!(report.score.composite, Some(100.0));
 
     let decoded: Value =
@@ -102,16 +107,19 @@ pub(crate) fn non_score_pillars_are_inapplicable_and_excluded_from_composite() {
         .find(|pillar| pillar["pillar"] == "waste")
         .expect("waste pillar present");
     assert_eq!(waste_pillar["findings"], 1);
-    assert_eq!(waste_pillar["penalty"].as_f64(), Some(12.0));
-    assert_eq!(waste_pillar["score"].as_f64(), Some(53.85));
+    assert_eq!(waste_pillar["applicable"], false);
+    assert_eq!(waste_pillar["penalty"].as_f64(), Some(0.0));
+    assert!(waste_pillar["score"].is_null());
+    assert!(!decoded["score"]["scoredPillars"]
+        .as_array()
+        .expect("scored pillars")
+        .contains(&json!("waste")));
 }
 
+/// Give tied pillars a predictable order based on the names a reader sees.
 #[test]
 pub(crate) fn pillar_ties_sort_by_canonical_label_not_enum_order() {
-    // Tie-break contract is `pillar ASC by kebab-case label`, not enum declaration order.
-    // Size (enum index 0) and Complexity (enum index 1) with equal finding counts would
-    // sort as `size, complexity` under the derived `Ord`; the canonical contract is
-    // `complexity, size`.
+    // A tie follows the displayed labels. `complexity` comes before `size` even though Rust declares `Size` first.
     let findings = vec![
         test_finding(
             "size.function-length",
@@ -139,6 +147,7 @@ pub(crate) fn pillar_ties_sort_by_canonical_label_not_enum_order() {
     );
 }
 
+/// Check that the browser view gives the same pillar breakdown as the native report.
 #[test]
 pub(crate) fn html_pillars_section_matches_canonical_contract() {
     // Construct a report with multiple pillars at different finding counts so we can verify
@@ -267,11 +276,7 @@ pub(crate) fn html_pillars_section_matches_canonical_contract() {
         "documentation (2 findings) should come before naming (1)"
     );
 
-    // Score must render with two decimal places (canonical contract). Spot-check that the score
-    // cell carries a ".NN<" suffix for at least one pillar: the fixture's three complexity findings
-    // (1 advisory, 1 warning, 1 error) sit on one symbol, so the ratified contract bills them as one
-    // correlated concept at max(12.00) / 3 each - 12.00 in total, not 17.00 - and over ten evaluated
-    // files the curve scores 53.85.
+    // The three complexity findings share a total penalty of 12.00. Across ten evaluated files, show 53.85 to two decimal places.
     assert!(
         html.contains(">53.85<"),
         "expected complexity score 53.85 in HTML, html = {html}"
@@ -298,6 +303,7 @@ pub(crate) fn html_pillars_section_matches_canonical_contract() {
     );
 }
 
+/// Keep a Markdown reader's pillar breakdown aligned with the native report.
 #[test]
 pub(crate) fn markdown_pillars_section_matches_canonical_contract() {
     // Construct a report with multiple pillars at different finding counts so we can verify

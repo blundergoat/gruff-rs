@@ -1,10 +1,7 @@
-//! Sensitive-data suppression contracts for the `sensitiveExclusions` config section.
+//! Exercise the config and audit behavior of `sensitiveExclusions`.
 //!
-//! Acceptance cases prove a declared scope suppresses exactly the findings inside it, publishes
-//! an audit row, and leaves every sibling finding reporting. Rejection cases prove each ratified
-//! configuration error stops the command before analysis. Cases and fixtures follow
-//! `gruff-spec/fixtures/sensitive-exclusions/cases.v1.json` and the synthetic renderings in
-//! `gruff-spec/fixtures/redaction/corpus.v1.json`; every value here is synthetic.
+//! A valid exclusion hides only scoped findings, publishes an audit row, and leaves sibling findings visible.
+//! Invalid exclusions stop analysis. All sample values are synthetic and follow the family exclusion and redaction fixtures.
 
 use super::*;
 
@@ -453,9 +450,9 @@ pub(crate) fn ordinary_exclusions_and_sensitive_exclusions_coexist() {
         dir.path(),
         r#"
 exclude:
-  - rule: sensitive-data.jwt-token
-    message_contains: JWT
-    reason: Ordinary message matching stays available for non-sensitive redesign scope.
+  - rule: docs.missing-readme
+    message_contains: does not contain
+    reason: Temporary corpus has no README.
 sensitiveExclusions:
   - rule: sensitive-data.aws-access-key
     path: src/aws_config.rs
@@ -470,14 +467,28 @@ sensitiveExclusions:
     assert!(report.suppressions[1].suppressed >= 1);
 
     let text = render_report(&report, OutputFormat::Text);
-    assert!(
-        text.contains("exclude[0] sensitive-data.jwt-token"),
-        "{text}"
-    );
+    assert!(text.contains("exclude[0] docs.missing-readme"), "{text}");
     assert!(
         text.contains("sensitiveExclusions[0] sensitive-data.aws-access-key"),
         "{text}"
     );
+}
+
+/// Keep sensitive rules out of ordinary exclusions after selector expansion.
+#[test]
+fn ordinary_exclusions_reject_sensitive_selectors() {
+    let dir = tempdir().expect("tempdir");
+    for selector in [
+        "sensitive-data.jwt-token",
+        "sensitive-data.*",
+        "SensitiveData",
+    ] {
+        let error = corpus_config_error(
+            dir.path(),
+            &format!("exclude:\n  - rule: {selector}\n    reason: Reviewed example\n"),
+        );
+        assert!(error.contains("sensitiveExclusions"), "{error}");
+    }
 }
 
 /// Reject a rationale that is missing or contains only whitespace.

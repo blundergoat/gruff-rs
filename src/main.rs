@@ -1,6 +1,7 @@
-//! Gruff's CLI entry point assembles commands, analysis services, and report output.
-//! Users reach this crate through a subcommand, which routes source discovery and
-//! rule findings into deterministic renderers and process-exit classification.
+//! Start the requested `gruff-rs` command from a shell or CI job.
+//!
+//! Scan commands resolve the target and config, run the requested checks, and render the result.
+//! The same outcome determines what the caller sees and which exit status their script receives.
 
 use chrono::Utc;
 use clap::builder::styling;
@@ -104,7 +105,9 @@ use cli::{
 };
 #[cfg(test)]
 use command_setup::resolve_fail_on;
-use command_setup::{emit_report_output, resolve_command_setup, resolve_project_root_and_config};
+use command_setup::{
+    emit_report_output, resolve_command_setup, resolve_project_root_and_config, RunFailure,
+};
 use config::{
     compile_path_matchers, AnalysisOptions, Config, CustomRule, CustomRuleScope, DeepScanBudget,
     DeepScanBudgetOverride, DiffSelection, ExclusionRule, ListedRule, PathMatcher, RequestedScope,
@@ -166,13 +169,24 @@ fn main() -> ExitCode {
     let global = cli.global;
     let writer = global.writer();
     let no_interaction = global.is_non_interactive();
-    let project_root = std::env::current_dir().ok();
-    let root = project_root.as_deref();
+    let launch_directory = std::env::current_dir().ok();
+    let offer_scan_config = |paths: &[PathBuf], config_path: Option<&Path>, no_config| {
+        prompt_for_scan_config(
+            launch_directory.as_deref(),
+            paths,
+            config_path,
+            no_config,
+            no_interaction,
+        );
+    };
     match cli.command {
-        Commands::Analyse(args) => run_analyse_command(*args, writer, root, no_interaction),
+        Commands::Analyse(args) => {
+            offer_scan_config(&args.paths, args.config.as_deref(), args.no_config);
+            run_analyse_command(*args, writer)
+        }
         Commands::Hook(args) => hook::run_hook_command(args, writer),
         Commands::Report(args) => {
-            init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
+            offer_scan_config(&args.paths, args.config.as_deref(), args.no_config);
             run_report(args, writer)
         }
         Commands::ListRules(args) => run_list_rules(args, writer),
@@ -186,7 +200,7 @@ fn main() -> ExitCode {
             run_dashboard(args)
         }
         Commands::Summary(args) => {
-            init::prompt_for_command(root, args.config.as_deref(), args.no_config, no_interaction);
+            offer_scan_config(&args.paths, args.config.as_deref(), args.no_config);
             run_summary(args, writer)
         }
         Commands::CheckIgnore(args) => run_check_ignore(args, global.verbose > 0, writer),
@@ -196,43 +210,41 @@ fn main() -> ExitCode {
     }
 }
 
-/// Run the `analyse` subcommand from parsed flags through setup, analysis and report rendering.
+/// Run `analyse` and send findings or a setup failure to the selected output format.
 ///
 /// `args` holds the parsed analyse flags, and `writer` is where the report or the failure envelope is written.
-/// `project_root`, the current directory if known, and `no_interaction` only feed `init::prompt_for_command`; setup finds the scanned root.
 ///
 /// Returns exit code 2 when setup or analysis fails, otherwise the outcome's exit code from the findings, the fail threshold and the gate.
-fn run_analyse_command(
-    args: AnalyseArgs,
-    writer: OutputWriter,
-    project_root: Option<&Path>,
-    no_interaction: bool,
-) -> ExitCode {
-    init::prompt_for_command(
-        project_root,
-        args.config.as_deref(),
-        args.no_config,
-        no_interaction,
-    );
+fn run_analyse_command(args: AnalyseArgs, writer: OutputWriter) -> ExitCode {
     let cli_fail_on = args.fail_on;
     let fail_on_new = args.fail_on_new;
+    let min_confidence = args.min_confidence;
     let deep_scan_budget = args.deep_scan_budget.clone();
-    let base = options_from_analyse(args, FailThreshold::Advisory);
-    // Kept for the failure branch below, which must publish an envelope after `base` has been consumed.
-    let fallback = base.clone();
+    let requested_options = options_from_analyse(args, FailThreshold::Advisory);
     let (project_root, options, config) = match analyse_setup(
-        base,
+        requested_options,
         cli_fail_on,
         deep_scan_budget.as_ref(),
-        &fallback,
-        &writer,
+        writer,
     ) {
         Ok(triple) => triple,
         Err(code) => return code,
     };
-    // The execution selectors choose which rules run, so they narrow the config before anything is scanned.
-    let config = analyse_run_config(config, &options, fail_on_new);
+    // Apply flags such as `--include-rule` now so the same selection controls findings and scores.
     let scope = RequestedScope::from_options(&options);
+    let config = match analyse_run_config(config, &options, fail_on_new) {
+        Ok(config) => config,
+        // For example, a caller using a retired rule ID gets a config diagnostic instead of an empty scan.
+        Err(error) => {
+            return emit_failed_run_report(
+                &project_root,
+                &options,
+                &RunFailure::Config(error),
+                writer,
+                None,
+            );
+        }
+    };
     let started = Instant::now();
     match run_analysis_in_project(&project_root, &options, &config) {
         Ok(mut report) => emit_analyse_report(
@@ -242,81 +254,111 @@ fn run_analyse_command(
             &scope,
             Some(started.elapsed().as_millis()),
             &writer,
+            min_confidence,
         ),
-        Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            emit_failed_run_report(&project_root, &options, &config, &scope, &error, &writer)
-        }
+        // A missing baseline requested by the caller still produces their JSON or SARIF failure report.
+        Err(error) => emit_failed_run_report(&project_root, &options, &error, writer, None),
     }
 }
 
-/// Resolve the project root, options and config an analyse run needs, or publish why it could not.
+/// Offer config setup at the project the caller selected for `analyse`, `report`, or `summary`.
 ///
-/// A configuration the run could not load is a run that could not start, so a caller who asked for a machine format
-/// gets the same v3 envelope a missing scan target already produces rather than an empty stdout.
+/// `caller_root` is the launch directory, if available. Empty `paths` normally select that directory.
+/// An explicit `config_path`, `no_config`, or `no_interaction` lets the caller bypass the prompt.
+fn prompt_for_scan_config(
+    caller_root: Option<&Path>,
+    paths: &[PathBuf],
+    config_path: Option<&Path>,
+    no_config: bool,
+    no_interaction: bool,
+) {
+    // A caller who supplied or disabled config, or is running unattended, gets no interactive setup question.
+    if no_interaction || no_config || config_path.is_some() {
+        return;
+    }
+    let project_root = caller_root.and_then(|root| {
+        command_setup::resolve_scan_context(root, paths)
+            .ok()
+            .map(|(root, _)| root)
+    });
+    init::prompt_for_command(project_root.as_deref(), None, false, false);
+}
+
+/// Resolve what `analyse` should scan before checking source files, with a machine report if setup fails.
 ///
-/// `base` holds the options parsed from the flags, `cli_fail_on` any command-line fail threshold, and `deep_scan_budget` any budget override.
-/// `fallback` is the copy of the parsed options that builds the failure envelope, which is written through `writer` when setup fails.
+/// `requested_options` holds the parsed flags. An absent `cli_fail_on` or `deep_scan_budget` lets config and defaults supply the value.
+/// `writer` receives the failure envelope when setup fails.
 /// Returns the resolved project root, options and config, or an Err holding exit code 2 after the failure is reported.
 #[allow(clippy::result_large_err)]
 fn analyse_setup(
-    base: AnalysisOptions,
+    requested_options: AnalysisOptions,
     cli_fail_on: Option<FailThreshold>,
     deep_scan_budget: Option<&DeepScanBudgetOverride>,
-    fallback: &AnalysisOptions,
-    writer: &OutputWriter,
+    writer: OutputWriter,
 ) -> Result<(PathBuf, AnalysisOptions, Config), ExitCode> {
     match resolve_command_setup(
-        base,
+        requested_options.clone(),
         cli_fail_on,
         "analyse",
         FailThreshold::Advisory,
         deep_scan_budget,
     ) {
         Ok(triple) => Ok(triple),
+        // For example, a missing `--config` file still yields an exit code and diagnostic in the requested format.
         Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            // The setup that failed is the one that would have named the project root and the config, so the
-            // envelope is built from the options the arguments already gave and the defaults nothing overrode.
-            let scope = RequestedScope::from_options(fallback);
+            let (root, options) = failed_setup_context(requested_options);
             Err(emit_failed_run_report(
-                &PathBuf::from("."),
-                fallback,
-                &Config::default(),
-                &scope,
-                &error,
+                &root,
+                &options,
+                &RunFailure::Config(error),
                 writer,
+                None,
             ))
         }
     }
 }
 
-/// Publish the envelope a run that could not start still owes a caller who asked for a machine format.
+/// Recover the requested scope for a machine report when configuration could not be loaded.
+/// Returns the project and rebased `options`, using the operands as typed if the project could not be resolved.
+fn failed_setup_context(mut options: AnalysisOptions) -> (PathBuf, AnalysisOptions) {
+    // Keep the caller's intended paths in a failure report when the launch directory and targets are still available.
+    if let Ok(caller_root) = std::env::current_dir() {
+        // For example, a malformed config need not prevent reporting the directory the caller selected.
+        if let Ok((root, paths)) = command_setup::resolve_scan_context(&caller_root, &options.paths)
+        {
+            options.paths = paths;
+            return (root, options);
+        }
+    }
+    (PathBuf::from("."), options)
+}
+
+/// Give JSON and SARIF callers a structured failure when a scan cannot start or finish.
+/// Human-readable requests get the error on stderr.
 ///
-/// Every other port publishes its v3 envelope here, carrying one run-invalidating diagnostic, so a consumer reading
-/// JSON learns what failed rather than reading nothing at all. A human-readable format keeps the stderr line alone.
-///
-/// `project_root`, `options`, `config` and the failure message `error` build the report, rendered under `scope` and handed to `writer`.
+/// `project_root`, `options` and `error` build the report. With no `output` file, `writer` sends it to stdout.
 /// Returns exit code 2 in every case; a format other than JSON or SARIF returns before any envelope is built.
 fn emit_failed_run_report(
     project_root: &Path,
     options: &AnalysisOptions,
-    config: &Config,
-    scope: &RequestedScope,
-    error: &str,
-    writer: &OutputWriter,
+    error: &RunFailure,
+    writer: OutputWriter,
+    output: Option<PathBuf>,
 ) -> ExitCode {
+    eprintln!("gruff-rs: {error}");
+    // Terminal users already have the error, while automation needs an envelope it can parse.
     if !matches!(options.format, OutputFormat::Json | OutputFormat::Sarif) {
         return ExitCode::from(2);
     }
 
-    let report = failed_run_report(project_root, options, config, error);
-    writer.emit_unconditional(&render_report_with_scope(
-        &report,
-        scope,
-        options.format,
-        None,
-    ));
+    let report = failed_run_report(project_root, options, error);
+    let scope = RequestedScope::from_options(options);
+    let rendered = render_report_with_scope(&report, &scope, options.format, None);
+    // If a report path is read-only, explain why report delivery also failed and keep exit status 2.
+    if let Err(error) = emit_report_output(writer, output, RunOutcome::DiagnosticsFailed, &rendered)
+    {
+        eprintln!("gruff-rs: {error}");
+    }
     ExitCode::from(2)
 }
 
@@ -327,6 +369,8 @@ fn emit_failed_run_report(
 ///
 /// `report` gains the gate diagnostic and exit code, then loses hidden findings; `options` gives the fail threshold, selectors and format.
 /// `config` gives the gate and display floor, `scope` and `duration_ms` go to the renderer, and `writer` emits the result.
+/// `min_confidence` is the minimum confidence used by the severity threshold.
+///
 /// Returns the exit code the outcome classified before any finding was hidden.
 fn emit_analyse_report(
     report: &mut AnalysisReport,
@@ -335,9 +379,15 @@ fn emit_analyse_report(
     scope: &RequestedScope,
     duration_ms: Option<u128>,
     writer: &OutputWriter,
+    min_confidence: Confidence,
 ) -> ExitCode {
     apply_gate_diagnostic(report, config.gate.as_ref());
-    let outcome = RunOutcome::classify(report, options.fail_on, config.gate.as_ref());
+    let outcome = RunOutcome::classify_with_confidence(
+        report,
+        options.fail_on,
+        config.gate.as_ref(),
+        min_confidence,
+    );
     report.machine_context.exit_code = outcome.numeric_code();
     apply_display_selectors(report, &options.display, config.display_floor);
     let rendered = render_report_with_scope(report, scope, options.format, duration_ms);
@@ -349,7 +399,11 @@ fn emit_analyse_report(
 ///
 /// `config` is the loaded config to narrow, `options` supplies the execution selectors, and `fail_on_new` says whether the flag was given.
 /// Returns the narrowed config, whose gate is first forced to new-findings scope when `fail_on_new` is true.
-fn analyse_run_config(mut config: Config, options: &AnalysisOptions, fail_on_new: bool) -> Config {
+fn analyse_run_config(
+    mut config: Config,
+    options: &AnalysisOptions,
+    fail_on_new: bool,
+) -> Result<Config, String> {
     if fail_on_new {
         apply_fail_on_new(&mut config);
     }
@@ -381,16 +435,13 @@ fn apply_display_selectors(
     report.findings.retain(|finding| effective.allows(finding));
 }
 
-/// Fold the `--fail-on-new` flag into the gate as `scope: new` with a default
-/// `error: 0` cap (ADR-003 baseline-aware gate-scope addendum). An existing `gate:`
-/// block keeps its other caps but is forced to fail-on-match: the flag is named and
-/// documented to *fail* on new findings, so it overrides a prior `onMatch: warn`. The
-/// missing-baseline precondition is enforced later by `Gate::scope_precondition_error`
-/// during analysis (a config error, exit 2).
+/// Make `--fail-on-new` act on new findings, with a default cap of zero errors.
+/// `config` keeps any existing gate limits and switches to failing on a match. Analysis reports exit 2 when no baseline is available.
 pub(crate) fn apply_fail_on_new(config: &mut Config) {
     let gate = config.gate.get_or_insert_with(Gate::default);
     gate.scope = GateScope::New;
     gate.on_match = GateOnMatch::Fail;
+    // Callers without an error cap expect a newly introduced error to fail the gate.
     if gate.error.is_none() {
         gate.error = Some(0);
     }
@@ -508,7 +559,7 @@ fn options_from_report(args: &ReportArgs, fail_on: FailThreshold) -> AnalysisOpt
 /// Run the `report` subcommand: resolve setup, analyse the project and publish the HTML or JSON report.
 ///
 /// `args` holds the report flags, including the output target, and `writer` is handed to `emit_report_output` with that target.
-/// Unlike `analyse`, a failed setup or analysis prints the error to stderr and publishes no envelope.
+/// JSON failures publish an invalidated report to the same output destination.
 ///
 /// Returns exit code 2 when setup, analysis or writing an output file fails, otherwise the outcome's code from the report, threshold and gate.
 fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
@@ -517,7 +568,7 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     let deep_scan_budget = args.deep_scan_budget.clone();
     let base = options_from_report(&args, FailThreshold::None);
     let (project_root, options, config) = match resolve_command_setup(
-        base,
+        base.clone(),
         cli_fail_on,
         "report",
         FailThreshold::None,
@@ -525,8 +576,14 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
     ) {
         Ok(triple) => triple,
         Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            return ExitCode::from(2);
+            let (root, options) = failed_setup_context(base);
+            return emit_failed_run_report(
+                &root,
+                &options,
+                &RunFailure::Config(error),
+                writer,
+                output,
+            );
         }
     };
     let scope = RequestedScope::from_options(&options);
@@ -537,6 +594,7 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
             apply_gate_diagnostic(&mut report, config.gate.as_ref());
             let outcome = RunOutcome::classify(&report, options.fail_on, config.gate.as_ref());
             report.machine_context.exit_code = outcome.numeric_code();
+            apply_display_selectors(&mut report, &options.display, config.display_floor);
             let rendered = render_report_with_scope(&report, &scope, options.format, duration_ms);
             match emit_report_output(writer, output, outcome, &rendered) {
                 Ok(()) => outcome.exit_code(),
@@ -546,10 +604,7 @@ fn run_report(args: ReportArgs, writer: OutputWriter) -> ExitCode {
                 }
             }
         }
-        Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            ExitCode::from(2)
-        }
+        Err(error) => emit_failed_run_report(&project_root, &options, &error, writer, output),
     }
 }
 
@@ -620,7 +675,10 @@ fn render_selector_output(
     })
 }
 
-/// The catalogue envelope every port publishes: an object carrying the rules under `rules`.
+/// Return the rule catalogue in the shared JSON envelope.
+///
+/// Automation reads the `rules` key even when the list is empty.
+/// Listing rules does not require a source scan.
 #[derive(Serialize)]
 struct RuleListing<'a> {
     rules: &'a [ListedRule],
@@ -640,10 +698,8 @@ fn format_listed_rules(rules: &[ListedRule], format: RuleListFormat) -> String {
     }
 }
 
-/// Knob names gruff-go already publishes for a single-threshold rule, keyed by rule id. The
-/// family listing shape (M09, ratified 2026-09-09) carries every threshold as a named map; a rule
-/// whose id has no knob name anywhere in the family publishes the one-key map `{"threshold": N}`
-/// so no new permanent public identifier is invented.
+/// Reuse the family's published option name for each single-threshold rule in `list-rules`.
+/// If the family has no name for a rule's threshold, publish `{"threshold": N}`.
 const LISTING_THRESHOLD_KNOB_NAMES: &[(&str, &str)] = &[
     ("complexity.cognitive", "maxComplexity"),
     ("complexity.cyclomatic", "maxComplexity"),
@@ -869,11 +925,11 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
         display: DisplaySelectors::default(),
     };
     let (project_root, options, config) =
-        match resolve_project_root_and_config(options, deep_scan_budget.as_ref()) {
+        match resolve_project_root_and_config(options.clone(), deep_scan_budget.as_ref()) {
             Ok(triple) => triple,
             Err(error) => {
-                eprintln!("gruff-rs: {error}");
-                return ExitCode::from(2);
+                let (root, options) = failed_setup_context(options);
+                return emit_failed_summary(&root, &options, &RunFailure::Config(error), writer);
             }
         };
 
@@ -889,11 +945,26 @@ fn run_summary(args: SummaryArgs, writer: OutputWriter) -> ExitCode {
             writer.emit(outcome, &rendered);
             outcome.exit_code()
         }
-        Err(error) => {
-            eprintln!("gruff-rs: {error}");
-            ExitCode::from(2)
-        }
+        Err(error) => emit_failed_summary(&project_root, &options, &error, writer),
     }
+}
+
+/// Emit the summary schema with an invalidated run when JSON is requested.
+/// `project_root` and `options` describe the attempted run. `writer` receives the diagnostic from `error`.
+/// Returns exit code 2.
+fn emit_failed_summary(
+    project_root: &Path,
+    options: &AnalysisOptions,
+    error: &RunFailure,
+    writer: OutputWriter,
+) -> ExitCode {
+    eprintln!("gruff-rs: {error}");
+    // `summary --format json` retains its schema so a caller can distinguish a failed scan from a zero-finding summary.
+    if matches!(options.format, OutputFormat::Json) {
+        let report = failed_run_report(project_root, options, error);
+        writer.emit_unconditional(&machine_contract::render_summary(&report));
+    }
+    ExitCode::from(2)
 }
 
 /// Generate the shell completion script for the CLI and write it straight to stdout.

@@ -1,6 +1,7 @@
-//! Stable finding identity and score-policy contracts for serialized reports.
-//! These tests distinguish line-sensitive baseline fingerprints from the
-//! line-insensitive identities consumed by hook new-only comparisons.
+//! Verify how baseline and hook consumers recognize findings between scans.
+//!
+//! The cases distinguish location-sensitive fingerprints from the line-free identities used for reviewed findings.
+//! They also check report redaction and the score policy a developer sees after analysis.
 
 use super::*;
 
@@ -152,6 +153,7 @@ fn make_finding(rule_id: &str, file: &str, line: usize, symbol: Option<&str>) ->
     })
 }
 
+/// Adding lines above a finding should leave comparison tooling able to recognize it.
 #[test]
 pub(crate) fn stable_identity_is_invariant_under_line_shifts() {
     let same_symbol_line_1 = make_finding("naming.short", "src/foo.rs", 1, Some("x"));
@@ -167,6 +169,7 @@ pub(crate) fn stable_identity_is_invariant_under_line_shifts() {
     );
 }
 
+/// Findings from different rules remain separate even when they point at the same code.
 #[test]
 pub(crate) fn stable_identity_distinguishes_rule_ids() {
     let one_rule = make_finding("naming.short", "src/foo.rs", 10, Some("x"));
@@ -178,6 +181,7 @@ pub(crate) fn stable_identity_distinguishes_rule_ids() {
     );
 }
 
+/// The same rule in another file must not inherit the first file's comparison identity.
 #[test]
 pub(crate) fn stable_identity_distinguishes_files() {
     let in_first_file = make_finding("naming.short", "src/auth.rs", 10, Some("x"));
@@ -189,8 +193,11 @@ pub(crate) fn stable_identity_distinguishes_files() {
     );
 }
 
+/// A finding without a named symbol remains comparable by its message across line edits.
 #[test]
 pub(crate) fn stable_identity_falls_back_to_message_when_symbol_is_none() {
+    /// Build a symbol-free finding to compare the same `message` and `file` at different `line` values.
+    /// Returns the fixture with only those parts varied between calls.
     fn finding_with(message: &str, file: &str, line: usize) -> Finding {
         Finding::new(FindingDescriptor {
             rule_id: "sensitive-data.api-key".to_string(),
@@ -220,6 +227,7 @@ pub(crate) fn stable_identity_falls_back_to_message_when_symbol_is_none() {
     );
 }
 
+/// Keep the stored identity format readable by the baseline loader and downstream consumers.
 #[test]
 pub(crate) fn stable_identity_is_sixteen_hex_chars() {
     let finding = make_finding("naming.short", "src/foo.rs", 1, Some("x"));
@@ -238,12 +246,10 @@ pub(crate) fn stable_identity_is_sixteen_hex_chars() {
     );
 }
 
+/// Keep the legacy fingerprint shape available to existing report consumers.
 #[test]
 pub(crate) fn fingerprint_byte_identical_to_pre_m02_formula() {
-    // The fingerprint formula hashes rule_id, file_path, line (or 0), and
-    // symbol (or empty) with `\0` separators. This test pins the
-    // byte-for-byte output so any accidental change to the formula breaks
-    // here before consumer baselines break.
+    // Pin the legacy fingerprint for comparison tools: hash rule, path, line or 0, and symbol or empty with NUL separators.
     let finding = make_finding("naming.short", "src/foo.rs", 42, Some("x"));
     let mut hasher = sha2::Sha256::new();
     sha2::Digest::update(&mut hasher, b"naming.short");
@@ -257,6 +263,7 @@ pub(crate) fn fingerprint_byte_identical_to_pre_m02_formula() {
     assert_eq!(finding.fingerprint, expected);
 }
 
+/// Prove which severity gate a caller gets from an explicit flag, project config, or neither.
 #[test]
 pub(crate) fn analyse_resolution_falls_through_cli_then_config_then_default() {
     let mut config = Config::default();
@@ -287,6 +294,7 @@ pub(crate) fn analyse_resolution_falls_through_cli_then_config_then_default() {
     );
 }
 
+/// Report users who set no threshold can still get a document containing findings.
 #[test]
 pub(crate) fn report_resolution_returns_none_default_when_unset() {
     let empty = Config::default();
@@ -314,6 +322,7 @@ pub(crate) fn report_resolution_returns_none_default_when_unset() {
     );
 }
 
+/// A gate configured for one CLI command must not change the exit policy of another.
 #[test]
 pub(crate) fn config_entry_for_one_command_does_not_leak_to_another() {
     let mut config = Config::default();
@@ -353,6 +362,7 @@ fn synth_finding(rule_id: &str, severity: Severity, pillar: Pillar) -> Finding {
     })
 }
 
+/// A rule can stay visible in the report without changing scores when config excludes its weight.
 #[test]
 pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     let findings = vec![
@@ -405,6 +415,7 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     );
 }
 
+/// An ordinary actionable finding still contributes its configured scoring weight.
 #[test]
 pub(crate) fn non_excluded_rule_scores_normally() {
     let findings = vec![synth_finding(
@@ -430,6 +441,7 @@ pub(crate) fn non_excluded_rule_scores_normally() {
     );
 }
 
+/// Show reviewers when a security rule is visible but no longer affects the grade.
 #[test]
 pub(crate) fn excluding_security_rule_emits_warning_diagnostic() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -461,6 +473,7 @@ pub(crate) fn excluding_security_rule_emits_warning_diagnostic() {
     );
 }
 
+/// An ordinary score exclusion needs no security warning.
 #[test]
 pub(crate) fn excluding_non_security_rule_emits_no_diagnostic() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -486,6 +499,7 @@ pub(crate) fn excluding_non_security_rule_emits_no_diagnostic() {
     );
 }
 
+/// Reject a malformed score exclusion before the caller relies on the grade.
 #[test]
 pub(crate) fn exclude_from_score_rejects_non_boolean_value() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -505,12 +519,10 @@ pub(crate) fn exclude_from_score_rejects_non_boolean_value() {
     );
 }
 
+/// Keep score-exclusion warnings in a predictable order for review and automation.
 #[test]
 pub(crate) fn excluded_security_rule_diagnostics_are_sorted_by_rule_id() {
-    // Two Security/SensitiveData built-ins excluded at the same time.
-    // `rule_settings` is a HashMap, so the iteration order of the source
-    // is non-deterministic; the diagnostics list must still come out in
-    // a stable sorted order so JSON/HTML output stays reproducible.
+    // Several security-related rules may be excluded from scoring. Stable diagnostic order lets callers compare JSON or HTML across scans.
     let dir = tempfile::tempdir().expect("tempdir");
     write_config(
         dir.path(),
@@ -545,15 +557,10 @@ pub(crate) fn excluded_security_rule_diagnostics_are_sorted_by_rule_id() {
     );
 }
 
+/// Report an unsupported scoring setting on a user-authored rule before scanning.
 #[test]
 pub(crate) fn custom_rules_cannot_set_exclude_from_score() {
-    // ADR-014 + the config-loader restriction together mean custom
-    // rules can only carry `enabled` under `rules.<id>:`. PR #3 review
-    // worried about a "silent scoring blind spot" when a custom
-    // Security/SensitiveData rule sets `excludeFromScore: true`, but the
-    // loader rejects that combination outright. Pin the loader behaviour
-    // so the assumption stays explicit; future lifts must update this
-    // test alongside the analysis-side diagnostic coverage.
+    // `enabled` is the only custom-rule setting under `rules.<id>`. An unsupported score setting must fail before the caller sees a grade.
     let dir = tempfile::tempdir().expect("tempdir");
     write_config(
         dir.path(),
@@ -579,6 +586,7 @@ custom_rules:
     );
 }
 
+/// A target named from outside its project gets the same project-wide checks as an in-project call.
 #[test]
 pub(crate) fn explicit_scan_target_makes_project_context_caller_cwd_invariant() {
     let _guard = analysis_lock();
@@ -671,6 +679,7 @@ pub(crate) fn explicit_scan_target_makes_project_context_caller_cwd_invariant() 
     assert!(diagnostic_types(&empty_report).contains(&"partial-context-rule-suppressed"));
 }
 
+/// Explicit baseline paths retain their shell meaning when analysis loads config from another directory.
 #[test]
 pub(crate) fn typed_baseline_paths_are_read_from_the_launch_directory() {
     // `--generate-baseline ../../base.json` and `--baseline ../../base.json` typed two levels inside the project name
@@ -737,11 +746,17 @@ pub(crate) fn typed_baseline_paths_are_read_from_the_launch_directory() {
     let missing =
         scan("--baseline", "../../missing.json").expect_err("a missing baseline is an error");
     assert!(
-        !missing.contains(&sandbox.path().display().to_string()),
+        !missing
+            .message()
+            .contains(&sandbox.path().display().to_string()),
         "{missing}"
     );
 }
 
+/// Restore the caller's working directory after exercising a CLI path lookup in a test.
+///
+/// The guard runs during ordinary cleanup and if the assertion panics.
+/// Later tests start from the original directory when restoration succeeds.
 struct RestoreCurrentDir(PathBuf);
 
 impl Drop for RestoreCurrentDir {

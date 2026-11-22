@@ -1,14 +1,14 @@
-//! The two selector families the family contract keeps apart.
+//! Apply the selectors a caller passes to choose what runs and what appears in the report.
 //!
-//! One decides which rules execute, so the score and any generated baseline move with it. The other decides what
-//! a finished report shows, and a finding it hides still counted. Keeping them in one module says that they are
-//! two answers to two different questions rather than one filter with two spellings.
+//! Use execution selectors to narrow findings, scores, and generated baselines to the requested rules.
+//! Use display selectors to hide findings from a finished report while preserving the scan's counts and exit decision.
 
 use super::*;
 
-/// The selectors that choose which rules execute.
+/// Choose which rules participate in the scan, score, and any generated baseline.
 ///
-/// Empty lists mean the configured selection stands, which is what a bare `analyse` runs.
+/// Empty lists keep the project selection a caller gets with bare `analyse`.
+/// An explicit include supplies a new selection. An exclude still wins when both flags match.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ExecutionSelectors {
     pub(crate) include_rules: Vec<String>,
@@ -29,10 +29,10 @@ impl ExecutionSelectors {
     }
 }
 
-/// The selectors that choose what a finished report shows.
+/// Choose which findings a caller sees in a finished report.
 ///
-/// A finding hidden here still counted toward the score and the exit code, which is what separates these from the
-/// execution selectors.
+/// Use these selectors to focus a review on a severity, rule, or pillar.
+/// Hidden findings still count toward the score and exit status.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DisplaySelectors {
     pub(crate) min_severity: Option<Severity>,
@@ -69,13 +69,16 @@ impl DisplaySelectors {
         {
             return false;
         }
+        // An explicit rule shortlist hides all other rules from this view without changing the scan totals.
         if !self.show_rules.is_empty() && !self.show_rules.contains(&finding.rule_id) {
             return false;
         }
+        // A rule the caller explicitly hides stays hidden even if another display flag would show it.
         if self.hide_rules.contains(&finding.rule_id) {
             return false;
         }
         let pillar = crate::report::pillar_label(finding.pillar).to_string();
+        // A pillar shortlist works the same way, after checking the individual rule filters.
         if !self.show_pillars.is_empty() && !self.show_pillars.contains(&pillar) {
             return false;
         }
@@ -84,45 +87,58 @@ impl DisplaySelectors {
 }
 
 impl Config {
-    /// Return a copy narrowed to the rules and pillars the user asked to run.
+    /// Use the caller's execution selectors before the scan calculates findings, grades, and baselines.
     ///
-    /// These selectors choose which rules execute, so the score and any generated baseline move with them. The
-    /// presentation selectors never reach here, which is what keeps the two ideas apart.
-    pub(crate) fn with_execution_selectors(&self, selectors: &ExecutionSelectors) -> Self {
+    /// `selectors` is empty when the caller wants the project selection. Returns the rule config or an error naming an invalid selector.
+    pub(crate) fn with_execution_selectors(
+        &self,
+        selectors: &ExecutionSelectors,
+    ) -> Result<Self, String> {
         // An unrestricted run keeps the configured selection rather than rebuilding an identical one.
         if !selectors.is_requested() {
-            return self.clone();
+            return Ok(self.clone());
         }
 
-        let registry = rules::builtin_registry_cached();
+        let catalog = config_loader::rule_selector_catalog(
+            rules::builtin_registry_cached(),
+            &self.custom_rules,
+        );
         let mut narrowed = self.clone();
-
-        for rule_id in &selectors.include_rules {
-            narrowed.selectors.positive.insert(rule_id.clone());
+        // For example, `--include-rule docs.missing-public-doc` limits the scan even when config normally selects more rules.
+        if !selectors.include_rules.is_empty() || !selectors.include_pillars.is_empty() {
+            narrowed.selectors.positive.clear();
             narrowed.selectors.has_positive = true;
         }
+
+        // An exact include can deliberately enable a known rule that config otherwise leaves off.
+        for rule_id in &selectors.include_rules {
+            let ids = config_loader::exact_rule_selector(rule_id, &catalog)
+                .ok_or_else(|| format!("unknown rule `{rule_id}` in --include-rule"))?;
+            narrowed.selectors.positive.extend(ids);
+            narrowed
+                .rule_settings
+                .entry(rule_id.clone())
+                .or_default()
+                .enabled = Some(true);
+        }
+        // Exclusions remove rules even when an included rule or pillar would have selected them.
         for rule_id in &selectors.exclude_rules {
-            narrowed.selectors.negative.insert(rule_id.clone());
+            let ids = config_loader::exact_rule_selector(rule_id, &catalog)
+                .ok_or_else(|| format!("unknown rule `{rule_id}` in --exclude-rule"))?;
+            narrowed.selectors.negative.extend(ids);
         }
-
-        for definition in registry.definitions() {
-            let pillar = crate::report::pillar_label(definition.pillar).to_string();
-            // A pillar selector names a group of rules, so it is expanded into the rule selectors the run reads.
-            if selectors.include_pillars.contains(&pillar) {
-                narrowed
-                    .selectors
-                    .positive
-                    .insert(definition.id.to_string());
-                narrowed.selectors.has_positive = true;
-            }
-            if selectors.exclude_pillars.contains(&pillar) {
-                narrowed
-                    .selectors
-                    .negative
-                    .insert(definition.id.to_string());
-            }
+        // A pillar can select configured custom rules as well as built-ins in the same quality area.
+        for pillar in &selectors.include_pillars {
+            let ids = config_loader::pillar_rule_selector(pillar, &catalog)
+                .ok_or_else(|| format!("unknown pillar `{pillar}` in --include-pillar"))?;
+            narrowed.selectors.positive.extend(ids);
         }
-
-        narrowed
+        // A pillar exclusion removes the whole group before it can affect the score or gate.
+        for pillar in &selectors.exclude_pillars {
+            let ids = config_loader::pillar_rule_selector(pillar, &catalog)
+                .ok_or_else(|| format!("unknown pillar `{pillar}` in --exclude-pillar"))?;
+            narrowed.selectors.negative.extend(ids);
+        }
+        Ok(narrowed)
     }
 }

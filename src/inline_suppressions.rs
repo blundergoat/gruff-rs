@@ -1,9 +1,7 @@
-//! FAMILY-CONTRACT.md section 13c for gruff-rs: another tool's `allow` or `expect` attribute, or a zizmor comment,
-//! suppresses the finding that makes the same claim where it was written, and every suppression is counted.
+//! Apply and audit the local suppressions recognized by `FAMILY-CONTRACT.md` section 13c.
 //!
-//! An attribute counts on the reported item or on an item or inline module enclosing it in the same file, including
-//! the file's own `#![allow(...)]`; an attribute inherited from another file, such as a crate root's `#![allow]`, is
-//! not read yet, so those findings keep reporting.
+//! A Rust `allow` or `expect` attribute, or a matching zizmor comment, can suppress a finding without a duplicate Gruff setting.
+//! Attributes apply to the item and enclosing scopes in the same file. Cross-file attributes leave the finding visible.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -14,7 +12,9 @@ use syn::{Attribute, Item, Meta, Token};
 
 use crate::analysis::apply_report_exclusions;
 use crate::config::Config;
-use crate::report::{Finding, SuppressedFinding, SuppressionSummary};
+use crate::gate::GateScope;
+use crate::report::{Finding, Summary, SuppressedFinding, SuppressionSummary};
+use crate::scoring::summarize;
 
 /// Reason on each inline audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13c).
 pub(crate) const INLINE_SUPPRESSION_REASON: &str =
@@ -74,6 +74,24 @@ pub(crate) fn apply_all_suppressions(
     let (kept, removed) = partition_inline_findings(findings, project_root);
     push_inline_rows(removed, &mut summaries, &mut suppressed);
     (kept, summaries, suppressed)
+}
+
+/// Keep reviewed baseline debt in the all-findings gate while honoring audited suppressions.
+/// `config` supplies the gate scope and suppressions under `project_root`.
+/// Returns `findings` and `summary`, recomputed for the all-findings gate when enabled.
+pub(crate) fn gate_scope_findings(
+    project_root: &Path,
+    config: &Config,
+    findings: Vec<Finding>,
+    summary: Summary,
+) -> (Vec<Finding>, Summary) {
+    // Only a scope-all gate can include reviewed findings and therefore needs the suppressions reapplied to that set.
+    if config.gate.as_ref().map(|gate| gate.scope) != Some(GateScope::All) {
+        return (findings, summary);
+    }
+    let (kept, _, _) = apply_all_suppressions(findings, config, project_root);
+    let summary = summarize(&kept);
+    (kept, summary)
 }
 
 /// Findings an attribute or comment covers, grouped by file and rule; a BTreeMap orders them in UTF-8 byte order.
@@ -156,7 +174,10 @@ fn is_mapped_rule(rule_id: &str) -> bool {
         || ZIZMOR_AUDITS.iter().any(|(_, rule)| *rule == rule_id)
 }
 
-/// One file's lines and the line ranges its `allow` and `expect` attributes cover.
+/// Find local suppression evidence for findings in one file.
+///
+/// Text lines let the scan inspect a matching comment. Parsed Rust scopes show which lints an attribute covers.
+/// If a scope cannot be read, its finding stays visible.
 struct FileSuppressions {
     lines: Vec<String>,
     /// First and last line of each attributed item, inline module or the whole file, with the lints it allows.

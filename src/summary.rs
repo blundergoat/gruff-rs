@@ -1,8 +1,12 @@
+//! Render the `summary` command for a developer checking the state of a project at a glance.
+//!
+//! Text output shows the score and leading rules and files so the reader can decide where to look next.
+//! JSON keeps report metadata and counts without the top-level finding list.
+
 use crate::{
     grade, pillar_label,
     rules::{builtin_registry, RuleRegistry},
     scoring::score_text,
-    scoring::top_file_scores_with_limit,
     AnalysisReport, Confidence, Finding, Pillar, PillarScore, RuleDelta, Severity, SummaryFormat,
     SCORE_PILLARS,
 };
@@ -34,6 +38,10 @@ pub(crate) fn render(
     }
 }
 
+/// Hold the findings summary prepared for a terminal reader.
+///
+/// Pillar scores and leading rules and files give the user places to inspect next.
+/// Deltas appear when the scan can compare against a baseline or changed region.
 struct SummaryDigest {
     pillars: Vec<PillarDigest>,
     top_rules: Vec<RuleDigest>,
@@ -41,6 +49,10 @@ struct SummaryDigest {
     per_rule_deltas: Option<Vec<RuleDelta>>,
 }
 
+/// Show counts and score for one quality area of a summary or report.
+///
+/// An absent grade means the run cannot grade this pillar.
+/// Severity counts help the reader decide whether to look at individual findings.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PillarDigest {
@@ -55,6 +67,10 @@ pub(crate) struct PillarDigest {
     pub(crate) penalty: f64,
 }
 
+/// Show a leading rule and how often it reported.
+///
+/// Catalogue details give the caller a short description when the rule is known.
+/// A rule without catalogue details still gets a count in the digest.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuleDigest {
@@ -68,6 +84,10 @@ struct RuleDigest {
     description: Option<&'static str>,
 }
 
+/// Point the summary reader to a file worth inspecting next.
+///
+/// The count describes the file's contribution, and a score and grade are shown when available.
+/// The order comes from the same file ranking as the full analysis report.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FileDigest {
@@ -176,10 +196,6 @@ fn top_rule_digests(report: &AnalysisReport, top: usize) -> Vec<RuleDigest> {
     top_rules
 }
 
-// Source per-rule severity from the actual findings, not from
-// `RuleDefinition.default_severity`, so `rules.<id>.severity:` overrides
-// (applied via `config.severity` at rule-emission time) stay consistent
-// between `summary.<severity>` counts and the topRules digest.
 /// Count each rule's findings and take its severity from the findings themselves, so severity overrides match the summary counts.
 ///
 /// `report` supplies the findings.
@@ -231,8 +247,11 @@ fn first_sentence(description: &'static str) -> &'static str {
 /// `report` supplies the findings and evaluated-file count, and `top` caps the list.
 /// Returns the rows in the order the scoring module gives them; a file without a score has no grade.
 fn top_file_digests(report: &AnalysisReport, top: usize) -> Vec<FileDigest> {
-    top_file_scores_with_limit(&report.findings, top, report.score.evaluated_files)
+    report
+        .score
+        .top_offenders
         .iter()
+        .take(top)
         .map(|file| FileDigest {
             file_path: file.file_path.to_string(),
             findings: file.findings,
@@ -258,10 +277,7 @@ fn render_text(report: &AnalysisReport, digest: &SummaryDigest, duration_ms: u12
     render_rules_text(&mut out, &digest.top_rules);
     out.push('\n');
     render_files_text(&mut out, &digest.top_files);
-    // `summary` applies sensitive exclusions, so it publishes the same audit line
-    // `analyse` prints, from the same renderer (FAMILY-CONTRACT.md section 13a).
-    // It is a port-local extension line below the canonical block, which section 1
-    // permits; machine JSON is the exact findings-free analysis projection.
+    // A terminal summary shows the same suppression audit as `analyse`, so excluded findings cannot vanish without an explanation.
     crate::render_text_suppressions(&mut out, report);
     out.trim_end_matches('\n').to_string()
 }
@@ -283,10 +299,8 @@ fn render_diagnostics_text(out: &mut String, report: &AnalysisReport) {
     }
 }
 
-// ADR-014 per-rule delta blocks in the compact summary view. Surfaced when
-// a baseline or diff comparison context populated `per_rule_deltas`. Same
-// shape and ordering as the analyse text reporter (absolute net DESC,
-// rule_id ASC, capped at five entries, zero-net rules dropped).
+// Comparison summaries use the same per-rule order as analysis text: largest absolute net first, rule ID for ties.
+// Omit zero-net rules and show at most five entries so the reviewer sees the biggest changes first.
 mod rule_delta_blocks {
     use super::{RuleDelta, RULE_DELTA_BLOCK_LIMIT};
     use std::fmt::Write as _;
@@ -338,9 +352,6 @@ mod rule_delta_blocks {
     }
 }
 
-// `mid` runs between the header detail and the canonical composite block so
-// callers can inject content there (per-rule deltas per ADR-014 in the
-// comparison case). When the caller has nothing to inject, pass a no-op closure.
 /// Write the summary's header card: masthead, composite block, path, file count, duration, then the injected lines, annotations and guidance.
 ///
 /// `out` receives the text, `report` supplies the values, and `duration_ms` is the run time shown on the card.
@@ -373,10 +384,8 @@ fn render_scan_card(
     render_scan_guidance(out, report);
 }
 
-// Baseline / diagnostics / missing-path context that previously trailed the
-// `Score:` line. Kept off the canonical composite block (which must stay
-// byte-aligned across ports) by emitting a single annotation line after it.
 /// Write one line joining the baseline, diagnostic-count and missing-path notes, when any of them applies.
+/// The separate note keeps the shared score block consistent across ports.
 ///
 /// `out` receives the line and `report` supplies the baseline result, diagnostics and missing paths; with none of them, nothing is written.
 fn render_scan_annotations(out: &mut String, report: &AnalysisReport) {
