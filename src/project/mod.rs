@@ -199,7 +199,7 @@ fn parsed_source(
 /// Count the physical lines in a file's text for the deep-scan line budget.
 ///
 /// `source` is the full file text.
-/// Returns 0 for empty text, otherwise the number of newline bytes plus one, so a trailing newline counts as an extra line.
+/// Returns `0` for empty text, otherwise the number of logical lines via `str::lines()` without counting a trailing newline as an extra line.
 fn physical_line_count(source: &str) -> usize {
     source.lines().count()
 }

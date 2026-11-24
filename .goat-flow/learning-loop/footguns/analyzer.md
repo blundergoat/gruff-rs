@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-08-24
+last_reviewed: 2026-11-25
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -131,7 +131,9 @@ Concrete instance from the 0.3.0 release check: `git check-ignore src/generated.
 
 The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/dead_code.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
 
-**2026-06-14 extension (external scan, OPEN gap):** the structured-reference extractor `src/parser/mod.rs` (search: `fn append_serde_default_references`) recognises only the `default = "..."` serde key (regex `\bdefault\s*=\s*"..."`). An external scan of a serde-heavy repo (goose) flagged custom `deserialize_with` / `serialize_with` / `skip_serializing_if` / `with` functions (e.g. `deserialize_modalities` via `#[serde(deserialize_with = "...")]`, `is_default_permissions` via `skip_serializing_if`) as `dead-code.unused-private-function` and `dead-code.unused-private-item-candidate`, because those attribute strings are the functions' only call sites and the extractor never appends them. Not yet fixed. Before treating dead-code findings on serde-heavy crates as authoritative, broaden the recognised serde attribute keys to the reference-bearing set (`with`, `serialize_with`, `deserialize_with`, `skip_serializing_if`, `default`), and add a fixture per key.
+**2026-06-14 extension (closed in 0.6.0):** `src/parser/mod.rs` (search: `fn append_serde_default_references`) was widened to the full reference-bearing serde attribute set (`default`, `deserialize_with`, `serialize_with`, `with`, `skip_serializing_if`, including `cfg_attr`).
+
+**2026-11-25 extension (standard format-macro captures):** `rust_code_reference_source` also invokes `src/parser/format_captures.rs` (search: `fn append_format_macro_references`) on comment-blanked source so inline `{ident}`, `{ident:...}`, and `{val:WIDTH$.PREC$}` captures inside standard formatting macros (`format!`, `println!`, `eprintln!`, `print!`, `eprint!`, `write!`, `writeln!`, `panic!`, `format_args!`) count as live references while comments, ordinary strings, and `{{escaped}}` braces stay masked. Always test writer-first 2nd-argument templates (`write!`/`writeln!`), raw templates, and escaped quotes when changing parser masking (`src/tests/parser/masker_invariants.rs`, search: `format_macro_captures`).
 
 ## Footgun: Loop-Scoped Rules Must Mask Comments
 

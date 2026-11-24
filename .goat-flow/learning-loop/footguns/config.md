@@ -1,6 +1,6 @@
 ---
 category: config
-last_reviewed: 2026-11-23
+last_reviewed: 2026-11-25
 ---
 
 ## Footgun: Stripping `paths.ignore` Defaults From `.gruff-rs.yaml`
@@ -105,3 +105,25 @@ A third trap is specific to writing these tests: a rule id used only inside an i
 Regression coverage:
 - `src/tests/config_and_selectors/sensitive_exclusions.rs` (search: `fn ordinary_exclusions_and_sensitive_exclusions_coexist`) asserts both channels publish rows, each with its own section-local index and config key, and that text output labels both.
 - `src/tests/config_and_selectors/sensitive_exclusions.rs` (search: `fn assert_removed_scopes`) differences a no-config baseline run against the configured run, so an unintended sibling suppression fails the case rather than silently hiding a finding.
+
+## Footgun: Selector Helpers Shared Between Config Loading And CLI Flags Leak Config Hints
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Before editing selector or unknown-rule diagnostics in `src/config_loader/`, check whether CLI commands reuse the same helper and gate config-migration advice to config paths and retired rule IDs only.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+
+**Prevention:** Gate `gruff-rs migrate-config` hints in `src/config_loader/selectors.rs` (search: `fn is_config_selector_path`) so only config paths (`rules.select[...]`, `rules.ignore[...]`, `exclude[...].rule`) emit migration advice, never CLI paths such as `rules --selector` in `src/main.rs` (search: `fn render_rule_list`). Keep non-retired unknown-rule diagnostics unchanged across `src/config_loader/rule_settings.rs` (search: `fn insert_rule_setting`), `src/config_loader/mod.rs` (search: `fn ensure_rule_supports_threshold`), and `src/config_loader/sensitive_exclusions.rs` (search: `fn parse_sensitive_rule_id`), because contract tests assert exact wording on typos. When `src/migrate_config.rs` (search: `fn drop_retired_selector_list`) removes retired IDs from a non-empty `rules.select`, refuse migration rather than emptying the list and silently widening analysis to every built-in rule.
+
+Shared helpers make it easy to leak config-file instructions onto CLI flag errors or overwrite exact-match typo assertions. Keep retired rule IDs in one shared list (`src/migrate_config.rs`, search: `RETIRED_0_5_RULES`) verified disjoint from the built-in registry (`src/tests/config_and_selectors/config.rs`, search: `migrate_config_drops_retired_rules_and_empty_minimum_severity`), and test both config and CLI `rules --selector` paths (`tests/cli_regressions.rs`, search: `migrate_config_upgrades_legacy_05_config_and_unmigrated_shows_hint`).
+
+## Footgun: Project-Root Ancestor Lookup Escapes Across .git Into Parent Ignores
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** Keep `.git` as a hard ancestor boundary in project-root resolution using `symlink_metadata`, and verify corpus or nested-repo scans assert positive `score.evaluatedFiles` rather than exit status zero alone.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+
+**Prevention:** Keep `ancestor.join(".git").symlink_metadata().is_ok()` beside `Cargo.toml` and `.gruff-rs.yaml` in `src/command_setup.rs` (search: `fn project_root_from_targets`). Never swap `symlink_metadata` for `exists`, because `exists` follows symlinks on untrusted source trees and fails open on dangling worktree or submodule `.git` links. Whenever scanning a repository rooted below another workspace, assert `score.evaluatedFiles > 0` instead of trusting exit code zero.
+
+Polyglot and nested-Rust repositories (such as Tauri apps with `src-tauri/Cargo.toml` or monorepos with `v2/Cargo.toml`) have `.git` at the repo root and no top-level `Cargo.toml` or `.gruff-rs.yaml`. When `project_root_from_targets` checked only `Cargo.toml` and `.gruff-rs.yaml`, scanning `Handy` and `RuView` inside a gitignored parent folder walked past `.git` into `gruff-rs`, applied the parent `.gitignore`, and exited zero with zero evaluated files (`Composite: n/a`). Guarded by `src/tests/scenarios/stable_identity.rs` (search: `project_root_stops_at_git_boundary_for_nested_repos`) and `tests/cli_regressions.rs` (search: `nested_git_repo_under_ignored_parent_dir_scans_its_own_sources`).

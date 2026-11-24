@@ -1,6 +1,6 @@
 ---
 category: security-analysis
-last_reviewed: 2026-10-05
+last_reviewed: 2026-11-25
 ---
 
 ## Footgun: Candidate Security Rules Must Recognise Idiomatic Defence Patterns
@@ -99,6 +99,17 @@ When adding any "look at nearby text for a binding/usage named X" helper, defaul
 The diff path is opt-in behind `--diff-git-unsafe` (ADR-019), but `.goat-flow/architecture.md` claims the diff subprocess "does not execute arbitrary code", so the gap also makes a committed claim untrue. Fix: pass `--no-ext-diff` on every `git diff` invocation (`src/changed_region.rs` search: `fn git_diff_patch`) - it disables both global `diff.external` and attribute-driven drivers. `--no-ext-diff` is a diff/log option, so it cannot live in the shared `git_command` builder (cat-file/ls-tree reject it); add it per diff arg vector.
 
 When hardening any subprocess against an untrusted tree, enumerate the ways the tree's OWN committed files (config, attributes, hooks, ignore files) can change behaviour, not just environment variables. Pairs with ADR-019.
+
+## Footgun: Lock-Across-Await Matching Treats Immediate Dereferences And Async Locks As Sync Guards
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** ACTUAL_MEASURED
+**Decision changed:** When auditing or modifying `concurrency.lock-across-await`, check whether the binding immediately dereferences a `Copy` value out of the guard (`*...lock().await`) and verify remediation text matches async locks (`.lock().await`) versus synchronous locks.
+**Trigger phase:** READ
+**Caught at:** VERIFY
+
+**Prevention:** Do not assume every `let x = ...lock()...;` line binds a live lock guard in `src/built_in_rules/concurrency_rules.rs` (search: `fn find_lock_guard_held_across_await`). A leading unary `*` copies out the inner value and drops the guard at the semicolon, and `.lock().await` / `.read().await` / `.write().await` already acquires an async-aware lock, so `lock_across_await_finding` (search: `fn lock_across_await_finding`) must not advise *"or use an async-aware lock"* on those sites.
+
+Measured on `goose` during the `0.6.0` corpus audit (2026-11-24): `let goose_mode = *self.current_goose_mode.lock().await;` produced three confirmed false positives (`agent.rs` and `reply_parts.rs`), and at least 29 of 31 warnings targeted `.lock().await` / `.read().await` / `.write().await` calls while advising the developer to switch to an async-aware lock.
 
 ## Resolved Entries
 

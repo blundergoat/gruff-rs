@@ -151,11 +151,9 @@ fn normalize_outer_rustdoc_text(text: &str) -> String {
         .to_string()
 }
 
-/// True iff the function signature in `body` includes a `-> <type>` clause
-/// (other than implicit unit). Strips rustdoc/comment lines first so doc
-/// examples containing `fn foo() -> T {}` cannot trigger a false positive
-/// on a fn whose real signature is `fn bar()`.
+/// Check whether the function signature in `body` includes an explicit `-> <type>` return clause.
 ///
+/// Strips rustdoc and comment lines first so doc examples like `/// fn foo() -> T {}` never trigger a false positive on `fn bar()`.
 /// Returns `true` when a `fn` header in the stripped `body` has an arrow before its opening brace, and `false` otherwise.
 pub(crate) fn signature_has_return_type(body: &str) -> bool {
     static SIG_RETURN_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -167,11 +165,10 @@ pub(crate) fn signature_has_return_type(body: &str) -> bool {
     .is_match(&code)
 }
 
-/// Returns `body` with `///`, `//!`, and `//` lines removed. Used by
-/// signature-region regexes that would otherwise match patterns inside
-/// rustdoc examples (e.g. `/// fn example(arg: i32) -> Result<()>`).
-/// Preserves line count so any caller relying on line offsets stays
-/// aligned.
+/// Strip `///`, `//!`, and `//` lines from `body` while keeping line count aligned for offset-based checks.
+///
+/// Used before signature-region regexes so rustdoc examples (such as `/// fn example(arg: i32) -> Result<()>`) are not mistaken for code.
+/// Returns `body` with every line-comment line replaced by an empty line.
 pub(crate) fn body_without_doc_comments(body: &str) -> String {
     body.lines()
         .map(|line| {
@@ -187,12 +184,10 @@ pub(crate) fn body_without_doc_comments(body: &str) -> String {
         .join("\n")
 }
 
-/// True iff `body` carries a macro attribute that marks the function as a
-/// frontend bridge: `#[tauri::command]`, `#[command]`, `#[wasm_bindgen]`,
-/// or `#[pyfunction]`. Bridge functions follow user-facing-summary rustdoc
-/// convention rather than the Rust API contract style.
+/// Check whether `body` carries a frontend bridge attribute (`#[tauri::command]`, `#[command]`, `#[wasm_bindgen]`, or `#[pyfunction]`).
 ///
-/// Returns `true` when one of those attributes, or `pyo3::pyfunction`, appears anywhere in `body`, and `false` otherwise.
+/// Bridge functions follow user-facing-summary rustdoc conventions rather than low-level Rust API doc style.
+/// Returns `true` when one of those attributes (or `pyo3::pyfunction`) appears in `body`, and `false` otherwise.
 pub(crate) fn has_frontend_bridge_attr(body: &str) -> bool {
     static BRIDGE_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(
@@ -202,15 +197,12 @@ pub(crate) fn has_frontend_bridge_attr(body: &str) -> bool {
     .is_match(body)
 }
 
-/// Best-effort parameter-name extraction from the signature line of a
-/// function block. Source-only: parses the first `fn name(` ... `)` token
-/// stream, splits on top-level commas, and pulls the leftmost identifier
-/// before `:` in each chunk. Skips `self` receivers and bare `_`. Strips
-/// rustdoc/comment lines first so `/// fn example(unrelated: i32)` in
-/// docs cannot be picked up as the real signature.
+/// Extract parameter names from the signature of a function block, skipping `self` receivers and bare `_`.
 ///
-/// `body` is the function's source block, doc and attribute lines included.
-/// Returns the parameter names in signature order, or an empty vector when no `fn` header with balanced parentheses is found.
+/// Strips rustdoc and comment lines first so doc examples like `/// fn example(unrelated: i32)` cannot replace the real signature.
+///
+/// `body` is the function's source block, including doc and attribute lines.
+/// Returns parameter names in signature order, or an empty vector when no `fn` header with balanced parentheses is found.
 pub(crate) fn extract_param_names(body: &str) -> Vec<String> {
     let code = body_without_doc_comments(body);
     let Some(inside) = function_signature_params(&code) else {
@@ -222,14 +214,30 @@ pub(crate) fn extract_param_names(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Find the parameter list of the first `fn` header in a function's source text.
+/// Find the parameter list of the first `fn` header in `body`, skipping any `<...>` generic bounds.
 ///
-/// `body` is that source text; the list opens at the first `(` after the first `fn` followed by a space, not a tab or newline.
-/// Returns the text between that parenthesis and its match, or `None` when that `fn`, the `(` or its matching `)` is missing.
+/// Generic bounds such as `<F: FnMut(&syn::Ident)>` are skipped so parentheses inside bounds are not mistaken for parameters.
+/// Returns the text between the parameter list's `(` and its matching `)`, or `None` when no `fn` header or balanced list exists.
 fn function_signature_params(body: &str) -> Option<&str> {
     let fn_index = body.find("fn ")?;
     let after_fn = &body[fn_index..];
-    let open_paren = after_fn.find('(')?;
+    let bytes = after_fn.as_bytes();
+    let mut angle_depth = 0usize;
+    let mut open_paren = None;
+    // Skip generic parameter lists (including `Fn(...) -> R` bounds) before locating the function's own `(` parameter list.
+    for (offset, &byte) in bytes.iter().enumerate() {
+        if byte == b'<' {
+            angle_depth += 1;
+        } else if byte == b'>' && (offset == 0 || bytes[offset - 1] != b'-') {
+            angle_depth = angle_depth.saturating_sub(1);
+        } else if angle_depth == 0 && byte == b'(' {
+            open_paren = Some(offset);
+            break;
+        } else if angle_depth == 0 && matches!(byte, b'{' | b';') {
+            return None;
+        }
+    }
+    let open_paren = open_paren?;
     let close = matching_close_paren_offset(after_fn, open_paren)?;
     Some(&after_fn[open_paren + 1..close])
 }

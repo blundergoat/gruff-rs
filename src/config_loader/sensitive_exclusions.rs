@@ -1,10 +1,11 @@
 //! Load and validate the `sensitiveExclusions` section that suppresses sensitive-data findings.
 //!
-//! Each entry names one exact sensitive-data rule id, one project-relative path, an optional
-//! symbol, and a required rationale. The section is deliberately separate from `exclude` so the
-//! ban on value matching is structural rather than a conditional: no key here can reference a
-//! matched secret (FAMILY-CONTRACT.md section 13a). A malformed entry stops the user's command
-//! with exit code 2 before any finding can be hidden.
+//! Separate from ordinary `exclude` so no key can match on secret text or value previews (FAMILY-CONTRACT.md section 13a).
+//! Every malformed entry stops the CLI with exit code 2 before any sensitive finding can be hidden:
+//! - `rule`: one exact sensitive-data rule ID (no globs or pillar selectors)
+//! - `path`: one exact project-relative file path (no globs, `..`, or absolute paths)
+//! - `symbol`: optional narrowing symbol
+//! - `reason`: required human-readable review rationale
 
 use super::*;
 
@@ -20,14 +21,11 @@ const RULE_PATTERN_CHARACTERS: &[char] = &[
 /// Characters that turn a path into a glob rather than one exact file.
 const PATH_GLOB_CHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Describe one user-configured sensitive-data suppression from `sensitiveExclusions`.
 ///
-/// The scope is one exact sensitive-data rule id plus one project-relative display path,
-/// optionally narrowed to one symbol. An absent symbol means every occurrence of that rule
-/// in that file is suppressed, and nothing outside that scope changes.
-/// The section carries no message or value matcher, so a user can never express a
-/// suppression in terms of the matched secret (FAMILY-CONTRACT.md section 13a).
+/// Scopes suppression to one exact rule ID and one project-relative display path, with an optional `symbol`.
+/// An absent `symbol` suppresses every match of that rule in that file; no message or value key exists (FAMILY-CONTRACT.md section 13a).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SensitiveExclusionRule {
     pub(crate) rule_id: String,
     pub(crate) path: String,
@@ -152,7 +150,7 @@ fn reject_rule_pattern(rule_id: &str, key_path: &str) -> Result<(), String> {
 ///
 /// `rule_id` is looked up in `registry` first, then by id in `custom_rules`, so a built-in definition wins over a custom one.
 /// Returns the matching rule's pillar, or `None` when neither source defines `rule_id`.
-fn rule_pillar(
+pub(crate) fn rule_pillar(
     rule_id: &str,
     registry: &rules::RuleRegistry,
     custom_rules: &[CustomRule],
@@ -169,11 +167,11 @@ fn rule_pillar(
 }
 
 /// Accept one project-relative file path and return it in report display form.
-/// Absolute paths, parent traversals, and globs each fail before analysis begins.
+/// Absolute paths, directory/empty paths, parent traversals, and globs each fail before analysis begins.
 ///
 /// `entry` is the parsed entry object whose `path` key is read, and `entry_path` names that entry in diagnostics.
-/// Returns the normalised display path, or `Err` when the configured `path` is missing, not a string, empty or only whitespace.
-/// An absolute path, a `..` component or glob characters also return `Err`; an empty normalised path is not rejected.
+/// Returns the normalised display path, or `Err` when `path` is missing, not a string, empty, or only whitespace.
+/// Directory or empty normalized paths (such as `./`, `.`, or `src/`), absolute paths, `..` components, and globs also return `Err`.
 fn parse_sensitive_path(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -181,6 +179,12 @@ fn parse_sensitive_path(
     let key_path = format!("{entry_path}.path");
     let configured = required_non_empty_config_string(entry, "path", entry_path)?;
     let path = normalize_report_path(&configured);
+    // Bare `./`, `.`, or a trailing `/` names a directory or nothing rather than one concrete file in the report.
+    if path.is_empty() || path == "." || path.ends_with('/') {
+        return Err(format!(
+            "config key `{key_path}` must name one exact file; `{configured}` does not name a file"
+        ));
+    }
     // An absolute path escapes the analysed project and records the author's machine layout.
     if is_absolute_display_path(&path) {
         return Err(format!(

@@ -1,3 +1,8 @@
+//! Expand rule and pillar selectors from `.gruff-rs.yaml`, `exclude`, and CLI flags into concrete rule IDs.
+//!
+//! Callers use this module when parsing `rules.select`, `rules.ignore`, `exclude[].rule`, `rules --selector`,
+//! and `--include-rule` / `--include-pillar` flags so every entry resolves consistently across built-in and custom rules.
+
 use super::*;
 
 /// Expands a config list of rule selectors into the set of built-in and custom rule ids they select.
@@ -68,6 +73,7 @@ pub(crate) fn expand_rule_selector_with_custom(
     path: &str,
 ) -> Result<BTreeSet<String>, String> {
     let selector = selector.trim();
+    // Reject blank strings such as `rules.select: [""]` before scanning so typos cannot silently select nothing.
     if selector.is_empty() {
         return Err(format!(
             "empty selector in `{path}`; expected exact rule id, dotted prefix, or public pillar"
@@ -79,6 +85,7 @@ pub(crate) fn expand_rule_selector_with_custom(
         .or_else(|| pillar_rule_selector(selector, &catalog))
         .or_else(|| prefix_rule_selector(selector, &catalog))
         .ok_or_else(|| {
+            // Point users upgrading a 0.5 config (for example `rules.select: [docs.stale-todo]`) straight to `migrate-config`.
             if is_config_selector_path(path) && crate::migrate_config::is_retired_0_5_rule(selector)
             {
                 format!(

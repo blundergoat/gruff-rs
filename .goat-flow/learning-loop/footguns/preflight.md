@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-11-23
+last_reviewed: 2026-11-25
 ---
 
 ## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
@@ -203,3 +203,14 @@ scratch file makes the perf harness fail before it can print a summary table.
 
 Mitigation: keep `setup_scenario` for `src.diff-empty` writing a minimal context-only unified diff
 (search: `@@ -1,1 +1,1 @@`) rather than truncating the patch with `: > "${SCRATCH_PATCH}"`.
+
+## Footgun: publish-crates.sh Accepts --allow-dirty Without Forwarding It To Cargo
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** OBSERVED
+**Decision changed:** Before committing a release, inspect packaged crate contents with `cargo package --list --locked --allow-dirty` instead of running `scripts/publish-crates.sh --allow-dirty`, and run `publish-crates.sh` only on a clean committed tree.
+**Trigger phase:** SCOPE
+**Caught at:** VERIFY
+
+**Prevention:** When verifying packaging before a release commit, invoke `cargo package --list --locked --allow-dirty` directly to confirm tracked files and exclude `.goat-flow/` scratch artifacts. Reserve `bash scripts/publish-crates.sh` for the clean post-commit release step documented in `docs/releasing.md` (search: `## Package Review`).
+
+`scripts/publish-crates.sh` (search: `ALLOW_DIRTY=1`) parses `--allow-dirty` to skip its own dirty-worktree guard, but its downstream `cargo package --list --locked` and `cargo publish --dry-run --locked` commands do not pass `--allow-dirty`. Calling `bash scripts/publish-crates.sh --allow-dirty` on an uncommitted working tree therefore passes the shell check and still fails inside Cargo.

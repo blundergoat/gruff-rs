@@ -5,13 +5,12 @@
 
 use super::*;
 
-/// Parses the config's `exclude` array into exclusion rules and installs them on the loaded config.
+/// Parse the config's `exclude` array into validated exclusion rules and install them on `config`.
 ///
-/// `exclude_value` is the raw `exclude` value, which must be an array whose entries are each parsed by `parse_exclusion_rule`.
-/// `config` supplies the custom rules selectors may name besides built-in rules; on success its `exclusions` list is replaced.
+/// Called while loading `.gruff-rs.yaml` after built-in and custom rules are known, so invalid selectors fail before analysis starts.
+/// `exclude_value` must be a YAML array of exclusion objects; `config` keeps its previous exclusions if any entry fails validation.
 ///
-/// Returns `Ok(())` once every entry parses, or an `Err` message when `exclude` is not an array or any entry is invalid.
-/// On error `config` is left unchanged.
+/// Returns `Ok(())` when every entry parses, or `Err` naming the invalid array or entry index.
 pub(crate) fn apply_exclusions_section(
     exclude_value: &Value,
     config: &mut Config,
@@ -21,6 +20,7 @@ pub(crate) fn apply_exclusions_section(
         .as_array()
         .ok_or_else(|| "config key `exclude` must be an array".to_string())?;
     let mut exclusions = Vec::new();
+    // Validate each entry with its index so config diagnostics point straight to the row the user needs to edit.
     for (index, entry_value) in entries.iter().enumerate() {
         exclusions.push(parse_exclusion_rule(
             index,
@@ -92,8 +92,12 @@ fn parse_exclusion_selector(
         custom_rules,
         &format!("{entry_path}.rule"),
     )?;
-    // A broad selector cannot silently hide a sensitive finding. Ask for the exact rule and path in its own audit section.
-    if rule_ids.iter().any(|id| id.starts_with("sensitive-data.")) {
+    // Reject built-in and custom sensitive-data rules so broad `exclude` selectors cannot bypass `sensitiveExclusions`.
+    if rule_ids.iter().any(|id| {
+        id.starts_with("sensitive-data.")
+            || sensitive_exclusions::rule_pillar(id, registry, custom_rules)
+                == Some(Pillar::SensitiveData)
+    }) {
         return Err(format!(
             "`{entry_path}.rule` matches a sensitive-data rule; use `sensitiveExclusions` with an exact rule and path"
         ));
@@ -153,6 +157,7 @@ fn parse_exclusion_message_filter(
             })
         })
         .transpose()?;
+    // An empty `message_contains` would match every finding of that rule unintentionally; omit the key to leave messages unfiltered.
     if message_contains
         .as_deref()
         .is_some_and(|message| message.is_empty())
@@ -164,16 +169,16 @@ fn parse_exclusion_message_filter(
     Ok(message_contains)
 }
 
-/// Reads an exclusion entry's required `reason`, which must be a string with at least one non-whitespace character.
+/// Read an exclusion entry's required `reason`, rejecting blank or whitespace-only rationales.
 ///
-/// `entry` is the exclusion object, and `entry_path` is its config path prefix used to name `reason` in error messages.
-///
-/// Returns the reason exactly as written, without trimming, or an `Err` message when `reason` is missing, not a string, or blank.
+/// `entry` is the exclusion object, and `entry_path` is its config path prefix used in error messages.
+/// Returns the reason as written, or `Err` when `reason` is missing, not a string, or blank.
 fn parse_exclusion_reason(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
 ) -> Result<String, String> {
     let reason = required_config_string(entry, "reason", &format!("{entry_path}.reason"))?;
+    // Reviewers rely on `reason` in the suppression audit table, so whitespace-only placeholders fail closed.
     if reason.trim().is_empty() {
         return Err(format!(
             "config key `{entry_path}.reason` must be a non-empty string"
@@ -182,12 +187,10 @@ fn parse_exclusion_reason(
     Ok(reason)
 }
 
-/// Reads a required string field from a config object and rejects it when it is empty or whitespace-only.
+/// Read a required string field from a config object and reject empty or whitespace-only values.
 ///
-/// `object` is the config object to read, and `key` is the name of the required field.
-/// `entry_path` is the object's config path; error messages name the field as `entry_path` and `key` joined by a dot.
-///
-/// Returns the field value without trimming, or an `Err` message when the field is missing, not a string, or blank.
+/// `object` is the config object to read, `key` is the required field name, and `entry_path` prefixes the diagnostic path.
+/// Returns the field value without trimming, or `Err` when the field is missing, not a string, or blank.
 pub(crate) fn required_non_empty_config_string(
     object: &serde_json::Map<String, Value>,
     key: &str,
@@ -195,6 +198,7 @@ pub(crate) fn required_non_empty_config_string(
 ) -> Result<String, String> {
     let path = format!("{entry_path}.{key}");
     let value = required_config_string(object, key, &path)?;
+    // Blank strings look populated in YAML but convey no rule ID, path, or review rationale.
     if value.trim().is_empty() {
         return Err(format!("config key `{path}` must be a non-empty string"));
     }

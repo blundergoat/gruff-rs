@@ -442,3 +442,37 @@ pub(crate) fn failed_run_envelope_leaves_out_a_target_named_from_a_sibling_direc
     assert_eq!(envelope["diagnostics"][0]["invalidatesRun"], true);
     assert_eq!(envelope["summary"]["exitCode"], 2);
 }
+
+/// Keep the required separator space before `title=` when GitHub annotations render pathless diagnostics.
+#[test]
+pub(crate) fn github_renderer_separates_pathless_diagnostic_command_and_title() {
+    let diagnostics = vec![
+        RunDiagnostic {
+            diagnostic_type: "patch-filter".to_string(),
+            message: "Filtered to 1 changed file.".to_string(),
+            file_path: None,
+            line: None,
+            invalidates_run: Some(false),
+        },
+        RunDiagnostic {
+            diagnostic_type: "config-error".to_string(),
+            message: "Invalid config.".to_string(),
+            file_path: None,
+            line: None,
+            invalidates_run: Some(true),
+        },
+    ];
+
+    let rendered = render_report(
+        &sample_report_with(Vec::new(), diagnostics),
+        OutputFormat::Github,
+    );
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "::notice title=patch-filter::Filtered to 1 changed file.",
+            "::error title=config-error::Invalid config.",
+        ]
+    );
+}

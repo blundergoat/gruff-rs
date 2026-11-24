@@ -39,17 +39,11 @@ fn analyse_file_length(unit: &SourceUnit<'_>, config: &Config, findings: &mut Ve
     if !unit.file.is_rust || file_length_is_exempt(&unit.file.display_path) {
         return;
     }
-    // A Rust file counts code lines on the bounded path too (FAMILY-CONTRACT section 12, search `Code lines in
-    // every line count`): the deep-scan budget removes deep analysis, not this count. Lines inside an inline
-    // `#[cfg(test)]` module count apart, so unit tests never push production code toward the limit.
-    let rust_lengths = unit.file.is_rust.then(|| rust_file_lengths(unit.source));
-    let line_count = match &rust_lengths {
-        Some(lengths) => lengths.production_lines,
-        None => substantive_line_count(&unit.file.display_path, unit.source),
-    };
-    let test_modules = rust_lengths
-        .map(|lengths| lengths.test_modules)
-        .unwrap_or_default();
+    // Count Rust code lines on the bounded path too (FAMILY-CONTRACT section 12): deep-scan budgets skip AST work, not this check.
+    // Inline `#[cfg(test)]` modules are measured separately so unit tests never push production code over the file limit.
+    let rust_lengths = rust_file_lengths(unit.source);
+    let line_count = rust_lengths.production_lines;
+    let test_modules = rust_lengths.test_modules;
     let rule_id = "size.file-length";
     let threshold = config.threshold(rule_id) as usize;
     // Production code lines beyond the user's threshold add the file-level finding; an oversized test module reports separately below.
@@ -253,50 +247,6 @@ fn matched_module_closes(code: &[u8], opens: &BTreeSet<usize>) -> BTreeMap<usize
         }
     }
     matches
-}
-
-/// Count lines with code or data so documentation does not push a file over the size limit.
-/// Rust ignores line and nested block comments. Hash-comment formats ignore `#` lines and INI also ignores `;` lines.
-/// Other formats count each non-blank line.
-///
-/// `display_path` picks the format by its lowercased extension, with backslashes read as slashes; `source` is the text measured.
-/// Returns the number of substantive lines, 0 for an empty source; a comment-only source counts 0 only for Rust, YAML, TOML and INI.
-fn substantive_line_count(display_path: &str, source: &str) -> usize {
-    let normalized = display_path.replace('\\', "/").to_ascii_lowercase();
-    if normalized.ends_with(".rs") {
-        return rust_substantive_line_count(source);
-    }
-    let hash_comments = normalized.ends_with(".yaml")
-        || normalized.ends_with(".yml")
-        || normalized.ends_with(".toml");
-    let semicolon_comments = normalized.ends_with(".ini");
-    source
-        .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return false;
-            }
-            if hash_comments && trimmed.starts_with('#') {
-                return false;
-            }
-            if semicolon_comments && (trimmed.starts_with(';') || trimmed.starts_with('#')) {
-                return false;
-            }
-            true
-        })
-        .count()
-}
-
-/// Rust-aware count of the code lines `rust_code_line_flags` marks.
-///
-/// `source` is a lexically whole Rust text, such as a file.
-/// Returns how many of its lines hold code, so blank, comment-only, doc-comment and attribute-only lines are not counted.
-fn rust_substantive_line_count(source: &str) -> usize {
-    rust_code_line_flags(source)
-        .into_iter()
-        .filter(|is_code| *is_code)
-        .count()
 }
 
 /// Mark which lines of a Rust source hold code (FAMILY-CONTRACT section 12, search `Code lines in every line count`).

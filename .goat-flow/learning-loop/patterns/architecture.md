@@ -1,6 +1,6 @@
 ---
 category: architecture
-last_reviewed: 2026-08-22
+last_reviewed: 2026-11-25
 ---
 
 ## Pattern: Per-Enum Display Helpers Live Next To The Enum, Not Per-Renderer

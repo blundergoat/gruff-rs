@@ -281,3 +281,65 @@ pub(crate) fn file_length_bounded_path_counts_code_lines() {
         "1001 code lines report on the bounded path"
     );
 }
+
+/// Skip parentheses inside generic trait bounds (`<F: FnMut(&str)>` or `<F: Fn(i32) -> Option<T>>`)
+/// when extracting function parameter names for `docs.missing-param-doc`.
+#[test]
+pub(crate) fn missing_param_doc_skips_parentheses_in_generic_fn_bounds() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("lib.rs"),
+        r#"//! Generic `Fn` bounds must not be misread as the function's parameter list.
+
+/// Walk `items` and invoke `callback` for each element.
+pub fn visit_each<F: FnMut(&str)>(items: &[&str], callback: &mut F) {
+    for item in items {
+        callback(item);
+    }
+}
+
+/// Transform `value` with `mapper` and return the formatted result.
+pub fn map_value<T, F: Fn(i32) -> Option<T>>(value: i32, mapper: F) -> Option<T> {
+    mapper(value)
+}
+
+/// Missing parameter mention on a generic `FnMut` function still reports the real parameter name.
+pub fn missing_real_param<F: FnMut(&str)>(items: &[&str], callback: &mut F) {
+    for item in items {
+        callback(item);
+    }
+}
+"#,
+    )
+    .expect("fixture write");
+    let report = run_analysis_in_project(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from("lib.rs")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    )
+    .expect("analysis succeeds");
+    let param_findings: Vec<(&str, &str)> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "docs.missing-param-doc")
+        .map(|finding| {
+            (
+                finding.symbol.as_deref().unwrap_or(""),
+                finding.message.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(param_findings.len(), 1, "{param_findings:?}");
+    assert_eq!(param_findings[0].0, "missing_real_param");
+    assert!(
+        param_findings[0].1.contains("`items`") && param_findings[0].1.contains("`callback`"),
+        "{:?}",
+        param_findings[0]
+    );
+}

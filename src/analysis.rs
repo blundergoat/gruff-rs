@@ -424,13 +424,19 @@ fn partition_excluded_findings(
 /// Decide whether one configured `exclude` entry covers one finding.
 ///
 /// `exclusion` supplies the rule ids and optional message substring, and `path_matchers` its compiled path patterns.
-/// `finding` is the finding under test, and its path is compared in normalised report form.
-/// Returns true only when the rule id matches, any pattern matches the path or none exist, and the message holds the substring if set.
+/// `finding` is the finding under test, compared in normalised report form; sensitive-data findings are never matched here.
+/// Returns true when `finding` is non-sensitive and matches the rule id, path filter (if any), and message substring (if set).
 fn exclusion_matches_finding_with_paths(
     exclusion: &ExclusionRule,
     path_matchers: &[PathMatcher],
     finding: &Finding,
 ) -> bool {
+    // Keep sensitive-data findings exclusively in `sensitiveExclusions`, even if a caller builds `Config` without the loader.
+    if matches!(finding.pillar, Pillar::SensitiveData)
+        || finding.rule_id.starts_with("sensitive-data.")
+    {
+        return false;
+    }
     if !exclusion.rule_ids.contains(&finding.rule_id) {
         return false;
     }

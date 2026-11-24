@@ -1,3 +1,8 @@
+//! Mask Rust strings and comments and extract identifier references for rule detectors.
+//!
+//! Callers run these helpers before text-level checks and dead-code scans so commented-out examples
+//! and string payloads do not produce false findings, while serde paths and format captures still count as uses.
+
 use super::*;
 
 mod comments;
@@ -94,9 +99,11 @@ pub(crate) fn push_original_char(source: &str, index: usize, output: &mut String
     index + character.len_utf8()
 }
 
-/// Build the text searched for identifier references: the source with strings and comments blanked, plus selected serde attribute paths and std formatting macro captures.
+/// Build the text searched for identifier references by dead-code analysis.
 ///
-/// `source` is the Rust file text.
+/// Keeps Rust code with strings and comments blanked, then appends selected serde attribute paths and std formatting macro captures.
+///
+/// `source` is the raw Rust file text.
 /// Returns the masked source followed by space-separated references from `append_serde_default_references` and `append_format_macro_references`.
 pub(crate) fn rust_code_reference_source(source: &str) -> String {
     let masked_source = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));

@@ -1,10 +1,14 @@
+//! Check durable Rust bindings for placeholder names, overly short variables, and same-file function shadowing.
+//!
+//! Runs on parsed Rust ASTs during `analyse` so reviewers see domain-meaningful identifiers instead of `foo`, `tmp`, or cryptic two-letter names.
+//! Loop indices, closure parameters, plain two-letter English words, and configured `allowlists.acceptedAbbreviations` stay quiet.
+
 use super::*;
 
 /// Analyze durable local and parameter names for the built-in naming rules.
 ///
-/// Every supported binding pattern is checked for placeholder names. Short-variable findings stay
-/// limited to durable `let` bindings and function parameters because loop and closure context
-/// usually supplies enough meaning. The same pass reports same-file function shadowing.
+/// Every supported binding pattern is checked for placeholder names; short-variable checks stay limited to durable `let` bindings and parameters.
+/// The same pass also flags local bindings that shadow a same-file free function.
 ///
 /// `file` supplies the display path each finding carries, and `ast` is the parsed file whose bindings are walked.
 /// `config` supplies extra placeholder names and accepted abbreviations; every naming finding is appended to `findings`.
@@ -24,12 +28,10 @@ pub(crate) fn analyse_naming_patterns(
     visitor.visit_file(ast);
 }
 
-/// Returns the names of every `fn` declared as a free item in the file
-/// (top-level functions and functions nested inside `mod` items). Methods
-/// inside `impl` blocks and `use`-imported functions are intentionally
-/// excluded so the v0.1 `naming.identifier-shadow` rule stays narrow.
+/// Collect the names of every free `fn` declared in the file (top-level functions and functions inside inline `mod` items).
 ///
-/// `ast` is the parsed file; only inline `mod` bodies are searched, so an out-of-line `mod name;` contributes no names.
+/// Methods inside `impl` blocks and `use`-imported functions stay excluded so `naming.identifier-shadow` remains narrow and high-signal.
+/// `ast` is the parsed file; out-of-line `mod name;` items contribute no names. Returns the sorted set of free function names.
 fn collect_same_file_free_fns(ast: &syn::File) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_free_fns_in_items(&ast.items, &mut names);
@@ -120,11 +122,10 @@ impl NamingPatternVisitor<'_> {
         is_placeholder_identifier(name) || extra_placeholders.iter().any(|extra| extra == name)
     }
 
-    /// Decide whether `name` is a two-byte identifier that the short-variable rule should report.
+    /// Decide whether `name` is a two-byte identifier that `naming.short-variable` should report.
     ///
-    /// Only names exactly two bytes long count; a leading underscore, a plain two-letter English word (`at`, `by`, `on`, `to`, `up`), an accepted abbreviation, or an AWS-path abbreviation exempts one.
-    /// Comparisons run against the lowercased `name`.
-    /// Returns true when `name` should be reported as too short, and false otherwise.
+    /// Exempts leading underscores, plain two-letter English words (`at`, `by`, `on`, `to`, `up`), configured abbreviations, and AWS-path names.
+    /// Comparisons run against the lowercased `name`; returns true when `name` should be reported as too short, and false otherwise.
     fn name_is_too_short(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         name.len() == 2
@@ -137,10 +138,10 @@ impl NamingPatternVisitor<'_> {
     /// Accept an AWS service abbreviation when the file's display path marks it as AWS code.
     ///
     /// The display path, with backslashes turned into slashes, must contain `/aws/` or end with `/aws.rs`.
-    /// `name` must already be lowercase and is looked up in the fixed `AWS_CONTEXT_ABBREVIATIONS` list.
-    /// Returns true only for a listed `name` in such a file, and false for any other name or path.
+    /// `name` must already be lowercase and is looked up in `AWS_CONTEXT_ABBREVIATIONS`; returns true only for a listed `name` in an AWS file.
     fn file_context_has_accepted_abbreviation(&self, name: &str) -> bool {
         let normalized = self.file.display_path.replace('\\', "/");
+        // AWS SDK modules routinely use two-letter service codes (such as `cw` or `sg`) that would be cryptic elsewhere.
         if normalized.contains("/aws/") || normalized.ends_with("/aws.rs") {
             return AWS_CONTEXT_ABBREVIATIONS.contains(&name);
         }
@@ -329,10 +330,10 @@ fn is_context_type(parameter_type: &syn::Type) -> bool {
     }
 }
 
-/// Recursively walks a `syn::Pat`, invoking `callback` for every leaf
-/// `Pat::Ident`. Handles tuples, tuple-structs, struct fields, slices,
-/// references, or-patterns, and typed patterns. Unhandled variants
-/// (`Pat::Lit`, `Pat::Wild`, etc.) carry no bindings to inspect.
+/// Recursively walk `pat` and invoke `callback` for every leaf `Pat::Ident` binding.
+///
+/// Covers tuples, tuple-structs, struct fields, slices, references, or-patterns, and typed patterns.
+/// Variants that bind no name (`Pat::Lit`, `Pat::Wild`, and similar) are skipped cleanly.
 fn walk_pat_idents<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
     if should_recurse_walk_pat(pat, callback) {
         return;

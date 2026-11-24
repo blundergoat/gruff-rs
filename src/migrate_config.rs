@@ -160,13 +160,14 @@ fn rename_legacy_gate(mapping: &mut Mapping, changes: &mut Vec<String>) -> Resul
 }
 
 /// Drop retired 0.5 rule references from `rules`, `exclude`, and `sensitiveExclusions` in `mapping`.
-/// Records every removed rule ID in `changes`, cleans emptied sections, and leaves non-retired typos untouched.
 ///
-/// Returns `Ok(())` when every retired reference is dropped safely, or `Err` if stripping `rules.select` would empty a non-empty selection.
+/// Records every removed rule ID in `changes`, deletes sections that become empty, and leaves non-retired typos untouched for the loader.
+/// Returns `Ok(())` when retired references drop safely, or `Err` if stripping `rules.select` would empty a previously non-empty selection.
 fn drop_retired_entries(mapping: &mut Mapping, changes: &mut Vec<String>) -> Result<(), String> {
     let remove_rules = match mapping.get_mut("rules") {
         Some(Value::Mapping(rules)) => {
             let mut changed = drop_retired_map_entries(rules, "rules", changes);
+            // A 0.5 config may also mention retired rule IDs inside `rules.custom`; drop the map only if removals empty it.
             let remove_custom = match rules.get_mut("custom") {
                 Some(Value::Mapping(custom)) => {
                     let custom_changed = drop_retired_map_entries(custom, "rules.custom", changes);
@@ -175,6 +176,7 @@ fn drop_retired_entries(mapping: &mut Mapping, changes: &mut Vec<String>) -> Res
                 }
                 _ => false,
             };
+            // Drop `rules.custom` once removing retired entries leaves it empty so the output has no stale empty block.
             if remove_custom {
                 rules.remove("custom");
             }
@@ -184,6 +186,7 @@ fn drop_retired_entries(mapping: &mut Mapping, changes: &mut Vec<String>) -> Res
         }
         _ => false,
     };
+    // Drop `rules` itself if stripping retired keys left it empty; a pre-existing empty `rules: {}` stays untouched.
     if remove_rules {
         mapping.remove("rules");
     }
@@ -194,7 +197,8 @@ fn drop_retired_entries(mapping: &mut Mapping, changes: &mut Vec<String>) -> Res
 
 /// Remove retired 0.5 rule keys from `entries` and record each removal under `prefix` in `changes`.
 ///
-/// Returns true when at least one retired key was removed from `entries`, and false otherwise.
+/// `entries` is a `rules` or `rules.custom` YAML mapping, `prefix` names its config path, and `changes` receives one entry per dropped rule.
+/// Returns true when at least one retired key was removed from `entries`, and false when no retired rule was present.
 fn drop_retired_map_entries(
     entries: &mut Mapping,
     prefix: &str,
@@ -206,6 +210,7 @@ fn drop_retired_map_entries(
         .filter(|key| is_retired_0_5_rule(key))
         .map(str::to_string)
         .collect();
+    // Delete every retired key found and log its exact config path so the user sees what `migrate-config` removed.
     for rule_id in &retired_keys {
         entries.remove(rule_id.as_str());
         changes.push(format!("{prefix}.{rule_id} removed; rule retired in 0.6.0"));
@@ -213,16 +218,20 @@ fn drop_retired_map_entries(
     !retired_keys.is_empty()
 }
 
-/// Remove retired 0.5 rule IDs from a selector array named `key` inside `rules`, recording removals in `changes`.
-/// When `refuse_empty` is true, emptying a previously non-empty list returns `Err` instead of widening scope; otherwise an emptied key is dropped.
+/// Remove retired 0.5 rule IDs from `rules.select` or `rules.ignore`, recording every removal in `changes`.
 ///
-/// Returns `Ok(true)` if any entry was removed, `Ok(false)` if none matched, or `Err` when `refuse_empty` blocks an emptied selection.
+/// When `refuse_empty` is true (for `rules.select`), emptying a non-empty list returns `Err` instead of silently widening the scan to all rules.
+/// Otherwise (for `rules.ignore`), an emptied list is removed so no empty array stays behind.
+///
+/// `rules` is the `rules` YAML mapping, `key` is `"select"` or `"ignore"`, and `changes` collects user-visible summary notes.
+/// Returns `Ok(true)` if any entry was removed, `Ok(false)` if none matched (or the key was absent), or `Err` if `refuse_empty` triggers.
 fn drop_retired_selector_list(
     rules: &mut Mapping,
     key: &str,
     refuse_empty: bool,
     changes: &mut Vec<String>,
 ) -> Result<bool, String> {
+    // Missing or non-sequence keys have no selector list to clean here; malformed shapes remain for the config loader to report.
     let Some(Value::Sequence(items)) = rules.get_mut(key) else {
         return Ok(false);
     };
@@ -235,35 +244,42 @@ fn drop_retired_selector_list(
         }
         _ => true,
     });
+    // Leave the selector list unchanged when every configured entry is still active in 0.6.
     if removed.is_empty() {
         return Ok(false);
     }
+    // Report each removed rule ID so the caller knows which 0.5 selectors no longer run.
     for rule_id in removed {
         changes.push(format!(
             "rules.{key} entry `{rule_id}` removed; rule retired in 0.6.0"
         ));
     }
     let became_empty = items.is_empty();
+    // For example, a config with `rules.select: [docs.stale-todo]` would otherwise silently run every built-in rule after migration.
     if refuse_empty && was_non_empty && became_empty {
         return Err(
             "removing retired 0.5 rules would empty `rules.select`, widening analysis to all built-in rules; replace `rules.select` with active 0.6.0 rules before migrating"
                 .to_string(),
         );
     }
+    // Drop an emptied `rules.ignore` list because ignoring nothing is already the default.
     if !refuse_empty && became_empty {
         rules.remove(key);
     }
     Ok(true)
 }
 
-/// Remove exclusion entries in `mapping[section]` whose `rule` names a retired 0.5 rule, logging removals in `changes`.
-/// Trims selector whitespace before matching when `trim_rule` is true, and removes `section` if dropping entries empties it.
+/// Remove exclusion entries in `mapping[section]` whose `rule` names a retired 0.5 rule, logging each removal in `changes`.
+///
+/// `section` is `"exclude"` or `"sensitiveExclusions"`; `trim_rule` trims selector whitespace (matching `exclude` loader semantics).
+/// If dropping retired entries empties `section`, the now-empty section key is removed from `mapping`.
 fn drop_retired_exclusion_list(
     mapping: &mut Mapping,
     section: &str,
     trim_rule: bool,
     changes: &mut Vec<String>,
 ) {
+    // Absent or non-sequence sections have no exclusion rows to prune; invalid shapes stay for config loading.
     let Some(Value::Sequence(entries)) = mapping.get_mut(section) else {
         return;
     };
@@ -282,14 +298,17 @@ fn drop_retired_exclusion_list(
             _ => true,
         }
     });
+    // Leave the section untouched when no exclusion references a retired 0.5 rule.
     if removed.is_empty() {
         return;
     }
+    // List every dropped exclusion so the user can review which legacy suppressions were retired.
     for rule_id in removed {
         changes.push(format!(
             "{section} entry for `{rule_id}` removed; rule retired in 0.6.0"
         ));
     }
+    // Drop the section key when every entry in it belonged to a retired rule.
     if entries.is_empty() {
         mapping.remove(section);
     }
@@ -382,15 +401,19 @@ fn renamed_gate_line(lines: &[&str], index: usize) -> Option<String> {
 
 /// Tell whether the YAML block opened at `index` with indentation `indent` contains at least one non-comment child line in `lines`.
 ///
+/// Used by the comment-preserving line rewriter to distinguish a real `minimumSeverity:` gate map from a commented-out 0.5 placeholder.
 /// Returns true when a deeper-indented non-comment line appears before the block ends, and false for empty or comment-only blocks.
 fn block_has_active_child(lines: &[&str], index: usize, indent: usize) -> bool {
     let mut cursor = index + 1;
+    // Scan deeper lines beneath the header until a blank line or dedent closes the block.
     while cursor < lines.len() {
         let line = lines[cursor];
         let trimmed = line.trim();
+        // A blank line or dedent ends the candidate block before any real child entry was found.
         if trimmed.is_empty() || line.len() - line.trim_start().len() <= indent {
             return false;
         }
+        // Any non-comment child line (for example `analyse: warning`) proves this block is a legacy gate map.
         if !trimmed.starts_with('#') {
             return true;
         }

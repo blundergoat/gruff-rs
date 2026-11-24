@@ -1,3 +1,8 @@
+//! Parse and validate per-rule settings under `rules:` and `rules.custom:` in `.gruff-rs.yaml`.
+//!
+//! Each configured rule entry is checked against the built-in registry or declared `custom_rules` before analysis starts,
+//! so typos, retired 0.5 IDs, or unpaired threshold/severity overrides fail closed with actionable guidance.
+
 use super::*;
 
 /// Read the `rules.select` and `rules.ignore` config keys into the positive and negative rule selectors.
@@ -212,10 +217,7 @@ pub(crate) fn apply_rule_thresholds(
             ));
         }
         (None, Some(severity_value)) => {
-            // ADR-011: a standalone `severity` override is for non-threshold rules
-            // only. For a thresholded rule it must be paired with `threshold` (the
-            // mirror of the `(threshold, None)` error above) so a lone severity
-            // can't silently leave the default threshold in place.
+            // ADR-011: a standalone `severity` applies only to non-thresholded rules; thresholded rules must pair `threshold` too.
             if rule_is_thresholded(rule_id, registry) {
                 return Err(format!(
                     "config key `rules.{rule_id}.threshold` is required when `severity` is configured for a thresholded rule"

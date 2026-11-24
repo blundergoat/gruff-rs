@@ -5,13 +5,13 @@
 
 use super::*;
 
-/// Renders `report` as GitHub Actions workflow command lines, one per diagnostic and finding, with run diagnostics listed first.
+/// Render `report` as GitHub Actions workflow command lines for `analyse --format github`.
 ///
-/// Each finding is annotated at its file and line, falling back to line 1 when it has no line, and is titled with its rule id.
-/// File paths, rule ids and messages are escaped for the workflow command syntax.
-/// A diagnostic without a file path currently gets a malformed prefix that runs the level into `title=`, so it is not a valid annotation.
+/// Run diagnostics appear first so CI logs surface setup or parse failures ahead of individual findings.
+/// Each finding annotates its file and line (defaulting to line 1) with its rule ID as title; paths, rule IDs, and messages are escaped.
 ///
-/// Returns the command lines joined by newlines, or an empty string when `report` has no diagnostics and no findings.
+/// `report` supplies the diagnostics and findings to publish.
+/// Returns the workflow command lines joined by newlines, or an empty string when `report` has neither diagnostics nor findings.
 pub(super) fn render_github(report: &AnalysisReport) -> String {
     report
         .diagnostics
@@ -31,18 +31,21 @@ pub(super) fn render_github(report: &AnalysisReport) -> String {
         .join("\n")
 }
 
-/// Formats `diagnostic` as one GitHub Actions workflow command line, at error level for a failure and notice level otherwise.
+/// Format one `diagnostic` as a GitHub Actions workflow annotation at `error` level for failures and `notice` level otherwise.
 ///
-/// The annotation names a file and line only when the diagnostic has a file path (line defaulting to 1) and is titled with the diagnostic type.
-/// Without a file path the level runs straight into `title=` with no separating space, so the line is currently not a valid annotation.
+/// Diagnostics tied to a file include `file=` and `line=` (defaulting to line 1).
+/// Pathless diagnostics keep a single space before `title=` so GitHub Actions parses the command instead of dropping it as plain log text.
 ///
-/// Returns the single workflow command line for `diagnostic`, without a trailing newline.
+/// `diagnostic` supplies the type, severity classification, optional location, and message.
+/// Returns the single workflow command line for `diagnostic` without a trailing newline.
 fn github_diagnostic(diagnostic: &RunDiagnostic) -> String {
+    // Failing diagnostics (such as parse or config errors) surface as red GitHub errors; informational notes stay notices.
     let level = if diagnostic.is_failure() {
         "error"
     } else {
         "notice"
     };
+    // Keep a space before `title=` when no file path exists so GitHub parses `::notice title=...::...` as an annotation.
     let location = diagnostic
         .file_path
         .as_deref()

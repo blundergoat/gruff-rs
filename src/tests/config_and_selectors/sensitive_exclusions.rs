@@ -685,6 +685,24 @@ sensitiveExclusions:
 "#,
     );
     assert!(glob.contains("must name one exact file"), "{glob}");
+
+    for non_file in ["./", ".", "src/"] {
+        let error = corpus_config_error(
+            dir.path(),
+            &format!(
+                r#"
+sensitiveExclusions:
+  - rule: sensitive-data.aws-access-key
+    path: "{non_file}"
+    reason: Synthetic fixture.
+"#
+            ),
+        );
+        assert!(
+            error.contains("does not name a file"),
+            "{non_file}: {error}"
+        );
+    }
 }
 
 /// Reject every message- or value-matching key, so no suppression can name a matched secret.

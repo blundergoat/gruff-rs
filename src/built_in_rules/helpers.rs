@@ -285,14 +285,12 @@ impl SensitiveDisplayMarker<'_> {
     }
 }
 
-/// Decide whether a value has enough length, character variety, and entropy to warrant a secret finding.
-/// This is a candidate check; detector-owned inert shapes are filtered later. Both bars come from the
-/// rule's configured detector parameters, so a value's fate never depends on a number repeated here.
-/// Variety is FAMILY-CONTRACT section 12's floor: a letter and a digit. A run of one character class clears the
-/// entropy bar by construction, and a digit-free mix of cases is an identifier; gruff-rs once required upper,
-/// lower and digit together, which hid lowercase-and-digit keys the other four ports report.
+/// Decide whether `value` meets the length, character-variety, and Shannon-entropy bars for a secret candidate.
 ///
-/// Returns true when `value` has at least `min_length` characters, an ASCII letter, an ASCII digit and entropy of at least `min_entropy`.
+/// Both thresholds (`min_length`, `min_entropy`) come from configured detector parameters; inert shapes are filtered later.
+/// Variety follows FAMILY-CONTRACT section 12 (one ASCII letter and one ASCII digit), so lowercase-and-digit keys report across ports.
+///
+/// Returns true when `value` has at least `min_length` chars, an ASCII letter, an ASCII digit, and entropy at least `min_entropy`.
 pub(crate) fn is_high_entropy(value: &str, min_length: usize, min_entropy: f64) -> bool {
     // Short values do not meet the detector's minimum evidence bar for a user finding.
     if value.chars().count() < min_length {
