@@ -1,5 +1,6 @@
 //! Upgrade a 0.5 config into a new file before running gruff-rs 0.6 with it.
-//! The per-command gate moves to `failOn`. Section 5 of `FAMILY-CONTRACT.md` makes category markers unconditional, so `secretPreviews` is removed.
+//! The per-command gate moves to `failOn`, empty `minimumSeverity:` placeholders and retired 0.5 rules are dropped,
+//! and section 5 of `FAMILY-CONTRACT.md` makes category markers unconditional so `secretPreviews` is removed.
 //!
 //! Keep comments when the line edit produces the correct YAML. The caller always keeps the original config as a reference.
 
@@ -12,6 +13,29 @@ use serde_yaml::{Mapping, Value};
 use crate::cli::{MigrateConfigArgs, OutputWriter};
 use crate::config::SCHEMA_VERSION;
 
+/// Built-in rule IDs retired between 0.5 and 0.6.0 (ADR-024).
+pub(crate) const RETIRED_0_5_RULES: &[&str] = &[
+    "concurrency.unbounded-channel",
+    "dependency.path-source",
+    "docs.stale-todo",
+    "error-handling.public-unwrap",
+    "modernisation.manual-is-empty",
+    "naming.boolean-prefix",
+    "naming.generic-function",
+    "performance.clone-in-loop",
+    "performance.format-in-loop",
+    "security.path-traversal-candidate",
+    "sensitive-data.database-url-password",
+    "sensitive-data.hardcoded-env-value",
+    "test-quality.conditional-logic",
+    "test-quality.sleep-in-test",
+    "waste.unreachable-code",
+];
+
+/// Guidance appended to config load errors caused by legacy 0.5 keys or retired rule IDs.
+pub(crate) const MIGRATE_CONFIG_HINT: &str =
+    "Run `gruff-rs migrate-config --config <old> --output <new>` to upgrade.";
+
 /// Explain why the migrated config drops `allowlists.secretPreviews`.
 const REMOVED_KEY_CHANGE: &str =
     "allowlists.secretPreviews removed; section 5 makes category markers unconditional";
@@ -19,6 +43,24 @@ const REMOVED_KEY_CHANGE: &str =
 /// Explain where to adjust the command's failure threshold after migration.
 const RENAMED_GATE_CHANGE: &str =
     "minimumSeverity: renamed to failOn:, the key that gates the exit code in 0.6";
+
+/// Tell whether `rule_id` is one of the fifteen built-in rules retired between 0.5 and 0.6.0.
+///
+/// `rule_id` is the exact rule identifier read from configuration.
+/// Returns true when `rule_id` matches an entry in `RETIRED_0_5_RULES`, and false otherwise.
+pub(crate) fn is_retired_0_5_rule(rule_id: &str) -> bool {
+    RETIRED_0_5_RULES.contains(&rule_id)
+}
+
+/// Format a config load error for a retired 0.5 rule ID with the `migrate-config` upgrade hint.
+///
+/// `rule_id` is the retired identifier and `context` names the config key where it appeared.
+/// Returns an error string naming the retired rule, its config location, and the upgrade command.
+pub(crate) fn retired_rule_config_error(rule_id: &str, context: &str) -> String {
+    format!(
+        "unknown rule id `{rule_id}` in config key `{context}` (retired in 0.6.0). {MIGRATE_CONFIG_HINT}"
+    )
+}
 
 /// Number one change against the line it happened on, so a user can read the summary beside their own file.
 ///
@@ -32,6 +74,7 @@ fn change_line(index: usize, description: &str) -> String {
 /// A caller can preview the same change list with `--dry-run` before choosing an output path.
 ///
 /// An empty `changes` list means the input was already current and `text` is the input byte for byte.
+#[derive(Debug)]
 pub(crate) struct ConfigMigration {
     pub(crate) text: String,
     pub(crate) changes: Vec<String>,
@@ -40,11 +83,10 @@ pub(crate) struct ConfigMigration {
 /// Rewrite legacy keys in `original`, preserving formatting when the result parses as the intended mapping.
 /// Returns migrated YAML and a change list, or an error if the input cannot be migrated unambiguously.
 pub(crate) fn migrate_config_text(original: &str) -> Result<ConfigMigration, String> {
-    // For example, a missing quote can make an old config unreadable. Show the YAML error before opening a destination.
+    // Show YAML syntax errors before opening a destination.
     let document: Value =
         serde_yaml::from_str(original).map_err(|error| format!("invalid YAML: {error}"))?;
     let mut mapping = match document {
-        // An empty file has no legacy settings to keep, so migration can add the required version on its own.
         Value::Null => Mapping::new(),
         Value::Mapping(mapping) => mapping,
         _ => return Err("config must be a YAML mapping".to_string()),
@@ -53,21 +95,19 @@ pub(crate) fn migrate_config_text(original: &str) -> Result<ConfigMigration, Str
     rename_legacy_gate(&mut mapping, &mut changes)?;
     // Preserve all other allowlists and any unrelated occurrence of the same key name.
     if let Some(Value::Mapping(allowlists)) = mapping.get_mut("allowlists") {
-        // Current scans use category markers automatically, so users no longer need this option.
         if allowlists.remove("secretPreviews").is_some() {
             changes.push(REMOVED_KEY_CHANGE.to_string());
-            // The removed setting may have been the only allowlist. Leave no empty section behind in that case.
             if allowlists.is_empty() {
                 mapping.remove("allowlists");
             }
         }
     }
+    drop_retired_entries(&mut mapping, &mut changes)?;
     // Older config files may have no schema version, which the new loader rejects.
     if mapping.get("schemaVersion").and_then(Value::as_str) != Some(SCHEMA_VERSION) {
         mapping.insert(Value::from("schemaVersion"), Value::from(SCHEMA_VERSION));
         changes.push(format!("schemaVersion set to {SCHEMA_VERSION}"));
     }
-    // A user can rerun migration against a current config without losing its original formatting.
     if changes.is_empty() {
         return Ok(ConfigMigration {
             text: original.to_string(),
@@ -76,7 +116,7 @@ pub(crate) fn migrate_config_text(original: &str) -> Result<ConfigMigration, Str
     }
     let intended = Value::Mapping(mapping);
     let comment_preserving_rewrite = migrate_config_lines(original);
-    // The original layout is safe to keep only when it retains the settings from the parsed rewrite.
+    // Keep original formatting only when the line edit matches the parsed target mapping.
     if serde_yaml::from_str::<Value>(&comment_preserving_rewrite.text)
         .is_ok_and(|parsed| parsed == intended)
     {
@@ -89,9 +129,18 @@ pub(crate) fn migrate_config_text(original: &str) -> Result<ConfigMigration, Str
     Ok(ConfigMigration { text, changes })
 }
 
-/// Move the legacy gate map in `mapping` and record the rename in `changes`.
-/// Returns success when the old key is absent or scalar, or when the gate is renamed without conflict.
+/// Move a legacy gate map or drop an empty `minimumSeverity:` placeholder in `mapping`, recording each edit in `changes`.
+/// Returns success when `minimumSeverity` is absent, scalar, removed as null, or renamed to `failOn` without conflict.
 fn rename_legacy_gate(mapping: &mut Mapping, changes: &mut Vec<String>) -> Result<(), String> {
+    // 0.5 `init` emitted a bare `minimumSeverity:` with only comments under it, which YAML reads as null.
+    if mapping.get("minimumSeverity").is_some_and(Value::is_null) {
+        mapping.remove("minimumSeverity");
+        changes.push(
+            "minimumSeverity: empty placeholder removed; use failOn: to gate exit codes or a scalar minimumSeverity: for display floor"
+                .to_string(),
+        );
+        return Ok(());
+    }
     // A scalar `minimumSeverity` controls display in 0.6, so only the old per-command map moves.
     if !mapping
         .get("minimumSeverity")
@@ -108,6 +157,142 @@ fn rename_legacy_gate(mapping: &mut Mapping, changes: &mut Vec<String>) -> Resul
         changes.push(RENAMED_GATE_CHANGE.to_string());
     }
     Ok(())
+}
+
+/// Drop retired 0.5 rule references from `rules`, `exclude`, and `sensitiveExclusions` in `mapping`.
+/// Records every removed rule ID in `changes`, cleans emptied sections, and leaves non-retired typos untouched.
+///
+/// Returns `Ok(())` when every retired reference is dropped safely, or `Err` if stripping `rules.select` would empty a non-empty selection.
+fn drop_retired_entries(mapping: &mut Mapping, changes: &mut Vec<String>) -> Result<(), String> {
+    let remove_rules = match mapping.get_mut("rules") {
+        Some(Value::Mapping(rules)) => {
+            let mut changed = drop_retired_map_entries(rules, "rules", changes);
+            let remove_custom = match rules.get_mut("custom") {
+                Some(Value::Mapping(custom)) => {
+                    let custom_changed = drop_retired_map_entries(custom, "rules.custom", changes);
+                    changed |= custom_changed;
+                    custom_changed && custom.is_empty()
+                }
+                _ => false,
+            };
+            if remove_custom {
+                rules.remove("custom");
+            }
+            changed |= drop_retired_selector_list(rules, "select", true, changes)?;
+            changed |= drop_retired_selector_list(rules, "ignore", false, changes)?;
+            changed && rules.is_empty()
+        }
+        _ => false,
+    };
+    if remove_rules {
+        mapping.remove("rules");
+    }
+    drop_retired_exclusion_list(mapping, "exclude", true, changes);
+    drop_retired_exclusion_list(mapping, "sensitiveExclusions", false, changes);
+    Ok(())
+}
+
+/// Remove retired 0.5 rule keys from `entries` and record each removal under `prefix` in `changes`.
+///
+/// Returns true when at least one retired key was removed from `entries`, and false otherwise.
+fn drop_retired_map_entries(
+    entries: &mut Mapping,
+    prefix: &str,
+    changes: &mut Vec<String>,
+) -> bool {
+    let retired_keys: Vec<String> = entries
+        .keys()
+        .filter_map(Value::as_str)
+        .filter(|key| is_retired_0_5_rule(key))
+        .map(str::to_string)
+        .collect();
+    for rule_id in &retired_keys {
+        entries.remove(rule_id.as_str());
+        changes.push(format!("{prefix}.{rule_id} removed; rule retired in 0.6.0"));
+    }
+    !retired_keys.is_empty()
+}
+
+/// Remove retired 0.5 rule IDs from a selector array named `key` inside `rules`, recording removals in `changes`.
+/// When `refuse_empty` is true, emptying a previously non-empty list returns `Err` instead of widening scope; otherwise an emptied key is dropped.
+///
+/// Returns `Ok(true)` if any entry was removed, `Ok(false)` if none matched, or `Err` when `refuse_empty` blocks an emptied selection.
+fn drop_retired_selector_list(
+    rules: &mut Mapping,
+    key: &str,
+    refuse_empty: bool,
+    changes: &mut Vec<String>,
+) -> Result<bool, String> {
+    let Some(Value::Sequence(items)) = rules.get_mut(key) else {
+        return Ok(false);
+    };
+    let was_non_empty = !items.is_empty();
+    let mut removed = Vec::new();
+    items.retain(|item| match item.as_str().map(str::trim) {
+        Some(rule_id) if is_retired_0_5_rule(rule_id) => {
+            removed.push(rule_id.to_string());
+            false
+        }
+        _ => true,
+    });
+    if removed.is_empty() {
+        return Ok(false);
+    }
+    for rule_id in removed {
+        changes.push(format!(
+            "rules.{key} entry `{rule_id}` removed; rule retired in 0.6.0"
+        ));
+    }
+    let became_empty = items.is_empty();
+    if refuse_empty && was_non_empty && became_empty {
+        return Err(
+            "removing retired 0.5 rules would empty `rules.select`, widening analysis to all built-in rules; replace `rules.select` with active 0.6.0 rules before migrating"
+                .to_string(),
+        );
+    }
+    if !refuse_empty && became_empty {
+        rules.remove(key);
+    }
+    Ok(true)
+}
+
+/// Remove exclusion entries in `mapping[section]` whose `rule` names a retired 0.5 rule, logging removals in `changes`.
+/// Trims selector whitespace before matching when `trim_rule` is true, and removes `section` if dropping entries empties it.
+fn drop_retired_exclusion_list(
+    mapping: &mut Mapping,
+    section: &str,
+    trim_rule: bool,
+    changes: &mut Vec<String>,
+) {
+    let Some(Value::Sequence(entries)) = mapping.get_mut(section) else {
+        return;
+    };
+    let mut removed = Vec::new();
+    entries.retain(|entry| {
+        let rule_id = entry
+            .as_mapping()
+            .and_then(|map| map.get("rule"))
+            .and_then(Value::as_str)
+            .map(|rule| if trim_rule { rule.trim() } else { rule });
+        match rule_id {
+            Some(retired_id) if is_retired_0_5_rule(retired_id) => {
+                removed.push(retired_id.to_string());
+                false
+            }
+            _ => true,
+        }
+    });
+    if removed.is_empty() {
+        return;
+    }
+    for rule_id in removed {
+        changes.push(format!(
+            "{section} entry for `{rule_id}` removed; rule retired in 0.6.0"
+        ));
+    }
+    if entries.is_empty() {
+        mapping.remove(section);
+    }
 }
 
 /// Try a line rewrite of `original` that keeps whitespace and comments for conventional block mappings.
@@ -190,9 +375,28 @@ fn renamed_gate_line(lines: &[&str], index: usize) -> Option<String> {
         return None;
     }
 
-    // An empty block would be a key with nothing under it, which the loader reads as neither shape.
-    let opens_block = index + 1 < lines.len() && is_deeper_than(lines[index + 1], indent);
+    // An empty or comment-only block is a placeholder, not a per-command gate map.
+    let opens_block = block_has_active_child(lines, index, indent);
     opens_block.then(|| format!("{}failOn:", &line[..indent]))
+}
+
+/// Tell whether the YAML block opened at `index` with indentation `indent` contains at least one non-comment child line in `lines`.
+///
+/// Returns true when a deeper-indented non-comment line appears before the block ends, and false for empty or comment-only blocks.
+fn block_has_active_child(lines: &[&str], index: usize, indent: usize) -> bool {
+    let mut cursor = index + 1;
+    while cursor < lines.len() {
+        let line = lines[cursor];
+        let trimmed = line.trim();
+        if trimmed.is_empty() || line.len() - line.trim_start().len() <= indent {
+            return false;
+        }
+        if !trimmed.starts_with('#') {
+            return true;
+        }
+        cursor += 1;
+    }
+    false
 }
 
 /// Remove the now-empty header from a block-style rewrite. The parsed mapping verifies that a blank line hid no later settings.

@@ -111,7 +111,7 @@ pub(crate) const NAMING_RULES: &[RuleDefinition] = &[
         Severity::Advisory,
         Confidence::High,
         None,
-        "Flags two-letter `let` bindings and function parameters outside accepted abbreviations, except conventional typed `cx` context parameters.",
+        "Flags two-letter `let` bindings and function parameters outside accepted abbreviations, plain two-letter English words (`at`, `by`, `on`, `to`, `up`), and conventional typed `cx` context parameters.",
         false_positives: &[
             FalsePositiveShape {
                 shape: "Domain abbreviations specific to the project (e.g. `aws`, `kms`, `ssn`).",

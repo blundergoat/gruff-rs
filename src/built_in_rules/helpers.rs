@@ -423,17 +423,25 @@ fn has_entropy_word_case(word: &str) -> bool {
 /// At least two word segments must supply a strict letter majority; empty or malformed names remain eligible for scoring.
 ///
 /// Returns true when every segment of `value` passes `entropy_segment_word_letters` and both bars above hold; false otherwise.
-/// One leading `../../`, `../`, `./`, `/` or `.` is ignored; segments are split on `/`, `.`, `_` and `-`, and other punctuation fails the name.
+/// One leading `../../`, `../`, `./` or `/` is ignored, followed by one optional leading `.` before an ASCII alphanumeric character;
+/// segments are split on `/`, `.`, `_` and `-`, and other punctuation fails the name.
 fn is_structured_entropy_name(value: &str) -> bool {
     static NAME_SHAPE: OnceLock<Regex> = OnceLock::new();
-    // A committed path may start with two parent components or one rooted, hidden or current-directory prefix.
-    let normalized = value
+    // A committed path may start with up to two parent components, `./`, or `/`, then one hidden-entry `.` prefix.
+    let after_dir_prefix = value
         .strip_prefix("../../")
         .or_else(|| value.strip_prefix("../"))
         .or_else(|| value.strip_prefix("./"))
         .or_else(|| value.strip_prefix('/'))
-        .or_else(|| value.strip_prefix('.'))
         .unwrap_or(value);
+    let normalized = after_dir_prefix
+        .strip_prefix('.')
+        .filter(|rest| {
+            rest.as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+        })
+        .unwrap_or(after_dir_prefix);
     // Missing segments or other punctuation keep the value eligible for a warning.
     if !static_regex(&NAME_SHAPE, r"^[A-Za-z0-9]+(?:[/._-]+[A-Za-z0-9]+)+$").is_match(normalized) {
         return false;
@@ -635,6 +643,35 @@ mod high_entropy_tests {
             "sha512-",
             "j51egjPa7/i+HYI",
             "ftzVDpy1aZQ=="
+        )));
+    }
+
+    #[test]
+    fn high_entropy_allows_relative_hidden_paths_without_hiding_opaque_tails() {
+        assert!(is_structured_high_entropy_non_secret(
+            "./.goat-flow/plans/0.3.0-upgrades-at-the-elevator-door/scripts/prepare_floor1_art.py"
+        ));
+        assert!(is_structured_high_entropy_non_secret(
+            "../.config/project-settings/floor1_art_manifest.json"
+        ));
+        assert!(is_structured_high_entropy_non_secret(
+            "../../.hidden/scripts/prepare_floor1_art.py"
+        ));
+
+        assert!(!is_structured_high_entropy_non_secret(concat!(
+            "./..goat-flow/plans/0.3.0-upgrades-",
+            "at-the-elevator-door/scripts/",
+            "prepare_floor1_art.py"
+        )));
+        assert!(!is_structured_high_entropy_non_secret(concat!(
+            "../../../.goat-flow/plans/0.3.0-upgrades-",
+            "at-the-elevator-door/scripts/",
+            "prepare_floor1_art.py"
+        )));
+        assert!(!is_structured_high_entropy_non_secret(concat!(
+            "./.goat-flow/plans/scripts/",
+            "q7W9e2R4t6Y8u1I3o5P0",
+            "a9S7d5F3g1H8j6K4l2Z0"
         )));
     }
 }

@@ -270,7 +270,8 @@ rules:
   naming.placeholder-identifier:
     enabled: true
   # Flags two-letter `let` bindings and function parameters outside accepted
-  # abbreviations, except conventional typed `cx` context parameters.
+  # abbreviations, plain two-letter English words (`at`, `by`, `on`, `to`, `up`),
+  # and conventional typed `cx` context parameters.
   naming.short-variable:
     enabled: true
   # Flags Regex::new calls inside loop bodies.

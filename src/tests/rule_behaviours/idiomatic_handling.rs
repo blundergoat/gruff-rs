@@ -238,3 +238,47 @@ rules:
         "unexpected error: {error}"
     );
 }
+
+#[test]
+pub(crate) fn short_variable_accepts_plain_two_letter_english_words() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"/// Route between two indices.
+pub fn path(from: usize, to: usize, at: usize, by: usize, on: bool, up: bool) -> usize {
+    let ok = from + to + at + by;
+    let zz = usize::from(on) + usize::from(up);
+    ok + zz
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    let flagged: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule_id == "naming.short-variable")
+        .filter_map(|finding| finding.symbol.as_deref())
+        .collect();
+    for allowed in ["to", "at", "by", "on", "up"] {
+        assert!(
+            !flagged.contains(&allowed),
+            "plain two-letter English word `{allowed}` must stay quiet; flagged={flagged:?}"
+        );
+    }
+    for expected in ["ok", "zz"] {
+        assert!(
+            flagged.contains(&expected),
+            "non-exempt two-letter name `{expected}` must still report; flagged={flagged:?}"
+        );
+    }
+}

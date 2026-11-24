@@ -109,8 +109,13 @@ fn parse_sensitive_rule_id(
     let key_path = format!("{entry_path}.rule");
     let rule_id = required_non_empty_config_string(entry, "rule", entry_path)?;
     reject_rule_pattern(&rule_id, &key_path)?;
-    let pillar = rule_pillar(&rule_id, registry, custom_rules)
-        .ok_or_else(|| format!("unknown rule id `{rule_id}` in config key `{key_path}`"))?;
+    let pillar = rule_pillar(&rule_id, registry, custom_rules).ok_or_else(|| {
+        if crate::migrate_config::is_retired_0_5_rule(&rule_id) {
+            crate::migrate_config::retired_rule_config_error(&rule_id, &key_path)
+        } else {
+            format!("unknown rule id `{rule_id}` in config key `{key_path}`")
+        }
+    })?;
     // Only the sensitive-data pillar is governed here; every other rule keeps its normal channel.
     if pillar != Pillar::SensitiveData {
         return Err(format!(

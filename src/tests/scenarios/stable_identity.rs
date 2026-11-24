@@ -753,6 +753,78 @@ pub(crate) fn typed_baseline_paths_are_read_from_the_launch_directory() {
     );
 }
 
+/// Nested Git repositories (standard `.git` directory or worktree `.git` file) stop project-root discovery from escaping into an ancestor repository.
+#[test]
+pub(crate) fn project_root_stops_at_git_boundary_for_nested_repos() {
+    let sandbox = tempfile::tempdir().expect("sandbox");
+    let parent = sandbox.path().join("parent");
+    let nested_dir_repo = parent.join("scratch/polyglot");
+    let nested_file_repo = parent.join("scratch/worktree");
+    fs::create_dir_all(nested_dir_repo.join(".git")).expect("git dir");
+    fs::create_dir_all(nested_dir_repo.join("docs")).expect("docs dir");
+    fs::create_dir_all(nested_dir_repo.join("src-tauri/src")).expect("nested crate");
+    fs::create_dir_all(nested_file_repo.join("sub")).expect("worktree subdir");
+    fs::write(parent.join("Cargo.toml"), "[package]\nname = \"parent\"\n").expect("parent cargo");
+    fs::write(
+        parent.join(".gruff-rs.yaml"),
+        format!("schemaVersion: {SCHEMA_VERSION}\n"),
+    )
+    .expect("parent config");
+    fs::write(
+        nested_dir_repo.join("src-tauri/Cargo.toml"),
+        "[package]\nname = \"app\"\n",
+    )
+    .expect("nested cargo");
+    fs::write(
+        nested_dir_repo.join("src-tauri/src/lib.rs"),
+        "pub fn ok() {}\n",
+    )
+    .expect("nested source");
+    fs::write(nested_file_repo.join(".git"), "gitdir: /tmp/example\n").expect("git file");
+
+    let canonical_parent = parent.canonicalize().expect("canonical parent");
+    let canonical_dir_repo = nested_dir_repo.canonicalize().expect("canonical dir repo");
+    let canonical_crate = nested_dir_repo
+        .join("src-tauri")
+        .canonicalize()
+        .expect("canonical nested crate");
+    let canonical_file_repo = nested_file_repo
+        .canonicalize()
+        .expect("canonical worktree repo");
+
+    let (root, paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/polyglot")],
+    )
+    .expect("resolve nested git dir repo");
+    assert_eq!(root, canonical_dir_repo);
+    assert_eq!(paths, vec![PathBuf::from(".")]);
+
+    let (docs_root, docs_paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/polyglot/docs")],
+    )
+    .expect("resolve subdir inside nested git repo");
+    assert_eq!(docs_root, canonical_dir_repo);
+    assert_eq!(docs_paths, vec![PathBuf::from("docs")]);
+
+    let (crate_root, crate_paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/polyglot/src-tauri/src/lib.rs")],
+    )
+    .expect("resolve nested crate");
+    assert_eq!(crate_root, canonical_crate);
+    assert_eq!(crate_paths, vec![PathBuf::from("src/lib.rs")]);
+
+    let (wt_root, wt_paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/worktree/sub")],
+    )
+    .expect("resolve nested git worktree file");
+    assert_eq!(wt_root, canonical_file_repo);
+    assert_eq!(wt_paths, vec![PathBuf::from("sub")]);
+}
+
 /// Restore the caller's working directory after exercising a CLI path lookup in a test.
 ///
 /// The guard runs during ordinary cleanup and if the assertion panics.

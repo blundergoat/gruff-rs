@@ -79,10 +79,28 @@ pub(crate) fn expand_rule_selector_with_custom(
         .or_else(|| pillar_rule_selector(selector, &catalog))
         .or_else(|| prefix_rule_selector(selector, &catalog))
         .ok_or_else(|| {
-            format!(
-                "unknown selector `{selector}` in `{path}`; expected exact rule id, dotted prefix, or public pillar such as Security"
-            )
+            if is_config_selector_path(path) && crate::migrate_config::is_retired_0_5_rule(selector)
+            {
+                format!(
+                    "unknown selector `{selector}` in `{path}` (retired in 0.6.0). {}",
+                    crate::migrate_config::MIGRATE_CONFIG_HINT
+                )
+            } else {
+                format!(
+                    "unknown selector `{selector}` in `{path}`; expected exact rule id, dotted prefix, or public pillar such as Security"
+                )
+            }
         })
+}
+
+/// Tell whether selector `path` originates from a config file section rather than a CLI flag.
+///
+/// `path` is the diagnostic location passed into selector expansion.
+/// Returns true for `rules.select[...]`, `rules.ignore[...]`, and `exclude[...].rule`, and false for CLI flags such as `rules --selector`.
+fn is_config_selector_path(path: &str) -> bool {
+    path.starts_with("rules.select[")
+        || path.starts_with("rules.ignore[")
+        || (path.starts_with("exclude[") && path.ends_with("].rule"))
 }
 
 /// Rejects selectors that use the reserved colon syntax for tiers and profiles, or a `*` without ending in `.*`.

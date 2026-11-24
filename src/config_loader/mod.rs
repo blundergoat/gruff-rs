@@ -27,7 +27,7 @@ pub(crate) use selectors::{
 pub(crate) use sensitive_exclusions::{apply_sensitive_exclusions_section, SensitiveExclusionRule};
 
 pub(crate) const LEGACY_SECRET_PREVIEWS_ERROR: &str =
-    "Config key \"allowlists.secretPreviews\" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration.";
+    "Config key \"allowlists.secretPreviews\" is removed in 0.6.0: FAMILY-CONTRACT.md section 5 makes category markers unconditional, so the key authorises nothing; delete it from the configuration. Run `gruff-rs migrate-config --config <old> --output <new>` to upgrade.";
 
 /// Load the resolved config used by one analysis command.
 /// An absent config path falls back to project discovery, while `--no-config` keeps safe defaults.
@@ -387,11 +387,11 @@ fn apply_display_floor_section(value: &Value, config: &mut Config) -> Result<(),
         return Ok(());
     }
     if value.is_object() {
-        return Err(
+        return Err(format!(
             "config key `minimumSeverity` is the display floor in 0.6.0 and takes one severity, not a per-command \
-             map; move the per-command exit gate to `failOn`, which is the key that gates the exit code."
-                .to_string(),
-        );
+             map; move the per-command exit gate to `failOn`, which is the key that gates the exit code. {}",
+            crate::migrate_config::MIGRATE_CONFIG_HINT
+        ));
     }
     let label = value.as_str().ok_or_else(|| {
         "config key `minimumSeverity` must be one severity: advisory, warning or error.".to_string()
@@ -601,9 +601,16 @@ pub(crate) fn ensure_rule_supports_threshold(
     registry: &rules::RuleRegistry,
     rule_id: &str,
 ) -> Result<(), String> {
-    let definition = registry
-        .get(rule_id)
-        .ok_or_else(|| format!("unknown rule id `{rule_id}` in config"))?;
+    let definition = registry.get(rule_id).ok_or_else(|| {
+        if crate::migrate_config::is_retired_0_5_rule(rule_id) {
+            format!(
+                "unknown rule id `{rule_id}` in config (retired in 0.6.0). {}",
+                crate::migrate_config::MIGRATE_CONFIG_HINT
+            )
+        } else {
+            format!("unknown rule id `{rule_id}` in config")
+        }
+    })?;
     // Only catalogue rules with one numeric threshold can honor this user setting.
     if definition.threshold.is_some() {
         Ok(())

@@ -99,7 +99,7 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 
 17. **sensitive-data rules skip test, fixture and example files** — Every sensitive-data rule except `sensitive-data.pii-test-fixture` skips a file under a `test`, `tests`, `__tests__`, `spec`, `testdata`, `fixtures` or `examples` directory, or named like a test file, and publishes each skip as a counted `source: "built-in"` audit row. A real credential committed under one of those paths is no longer reported. The rest of this entry is in `CHANGELOG.md`.
 
-18. **five rules are removed** — `dependency.path-source` (right on 0 of 13 judged findings), `error-handling.public-unwrap` (14 of 44), `security.path-traversal-candidate` (1 of 20), `sensitive-data.database-url-password` (0 of 25) and `sensitive-data.hardcoded-env-value` (0 of 25) were each right less than half the time in the 0.6.0 precision measurement. Config validation rejects unknown rule ids, so a `rules:` block, `rules.select`, `exclude` or `sensitiveExclusions` entry that names one fails the run with exit `2`. A config written by an earlier `init` lists every rule and so names all five: delete their blocks, or regenerate with `gruff-rs init --force`, which rewrites the whole file. `migrate-config` keeps them, so a migrated 0.5 config still needs them deleted. A baseline row for a retired rule still loads, and its findings report as resolved. `--include-rule` and `--exclude-rule` reject retired or unknown rule IDs with exit `2`; update any CI commands that name them. The decision is ADR-024.
+18. **five rules are removed** — `dependency.path-source` (right on 0 of 13 judged findings), `error-handling.public-unwrap` (14 of 44), `security.path-traversal-candidate` (1 of 20), `sensitive-data.database-url-password` (0 of 25) and `sensitive-data.hardcoded-env-value` (0 of 25) were each right less than half the time in the 0.6.0 precision measurement. Config validation rejects unknown rule ids, so a `rules:` block, `rules.select`, `rules.ignore`, `exclude` or `sensitiveExclusions` entry that names one fails the run with exit `2` and prints a `gruff-rs migrate-config` hint. A config written by an earlier `init` lists every rule and so names all fifteen retired `0.5` rules (these five plus the ten retired in the coordinated `0.6.0` break): run `gruff-rs migrate-config --config <old> --output <new>` to drop them and any empty `minimumSeverity:` placeholder block (preserving the original file; migration refuses if stripping `rules.select` would empty a non-empty selection), or regenerate with `gruff-rs init --force`. A baseline row for a retired rule still loads, and its findings report as resolved. `--include-rule` and `--exclude-rule` reject retired or unknown rule IDs with exit `2`; update any CI commands that name them. The decision is ADR-024.
 
 19. **three rules are off by default** — `ci.github-event-shell-interpolation`, `security.sql-dynamic-query` and `security.ssrf-candidate` were each wrong on all four judged findings, too few to delete on. Enable one with `rules.<id>.enabled: true`; `--include-rule` also turns one on, but narrows the run to the rules it names. A config written by an earlier `init` lists them as `enabled: true` and keeps them on. The decision is ADR-024.
 
@@ -148,19 +148,31 @@ of warning before the change lands:
    cargo install gruff-rs --locked --version 0.6.0 --root ./.cargo-tools
    ```
 
-3. Carry a baseline forward rather than regenerating it, so previously reviewed findings stay
+3. Upgrade an existing `0.5` configuration into a new file before scanning so the original stays
+   intact for rollback:
+
+   ```bash
+   ./.cargo-tools/bin/gruff-rs migrate-config --config .gruff-rs.yaml --output .gruff-rs.0.6.yaml
+   ```
+
+   `migrate-config` renames a per-command `minimumSeverity:` map to `failOn:`, removes empty
+   `minimumSeverity:` placeholders, deletes `allowlists.secretPreviews`, and strips all fifteen
+   retired `0.5` rule IDs across `rules:`, `rules.select`, `rules.ignore`, `exclude`, and
+   `sensitiveExclusions` (refusing if removing retired IDs would empty a non-empty `rules.select`).
+   Review the diff, then replace `.gruff-rs.yaml` once satisfied.
+4. Carry a baseline forward rather than regenerating it, so previously reviewed findings stay
    reviewed. Run `gruff-rs analyse --migrate-baseline <old path> --generate-baseline <new path>`,
    the command the tool prints when it refuses a `0.5` baseline; the original file is preserved.
-4. Re-run `./.cargo-tools/bin/gruff-rs summary .` and compare the finding count and grade with the
+5. Re-run `./.cargo-tools/bin/gruff-rs summary .` and compare the finding count and grade with the
    one you had. Both are expected to move: every score changes at this release, the fallback policy
    changes which files are scanned at all, and a secret a `0.5` baseline suppressed is reported
    again. Read a difference against the breaks above before treating it as a regression.
-5. Update JSON consumers to `gruff.analysis.v3`: read `findings[].file`, `paths.details`,
+6. Update JSON consumers to `gruff.analysis.v3`: read `findings[].file`, `paths.details`,
    `summary.suppressedFindings`, and `extensions.rs.topLevel.perRuleDeltas`.
 
 **Retreat path.** Pin the previous line —
 `cargo install gruff-rs --locked --version 0.5.0 --root ./.cargo-tools` — and keep the `0.5`
-baseline file the migration preserved.
+config and baseline files the migrations preserved.
 
 ## Upgrade workflow (0.4.x → 0.5.0)
 
@@ -269,7 +281,7 @@ without edits. The new surface is opt-in:
 
 ## Retired M02 rules in `0.6.0`
 
-The following rules are retired. Remove their `rules:` blocks and any configured selector or exclusion entries naming them; configuration rejects retired IDs. CLI include and exclude selectors reject retired IDs. Existing baseline entries for those rules resolve.
+The following rules are retired. Run `gruff-rs migrate-config --config <old> --output <new>` to strip them automatically, or remove their `rules:` blocks and any configured selector or exclusion entries naming them; configuration rejects retired IDs with a migration hint. CLI include and exclude selectors reject retired IDs. Existing baseline entries for those rules resolve.
 
 - `concurrency.unbounded-channel`
 - `docs.stale-todo`

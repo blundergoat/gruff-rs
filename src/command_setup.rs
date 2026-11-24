@@ -117,19 +117,22 @@ fn absolute_scan_targets(caller_root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> 
         .collect()
 }
 
-/// Find the project root as the nearest directory at or above the targets' common directory that holds `Cargo.toml` or `.gruff-rs.yaml`.
+/// Find the project root as the nearest directory at or above the targets' common directory that holds `Cargo.toml`, `.gruff-rs.yaml`, or `.git`.
 ///
 /// `targets` are the absolute scan targets.
 ///
-/// Returns that directory canonicalized, or the canonical common directory when no ancestor holds either file.
+/// Returns that directory canonicalized, or the canonical common directory when no ancestor holds any of those markers.
 /// Returns Err when `targets` is empty or has no common directory, or when canonicalizing fails.
-/// Several targets that meet only at a filesystem root holding neither marker file are also an Err.
+/// Several targets that meet only at a filesystem root holding no marker are also an Err.
 fn project_root_from_targets(targets: &[PathBuf]) -> Result<PathBuf, String> {
     let shared_directory = common_target_directory(targets)?;
-    // The nearest project marker makes `analyse src/lib.rs` use the config intended for that source tree.
+    // The nearest project marker makes `analyse src/lib.rs` use the config intended for that source tree,
+    // and `.git` (directory or worktree/submodule gitfile) stops lookup from escaping into an unrelated parent repo.
     for ancestor in shared_directory.ancestors() {
-        // Cargo manifests and Gruff configs both let callers point at a subdirectory without repeating the project root.
-        if ancestor.join("Cargo.toml").is_file() || ancestor.join(".gruff-rs.yaml").is_file() {
+        if ancestor.join("Cargo.toml").is_file()
+            || ancestor.join(".gruff-rs.yaml").is_file()
+            || ancestor.join(".git").symlink_metadata().is_ok()
+        {
             return ancestor.canonicalize().map_err(|error| {
                 format!(
                     "unable to canonicalize project root {}: {error}",

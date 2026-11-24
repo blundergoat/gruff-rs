@@ -283,3 +283,126 @@ fn parse_failure_does_not_publish_a_score_for_unevaluated_rust() {
     assert_eq!(report["score"]["evaluatedFiles"], 0);
     assert!(report["score"]["composite"]["score"].is_null());
 }
+
+/// Migrate a 0.5-style config with retired rules and empty `minimumSeverity:`, confirm unmigrated runs hint `migrate-config`, and keep CLI `--selector` errors free of config hints.
+#[test]
+fn migrate_config_upgrades_legacy_05_config_and_unmigrated_shows_hint() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    fs::write(root.join("README.md"), "# Sample\n").expect("readme");
+    fs::write(
+        root.join("lib.rs"),
+        "/// Sample function.\npub fn sample() {}\n",
+    )
+    .expect("source");
+    let legacy = concat!(
+        "schemaVersion: gruff-rs.config.v1\n",
+        "minimumSeverity:\n",
+        "  # analyse: advisory\n",
+        "allowlists:\n",
+        "  secretPreviews: []\n",
+        "rules:\n",
+        "  docs.stale-todo:\n",
+        "    enabled: true\n",
+        "  naming.short-variable:\n",
+        "    enabled: true\n",
+    );
+    fs::write(root.join(".gruff-rs.yaml"), legacy).expect("legacy config");
+
+    let unmigrated = run(root, &["summary", "--no-ansi", "."]);
+    assert_eq!(unmigrated.status.code(), Some(2));
+    let unmigrated_stderr = String::from_utf8_lossy(&unmigrated.stderr);
+    assert!(
+        unmigrated_stderr.contains("gruff-rs migrate-config"),
+        "{unmigrated_stderr}"
+    );
+
+    let migrated = run(
+        root,
+        &[
+            "migrate-config",
+            "--no-ansi",
+            "--config",
+            ".gruff-rs.yaml",
+            "--output",
+            "migrated.yaml",
+        ],
+    );
+    assert_eq!(
+        migrated.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&migrated.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&migrated.stdout);
+    assert!(stdout.contains("docs.stale-todo"), "{stdout}");
+    assert!(stdout.contains("minimumSeverity:"), "{stdout}");
+    assert_eq!(
+        fs::read_to_string(root.join(".gruff-rs.yaml")).expect("source preserved"),
+        legacy
+    );
+
+    let summary = run(
+        root,
+        &["summary", "--no-ansi", "--config", "migrated.yaml", "."],
+    );
+    assert_eq!(
+        summary.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&summary.stderr)
+    );
+
+    let cli_selector = run(
+        root,
+        &["rules", "--no-config", "--selector", "docs.stale-todo"],
+    );
+    assert_eq!(cli_selector.status.code(), Some(2));
+    let cli_stderr = String::from_utf8_lossy(&cli_selector.stderr);
+    assert!(!cli_stderr.contains("migrate-config"), "{cli_stderr}");
+}
+
+/// Scanning a nested Git repository inside a gitignored subdirectory of a parent Rust repo evaluates the child repo rather than zero files.
+#[test]
+fn nested_git_repo_under_ignored_parent_dir_scans_its_own_sources() {
+    let project = tempdir().expect("project");
+    let parent = project.path();
+    fs::write(parent.join("Cargo.toml"), "[package]\nname = \"parent\"\n").expect("parent cargo");
+    fs::write(parent.join(".gitignore"), "scratch/\n").expect("parent gitignore");
+
+    let child = parent.join("scratch/nested-app");
+    fs::create_dir_all(child.join(".git")).expect("child git");
+    fs::create_dir_all(child.join("src-tauri/src")).expect("child crate");
+    fs::write(child.join("README.md"), "# Child\n").expect("child readme");
+    fs::write(
+        child.join("src-tauri/Cargo.toml"),
+        "[package]\nname = \"child\"\n",
+    )
+    .expect("child cargo");
+    fs::write(
+        child.join("src-tauri/src/lib.rs"),
+        "/// Entry point.\npub fn entry() {}\n",
+    )
+    .expect("child source");
+
+    let output = run(
+        parent,
+        &[
+            "summary",
+            "--no-ansi",
+            "--no-config",
+            "--format",
+            "json",
+            "scratch/nested-app",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_output(&output);
+    assert_eq!(report["score"]["evaluatedFiles"], 1, "{report}");
+    assert_eq!(report["summary"]["discoveredFiles"], 3, "{report}");
+}

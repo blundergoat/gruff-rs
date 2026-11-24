@@ -1,11 +1,13 @@
 use super::*;
 
 mod comments;
+mod format_captures;
 
 use comments::comment_passthrough_end;
 pub(crate) use comments::{
     extract_rust_comments, strip_rust_comments_after_string_mask, RustComment,
 };
+use format_captures::append_format_macro_references;
 
 /// Compile a fixed regex once and hand back the cached copy on every later call.
 ///
@@ -92,15 +94,17 @@ pub(crate) fn push_original_char(source: &str, index: usize, output: &mut String
     index + character.len_utf8()
 }
 
-/// Build the text searched for identifier references: the source with strings and comments blanked, plus selected serde attribute paths.
+/// Build the text searched for identifier references: the source with strings and comments blanked, plus selected serde attribute paths and std formatting macro captures.
 ///
 /// `source` is the Rust file text.
-/// Returns the masked source followed by a space and the path for each serde reference that `append_serde_default_references` keeps.
+/// Returns the masked source followed by space-separated references from `append_serde_default_references` and `append_format_macro_references`.
 pub(crate) fn rust_code_reference_source(source: &str) -> String {
     let masked_source = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
     let mut reference_source = String::with_capacity(masked_source.len() + 64);
     reference_source.push_str(&masked_source);
-    append_serde_default_references(&source_without_comments(source), &mut reference_source);
+    let uncommented = source_without_comments(source);
+    append_serde_default_references(&uncommented, &mut reference_source);
+    append_format_macro_references(&uncommented, &mut reference_source);
     reference_source
 }
 

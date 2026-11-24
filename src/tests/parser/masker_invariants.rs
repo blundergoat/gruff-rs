@@ -333,3 +333,107 @@ pub(crate) fn serde_default_reference_survives_as_a_call_site() {
         "a non-serde string must be masked, not kept as a reference; reference={plain_reference:?}"
     );
 }
+
+#[test]
+pub(crate) fn format_macro_inline_captures_survive_as_references() {
+    let source = r#"const ICON_FOLDER: &str = "icons";
+fn build_path(name: &str) -> String {
+    format!("{ICON_FOLDER}/{name}.png")
+}
+"#;
+    let reference = rust_code_reference_source(source);
+    let count = reference
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|token| *token == "ICON_FOLDER")
+        .count();
+    assert!(
+        count >= 2,
+        "format! inline capture must be counted alongside its definition; count={count}, reference={reference:?}"
+    );
+}
+
+#[test]
+pub(crate) fn format_macro_captures_cover_all_std_macros_and_edge_shapes() {
+    let source = r###"fn demo(writer: &mut String, first: usize, second: usize) {
+    let _ = std::format!("{FMT_CONST:?}");
+    println!("{PRINTLN_CONST}");
+    eprintln!("{EPRINTLN_CONST:#?}");
+    print!("{PRINT_CONST}");
+    eprint!("{EPRINT_CONST}");
+    core::write!(writer, "{WRITE_CONST}");
+    std::writeln!(self.out(first, second), "{WRITELN_CONST:WIDTH$.PREC$}");
+    let _ = format_args!("{ARGS_CONST}");
+    if false {
+        panic!("{PANIC_CONST}");
+    }
+    let _ = format!(r"{RAW_CONST}");
+    let _ = format!(r#""{RAW_HASH_CONST}""#);
+    let _ = format!("quoted \"{QUOTED_CONST}\" \\{SLASH_CONST}");
+    let _ = format!["{BRACKET_CONST}"];
+    let _ = format!{"{BRACE_CONST}"};
+    let _ = writeln!(format!("{NESTED_ARG_CONST}"), "{OUTER_WRITE_CONST}");
+}
+"###;
+    let reference = rust_code_reference_source(source);
+    let expected = [
+        "FMT_CONST",
+        "PRINTLN_CONST",
+        "EPRINTLN_CONST",
+        "PRINT_CONST",
+        "EPRINT_CONST",
+        "WRITE_CONST",
+        "WRITELN_CONST",
+        "WIDTH",
+        "PREC",
+        "ARGS_CONST",
+        "PANIC_CONST",
+        "RAW_CONST",
+        "RAW_HASH_CONST",
+        "QUOTED_CONST",
+        "SLASH_CONST",
+        "BRACKET_CONST",
+        "BRACE_CONST",
+        "NESTED_ARG_CONST",
+        "OUTER_WRITE_CONST",
+    ];
+    for name in expected {
+        assert!(
+            reference
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+                .any(|token| token == name),
+            "expected std formatting macro capture `{name}` in reference source; reference={reference:?}"
+        );
+    }
+}
+
+#[test]
+pub(crate) fn format_macro_captures_ignore_escapes_comments_and_non_format_strings() {
+    let source = r###"fn controls(val: usize) {
+    // format!("{COMMENT_ONLY}")
+    /* println!("{BLOCK_COMMENT_ONLY}") */
+    let _ = format!("{{ESCAPED_BRACE}} {0} \u{abcd}", val);
+    let _ = "{PLAIN_STRING}";
+    let _ = "format!(\"{FAKE_IN_STRING}\")";
+    let _ = br#"a " format!("{FAKE_IN_BYTE_RAW}") " b"#;
+    let _ = custom_log!("{CUSTOM_MACRO_ONLY}");
+}
+"###;
+    let reference = rust_code_reference_source(source);
+    for forbidden in [
+        "COMMENT_ONLY",
+        "BLOCK_COMMENT_ONLY",
+        "ESCAPED_BRACE",
+        "abcd",
+        "PLAIN_STRING",
+        "FAKE_IN_STRING",
+        "FAKE_IN_BYTE_RAW",
+        "CUSTOM_MACRO_ONLY",
+    ] {
+        assert!(
+            !reference
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+                .any(|token| token == forbidden),
+            "non-capture `{forbidden}` must stay excluded; reference={reference:?}"
+        );
+    }
+}

@@ -241,7 +241,9 @@ than ignoring it, because it ships no gate for that command.
 `advisory`, `warning`, or `error` — and is the display floor, hiding findings
 below it from the reported list while the counts, the score, and the exit code
 stay unchanged. The 0.5 per-command `minimumSeverity:` map is refused with an
-error naming `failOn`; `gruff-rs migrate-config` performs the rename.
+error naming `failOn` and a `gruff-rs migrate-config` hint; `gruff-rs migrate-config`
+performs the rename, removes empty `minimumSeverity:` placeholders, deletes
+`allowlists.secretPreviews`, and strips the fifteen retired 0.5 rule IDs.
 
 ## Quality Gate
 

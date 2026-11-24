@@ -221,6 +221,44 @@ pub fn entry(values: &[i32]) -> Vec<bool> {
 }
 
 #[test]
+/// Keep genuinely unused private functions flagged even when non-capture strings or escaped braces mention their name.
+pub(crate) fn dead_code_unused_private_function_ignores_escaped_format_braces_and_plain_strings() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"fn unused_in_escaped_braces() {}
+fn unused_in_plain_string() {}
+
+pub fn entry() -> String {
+    let _ = "{unused_in_plain_string}";
+    format!("{{unused_in_escaped_braces}}")
+}
+"#,
+    );
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+    for symbol in ["unused_in_escaped_braces", "unused_in_plain_string"] {
+        assert!(
+            report.findings.iter().any(|finding| {
+                finding.rule_id == "dead-code.unused-private-function"
+                    && finding.symbol.as_deref() == Some(symbol)
+            }),
+            "dead-code.unused-private-function must still report `{symbol}`; findings={:?}",
+            report.findings
+        );
+    }
+}
+
+#[test]
 /// Keep generated dependency lockfiles quiet while authored long files remain reportable.
 pub(crate) fn file_length_skips_dependency_lockfiles() {
     let _guard = analysis_lock();

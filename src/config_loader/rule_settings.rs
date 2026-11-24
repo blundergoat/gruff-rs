@@ -80,6 +80,11 @@ pub(crate) fn insert_rule_setting(
     let is_builtin = sources.registry.contains(rule_id);
     let is_custom = sources.custom_rules.iter().any(|rule| rule.id == rule_id);
     if !is_builtin && !is_custom {
+        if crate::migrate_config::is_retired_0_5_rule(rule_id) {
+            return Err(crate::migrate_config::retired_rule_config_error(
+                rule_id, context,
+            ));
+        }
         return Err(format!(
             "unknown rule id `{rule_id}` in config key `{context}`"
         ));

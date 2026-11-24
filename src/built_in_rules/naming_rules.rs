@@ -122,13 +122,14 @@ impl NamingPatternVisitor<'_> {
 
     /// Decide whether `name` is a two-byte identifier that the short-variable rule should report.
     ///
-    /// Only names exactly two bytes long count; a leading underscore, an accepted abbreviation or an AWS-path abbreviation exempts one.
-    /// Accepted abbreviations are compared against the lowercased `name`.
+    /// Only names exactly two bytes long count; a leading underscore, a plain two-letter English word (`at`, `by`, `on`, `to`, `up`), an accepted abbreviation, or an AWS-path abbreviation exempts one.
+    /// Comparisons run against the lowercased `name`.
     /// Returns true when `name` should be reported as too short, and false otherwise.
     fn name_is_too_short(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         name.len() == 2
             && !name.starts_with('_')
+            && !PLAIN_TWO_LETTER_WORDS.contains(&lower.as_str())
             && !self.config.accepted_abbreviations.contains(&lower)
             && !self.file_context_has_accepted_abbreviation(&lower)
     }
@@ -146,6 +147,8 @@ impl NamingPatternVisitor<'_> {
         false
     }
 }
+
+const PLAIN_TWO_LETTER_WORDS: &[&str] = &["at", "by", "on", "to", "up"];
 
 const AWS_CONTEXT_ABBREVIATIONS: &[&str] = &[
     "ca", "ce", "cn", "cw", "dp", "dt", "gb", "gw", "lb", "pm", "py", "sa", "sg", "sn", "td", "tg",
