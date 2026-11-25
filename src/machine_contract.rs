@@ -95,40 +95,8 @@ pub(crate) fn report_context(
 /// Returns success for a representable `report` or an error naming only the invalid path's last component.
 pub(crate) fn validate_required_paths(report: &AnalysisReport) -> Result<(), String> {
     let root = &report.machine_context.project_root;
-    let paths = report
-        .findings
-        .iter()
-        .map(|finding| finding.file_path.as_str())
-        .chain(
-            report
-                .score
-                .top_offenders
-                .iter()
-                .map(|row| row.file_path.as_str()),
-        )
-        .chain(
-            report
-                .paths
-                .ignored_path_details
-                .iter()
-                .map(|row| row.path.as_str()),
-        )
-        .chain(report.paths.missing_paths.iter().map(String::as_str))
-        .chain(
-            report
-                .suppressions
-                .iter()
-                .flat_map(|row| row.paths.iter().map(String::as_str)),
-        )
-        .chain(
-            report
-                .machine_context
-                .diff
-                .iter()
-                .flat_map(|diff| diff.changed_files.iter().map(String::as_str)),
-        );
     // A machine caller gets a structured error instead of a partial document or a host-specific path.
-    if let Some(path) = paths
+    if let Some(path) = required_report_paths(report)
         .into_iter()
         .find(|path| relative_machine_path(path, root).is_none())
     {
@@ -141,6 +109,53 @@ pub(crate) fn validate_required_paths(report: &AnalysisReport) -> Result<(), Str
         ));
     }
     Ok(())
+}
+
+/// Collect every report path that must have a project-relative form in machine JSON output.
+///
+/// `report` supplies findings, top offenders, score clusters, ignored/missing paths, suppression paths, and diff changed files.
+/// Returns the borrowed path slices in report-section order, or an empty list when the report carries no paths.
+fn required_report_paths(report: &AnalysisReport) -> Vec<&str> {
+    let mut paths: Vec<&str> = Vec::new();
+    paths.extend(
+        report
+            .findings
+            .iter()
+            .map(|finding| finding.file_path.as_str()),
+    );
+    paths.extend(
+        report
+            .score
+            .top_offenders
+            .iter()
+            .map(|offender| offender.file_path.as_str()),
+    );
+    paths.extend(
+        report
+            .score
+            .clusters
+            .iter()
+            .map(|cluster| cluster.file.as_str()),
+    );
+    paths.extend(
+        report
+            .paths
+            .ignored_path_details
+            .iter()
+            .map(|ignored| ignored.path.as_str()),
+    );
+    paths.extend(report.paths.missing_paths.iter().map(String::as_str));
+    paths.extend(
+        report
+            .suppressions
+            .iter()
+            .flat_map(|row| row.paths.iter().map(String::as_str)),
+    );
+    // Changed files named by a diff are published in the report, so they must pass the same relative-path check.
+    if let Some(diff) = &report.machine_context.diff {
+        paths.extend(diff.changed_files.iter().map(String::as_str));
+    }
+    paths
 }
 
 /// Render the analysis v3 envelope for a finished report as pretty-printed JSON text.
@@ -181,11 +196,11 @@ where
 
 /// Build the `gruff.analysis.v3` envelope for a finished report as a JSON value.
 ///
-/// `report` supplies every section; its baseline, diff context, and per-rule deltas are added only when present.
-/// Returns the envelope object, making path fields project-relative except for score cluster paths, which are copied unchanged.
+/// `report` supplies every section; baseline, diff context, and per-rule deltas are omitted when absent.
+/// Returns the envelope object with all published path fields normalized relative to the project root.
 ///
-/// Panics when a finding, suppression, top-offender, missing, ignored, or changed-file path has no project-relative form.
-/// It also panics when the ignored paths and their details disagree, or when a default ignore has a pattern with no canonical reason.
+/// Panics if a required report path (finding, cluster, top offender, suppression, missing, ignored, or diff file) has no project-relative form.
+/// Also panics when ignored paths and their details disagree, or a default ignore lacks a canonical reason.
 pub(crate) fn analysis_value(report: &AnalysisReport) -> Value {
     let (details, ignored_paths) = path_details(report);
     let mut payload = json!({
@@ -272,6 +287,11 @@ fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value 
         .iter()
         .filter(|diagnostic| diagnostic.diagnostic_type == "parse-error")
         .count();
+    let bounded_deep_scans = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.diagnostic_type == "bounded-deep-scan")
+        .count();
     let mut payload = json!({
         "analysedFiles": analysed,
         "diagnostics": report.diagnostics.len(),
@@ -287,7 +307,7 @@ fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value 
         "ignoredPaths": ignored_count,
         "missingPaths": report.paths.missing_paths.len(),
         "parseErrors": parse_errors,
-        "parsedFiles": analysed.saturating_sub(parse_errors),
+        "parsedFiles": analysed.saturating_sub(parse_errors + bounded_deep_scans),
         "skippedFiles": ignored_count + (report.paths.analysed_files - analysed),
     });
     if let Some(count) = report.suppressed_count {
@@ -300,7 +320,7 @@ fn summary_counts_value(report: &AnalysisReport, ignored_count: usize) -> Value 
 }
 
 /// Return the number of discovered files for which `report` has no read failure or skip.
-fn analysed_file_count(report: &AnalysisReport) -> usize {
+pub(crate) fn analysed_file_count(report: &AnalysisReport) -> usize {
     let unread = report
         .diagnostics
         .iter()
@@ -475,11 +495,8 @@ fn diagnostic_value(diagnostic: &RunDiagnostic, root: &str) -> Value {
 
 /// Build the `score` section of the analysis envelope.
 ///
-/// `report` supplies the score; clusters, rule attribution, evaluated files, and scored pillars are copied as they are.
-/// Returns the score object, with top-offender files made relative to the machine-context project root.
-/// Composite, pillar, and file scores and penalties equal to zero are written as positive zero.
-///
-/// Panics when a top offender's file has no project-relative form.
+/// `report` supplies the score, copying rule attribution, evaluated files, and scored pillars while normalizing cluster and offender paths.
+/// Returns the JSON score object with zero scores written as positive zero; panics if a cluster or offender file has no project-relative form.
 fn score_value(report: &AnalysisReport) -> Value {
     let root = &report.machine_context.project_root;
     json!({
@@ -487,7 +504,7 @@ fn score_value(report: &AnalysisReport) -> Value {
             "grade": report.score.grade,
             "score": report.score.composite.map(machine_number),
         },
-        "clusters": report.score.clusters,
+        "clusters": report.score.clusters.iter().map(|cluster| score_cluster_value(cluster, root)).collect::<Vec<_>>(),
         "ruleAttribution": report.score.rule_attribution,
         "evaluatedFiles": report.score.evaluated_files,
         "scoredPillars": report.score.scored_pillars,
@@ -495,6 +512,22 @@ fn score_value(report: &AnalysisReport) -> Value {
         "topOffenders": report.score.top_offenders.iter().take(scoring::TOP_OFFENDER_LIMIT).map(|score| {
             top_offender_value(score, root)
         }).collect::<Vec<_>>(),
+    })
+}
+
+/// Project one correlated score cluster into its analysis v3 object with a project-relative file path.
+///
+/// `cluster` supplies the file, symbol, rule ids, finding count, and weight; `root` is the project root the file is made relative to.
+/// Returns the JSON object with `file` normalized via `machine_path` and `weight` normalized via `machine_number`.
+///
+/// Panics when `cluster.file` cannot be expressed relative to `root`.
+fn score_cluster_value(cluster: &scoring::ScoreCluster, root: &str) -> Value {
+    json!({
+        "file": machine_path(&cluster.file, root),
+        "symbol": cluster.symbol,
+        "ruleIds": cluster.rule_ids,
+        "findings": cluster.findings,
+        "weight": machine_number(cluster.weight),
     })
 }
 

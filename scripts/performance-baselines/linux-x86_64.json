@@ -5,7 +5,7 @@
     "version": "0.6.0"
   },
   "git": {
-    "commit": "545ace9011802e70d1ced5e80a71e8916078c1a9",
+    "commit": "d6f0f3d4f07ad4ab23dfb9a688e1cde454a5430f",
     "dirty": true
   },
   "machine": {
@@ -21,8 +21,8 @@
         "Cargo.toml",
         "Cargo.lock"
       ],
-      "fileCount": 151,
-      "digest": "18493418f0c62b644804a02fa7a52b10d35e335cffa7d0032fee74fe8ee9c582"
+      "fileCount": 152,
+      "digest": "007f4d87fc1f2d834a0218130b9017570d6c4964e10124f510fe9808e793a411"
     },
     "workload": {
       "includedPaths": [
@@ -32,412 +32,292 @@
         ".ignore"
       ],
       "fileCount": 5,
-      "digest": "21ef3477f25bc5a06f3d2ea267fe047773b669ac273b6b0be23cd2b0b9f7fc8e"
+      "digest": "9a112691bba42379ea5b95dbc062c925eab019c78148b1bc707bbab99367aba1"
     },
     "artifact": {
       "kind": "fresh-binary",
-      "sha256": "2b896d73ced527c5137a4f2c7200423c6dd8844c78a5159518e6ae84ce77d5cf"
+      "sha256": "e676bcd747d5419989c2d07aa05dd448c138593cf17699a4922a43c63a6449b1"
     },
-    "harnessSha256": "c2fa8fc7adea38b37719e65022c98fc3f97e64be7eb1d09875613a5acfac8eae"
+    "harnessSha256": "f188e02f33f8ce1a90ea19aa1507a073ff352e150c52b2b01b63e0b207954af5"
   },
   "build": {
     "profile": "release",
     "locked": true,
-    "build_seconds": 17.851
+    "build_seconds": 19.370
   },
-  "iters": 8,
+  "iters": 5,
   "discarded_warmup": 1,
-  "generated_at": "2026-11-22T10:09:43Z",
+  "generated_at": "2026-11-25T09:09:30Z",
   "scenarios": [
     {
       "name": "fixtures.text",
-      "command": "gruff-rs analyse fixtures --format text --fail-on none --no-baseline",
+      "command": "gruff-rs analyse fixtures --no-config --format text --fail-on none --no-baseline",
       "iterations": [
         {
-          "wall_seconds": 0.007247,
-          "peak_rss_bytes": 8699904
+          "wall_seconds": 0.028724,
+          "peak_rss_bytes": 19333120
         },
         {
-          "wall_seconds": 0.007053,
-          "peak_rss_bytes": 8785920
+          "wall_seconds": 0.030350,
+          "peak_rss_bytes": 19214336
         },
         {
-          "wall_seconds": 0.007773,
-          "peak_rss_bytes": 8515584
+          "wall_seconds": 0.030102,
+          "peak_rss_bytes": 19308544
         },
         {
-          "wall_seconds": 0.007302,
-          "peak_rss_bytes": 8622080
-        },
-        {
-          "wall_seconds": 0.007477,
-          "peak_rss_bytes": 8953856
-        },
-        {
-          "wall_seconds": 0.007443,
-          "peak_rss_bytes": 8683520
-        },
-        {
-          "wall_seconds": 0.007909,
-          "peak_rss_bytes": 8536064
+          "wall_seconds": 0.030491,
+          "peak_rss_bytes": 19181568
         }
       ],
-      "median_seconds": 0.007443,
-      "min_seconds": 0.007053,
-      "max_seconds": 0.007909,
-      "stddev_seconds": 0.000299,
-      "peak_rss_bytes": 8683520
+      "median_seconds": 0.030226,
+      "min_seconds": 0.028724,
+      "max_seconds": 0.030491,
+      "stddev_seconds": 0.000811,
+      "peak_rss_bytes": 19261440
     },
     {
       "name": "fixtures.json",
-      "command": "gruff-rs analyse fixtures --format json --fail-on none --no-baseline",
+      "command": "gruff-rs analyse fixtures --no-config --format json --fail-on none --no-baseline",
       "iterations": [
         {
-          "wall_seconds": 0.007862,
-          "peak_rss_bytes": 8626176
+          "wall_seconds": 0.030931,
+          "peak_rss_bytes": 19304448
         },
         {
-          "wall_seconds": 0.007682,
-          "peak_rss_bytes": 8523776
+          "wall_seconds": 0.040761,
+          "peak_rss_bytes": 19181568
         },
         {
-          "wall_seconds": 0.008133,
-          "peak_rss_bytes": 8994816
+          "wall_seconds": 0.029183,
+          "peak_rss_bytes": 19136512
         },
         {
-          "wall_seconds": 0.007481,
-          "peak_rss_bytes": 8757248
-        },
-        {
-          "wall_seconds": 0.008083,
-          "peak_rss_bytes": 8630272
-        },
-        {
-          "wall_seconds": 0.007476,
-          "peak_rss_bytes": 8892416
-        },
-        {
-          "wall_seconds": 0.008165,
-          "peak_rss_bytes": 8523776
+          "wall_seconds": 0.029350,
+          "peak_rss_bytes": 19193856
         }
       ],
-      "median_seconds": 0.007862,
-      "min_seconds": 0.007476,
-      "max_seconds": 0.008165,
-      "stddev_seconds": 0.000299,
-      "peak_rss_bytes": 8630272
+      "median_seconds": 0.030141,
+      "min_seconds": 0.029183,
+      "max_seconds": 0.040761,
+      "stddev_seconds": 0.005526,
+      "peak_rss_bytes": 19187712
     },
     {
       "name": "fixtures.sarif",
-      "command": "gruff-rs analyse fixtures --format sarif --fail-on none --no-baseline",
+      "command": "gruff-rs analyse fixtures --no-config --format sarif --fail-on none --no-baseline",
       "iterations": [
         {
-          "wall_seconds": 0.007493,
-          "peak_rss_bytes": 9064448
+          "wall_seconds": 0.034777,
+          "peak_rss_bytes": 19783680
         },
         {
-          "wall_seconds": 0.008738,
-          "peak_rss_bytes": 9039872
+          "wall_seconds": 0.033210,
+          "peak_rss_bytes": 19496960
         },
         {
-          "wall_seconds": 0.008105,
-          "peak_rss_bytes": 8974336
+          "wall_seconds": 0.031162,
+          "peak_rss_bytes": 19795968
         },
         {
-          "wall_seconds": 0.008048,
-          "peak_rss_bytes": 9125888
-        },
-        {
-          "wall_seconds": 0.008010,
-          "peak_rss_bytes": 9158656
-        },
-        {
-          "wall_seconds": 0.007828,
-          "peak_rss_bytes": 9101312
-        },
-        {
-          "wall_seconds": 0.007838,
-          "peak_rss_bytes": 9273344
+          "wall_seconds": 0.029410,
+          "peak_rss_bytes": 19709952
         }
       ],
-      "median_seconds": 0.008010,
-      "min_seconds": 0.007493,
-      "max_seconds": 0.008738,
-      "stddev_seconds": 0.000381,
-      "peak_rss_bytes": 9101312
+      "median_seconds": 0.032186,
+      "min_seconds": 0.029410,
+      "max_seconds": 0.034777,
+      "stddev_seconds": 0.002346,
+      "peak_rss_bytes": 19746816
     },
     {
       "name": "fixtures.html",
-      "command": "gruff-rs analyse fixtures --format html --fail-on none --no-baseline",
+      "command": "gruff-rs analyse fixtures --no-config --format html --fail-on none --no-baseline",
       "iterations": [
         {
-          "wall_seconds": 0.007082,
-          "peak_rss_bytes": 8724480
+          "wall_seconds": 0.029749,
+          "peak_rss_bytes": 19267584
         },
         {
-          "wall_seconds": 0.007440,
-          "peak_rss_bytes": 8781824
+          "wall_seconds": 0.028957,
+          "peak_rss_bytes": 19480576
         },
         {
-          "wall_seconds": 0.007424,
-          "peak_rss_bytes": 8671232
+          "wall_seconds": 0.028119,
+          "peak_rss_bytes": 19124224
         },
         {
-          "wall_seconds": 0.007075,
-          "peak_rss_bytes": 8765440
-        },
-        {
-          "wall_seconds": 0.007722,
-          "peak_rss_bytes": 8941568
-        },
-        {
-          "wall_seconds": 0.006886,
-          "peak_rss_bytes": 8781824
-        },
-        {
-          "wall_seconds": 0.007181,
-          "peak_rss_bytes": 8929280
+          "wall_seconds": 0.028779,
+          "peak_rss_bytes": 19320832
         }
       ],
-      "median_seconds": 0.007181,
-      "min_seconds": 0.006886,
-      "max_seconds": 0.007722,
-      "stddev_seconds": 0.000284,
-      "peak_rss_bytes": 8781824
+      "median_seconds": 0.028868,
+      "min_seconds": 0.028119,
+      "max_seconds": 0.029749,
+      "stddev_seconds": 0.000670,
+      "peak_rss_bytes": 19294208
     },
     {
       "name": "src.json",
       "command": "gruff-rs analyse src --format json --fail-on none --no-baseline",
       "iterations": [
         {
-          "wall_seconds": 0.888996,
-          "peak_rss_bytes": 135172096
+          "wall_seconds": 0.857674,
+          "peak_rss_bytes": 139022336
         },
         {
-          "wall_seconds": 0.927817,
-          "peak_rss_bytes": 135323648
+          "wall_seconds": 0.966419,
+          "peak_rss_bytes": 138944512
         },
         {
-          "wall_seconds": 0.943291,
-          "peak_rss_bytes": 135217152
+          "wall_seconds": 0.850462,
+          "peak_rss_bytes": 139149312
         },
         {
-          "wall_seconds": 0.918015,
-          "peak_rss_bytes": 135360512
-        },
-        {
-          "wall_seconds": 0.904449,
-          "peak_rss_bytes": 135245824
-        },
-        {
-          "wall_seconds": 0.872791,
-          "peak_rss_bytes": 135438336
-        },
-        {
-          "wall_seconds": 0.874772,
-          "peak_rss_bytes": 135245824
+          "wall_seconds": 0.869443,
+          "peak_rss_bytes": 139337728
         }
       ],
-      "median_seconds": 0.904449,
-      "min_seconds": 0.872791,
-      "max_seconds": 0.943291,
-      "stddev_seconds": 0.026958,
-      "peak_rss_bytes": 135245824
+      "median_seconds": 0.863559,
+      "min_seconds": 0.850462,
+      "max_seconds": 0.966419,
+      "stddev_seconds": 0.054181,
+      "peak_rss_bytes": 139085824
     },
     {
       "name": "src.exact-rust-item",
-      "command": "gruff-rs analyse src --format json --fail-on none --config /home/devgoat/projects/gruff-workspace/projects/gruff-rs/target/perf/scratch-exact-rust-rule.yaml --no-baseline",
+      "command": "gruff-rs analyse src --format json --fail-on none --config target/perf/scratch-exact-rust-rule.yaml --no-baseline",
       "iterations": [
         {
-          "wall_seconds": 0.352232,
-          "peak_rss_bytes": 91426816
+          "wall_seconds": 0.272579,
+          "peak_rss_bytes": 94474240
         },
         {
-          "wall_seconds": 0.257264,
-          "peak_rss_bytes": 91488256
+          "wall_seconds": 0.272664,
+          "peak_rss_bytes": 94576640
         },
         {
-          "wall_seconds": 0.266271,
-          "peak_rss_bytes": 91639808
+          "wall_seconds": 0.280882,
+          "peak_rss_bytes": 94474240
         },
         {
-          "wall_seconds": 0.323628,
-          "peak_rss_bytes": 91672576
-        },
-        {
-          "wall_seconds": 0.261927,
-          "peak_rss_bytes": 91590656
-        },
-        {
-          "wall_seconds": 0.265082,
-          "peak_rss_bytes": 91631616
-        },
-        {
-          "wall_seconds": 0.263918,
-          "peak_rss_bytes": 91738112
+          "wall_seconds": 0.268833,
+          "peak_rss_bytes": 94470144
         }
       ],
-      "median_seconds": 0.265082,
-      "min_seconds": 0.257264,
-      "max_seconds": 0.352232,
-      "stddev_seconds": 0.037645,
-      "peak_rss_bytes": 91631616
+      "median_seconds": 0.272622,
+      "min_seconds": 0.268833,
+      "max_seconds": 0.280882,
+      "stddev_seconds": 0.005086,
+      "peak_rss_bytes": 94474240
     },
     {
       "name": "src.with-baseline",
-      "command": "gruff-rs analyse src --format json --fail-on none --baseline /home/devgoat/projects/gruff-workspace/projects/gruff-rs/target/perf/scratch-baseline.json",
+      "command": "gruff-rs analyse src --format json --fail-on none --baseline target/perf/scratch-baseline.json",
       "iterations": [
         {
-          "wall_seconds": 1.036155,
-          "peak_rss_bytes": 135241728
+          "wall_seconds": 1.486577,
+          "peak_rss_bytes": 138764288
         },
         {
-          "wall_seconds": 0.915468,
-          "peak_rss_bytes": 135188480
+          "wall_seconds": 1.530267,
+          "peak_rss_bytes": 138858496
         },
         {
-          "wall_seconds": 0.908402,
-          "peak_rss_bytes": 135180288
+          "wall_seconds": 1.505995,
+          "peak_rss_bytes": 138760192
         },
         {
-          "wall_seconds": 0.879251,
-          "peak_rss_bytes": 135241728
-        },
-        {
-          "wall_seconds": 0.860947,
-          "peak_rss_bytes": 135446528
-        },
-        {
-          "wall_seconds": 0.884293,
-          "peak_rss_bytes": 135241728
-        },
-        {
-          "wall_seconds": 0.944849,
-          "peak_rss_bytes": 135241728
+          "wall_seconds": 1.309307,
+          "peak_rss_bytes": 138764288
         }
       ],
-      "median_seconds": 0.908402,
-      "min_seconds": 0.860947,
-      "max_seconds": 1.036155,
-      "stddev_seconds": 0.058696,
-      "peak_rss_bytes": 135241728
+      "median_seconds": 1.496286,
+      "min_seconds": 1.309307,
+      "max_seconds": 1.530267,
+      "stddev_seconds": 0.100751,
+      "peak_rss_bytes": 138764288
     },
     {
       "name": "src.with-history",
-      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline --history-file /home/devgoat/projects/gruff-workspace/projects/gruff-rs/target/perf/scratch-history.json",
+      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline --history-file target/perf/scratch-history.json",
       "iterations": [
         {
-          "wall_seconds": 0.962240,
-          "peak_rss_bytes": 135303168
+          "wall_seconds": 1.411236,
+          "peak_rss_bytes": 138625024
         },
         {
-          "wall_seconds": 0.864048,
-          "peak_rss_bytes": 135294976
+          "wall_seconds": 1.241550,
+          "peak_rss_bytes": 139247616
         },
         {
-          "wall_seconds": 0.880798,
-          "peak_rss_bytes": 135102464
+          "wall_seconds": 1.490834,
+          "peak_rss_bytes": 138670080
         },
         {
-          "wall_seconds": 0.885425,
-          "peak_rss_bytes": 135282688
-        },
-        {
-          "wall_seconds": 0.985339,
-          "peak_rss_bytes": 135139328
-        },
-        {
-          "wall_seconds": 0.949042,
-          "peak_rss_bytes": 135368704
-        },
-        {
-          "wall_seconds": 0.982775,
-          "peak_rss_bytes": 135299072
+          "wall_seconds": 1.319875,
+          "peak_rss_bytes": 138973184
         }
       ],
-      "median_seconds": 0.949042,
-      "min_seconds": 0.864048,
-      "max_seconds": 0.985339,
-      "stddev_seconds": 0.051651,
-      "peak_rss_bytes": 135294976
+      "median_seconds": 1.365555,
+      "min_seconds": 1.241550,
+      "max_seconds": 1.490834,
+      "stddev_seconds": 0.108390,
+      "peak_rss_bytes": 138821632
     },
     {
       "name": "src.diff-empty",
-      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline --diff-patch /home/devgoat/projects/gruff-workspace/projects/gruff-rs/target/perf/scratch-empty.patch",
+      "command": "gruff-rs analyse src --format json --fail-on none --no-baseline --diff-patch target/perf/scratch-empty.patch",
       "iterations": [
         {
-          "wall_seconds": 0.050861,
-          "peak_rss_bytes": 20279296
+          "wall_seconds": 0.061599,
+          "peak_rss_bytes": 20369408
         },
         {
-          "wall_seconds": 0.046780,
-          "peak_rss_bytes": 20348928
+          "wall_seconds": 0.064025,
+          "peak_rss_bytes": 20123648
         },
         {
-          "wall_seconds": 0.044524,
-          "peak_rss_bytes": 20312064
+          "wall_seconds": 0.056214,
+          "peak_rss_bytes": 20185088
         },
         {
-          "wall_seconds": 0.044574,
-          "peak_rss_bytes": 20361216
-        },
-        {
-          "wall_seconds": 0.050337,
-          "peak_rss_bytes": 20307968
-        },
-        {
-          "wall_seconds": 0.043383,
-          "peak_rss_bytes": 20377600
-        },
-        {
-          "wall_seconds": 0.043471,
-          "peak_rss_bytes": 20119552
+          "wall_seconds": 0.067608,
+          "peak_rss_bytes": 20316160
         }
       ],
-      "median_seconds": 0.044574,
-      "min_seconds": 0.043383,
-      "max_seconds": 0.050861,
-      "stddev_seconds": 0.003162,
-      "peak_rss_bytes": 20312064
+      "median_seconds": 0.062812,
+      "min_seconds": 0.056214,
+      "max_seconds": 0.067608,
+      "stddev_seconds": 0.004784,
+      "peak_rss_bytes": 20250624
     },
     {
       "name": "list-rules.json",
       "command": "gruff-rs list-rules --format json",
       "iterations": [
         {
-          "wall_seconds": 0.004273,
-          "peak_rss_bytes": 7761920
+          "wall_seconds": 0.006829,
+          "peak_rss_bytes": 8007680
         },
         {
-          "wall_seconds": 0.004447,
-          "peak_rss_bytes": 8364032
+          "wall_seconds": 0.007726,
+          "peak_rss_bytes": 8101888
         },
         {
-          "wall_seconds": 0.004722,
-          "peak_rss_bytes": 8011776
+          "wall_seconds": 0.008044,
+          "peak_rss_bytes": 7839744
         },
         {
-          "wall_seconds": 0.004858,
-          "peak_rss_bytes": 7671808
-        },
-        {
-          "wall_seconds": 0.004575,
-          "peak_rss_bytes": 7946240
-        },
-        {
-          "wall_seconds": 0.004694,
-          "peak_rss_bytes": 7860224
-        },
-        {
-          "wall_seconds": 0.004080,
-          "peak_rss_bytes": 7684096
+          "wall_seconds": 0.006620,
+          "peak_rss_bytes": 8118272
         }
       ],
-      "median_seconds": 0.004575,
-      "min_seconds": 0.004080,
-      "max_seconds": 0.004858,
-      "stddev_seconds": 0.000273,
-      "peak_rss_bytes": 7860224
+      "median_seconds": 0.007278,
+      "min_seconds": 0.006620,
+      "max_seconds": 0.008044,
+      "stddev_seconds": 0.000688,
+      "peak_rss_bytes": 8054784
     }
   ]
 }

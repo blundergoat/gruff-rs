@@ -367,6 +367,9 @@ rules:
     enabled: true
     threshold: 7
     severity: warning
+  # Flags three or more tests in one module whose bodies differ only in literal values.
+  test-quality.duplicate-test-body:
+    enabled: true
   # Flags ignored tests that do not explain why they are skipped.
   test-quality.ignored-without-reason:
     enabled: true

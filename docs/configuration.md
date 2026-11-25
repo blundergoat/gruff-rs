@@ -186,6 +186,18 @@ entry index and the offending key (exit code 2):
 An entry that matches no finding is not an error. It reports `suppressed: 0`, so
 fixing the underlying problem never breaks a build.
 
+Every entry publishes one row in the report's `suppressions` array
+(`{index, rule, paths, reason, suppressed}` plus `symbol` when present) and contributes to the
+`Suppressed findings: N via …` line on the `analyse` and `summary` text output,
+where its row is labelled `sensitiveExclusions[<index>]`. Both commands apply the
+exclusion, so both publish the count; `summary --format json` carries the same
+`suppressions` array, because the `gruff.summary.v3` envelope is the analysis
+envelope with only `findings` removed. Suppressed findings are excluded from scoring and
+exit codes but are never silently invisible, and no reported field carries matched
+value material.
+
+## Inline Suppressions
+
 An `allow` or `expect` attribute naming a lint that makes a gruff-rs rule's claim
 also suppresses that finding where it was written (FAMILY-CONTRACT.md section
 13c): `clippy::too_many_lines` for `size.function-length`,
@@ -204,16 +216,6 @@ the built-in rows, numbered on from them, with `source: "inline"`, the reason
 "Another tool's suppression comment names this check, so the finding is suppressed
 where it was written." and the text label `inline[<path>]`; SARIF keeps the finding
 as a result with an `inSource` suppression.
-
-Every entry publishes one row in the report's `suppressions` array
-(`{index, rule, paths, reason, suppressed}` plus `symbol` when present) and contributes to the
-`Suppressed findings: N via …` line on the `analyse` and `summary` text output,
-where its row is labelled `sensitiveExclusions[<index>]`. Both commands apply the
-exclusion, so both publish the count; `summary --format json` carries the same
-`suppressions` array, because the `gruff.summary.v3` envelope is the analysis
-envelope with only `findings` removed. Suppressed findings are excluded from scoring and
-exit codes but are never silently invisible, and no reported field carries matched
-value material.
 
 ## Severity Defaults
 

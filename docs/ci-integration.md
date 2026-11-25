@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Replace the placeholder with the reviewed commit for v0.5.0.
-      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.5.0
+      # Replace the placeholder with the reviewed commit for v0.6.0.
+      - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.6.0
         with:
-          version: 0.5.0
+          version: 0.6.0
           argv: |
             analyse
             src
@@ -43,7 +43,7 @@ drive-relative value such as `C:crate` names no root the action can resolve, so
 it is rejected rather than guessed.
 
 Replace `FULL_40_CHARACTER_COMMIT_SHA` with the reviewed full commit SHA for
-v0.5.0 and keep `version: 0.5.0` aligned with that review. A full SHA pins the
+v0.6.0 and keep `version: 0.6.0` aligned with that review. A full SHA pins the
 action code immutably. An exact action tag can infer its matching binary
 version, but tags can move; a full-SHA caller must always supply `version`.
 `latest` and omitted versions on non-release refs fail closed.
@@ -137,7 +137,10 @@ it to scope its own work:
 ```
 
 The array carries one entry per input path, in the order given, so a caller can
-pair results with its own path list by index.
+pair results with its own path list by index. Because `check-ignore` applies the
+same explicit-file policy as `analyse <file>`, config `paths.ignore` and VCS
+internals always ignore matching paths, while explicit supported files bypass
+`.gitignore` and built-in directory defaults.
 
 Exit codes mirror `git check-ignore`: `0` when at least one path is ignored, `1`
 when none are, `2` on error. Text output lists the ignored paths; add `-v` to
@@ -155,9 +158,11 @@ Ordinary project analysis remains config-aware, so this repository's
 `.gruff-rs.yaml` continues to exclude `.github/**` from broad dogfood scans.
 Preflight has a separate named security check that enumerates the exact live
 `.github/workflows/*.yml` and `.yaml` files plus root `action.yml`, then supplies
-those paths with `--no-config --no-baseline`. That explicit bypass audits
-checked-in automation without weakening the project's normal ignore policy or
-recursively discovering arbitrary local actions.
+those paths with `--no-config --no-baseline` and explicit `--include-rule` flags
+for all six GitHub metadata rules (including the two default-off checks,
+`ci.github-event-shell-interpolation` and `security.github-actions-broad-permissions`).
+That explicit bypass audits checked-in automation without weakening the project's
+normal ignore policy or recursively discovering arbitrary local actions.
 
 An explicitly supplied file named exactly `action.yml` or `action.yaml` receives
 the step rules that understand both workflow and composite-action syntax:
@@ -165,6 +170,6 @@ direct `github.event.*` shell interpolation, remote downloads piped into a
 shell, and third-party `uses:` dependencies without full commit SHAs. Workflow
 permissions, `pull_request_target`, and pull-request secret checks remain
 workflow-only because action metadata has no workflow trigger or permission
-contract. `ci.github-event-shell-interpolation` has been off by default since 0.6.0,
-so it runs only when a config enables it or `--include-rule` names it, which
-also narrows the run to the named rules; a `--no-config` audit skips it.
+contract. Outside preflight, `ci.github-event-shell-interpolation` and
+`security.github-actions-broad-permissions` are off by default in `0.6.0`, so they
+run only when a config enables them or `--include-rule` names them.

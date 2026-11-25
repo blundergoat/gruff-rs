@@ -113,9 +113,13 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
         "\nScore: **{}**\n\nFindings: {} advisory, {} warning, {} error.\n",
         composite_text, report.summary.advisory, report.summary.warning, report.summary.error
     ));
+    render_markdown_baseline_and_suppressions(&mut output, report);
     render_pillars_section(&mut output, &pillars);
     render_diagnostics_section(&mut output, report);
     // The review shows at most fifty findings in deterministic report order.
+    if !report.findings.is_empty() {
+        output.push_str("\n## Findings\n");
+    }
     for finding in report.findings.iter().take(50) {
         let rule_id = markdown_code_span(&finding.rule_id);
         let file_path = markdown_code_span(&finding.file_path);
@@ -125,6 +129,48 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
         output.push_str(&format!("\n- {rule_id} {file_path}:{line} - {message}"));
     }
     output
+}
+
+/// Append one-line baseline and suppression audit notes to `output` when `report` has baseline or suppression entries.
+///
+/// Keeps Markdown consistent with `FAMILY-CONTRACT.md` section 13a so suppressions are never silent.
+fn render_markdown_baseline_and_suppressions(output: &mut String, report: &AnalysisReport) {
+    // A run that used or wrote a baseline says so, so the reader knows reviewed findings may be hidden.
+    if let Some(baseline) = &report.baseline {
+        if baseline.generated {
+            let _ = writeln!(
+                output,
+                "\nBaseline: generated {} ({} entries).",
+                markdown_code_span(&baseline.path),
+                baseline.entries
+            );
+        } else {
+            let _ = writeln!(
+                output,
+                "\nBaseline: {} {} ({} new, {} unchanged, {} resolved).",
+                markdown_plain_text(&baseline.source),
+                markdown_code_span(&baseline.path),
+                baseline.new_count,
+                baseline.unchanged_count,
+                baseline.absent_count
+            );
+        }
+    }
+    // List suppression entries, so a reviewer can see which findings config or attributes removed and why.
+    if !report.suppressions.is_empty() {
+        let suppressed_total: usize = report.suppressions.iter().map(|row| row.suppressed).sum();
+        let _ = writeln!(
+            output,
+            "\nSuppressed findings: {} across {} audit {}.",
+            suppressed_total,
+            report.suppressions.len(),
+            if report.suppressions.len() == 1 {
+                "entry"
+            } else {
+                "entries"
+            }
+        );
+    }
 }
 
 /// Append a Diagnostics section to `output` listing each diagnostic of `report`, or write nothing when the report has no diagnostics.

@@ -1,6 +1,14 @@
+//! Render each HTML section of the standalone report shown by `report --format html` and the local browser dashboard.
+//!
+//! Formats the masthead, diagnostics, suppression audit, verdict, pillar table, top offenders, complexity chart, and findings list.
+//! Every finding field and path is HTML-escaped so untrusted repository content cannot inject markup into the viewer's browser.
+
 use super::styles::css;
 use super::{severity_text, DistributionBar, OffenderRow, PillarRow, ReportView, SCHEMA_VERSION};
-use crate::{html_escape, pillar_label, scoring::score_text, Finding, RunDiagnostic, Severity};
+use crate::{
+    html_escape, pillar_label, scoring::score_text, Finding, RunDiagnostic, Severity,
+    SuppressionSummary,
+};
 use std::fmt::Write as _;
 
 /// Render the complete standalone HTML inspection report page.
@@ -18,12 +26,15 @@ pub(crate) fn document(view: &ReportView<'_>) -> String {
         html_escape(&view.grade_letter)
     ));
     out.push_str("<style>");
-    out.push_str(&css(!view.report.diagnostics.is_empty()));
+    out.push_str(&css(
+        !view.report.diagnostics.is_empty() || !view.report.suppressions.is_empty()
+    ));
     out.push_str("</style>\n</head>\n<body>\n");
     out.push_str("<main class=\"paper\">");
     out.push_str("<span class=\"corner-tr\"></span><span class=\"corner-bl\"></span>");
     out.push_str(&masthead(view));
     out.push_str(&diagnostics_section(&view.report.diagnostics));
+    out.push_str(&suppressions_section(&view.report.suppressions));
     out.push_str(&verdict_section(view));
     out.push_str(&pillars_section(view));
     out.push_str(&offenders_section(view));
@@ -100,6 +111,45 @@ fn diagnostics_section(diagnostics: &[RunDiagnostic]) -> String {
     out.push_str("<div class=\"diagnostic-list\">");
     for diagnostic in diagnostics {
         out.push_str(&diagnostic_row(diagnostic));
+    }
+    out.push_str("</div></section>");
+    out
+}
+
+/// Render the suppression audit section of the report so HTML never filters findings in silence (`FAMILY-CONTRACT.md` section 13a).
+///
+/// `suppressions` are the suppression summary rows from configured, built-in, and inline channels.
+/// Returns an empty string when there are no suppressions, leaving the page unchanged on clean scans.
+fn suppressions_section(suppressions: &[SuppressionSummary]) -> String {
+    // A clean scan with no suppressions keeps the page unchanged.
+    if suppressions.is_empty() {
+        return String::new();
+    }
+    let total: usize = suppressions.iter().map(|row| row.suppressed).sum();
+    let mut out = String::new();
+    out.push_str("<section class=\"diagnostics\">");
+    let _ = write!(
+        out,
+        "<h2 class=\"section-head\">suppressions <span class=\"aside\">{total} suppressed across {} {}</span></h2>",
+        suppressions.len(),
+        if suppressions.len() == 1 { "entry" } else { "entries" }
+    );
+    out.push_str("<div class=\"diagnostic-list\">");
+    // One row per suppression entry, with its reason, so a reviewer can check each one.
+    for row in suppressions {
+        let scope = if row.paths.is_empty() {
+            row.rule.clone()
+        } else {
+            format!("{} ({})", row.rule, row.paths.join(", "))
+        };
+        let _ = write!(
+            out,
+            "<div class=\"diagnostic\"><span class=\"diagnostic-type\">{}</span><span class=\"diagnostic-message\">{} suppressed: {}</span><span class=\"diagnostic-location\">{}</span></div>",
+            html_escape(row.config_key),
+            row.suppressed,
+            html_escape(&row.reason),
+            html_escape(&scope)
+        );
     }
     out.push_str("</div></section>");
     out
@@ -301,9 +351,9 @@ fn offender_row(row: &OffenderRow<'_>) -> String {
     )
 }
 
-/// Render the cyclomatic complexity histogram section.
+/// Render the complexity histogram section.
 ///
-/// `view` supplies the distribution buckets and the summary sentence shown above the chart.
+/// `view` supplies the metric label, distribution buckets, and summary sentence shown above the chart.
 /// Returns the section HTML with one bar and one axis label per bucket, bar heights scaled to the largest bucket.
 fn distribution_section(view: &ReportView<'_>) -> String {
     let max = distribution_max(&view.distribution);
@@ -316,13 +366,14 @@ fn distribution_section(view: &ReportView<'_>) -> String {
     format!(
         concat!(
             "<section class=\"chart-section\">",
-            "<h2 class=\"section-head\">distribution <span class=\"aside\">cyclomatic complexity</span></h2>",
+            "<h2 class=\"section-head\">distribution <span class=\"aside\">{label}</span></h2>",
             "<p class=\"chart-summary\">{summary}</p>",
-            "<div class=\"chart-card\"><div class=\"title\">cyclomatic complexity · flagged methods</div>",
+            "<div class=\"chart-card\"><div class=\"title\">{label} · flagged methods</div>",
             "<div class=\"histogram\">{bars}</div>",
             "<div class=\"histogram-axis\">{axis}</div>",
             "</div></section>"
         ),
+        label = html_escape(view.distribution_label),
         summary = html_escape(&view.distribution_summary),
         bars = bars,
         axis = axis,

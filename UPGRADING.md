@@ -61,7 +61,10 @@ at a time, so a project using more than one of them moves once. This port's reco
    `gruff.analysis.v3`; `summary --format json` emits `gruff.summary.v3`. Finding and
    score-offender `filePath` aliases and the top-level `suppressedCount` alias are removed; ignored
    paths move from `paths.ignoredPathDetails` to `paths.details`; Rust-only finding scope and
-   per-rule deltas live under `extensions.rs`. Fingerprint and stable-identity inputs are unchanged.
+   per-rule deltas live under `extensions.rs`. Analysis JSON `findings[].fingerprint` and
+   `stableIdentity` remain non-null on every finding (baselines and SARIF
+   `partialFingerprints.gruffFingerprint` moved to the line-free durable identity in items 1 and 3
+   above).
 8. **default scans use the family fallback policy** — Non-VCS fallbacks defer to any governing
    `.gitignore`, match at any depth, committed control metadata stays scannable, and explicit
    supported files bypass Git and fallback exclusions. Rust retains `target`; VCS internals remain
@@ -104,6 +107,7 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 19. **three rules are off by default** — `ci.github-event-shell-interpolation`, `security.sql-dynamic-query` and `security.ssrf-candidate` were each wrong on all four judged findings, too few to delete on. Enable one with `rules.<id>.enabled: true`; `--include-rule` also turns one on, but narrows the run to the rules it names. A config written by an earlier `init` lists them as `enabled: true` and keeps them on. The decision is ADR-024.
 
 20. **unit and never returns stop asking for a description, and three documentation rules widen by default** — `docs.missing-return-doc` no longer reports a function returning `()` or `!`, which removed 3 findings at the defaults on the 0.6.0 precision measurement's twelve Rust repositories. `docs.missing-param-doc` names every undocumented parameter in one message, and `docs.missing-public-doc` says what the rustdoc should cover. The `everyCallable` option is on by default for the three rules, including in a config written by an earlier `init`, which has no `options` entry; turning it on there added 25,316 `docs.missing-public-doc`, 1,862 `docs.missing-param-doc` and 1,563 `docs.missing-return-doc` findings, taking the total from 25,460 to 54,201, a little over twice as many. Set `rules.<id>.options.everyCallable: false` to keep a rule to public functions. The rest of this entry is in `CHANGELOG.md`.
+21. **remaining `0.6.0` rule-default, severity, and confidence shifts** — All eight formerly-`error` `sensitive-data.*` rules (`api-key-pattern`, `aws-access-key`, `gcp-service-account-key`, `jwt-token`, `phi-pattern`, `pii-test-fixture`, `private-key`, `url-embedded-credentials`) now default to `warning` (override `severity: error` in `.gruff-rs.yaml` to retain `--fail-on error` blocking); `complexity.cyclomatic`, `security.process-command`, `security.unsafe-deserialization`, `security.github-actions-broad-permissions`, and `security.hardcoded-bind-all-interfaces` are off by default (set `enabled: true` to keep them on); `security.*` rules skip test, fixture, and example paths with counted `source: "built-in"` audit rows; ten rules recalibrated confidence against measured precision with catalogue confidence taking precedence on every built-in finding; and `test-quality.duplicate-test-body` is enabled by default (set `enabled: false` to opt out). Full details are in `CHANGELOG.md`.
 
 ## What may change in `0.5.x` with deprecation
 

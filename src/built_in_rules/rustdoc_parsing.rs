@@ -266,19 +266,26 @@ fn matching_close_paren_offset(after_fn: &str, open_paren: usize) -> Option<usiz
 /// Split a parameter list into one chunk per parameter at the commas outside any nested brackets.
 ///
 /// `inside` is the text between the parameter list's parentheses; angle, round, square and curly brackets raise the nesting depth.
-/// Their closers lower it, never below zero, and an arrow's `>` counts as a closer.
+/// Their closers lower it, never below zero, while a `->` arrow's `>` is ignored so `Fn(...) -> R` bounds keep their balance.
 /// Returns every chunk untrimmed, including an empty last chunk after a trailing comma or for empty input.
 fn split_top_level_commas(inside: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     let mut depth = 0i32;
+    let mut previous = None;
     for character in inside.chars() {
         match character {
             '<' | '(' | '[' | '{' => {
                 depth += 1;
                 current.push(character);
             }
-            '>' | ')' | ']' | '}' => {
+            '>' => {
+                if previous != Some('-') && depth > 0 {
+                    depth -= 1;
+                }
+                current.push(character);
+            }
+            ')' | ']' | '}' => {
                 if depth > 0 {
                     depth -= 1;
                 }
@@ -289,6 +296,7 @@ fn split_top_level_commas(inside: &str) -> Vec<String> {
             }
             _ => current.push(character),
         }
+        previous = Some(character);
     }
     chunks.push(current);
     chunks

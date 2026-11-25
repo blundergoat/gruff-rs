@@ -333,6 +333,16 @@ fn migrate_config_lines(original: &str) -> ConfigMigration {
             continue;
         }
 
+        // An empty 0.5 `minimumSeverity:` header (comment-only block) is dropped while keeping surrounding comments.
+        if is_empty_legacy_gate_header(&lines, index) {
+            changes.push(change_line(
+                index,
+                "minimumSeverity: empty placeholder removed; use failOn: to gate exit codes or a scalar minimumSeverity: for display floor",
+            ));
+            index += 1;
+            continue;
+        }
+
         // A per-command map under the old key is the exit gate, which now has its own name.
         if let Some(renamed) = renamed_gate_line(&lines, index) {
             changes.push(change_line(index, RENAMED_GATE_CHANGE));
@@ -369,6 +379,26 @@ fn legacy_preview_block_length(lines: &[&str], index: usize) -> usize {
     }
 
     length
+}
+
+/// Report whether `lines[index]` is a bare top-level `minimumSeverity:` placeholder with no value and no active child.
+///
+/// `lines` are the original config lines and `index` is the 0-based line to test.
+/// Returns true when the line is an empty `minimumSeverity:` header (e.g. followed only by comments), false otherwise.
+fn is_empty_legacy_gate_header(lines: &[&str], index: usize) -> bool {
+    let line = lines[index];
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+    // Only a top-level minimumSeverity key is the 0.5 setting being migrated; a nested one belongs to something else.
+    if indent != 0 || !key_is(trimmed, "minimumSeverity") {
+        return false;
+    }
+    let tail = trimmed
+        .split_once(':')
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or_default();
+    let tail_without_comment = tail.split('#').next().unwrap_or_default().trim();
+    tail_without_comment.is_empty() && !block_has_active_child(lines, index, indent)
 }
 
 /// Rewrite the old gate key when it introduces a per-command block, leaving the scalar display floor alone.
@@ -490,7 +520,7 @@ fn with_schema_version(
             ));
             lines.insert(0, pinned);
         }
-        Some(position) if lines[position].trim() != pinned => {
+        Some(position) if !schema_version_line_matches(&lines[position]) => {
             changes.push(format!(
                 "line {}: schemaVersion pinned to {SCHEMA_VERSION}",
                 position + 1
@@ -512,6 +542,18 @@ fn with_schema_version(
         text: lines.join("\n"),
         changes,
     }
+}
+
+/// Report whether a top-level `schemaVersion:` line already evaluates to `SCHEMA_VERSION`.
+///
+/// `line` is the raw YAML line containing `schemaVersion:`; quoted values and trailing `#` comments (such as `# pinned`) are parsed as YAML.
+/// Returns true when the YAML scalar equals `SCHEMA_VERSION`, and false when it is missing, non-string, or names another version.
+fn schema_version_line_matches(line: &str) -> bool {
+    // Split on the first colon so the YAML parser evaluates only the scalar value and any inline comment.
+    let Some((_, tail)) = line.split_once(':') else {
+        return false;
+    };
+    serde_yaml::from_str::<String>(tail.trim()).ok().as_deref() == Some(SCHEMA_VERSION)
 }
 
 /// Read the named config, rewrite it, and put the result where the user asked.

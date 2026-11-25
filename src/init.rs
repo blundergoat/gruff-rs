@@ -53,15 +53,13 @@ const DEFAULT_IGNORE_PATTERNS: &[&str] = &[
 /// or cannot be written.
 pub(crate) fn run_init(args: InitArgs, writer: OutputWriter) -> ExitCode {
     let output = &args.output;
-    let preserved_ignores = read_existing_ignore_patterns(output);
-    let preserved_min_severity = read_existing_fail_on(output);
-    let preserved_deep_scan_budget = read_existing_deep_scan_budget(output);
+    let preserved = PreservedInitSettings::read(output);
     let body = render_default_config_with_budget(
         &builtin_registry(),
-        &preserved_ignores,
-        &preserved_min_severity,
-        &preserved_deep_scan_budget,
-        read_existing_display_floor(output),
+        &preserved.ignores,
+        &preserved.fail_on,
+        &preserved.deep_scan_budget,
+        preserved.display_floor,
     );
 
     // `--stdout` lets the user preview or redirect config without changing a project file.
@@ -188,17 +186,15 @@ fn should_write_default_config(project_root: &Path) -> bool {
 /// `target` is the config file to write; any ignores, `failOn` thresholds, and deep-scan budget already in it are kept in the new content.
 fn write_default_config_at(target: &Path) {
     let mut stderr = std::io::stderr();
-    let preserved_ignores = read_existing_ignore_patterns(target);
-    let preserved_min_severity = read_existing_fail_on(target);
-    let preserved_deep_scan_budget = read_existing_deep_scan_budget(target);
+    let preserved = PreservedInitSettings::read(target);
     match fs::write(
         target,
         render_default_config_with_budget(
             &builtin_registry(),
-            &preserved_ignores,
-            &preserved_min_severity,
-            &preserved_deep_scan_budget,
-            read_existing_display_floor(target),
+            &preserved.ignores,
+            &preserved.fail_on,
+            &preserved.deep_scan_budget,
+            preserved.display_floor,
         ),
     ) {
         Ok(()) => {
@@ -494,44 +490,133 @@ fn format_threshold(value: f64) -> String {
 ///
 /// `value` is one path pattern written into the generated `paths.ignore` list.
 ///
-/// Returns `value` unchanged when `needs_quoting` is false, otherwise wrapped in double quotes with backslashes and double quotes escaped.
+/// Returns `value` unchanged when `needs_quoting` is false, otherwise wrapped in double quotes with special characters escaped.
 fn yaml_string(value: &str) -> String {
     // YAML-sensitive values need quotes so the user's path is loaded exactly as displayed.
     if needs_quoting(value) {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+        let mut escaped = String::with_capacity(value.len() + 2);
+        for character in value.chars() {
+            match character {
+                '\\' => escaped.push_str("\\\\"),
+                '"' => escaped.push_str("\\\""),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '\t' => escaped.push_str("\\t"),
+                // YAML forbids other raw control characters, such as a BEL, so they are written as escapes the loader reads back exactly.
+                control if control.is_control() => {
+                    escaped.push_str(&format!("\\u{:04X}", u32::from(control)))
+                }
+                other => escaped.push(other),
+            }
+        }
+        format!("\"{escaped}\"")
     } else {
         value.to_string()
     }
 }
 
-// YAML indicators, map separators, and comment markers can change an unquoted path's meaning in the user's generated config.
-const YAML_LEADING_INDICATORS: &[char] = &['*', '&', '?', '|', '>', '!', '%', '@', '`'];
+// YAML indicators, map separators, flow delimiters, and comment markers can change an unquoted scalar's meaning.
+const YAML_LEADING_INDICATORS: &[char] = &[
+    '*', '&', '?', '|', '>', '!', '%', '@', '`', '-', ':', '#', '{', '}', '[', ']', ',', '\'', '"',
+];
+
+// Reserved YAML 1.1/1.2 boolean and null literals that deserialize to non-strings if left unquoted.
+const YAML_RESERVED_SCALARS: &[&str] = &[
+    "true", "false", "yes", "no", "on", "off", "y", "n", "null", "~", ".inf", "-.inf", "+.inf",
+    ".nan",
+];
 
 /// Decide whether a generated YAML value needs quotes to survive a user reload unchanged.
 ///
 /// `value` is the raw scalar text, such as an ignore pattern, before any quoting.
-///
-/// Returns `true` when `value` starts with one of `YAML_LEADING_INDICATORS` or contains a colon then a space or a space then `#`.
-/// The checks are not exhaustive: for example, `true`, `null`, `{foo}`, and `#foo` return `false` yet change meaning unquoted.
+/// Returns `true` for empty, whitespace-padded, reserved-keyword, numeric, indicator-led, control-char, or flow/comment-bearing scalars.
 fn needs_quoting(value: &str) -> bool {
-    let starts_with_indicator = value
-        .chars()
-        .next()
-        .is_some_and(|first| YAML_LEADING_INDICATORS.contains(&first));
-    starts_with_indicator || value.contains(": ") || value.contains(" #")
+    value.is_empty()
+        || value.trim() != value
+        || value
+            .chars()
+            .next()
+            .is_some_and(|first| YAML_LEADING_INDICATORS.contains(&first))
+        || has_unsafe_yaml_char(value)
+        || is_yaml_reserved_or_numeric(value)
+}
+
+/// Report whether `value` contains YAML syntax tokens, quotes, backslashes, or control characters that require quoting.
+///
+/// `value` is the scalar text to inspect.
+/// Returns `true` when quoting is required so YAML parsing preserves the exact string.
+fn has_unsafe_yaml_char(value: &str) -> bool {
+    value.contains(": ")
+        || value.ends_with(':')
+        || value.contains(" #")
+        || value.chars().any(|character| {
+            character.is_control()
+                || matches!(character, '"' | '\'' | '\\' | '{' | '}' | '[' | ']' | ',')
+        })
+}
+
+/// Report whether `value` would be interpreted as a YAML boolean, null, float sentinel, or number if left unquoted.
+///
+/// `value` is the scalar text to inspect.
+/// Returns `true` when quoting is required to keep the scalar a plain string.
+fn is_yaml_reserved_or_numeric(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    YAML_RESERVED_SCALARS.contains(&lower.as_str())
+        || value.parse::<i64>().is_ok()
+        || value.parse::<f64>().is_ok()
+        || lower.starts_with("0x")
+        || lower.starts_with("0o")
+        || lower.starts_with("0b")
+}
+
+/// Settings preserved from an existing config during `gruff-rs init --force` in a single YAML read.
+struct PreservedInitSettings {
+    ignores: Vec<String>,
+    fail_on: BTreeMap<String, FailThreshold>,
+    deep_scan_budget: DeepScanBudget,
+    display_floor: Option<Severity>,
+}
+
+impl PreservedInitSettings {
+    /// Parse `path` at most once and extract every setting `init` preserves, falling back cleanly on missing or malformed YAML.
+    ///
+    /// `path` is the existing config file to read.
+    /// Returns the preserved settings (defaults when absent or unparseable) while emitting at most one stderr parse warning.
+    fn read(path: &Path) -> Self {
+        let Some(value) = read_existing_yaml(path, "setting preservation") else {
+            return Self {
+                ignores: Vec::new(),
+                fail_on: BTreeMap::new(),
+                deep_scan_budget: DeepScanBudget::default(),
+                display_floor: None,
+            };
+        };
+        Self {
+            ignores: extract_ignore_patterns(&value),
+            fail_on: extract_fail_on(&value),
+            deep_scan_budget: extract_deep_scan_budget(&value),
+            display_floor: extract_display_floor(&value),
+        }
+    }
 }
 
 /// Read path ignores that should survive `gruff-rs init --force` regeneration.
-/// Missing, unreadable, malformed, or absent list data becomes empty so users can still repair the file.
 ///
-/// `path` is the existing config file to read; a malformed file also prints a parse warning to stderr.
-///
-/// Returns the string entries of `paths.ignore` in file order, skipping non-string entries, or an empty list when none can be read.
+/// `path` is the existing config file to read; a malformed file prints a parse warning to stderr.
+/// Returns `paths.ignore` string entries in file order, or an empty list when the file is missing, unreadable, or lacks a valid list.
+#[cfg(test)]
 pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
-    // No readable YAML means there are no safe existing ignore values to preserve.
     let Some(value) = read_existing_yaml(path, "ignore preservation") else {
         return Vec::new();
     };
+    extract_ignore_patterns(&value)
+}
+
+/// Extract string entries from `paths.ignore` in a parsed YAML config document.
+///
+/// `value` is the parsed YAML root.
+/// Returns the string ignore patterns in file order, or an empty list when `paths.ignore` is absent or non-sequence.
+fn extract_ignore_patterns(value: &serde_yaml::Value) -> Vec<String> {
     value
         .get("paths")
         .and_then(|paths| paths.get("ignore"))
@@ -545,16 +630,22 @@ pub(crate) fn read_existing_ignore_patterns(path: &Path) -> Vec<String> {
 }
 
 /// Read valid command thresholds that should survive `gruff-rs init --force` regeneration.
-/// Missing or invalid entries are skipped so the user can repair a partly broken config.
 ///
-/// `path` is the existing config file to read; a malformed file also prints a parse warning to stderr.
-///
-/// Returns the `failOn` entries for `analyse` and `report` whose values parse as thresholds, or an empty map when there is no readable block.
+/// `path` is the existing config file to read; a malformed file prints a parse warning to stderr.
+/// Returns valid `failOn` entries for `analyse` and `report`, or an empty map when missing or unreadable so users can repair a broken file.
+#[cfg(test)]
 pub(crate) fn read_existing_fail_on(path: &Path) -> BTreeMap<String, FailThreshold> {
-    // No readable YAML means there are no safe threshold overrides to preserve.
     let Some(value) = read_existing_yaml(path, "failOn preservation") else {
         return BTreeMap::new();
     };
+    extract_fail_on(&value)
+}
+
+/// Extract valid `failOn` command thresholds from a parsed YAML config document.
+///
+/// `value` is the parsed YAML root.
+/// Returns the `analyse` and `report` entries that parse as valid thresholds, or an empty map when absent.
+fn extract_fail_on(value: &serde_yaml::Value) -> BTreeMap<String, FailThreshold> {
     value
         .get("failOn")
         .and_then(|v| v.as_mapping())
@@ -562,24 +653,19 @@ pub(crate) fn read_existing_fail_on(path: &Path) -> BTreeMap<String, FailThresho
         .unwrap_or_default()
 }
 
-/// Read the scalar display floor from an existing config at `path`.
-/// Returns no floor if the field is absent or is a legacy command map.
-fn read_existing_display_floor(path: &Path) -> Option<Severity> {
-    let value = read_existing_yaml(path, "minimumSeverity preservation")?;
+/// Extract the scalar `minimumSeverity` display floor from a parsed YAML config document.
+///
+/// `value` is the parsed YAML root.
+/// Returns the parsed severity, or `None` when absent or a legacy command map.
+fn extract_display_floor(value: &serde_yaml::Value) -> Option<Severity> {
     value.get("minimumSeverity")?.as_str()?.parse().ok()
 }
 
-/// Preserve a valid existing deep-scan budget during `init --force` regeneration.
-/// Invalid members fall back independently so regeneration can repair a broken file.
+/// Extract a valid `deepScanBudget` block from a parsed YAML config document.
 ///
-/// `path` is the existing config file to read; a malformed file also prints a parse warning to stderr.
-///
-/// Returns `DeepScanBudget::default()` when no `deepScanBudget` mapping can be read.
-/// Otherwise each valid member is kept, other members take their defaults, and `override_state` is set to `config`.
-fn read_existing_deep_scan_budget(path: &Path) -> DeepScanBudget {
-    let Some(value) = read_existing_yaml(path, "deepScanBudget preservation") else {
-        return DeepScanBudget::default();
-    };
+/// `value` is the parsed YAML root.
+/// Returns `DeepScanBudget::default()` when absent, or the preserved members with defaults for missing/invalid fields.
+fn extract_deep_scan_budget(value: &serde_yaml::Value) -> DeepScanBudget {
     let Some(mapping) = value
         .get("deepScanBudget")
         .and_then(serde_yaml::Value::as_mapping)

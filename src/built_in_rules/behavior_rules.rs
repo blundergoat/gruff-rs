@@ -268,7 +268,7 @@ pub(crate) fn analyse_process_commands(
             continue;
         }
         let literal_arrays =
-            literal_argument_array_bindings(&literal_lines, &code_lines, line_index);
+            literal_argument_array_bindings(&literal_lines, &code_lines, line_index, window_end);
         let risk_signals =
             process_command_risk_signals(&literal_window, &code_window, &literal_arrays);
         // Fixed commands without a concrete risk shape do not warrant a security warning.
@@ -832,21 +832,19 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
-/// Name the locals an earlier statement of the same function binds to an array of plain string literals that
-/// still holds at the command.
+/// Return local variable names in the same function that still hold an immutable array of plain string literals at a `Command::new` call.
 ///
-/// The nearest `let` of each name decides, and a `mut` binding never counts because its elements can be replaced.
-/// A binding in a block that closed before the command is out of scope. Any other mention of the name between the
-/// binding and the command (an `if let`, `for`, match arm or closure parameter) may rebind it, so the name is dropped,
-/// as it is when the command line names it more than once.
+/// Keeps command-injection rules quiet on safe constant arg lists while staying conservative against reassignment or shadowing:
+/// - Only the nearest `let` for a name counts; `mut` bindings and bindings inside closed inner blocks are rejected.
+/// - Any intervening mention (such as `if let`, `for`, match arm, or closure param) or repeated use on the command line drops the name.
 ///
-/// `literal_preserving_lines` keeps string literals and `code_only_lines` masks them; both views mask comments and share line numbers.
-/// `line_index` is the zero-based line of the `Command::new` call.
-/// Returns the names of the qualifying bindings, or an empty set when none qualify.
+/// `literal_preserving_lines` keeps strings while `code_only_lines` masks them (both mask comments); `line_index`..`window_end` spans the call.
+/// Returns qualifying variable names, or an empty set when no safe literal-array bindings exist.
 fn literal_argument_array_bindings(
     literal_preserving_lines: &[&str],
     code_only_lines: &[&str],
     line_index: usize,
+    window_end: usize,
 ) -> HashSet<String> {
     let let_binding = static_regex(
         &PROCESS_LET_BINDING_REGEX,
@@ -859,49 +857,57 @@ fn literal_argument_array_bindings(
     let mut nearest_seen = HashSet::new();
     let mut literal_arrays = HashSet::new();
     // Walk back to the enclosing function's signature; bindings above it belong to other code.
-    for (index, line) in literal_preserving_lines[..line_index]
+    for (index, (line, code_line)) in literal_preserving_lines[..line_index]
         .iter()
+        .zip(code_only_lines[..line_index].iter())
         .enumerate()
         .rev()
     {
-        // Visit a line's bindings right to left, so the later of two on one line is the nearer.
-        let bindings: Vec<_> = let_binding.captures_iter(line).collect();
+        // Match bindings on `code_only_lines` so string literals cannot forge a `let` declaration,
+        // visiting right to left so the later of two bindings on one line is the nearer.
+        let bindings: Vec<_> = let_binding.captures_iter(code_line).collect();
         for binding in bindings.iter().rev() {
             let name = binding["name"].to_string();
             let binding_end = binding.get(0).map_or(0, |whole| whole.end());
             // The nearest binding decides; a non-`mut` literal array still in scope and untouched is the only one accepted.
             if nearest_seen.insert(name.clone())
                 && binding.name("mutable").is_none()
-                && literal_array.is_match(&line[binding_end..])
+                && line
+                    .get(binding_end..)
+                    .is_some_and(|rest| literal_array.is_match(rest))
                 && is_binding_live_at_command(
                     code_only_lines,
                     index,
                     binding_end,
                     line_index,
+                    window_end,
                     &name,
                 )
             {
                 literal_arrays.insert(name);
             }
         }
-        if line.contains("fn ") {
+        if code_line.contains("fn ") {
             break;
         }
     }
     literal_arrays
 }
 
-/// Report whether a binding is still in scope, unmentioned between its own end and the command line, and named exactly
-/// once on the command line.
+/// Report whether a binding is still in scope, unmentioned between its own end and the command statement, and named exactly
+/// once within the command statement window.
 ///
 /// `code_only_lines` are the masked source lines, and `binding_index` is the binding's line.
-/// `binding_end` is the byte offset just after its `let name`, `command_index` is the command's line, and `name` is the bound local.
-/// Returns true when the block stays open, no line in between mentions `name`, and the command line names it once; false otherwise.
+/// `binding_end` is the byte offset just after its `let name`, and `name` is the bound local.
+/// `command_index`..`command_end` is the command statement's line range.
+///
+/// Returns true when the block stays open, no line in between mentions `name`, and the command statement names it once; false otherwise.
 fn is_binding_live_at_command(
     code_only_lines: &[&str],
     binding_index: usize,
     binding_end: usize,
     command_index: usize,
+    command_end: usize,
     name: &str,
 ) -> bool {
     let between = std::iter::once(
@@ -931,7 +937,11 @@ fn is_binding_live_at_command(
             return false;
         }
     }
-    identifier_mentions(code_only_lines[command_index], name) == 1
+    let command_mentions: usize = code_only_lines[command_index..command_end]
+        .iter()
+        .map(|line| identifier_mentions(line, name))
+        .sum();
+    command_mentions == 1
 }
 
 /// Count whole-identifier mentions of a local name in code-only text, so `.args` and `path::args` do not count.

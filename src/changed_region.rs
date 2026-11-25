@@ -147,9 +147,15 @@ pub(crate) fn git_diff_patch(
     mode: &str,
     paths: &[PathBuf],
 ) -> Result<DiffPatchLineMap, String> {
-    // `--no-ext-diff`/`--no-textconv` stop an untrusted repo's configured diff
-    // drivers from executing under this `--diff-git-unsafe`-gated path.
-    let mut diff_arguments = vec!["diff", "--no-ext-diff", "--no-textconv", "--unified=0"];
+    // `--relative` keeps patch paths relative to `project_root` even inside a nested member crate;
+    // `--no-ext-diff`/`--no-textconv` stop an untrusted repo's configured diff drivers from executing.
+    let mut diff_arguments = vec![
+        "diff",
+        "--relative",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=0",
+    ];
     match mode {
         // Compare the working tree against the last commit, which is what an operator means by "what have I changed".
         "working-tree" => diff_arguments.push("HEAD"),

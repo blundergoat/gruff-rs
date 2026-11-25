@@ -92,28 +92,18 @@ fn emit_hook_report(
         run.config,
         run.changed_region_active,
     ) {
-        writer.emit_unconditional(&render_fatal("baseline", &error));
+        let diagnostic_type = if args.diff.is_some() {
+            "changed-region"
+        } else {
+            "baseline"
+        };
+        writer.emit_unconditional(&render_fatal(diagnostic_type, &error));
         eprintln!("gruff-rs: {error}");
         return ExitCode::from(2);
     }
 
     let has_fatal_diagnostic = report.diagnostics.iter().any(RunDiagnostic::is_failure);
-    let context = HookRunContext {
-        mode: hook_run_mode(args),
-        changed_scope: run.changed_region_active.then_some(args.changed_scope),
-        paths: args
-            .paths
-            .iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect(),
-        baseline_path: run.options.baseline.as_ref().and_then(|path| {
-            let path = absolutize(run.project_root, path).canonicalize().ok()?;
-            crate::machine_contract::relative_machine_path(
-                &path.to_string_lossy(),
-                &run.project_root.to_string_lossy(),
-            )
-        }),
-    };
+    let context = hook_run_context(report, run);
     let payload = render_hook_report_for(
         report,
         run.changed_region_active,
@@ -122,10 +112,39 @@ fn emit_hook_report(
     );
     writer.emit_unconditional(&payload);
 
+    // A fatal diagnostic means the hook could not check the edit, so it exits 2 whatever the findings say.
     if has_fatal_diagnostic {
         return ExitCode::from(2);
     }
     ExitCode::from(hook_exit_code(&payload, args))
+}
+
+/// Assemble the hook audit metadata carried under `run` in `gruff.hook.v2`.
+///
+/// `report` supplies whether a baseline was applied, and `run` supplies the CLI arguments, project root, and rebased options.
+/// Returns the `HookRunContext` with project-relative baseline path when representable (`None` for external baselines).
+fn hook_run_context(report: &AnalysisReport, run: &HookRun<'_>) -> HookRunContext {
+    let args = run.args;
+    HookRunContext {
+        mode: hook_run_mode(args),
+        changed_scope: run.changed_region_active.then_some(args.changed_scope),
+        paths: args
+            .paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        baseline_applied: report
+            .baseline
+            .as_ref()
+            .is_some_and(|baseline| !baseline.generated),
+        baseline_path: run.options.baseline.as_ref().and_then(|path| {
+            let path = absolutize(run.project_root, path).canonicalize().ok()?;
+            crate::machine_contract::relative_machine_path(
+                &path.to_string_lossy(),
+                &run.project_root.to_string_lossy(),
+            )
+        }),
+    }
 }
 
 /// Render the payload for a run that could not happen, naming which kind of failure it was.
@@ -509,7 +528,8 @@ fn git_base_tree_paths(
 
 /// Read the content of every listed base-tree path in one `git cat-file --batch -Z` call.
 ///
-/// `project_root` is the repository git runs in, and each of `base_paths` is queried at `base_ref` as a NUL-terminated `ref:path` query.
+/// `project_root` is the repository git runs in, and each of `base_paths` is queried at `base_ref` as a NUL-terminated `ref:./path` query.
+/// The `./` keeps each path relative to the current folder, so a nested member crate resolves its own files.
 /// Returns the raw batch output, one header and content per query in order, or Err when the git command fails.
 fn git_cat_file_batch(
     project_root: &Path,
@@ -519,7 +539,7 @@ fn git_cat_file_batch(
     let mut queries = Vec::new();
     for path in base_paths {
         queries.extend_from_slice(base_ref.as_bytes());
-        queries.push(b':');
+        queries.extend_from_slice(b":./");
         queries.extend_from_slice(path.as_bytes());
         queries.push(0);
     }
@@ -797,7 +817,7 @@ fn fatal_payload(diagnostic_type: &str, message: &str) -> Value {
     json!({
         "contractVersion": HOOK_CONTRACT_VERSION,
         "analyzer": analyzer_json(),
-        "run": run_payload("full", "file", &[], 0, None),
+        "run": run_payload("full", "file", &[], 0, false, None),
         "findings": [],
         "diagnostics": [{
             "type": diagnostic_type,
@@ -819,13 +839,16 @@ fn fatal_payload(diagnostic_type: &str, message: &str) -> Value {
 /// identical on the wire.
 ///
 /// `mode` is the region selector, `scope` the granularity the run reports at, and `paths` the operands as the caller gave them.
-/// `analysed_files` counts the files scanned, and `baseline_path` is the baseline that classified the run, or None when none applied.
-/// Returns the `run` JSON object, whose `baseline` block is applied and names the v3 schema only when `baseline_path` is set.
+/// `analysed_files` counts the files scanned, and `baseline_applied` records whether a baseline classified the run, including an external file.
+/// `baseline_path` is the project-relative baseline path, or None when none applied or the file sits outside the project root.
+///
+/// Returns the `run` JSON object, whose `baseline` block reports `applied` and the v3 schema whenever `baseline_applied` is true.
 fn run_payload(
     mode: &str,
     scope: &str,
     paths: &[String],
     analysed_files: usize,
+    baseline_applied: bool,
     baseline_path: Option<&str>,
 ) -> Value {
     json!({
@@ -834,8 +857,8 @@ fn run_payload(
         "paths": paths,
         "analysedFiles": analysed_files,
         "baseline": {
-            "applied": baseline_path.is_some(),
-            "schemaVersion": baseline_path.map(|_| HOOK_BASELINE_SCHEMA_VERSION),
+            "applied": baseline_applied,
+            "schemaVersion": baseline_applied.then_some(HOOK_BASELINE_SCHEMA_VERSION),
             "path": baseline_path
         }
     })
@@ -881,16 +904,19 @@ pub(crate) struct HookRunContext {
     pub(crate) changed_scope: Option<ChangedScope>,
     /// The operands as the caller gave them.
     pub(crate) paths: Vec<String>,
-    /// Project-relative baseline that classified the run, or None when none applied.
+    /// Whether a baseline classified the run, even when its path lies outside the project root.
+    pub(crate) baseline_applied: bool,
+    /// Project-relative baseline that classified the run, or None when none applied or external.
     pub(crate) baseline_path: Option<String>,
 }
 
 /// Render the hook payload for a finished scan: sorted findings, diagnostics, suppressions, ignored paths and the run's audit block.
 ///
 /// `report` is changed in place: the changed-region filter may drop findings, and its findings and diagnostics are moved into the payload.
-/// `changed_region_active` and `new_only_active` steer that filter; `context` gives the audit block its mode, operands and baseline path.
+/// `changed_region_active` and `new_only_active` steer that filter; `context` gives the audit block its mode, operands and baseline metadata.
 ///
-/// Returns the JSON payload with `file` for a full run, `hunk` for explicit hunk scope, and `symbol` for other changed scans.
+/// Returns the JSON payload with scope `file` for a full or unnarrowed diff run, `hunk` for explicit hunk scope,
+/// and `symbol` for symbol-scoped changed-region scans.
 /// An empty `context.mode` is reported as `full`.
 pub(crate) fn render_hook_report_for(
     report: &mut AnalysisReport,
@@ -904,9 +930,9 @@ pub(crate) fn render_hook_report_for(
     let ignored_paths =
         serde_json::to_value(&report.paths.ignored_path_details).unwrap_or_else(|_| json!([]));
     let suppressed_count = report.suppressed_count.unwrap_or(0);
+    let analysed_files = crate::machine_contract::analysed_file_count(report);
     let diagnostics = hook_diagnostics(std::mem::take(&mut report.diagnostics));
     let suppressions = hook_suppressions(&report.suppressions);
-    let analysed_files = report.paths.analysed_files;
     // A caller without a selected comparison mode sees a full run in the audit.
     let mode = if context.mode.is_empty() {
         "full".to_string()
@@ -914,11 +940,12 @@ pub(crate) fn render_hook_report_for(
         context.mode.clone()
     };
     let scope = match (mode.as_str(), context.changed_scope) {
-        ("full", _) => "file",
+        ("full", _) | (_, None) => "file",
         (_, Some(ChangedScope::Hunk)) => "hunk",
-        _ => "symbol",
+        (_, Some(ChangedScope::Symbol)) => "symbol",
     };
     let findings = hook_findings(std::mem::take(&mut report.findings), &registry);
+    let baseline_applied = context.baseline_applied || context.baseline_path.is_some();
 
     serde_json::to_string_pretty(&json!({
         "contractVersion": HOOK_CONTRACT_VERSION,
@@ -928,6 +955,7 @@ pub(crate) fn render_hook_report_for(
             scope,
             &context.paths,
             analysed_files,
+            baseline_applied,
             context.baseline_path.as_deref(),
         ),
         "findings": findings,

@@ -21,8 +21,6 @@ pub(crate) fn has_nearby_invariant_comment(source: &str) -> bool {
 /// Returns true when `source` has `assert!(true)` or `assert!(false)`, or an `assert_eq!` of two identical digit-only or quoted literals.
 /// The `assert_eq!` must end right after its second literal, without a trailing comma or message, and no literal may contain its own quote.
 /// It is also true when `has_literal_binding_tautology` finds a literal binding asserted unchanged within its textual window.
-///
-/// Panics when a bound name or literal is long enough for `literal_is_asserted_before_shadow` to exceed the regex size limit.
 pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     let literal_assert = static_regex(&TRIVIAL_ASSERT_REGEX, r"\bassert!\s*\(\s*(true|false)\s*\)");
     // A literal assertion gives the user no confidence that application behavior works.
@@ -50,7 +48,6 @@ pub(crate) fn has_trivial_assertion(source: &str) -> bool {
 ///
 /// `source` is the test text to search; only an immutable `let` of `true`, `false` or a number literal can count.
 /// Returns true when such a binding meets an `assert_eq!` against its literal inside the window `literal_is_asserted_before_shadow` checks.
-/// Panics when a bound name or literal is long enough for `literal_is_asserted_before_shadow` to exceed the regex size limit.
 fn has_literal_binding_tautology(source: &str) -> bool {
     let binding = static_regex(
         &LITERAL_BINDING_REGEX,
@@ -76,22 +73,24 @@ fn has_literal_binding_tautology(source: &str) -> bool {
 ///
 /// `rest` is the source after the binding, `name` is the bound identifier, and `literal` is its value as written.
 /// Returns true when `assert_eq!` compares `name` with `literal`, in either order, before the next `let` that mentions `name` ahead of an `=`.
-/// The window is textual, so a `let name;` with no value does not end it, while `name` in a later `let` type annotation does.
+/// Returns false safely if `name` or `literal` is too large to compile into a bounded regex.
 ///
-/// Panics through `expect` when `name` or `literal` is so long that a generated regex exceeds the regex crate's compiled size limit.
+/// The window is textual, so a `let name;` with no value does not end it, while `name` in a later `let` type annotation does.
 fn literal_is_asserted_before_shadow(rest: &str, name: &str, literal: &str) -> bool {
     let escaped_name = regex::escape(name);
     let escaped_literal = regex::escape(literal);
 
     // A later binding ends the safe comparison window because the assertion may refer to a different user value.
-    let shadow = Regex::new(&format!(r"\blet\b[^;=]*\b{escaped_name}\b[^;=]*="))
-        .expect("literal-binding shadow regex compiles");
+    let Ok(shadow) = Regex::new(&format!(r"\blet\b[^;=]*\b{escaped_name}\b[^;=]*=")) else {
+        return false;
+    };
     let window_end = shadow.find(rest).map_or(rest.len(), |found| found.start());
 
-    let assertion = Regex::new(&format!(
+    let Ok(assertion) = Regex::new(&format!(
         r"\bassert_eq!\s*\(\s*(?:\b{escaped_name}\b\s*,\s*\b{escaped_literal}\b|\b{escaped_literal}\b\s*,\s*\b{escaped_name}\b)\s*[,)]"
-    ))
-    .expect("literal-binding assertion regex compiles");
+    )) else {
+        return false;
+    };
     assertion.is_match(&rest[..window_end])
 }
 

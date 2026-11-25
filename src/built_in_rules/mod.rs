@@ -232,6 +232,7 @@ fn any_rule_is_enabled(config: &Config, rule_ids: &[&str]) -> bool {
 ///
 /// `unit` is the source unit to scan and `config` selects the enabled rules and their severities.
 /// Returns the findings of enabled rules after `apply_configured_severity`; any function blocks built on the way are dropped.
+#[cfg(test)]
 pub(crate) fn analyse(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     analyse_with_artifacts(unit, config, false).findings
 }

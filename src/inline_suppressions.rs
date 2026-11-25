@@ -11,10 +11,8 @@ use syn::spanned::Spanned;
 use syn::{Attribute, Item, Meta, Token};
 
 use crate::analysis::apply_report_exclusions;
-use crate::config::Config;
-use crate::gate::GateScope;
-use crate::report::{Finding, Summary, SuppressedFinding, SuppressionSummary};
-use crate::scoring::summarize;
+use crate::config::{Config, DeepScanBudget};
+use crate::report::{Finding, SuppressedFinding, SuppressionSummary};
 
 /// Reason on each inline audit row; every port publishes these exact words (FAMILY-CONTRACT.md section 13c).
 pub(crate) const INLINE_SUPPRESSION_REASON: &str =
@@ -54,12 +52,10 @@ const ZIZMOR_AUDITS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Apply the configured exclusions and built-in skips, then remove each finding an `allow` or `expect` attribute or a
-/// zizmor comment covers and count it in one inline audit row per file and rule, after the built-in rows and numbered
-/// on from them.
+/// Apply configured exclusions, built-in skips, and inline `allow`/`expect` or zizmor suppressions in audit order.
 ///
-/// `findings` is consumed, `config` supplies the exclusion lists, and `project_root` locates the files read for attributes and comments.
-/// Returns the kept findings, the suppression summaries with inline rows last, and every suppressed finding paired with its summary.
+/// `findings` is consumed, `config` supplies exclusion lists and the deep-scan budget, and `project_root` locates files for inline checks.
+/// Returns kept findings, suppression summaries with inline rows numbered after built-ins, and each suppressed finding paired with its summary.
 pub(crate) fn apply_all_suppressions(
     findings: Vec<Finding>,
     config: &Config,
@@ -71,27 +67,10 @@ pub(crate) fn apply_all_suppressions(
 ) {
     let (findings, mut summaries, mut suppressed) =
         apply_report_exclusions(findings, &config.exclusions, &config.sensitive_exclusions);
-    let (kept, removed) = partition_inline_findings(findings, project_root);
+    let (kept, removed) =
+        partition_inline_findings(findings, project_root, &config.deep_scan_budget);
     push_inline_rows(removed, &mut summaries, &mut suppressed);
     (kept, summaries, suppressed)
-}
-
-/// Keep reviewed baseline debt in the all-findings gate while honoring audited suppressions.
-/// `config` supplies the gate scope and suppressions under `project_root`.
-/// Returns `findings` and `summary`, recomputed for the all-findings gate when enabled.
-pub(crate) fn gate_scope_findings(
-    project_root: &Path,
-    config: &Config,
-    findings: Vec<Finding>,
-    summary: Summary,
-) -> (Vec<Finding>, Summary) {
-    // Only a scope-all gate can include reviewed findings and therefore needs the suppressions reapplied to that set.
-    if config.gate.as_ref().map(|gate| gate.scope) != Some(GateScope::All) {
-        return (findings, summary);
-    }
-    let (kept, _, _) = apply_all_suppressions(findings, config, project_root);
-    let summary = summarize(&kept);
-    (kept, summary)
 }
 
 /// Findings an attribute or comment covers, grouped by file and rule; a BTreeMap orders them in UTF-8 byte order.
@@ -99,11 +78,13 @@ type InlineFindingsByFileAndRule = BTreeMap<(String, String), Vec<Finding>>;
 
 /// Split findings into the ones the report keeps and the ones an attribute or comment covers.
 ///
-/// `findings` is consumed, and `project_root` locates each file holding a mapped finding, which is read only once.
+/// `findings` is consumed, `project_root` locates each file holding a mapped finding (read only once),
+/// and `deep_scan_budget` bounds which Rust files are parsed for attribute scopes.
 /// Returns the kept findings in their original order and the covered ones grouped by file path and rule id.
 fn partition_inline_findings(
     findings: Vec<Finding>,
     project_root: &Path,
+    deep_scan_budget: &DeepScanBudget,
 ) -> (Vec<Finding>, InlineFindingsByFileAndRule) {
     let mut files: HashMap<String, FileSuppressions> = HashMap::new();
     let mut kept = Vec::new();
@@ -114,9 +95,9 @@ fn partition_inline_findings(
             kept.push(finding);
             continue;
         }
-        let file = files
-            .entry(finding.file_path.clone())
-            .or_insert_with(|| FileSuppressions::read(project_root, &finding.file_path));
+        let file = files.entry(finding.file_path.clone()).or_insert_with(|| {
+            FileSuppressions::read(project_root, &finding.file_path, deep_scan_budget)
+        });
         if file.is_finding_suppressed(&finding) {
             removed
                 .entry((finding.file_path.clone(), finding.rule_id.clone()))
@@ -185,17 +166,36 @@ struct FileSuppressions {
 }
 
 impl FileSuppressions {
-    /// Read and parse one file; an unreadable file or one that does not parse covers nothing.
+    /// Read and parse one file for local suppressions; unreadable, over-budget, or unparseable files cover nothing.
     ///
-    /// `display_path` is joined onto `project_root` to read the file, and only a path ending in `.rs` is parsed for attribute scopes.
-    /// Returns the file's lines, empty when it cannot be read, and its attribute scopes, empty when it is not Rust or fails to parse.
-    fn read(project_root: &Path, display_path: &str) -> Self {
-        let source = std::fs::read_to_string(project_root.join(display_path)).unwrap_or_default();
-        let scopes = match display_path.ends_with(".rs") {
-            true => syn::parse_file(&source)
+    /// `display_path` is joined onto `project_root`; only `.rs` files within `deep_scan_budget` are parsed for attribute scopes.
+    /// Returns the file's text lines (empty when unreadable or skipped for an over-budget Rust file) and parsed attribute scopes.
+    fn read(project_root: &Path, display_path: &str, deep_scan_budget: &DeepScanBudget) -> Self {
+        let full_path = project_root.join(display_path);
+        let is_rust = Path::new(display_path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"));
+        // Rust files only check parsed attribute scopes, so an over-budget `.rs` file skips reading its bytes into RAM.
+        let max_bytes = u64::try_from(deep_scan_budget.max_bytes).unwrap_or(u64::MAX);
+        if is_rust
+            && deep_scan_budget.enabled
+            && std::fs::metadata(&full_path).is_ok_and(|metadata| metadata.len() > max_bytes)
+        {
+            return Self {
+                lines: Vec::new(),
+                scopes: Vec::new(),
+            };
+        }
+        let source = std::fs::read_to_string(&full_path).unwrap_or_default();
+        let within_budget = !deep_scan_budget.enabled
+            || (source.len() <= deep_scan_budget.max_bytes
+                && source.lines().count() <= deep_scan_budget.max_lines);
+        let scopes = if is_rust && within_budget {
+            syn::parse_file(&source)
                 .map(|file| file_scopes(&file))
-                .unwrap_or_default(),
-            false => Vec::new(),
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         };
         Self {
             lines: source.lines().map(str::to_string).collect(),
@@ -269,10 +269,12 @@ fn collect_item_scopes(item: &Item, scopes: &mut Vec<(usize, usize, Vec<String>)
     };
     push_scope(item.span(), attrs, scopes);
     match item {
+        Item::Fn(item_fn) => collect_block_item_scopes(&item_fn.block, scopes),
         Item::Impl(item_impl) => {
             for member in &item_impl.items {
                 if let syn::ImplItem::Fn(method) = member {
                     push_scope(method.span(), &method.attrs, scopes);
+                    collect_block_item_scopes(&method.block, scopes);
                 }
             }
         }
@@ -280,6 +282,10 @@ fn collect_item_scopes(item: &Item, scopes: &mut Vec<(usize, usize, Vec<String>)
             for member in &item_trait.items {
                 if let syn::TraitItem::Fn(method) = member {
                     push_scope(method.span(), &method.attrs, scopes);
+                    // A trait method with a default body can hold nested items whose own #[allow] attributes must be found too.
+                    if let Some(default_body) = &method.default {
+                        collect_block_item_scopes(default_body, scopes);
+                    }
                 }
             }
         }
@@ -289,6 +295,19 @@ fn collect_item_scopes(item: &Item, scopes: &mut Vec<(usize, usize, Vec<String>)
             }
         }
         _ => {}
+    }
+}
+
+/// Record attribute scopes on items declared directly inside a function body block.
+///
+/// `block` is the function body whose statements are scanned for nested `syn::Stmt::Item` declarations.
+/// `scopes` receives each attributed nested item's line range in traversal order.
+fn collect_block_item_scopes(block: &syn::Block, scopes: &mut Vec<(usize, usize, Vec<String>)>) {
+    for stmt in &block.stmts {
+        // An item declared inside a function body, such as a nested fn, can carry its own suppression attribute.
+        if let syn::Stmt::Item(nested) = stmt {
+            collect_item_scopes(nested, scopes);
+        }
     }
 }
 
@@ -343,27 +362,87 @@ fn is_lint_for_rule(lint: &str, rule_id: &str) -> bool {
         .any(|(name, rules)| *name == lint && rules.contains(&rule_id))
 }
 
-/// Report whether a `# zizmor: ignore[...]` on the line names an audit that makes the rule's claim.
+/// Report whether a YAML `# zizmor: ignore[...]` comment on the line names an audit that makes the rule's claim.
 ///
-/// `line` is searched for its first `zizmor:` marker, which this check does not require to follow a `#`, and `rule_id` is the finding's rule.
-/// Returns true when a comma-separated audit after `ignore` maps to `rule_id` in `ZIZMOR_AUDITS`, otherwise false.
+/// `line` is inspected only from its unquoted `#` comment onward, so a quoted value cannot fake a suppression.
+/// Every `zizmor: ignore[...]` marker with a closing `]` is checked, so an earlier mention cannot hide a real one.
+///
+/// `rule_id` is the finding's rule.
+/// Returns true when a comma-separated audit inside `ignore[...]` maps to `rule_id` in `ZIZMOR_AUDITS`, otherwise false.
 fn has_zizmor_audit_for_rule(line: &str, rule_id: &str) -> bool {
-    let Some(start) = line.find("zizmor:") else {
+    let Some(mut tail) = yaml_comment_tail(line) else {
         return false;
     };
-    let rest = &line[start + "zizmor:".len()..];
-    let Some(audits) = rest
-        .trim_start()
-        .strip_prefix("ignore[")
-        .and_then(|tail| tail.split(']').next())
-    else {
-        return false;
-    };
-    audits.split(',').any(|audit| {
-        ZIZMOR_AUDITS
-            .iter()
-            .any(|(name, rule)| *name == audit.trim() && *rule == rule_id)
-    })
+    // Check every zizmor marker on the line, so an earlier mention in the comment cannot hide a real one.
+    while let Some(start) = tail.find("zizmor:") {
+        let rest = &tail[start + "zizmor:".len()..];
+        let matched = rest
+            .trim_start()
+            .strip_prefix("ignore[")
+            .and_then(|after| after.split_once(']'))
+            .is_some_and(|(audits, _)| {
+                audits.split(',').any(|audit| {
+                    ZIZMOR_AUDITS
+                        .iter()
+                        .any(|(name, rule)| *name == audit.trim() && *rule == rule_id)
+                })
+            });
+        if matched {
+            return true;
+        }
+        tail = rest;
+    }
+    false
+}
+
+/// Extract the unquoted `# ...` YAML comment tail from one workflow line, or `None` when none starts.
+///
+/// `line` is scanned left to right while skipping single-quoted and double-quoted YAML spans started at a scalar boundary.
+/// A `#` opens a comment only at byte 0 or after ASCII whitespace; returns the slice after `#`, or `None` otherwise.
+fn yaml_comment_tail(line: &str) -> Option<&str> {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let at_boundary = index == 0
+            || bytes[index - 1].is_ascii_whitespace()
+            || matches!(bytes[index - 1], b':' | b'[' | b',' | b'{');
+        // Skip a quoted YAML value whole, so a # inside it is not taken for the start of a comment.
+        if at_boundary && matches!(bytes[index], b'\'' | b'"') {
+            index = skip_yaml_quoted(bytes, index);
+            continue;
+        }
+        if bytes[index] == b'#' && (index == 0 || bytes[index - 1].is_ascii_whitespace()) {
+            return Some(&line[index + 1..]);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Advance past one YAML single- or double-quoted span starting at `start`.
+///
+/// `bytes` holds the line's UTF-8 bytes and `start` points at the opening `'` or `"` byte.
+/// Returns the byte offset immediately after the matching closing quote, or `bytes.len()` when unclosed.
+fn skip_yaml_quoted(bytes: &[u8], start: usize) -> usize {
+    let quote = bytes[start];
+    let mut index = start + 1;
+    while index < bytes.len() {
+        // Inside double quotes, a backslash escapes the next character.
+        if quote == b'"' && bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            // Inside single quotes, '' is an escaped quote, as in 'it''s'.
+            if quote == b'\'' && bytes.get(index + 1) == Some(&b'\'') {
+                index += 2;
+                continue;
+            }
+            return index + 1;
+        }
+        index += 1;
+    }
+    bytes.len()
 }
 
 #[cfg(test)]

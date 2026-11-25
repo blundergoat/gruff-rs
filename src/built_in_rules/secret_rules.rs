@@ -162,7 +162,7 @@ fn private_key_is_native_pattern(unit: &SourceUnit<'_>, capture: &regex::Match<'
             continue;
         };
         // An unrelated span or embedded key body keeps this private-key occurrence reportable.
-        if !is_private_key_pattern_match(unit, literal, capture) {
+        if !is_private_key_pattern_match(literal, capture) {
             continue;
         }
         let mut use_proof = NativePrivateKeyPatternUse {
@@ -179,27 +179,13 @@ fn private_key_is_native_pattern(unit: &SourceUnit<'_>, capture: &regex::Match<'
 
 /// Prove that this literal owns the matched header and has no embedded private-key body.
 ///
-/// `unit` supplies line-start offsets, `literal` is a candidate string constant and `capture` is the matched private-key header.
-/// The literal's span must cover `capture`, and its text after the header must be empty or `.*?` followed by the matching END marker.
-/// Returns true when both hold, and false when line offsets are missing, the span or header does not match, or other text follows.
-fn is_private_key_pattern_match(
-    unit: &SourceUnit<'_>,
-    literal: &syn::LitStr,
-    capture: &regex::Match<'_>,
-) -> bool {
-    let span = literal.span();
-    let start = span.start();
-    let end = span.end();
-    // Missing source-line offsets leave ownership unproved and preserve the private-key warning.
-    let starts = unit.line_starts();
-    let (Some(start_line), Some(end_line)) = (
-        starts.get(start.line.saturating_sub(1)),
-        starts.get(end.line.saturating_sub(1)),
-    ) else {
-        return false;
-    };
+/// `literal` is a candidate string constant and `capture` is the matched private-key header.
+/// The literal's byte span must cover `capture`, and its text after the header must be empty or `.*?` followed by the matching END marker.
+/// Returns true when both hold, and false when the span or header does not match or other text follows.
+fn is_private_key_pattern_match(literal: &syn::LitStr, capture: &regex::Match<'_>) -> bool {
+    let range = literal.span().byte_range();
     // A header outside this literal's span cannot borrow its native-pattern exception.
-    if capture.start() < start_line + start.column || capture.end() > end_line + end.column {
+    if capture.start() < range.start || capture.end() > range.end {
         return false;
     }
     let value = literal.value();
@@ -586,22 +572,27 @@ pub(crate) fn analyse_high_entropy_strings(
             continue;
         };
         let value = secret.as_str();
-        // A short fragment returns its closing quote to the search so a following secret remains discoverable.
-        search_start = if value.len() < min_length {
-            candidate.end() - 1
-        } else {
-            candidate.end()
-        };
-        // A public PEM block's base64 body is certificate or public-key material, never a secret.
-        if armoured.iter().any(|span| span.contains(&secret.start())) {
+        // Return the closing quote whenever a match does not produce a finding so an unquoted gap
+        // between literals cannot swallow the opening quote of a following reportable secret.
+        if value.len() < min_length
+            || offset_in_sorted_spans(&armoured, secret.start())
+            || !high_entropy_secret_should_report(value, min_length, min_entropy)
+        {
+            search_start = candidate.end() - 1;
             continue;
         }
-        // Inert shapes remain silent so users can focus on credible generated-secret candidates.
-        if !high_entropy_secret_should_report(value, min_length, min_entropy) {
-            continue;
-        }
+        search_start = candidate.end();
         findings.push(high_entropy_finding(unit, &secret));
     }
+}
+
+/// Report whether `offset` falls inside any byte range in `spans`, which must be sorted and non-overlapping.
+///
+/// `spans` holds the sorted half-open byte ranges and `offset` is the byte position to look up.
+/// Returns true when a range covers `offset`, and false otherwise.
+fn offset_in_sorted_spans(spans: &[std::ops::Range<usize>], offset: usize) -> bool {
+    let index = spans.partition_point(|span| span.end <= offset);
+    spans.get(index).is_some_and(|span| span.contains(&offset))
 }
 
 static PEM_ARMOUR_OPENING_REGEX: OnceLock<Regex> = OnceLock::new();

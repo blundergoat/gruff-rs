@@ -1,3 +1,8 @@
+//! Render single-rule detail cards and unknown-rule typo suggestions for `gruff-rs rules <rule-id>`.
+//!
+//! Resolves both built-in rules and configured `custom.<slug>` rules in text or JSON format so developers can inspect thresholds,
+//! rationale, and escape hatches without leaving the terminal.
+
 use super::*;
 use crate::rules::{RuleDefinition, RuleRegistry};
 use serde_json::json;
@@ -6,13 +11,10 @@ use std::fmt::Write as _;
 const SUGGESTION_LIMIT: usize = 3;
 const SUGGESTION_MAX_DISTANCE: usize = 3;
 
-/// Render the deep-view card for a single rule, or surface a
-/// suggestions-bearing error when the id does not match. Looks at
-/// built-in rules first, then `custom_rules` so configured `custom.<slug>`
-/// ids resolve symmetrically with the catalogue view.
+/// Render the detail card for one built-in or configured custom rule, or return typo suggestions when unknown.
 ///
-/// `rule_id` is looked up in `registry` before `custom_rules`, and `format` picks the JSON or text rendering.
-/// Returns the rendered card; an `Err` is the unknown-rule message offering up to three ids within edit distance three.
+/// `rule_id` is looked up in `registry` before `custom_rules`, and `format` selects JSON or text output.
+/// Returns the rendered card, or an `Err` message suggesting up to three close rule IDs within edit distance three.
 pub(crate) fn render_rule_detail(
     rule_id: &str,
     registry: &RuleRegistry,
@@ -143,11 +145,50 @@ fn render_detail_text(definition: &RuleDefinition) -> String {
     out.push('\n');
 
     render_options_block(&mut out, definition);
+    render_detector_parameters_block(&mut out, definition);
     render_escape_hatches_block(&mut out, definition);
     render_false_positive_block(&mut out, definition);
     render_related_block(&mut out, definition);
 
     out.trim_end_matches('\n').to_string()
+}
+
+/// Append the detector-parameters section of a rule's text card when the rule exposes named numeric thresholds.
+///
+/// `out` receives one aligned line per parameter of `definition` under `Detector parameters:`, plus a trailing blank line.
+/// Nothing is written when the rule declares no detector parameters.
+fn render_detector_parameters_block(out: &mut String, definition: &RuleDefinition) {
+    let parameters = crate::rules::detector_parameters(definition.id);
+    // A rule without tunable detector settings prints no parameters section.
+    if parameters.is_empty() {
+        return;
+    }
+    out.push_str("Detector parameters:\n");
+    let name_width = parameters
+        .iter()
+        .map(|parameter| parameter.name.len())
+        .max()
+        .unwrap_or(0);
+    for parameter in parameters {
+        let kind_summary = match parameter.kind {
+            crate::rules::DetectorParameterKind::WholeNumber { min, max } => {
+                format!(
+                    "integer ({min}..={max}, default {})",
+                    parameter.default as u64
+                )
+            }
+            crate::rules::DetectorParameterKind::NonNegative => {
+                format!("number (>= 0, default {})", parameter.default)
+            }
+        };
+        let _ = writeln!(
+            out,
+            "  {name:<name_width$}  {kind_summary}",
+            name = parameter.name,
+            name_width = name_width,
+        );
+    }
+    out.push('\n');
 }
 
 /// Append the default-options section of a rule's text card, one aligned line per option.
@@ -190,6 +231,13 @@ fn render_escape_hatches_block(out: &mut String, definition: &RuleDefinition) {
     for option in definition.options {
         let _ = writeln!(out, "  rules.{}.options.{}", definition.id, option.name);
     }
+    for parameter in crate::rules::detector_parameters(definition.id) {
+        let _ = writeln!(
+            out,
+            "  rules.{}.thresholds.{}",
+            definition.id, parameter.name
+        );
+    }
     let _ = writeln!(out, "  rules.{}.enabled", definition.id);
     let _ = writeln!(out, "  paths.ignore");
     out.push('\n');
@@ -230,16 +278,22 @@ fn render_related_block(out: &mut String, definition: &RuleDefinition) {
 /// `definition` supplies the fields; its escape hatches list each option's override key, then its enable key and `paths.ignore`.
 /// Returns the pretty-printed JSON object.
 fn render_detail_json(definition: &RuleDefinition) -> String {
+    let parameters = crate::rules::detector_parameters(definition.id);
     let escape_hatches: Vec<String> = definition
         .options
         .iter()
         .map(|opt| format!("rules.{}.options.{}", definition.id, opt.name))
+        .chain(
+            parameters
+                .iter()
+                .map(|param| format!("rules.{}.thresholds.{}", definition.id, param.name)),
+        )
         .chain([
             format!("rules.{}.enabled", definition.id),
             "paths.ignore".to_string(),
         ])
         .collect();
-    let payload = json!({
+    let mut payload = json!({
         "id": definition.id,
         "name": definition.name,
         "pillar": pillar_label(definition.pillar),
@@ -254,6 +308,19 @@ fn render_detail_json(definition: &RuleDefinition) -> String {
         "falsePositiveShapes": definition.false_positive_shapes,
         "relatedRules": definition.related_rules,
     });
+    if !parameters.is_empty() {
+        let thresholds: serde_json::Map<String, serde_json::Value> = parameters
+            .iter()
+            .map(|parameter| (parameter.name.to_string(), json!(parameter.default)))
+            .collect();
+        payload
+            .as_object_mut()
+            .expect("rule detail payload is an object")
+            .insert(
+                "thresholds".to_string(),
+                serde_json::Value::Object(thresholds),
+            );
+    }
     serde_json::to_string_pretty(&payload).expect("rule detail serializes")
 }
 

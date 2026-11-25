@@ -1,3 +1,8 @@
+//! Render an `AnalysisReport` as a deterministic SARIF 2.1.0 JSON log for code-scanning and CI consumers.
+//!
+//! Maps built-in and configured custom rules into SARIF tool descriptors alongside active findings and audited suppressions.
+//! Used when the caller runs `gruff-rs analyse --format sarif`.
+
 use super::*;
 
 /// Render a whole analysis report as a pretty-printed SARIF 2.1.0 log.
@@ -162,6 +167,15 @@ fn sarif_rule_properties(definition: &rules::RuleDefinition) -> Value {
     );
     if let Some(threshold) = definition.threshold {
         properties.insert("threshold".to_string(), json!(threshold.default));
+    }
+    let parameters = crate::rules::detector_parameters(definition.id);
+    // A rule with tunable detector settings publishes their defaults, so a SARIF viewer shows the thresholds in force.
+    if !parameters.is_empty() {
+        let thresholds: Map<String, Value> = parameters
+            .iter()
+            .map(|parameter| (parameter.name.to_string(), json!(parameter.default)))
+            .collect();
+        properties.insert("thresholds".to_string(), Value::Object(thresholds));
     }
     if !definition.options.is_empty() {
         properties.insert("options".to_string(), json!(definition.options));

@@ -134,17 +134,25 @@ impl TestGroups<'_> {
 
     /// The signature without its name: asyncness, generics, inputs and return type decide how a body runs.
     ///
-    /// `signature` is the test's parsed signature, re-read from source so the token after `fn` can be dropped.
+    /// `signature` is the test's parsed signature, re-read from source so only the function's own identifier after the declaration `fn` is dropped.
     /// Returns the remaining tokens as a string, or `None` when the signature span cannot be re-read.
     fn signature(&self, signature: &syn::Signature) -> Option<String> {
         let mut after_fn = false;
+        let mut dropped_name = false;
         let kept: TokenStream = self
             .tokens(signature.span())?
             .into_iter()
             .filter(|token| {
-                let is_name = after_fn;
-                after_fn = matches!(token, TokenTree::Ident(ident) if ident == "fn");
-                !is_name
+                // Drop the test's own name, the token after `fn`, so tests that differ only in name still compare as duplicates.
+                if !dropped_name && after_fn {
+                    dropped_name = true;
+                    after_fn = false;
+                    return false;
+                }
+                if !dropped_name {
+                    after_fn = matches!(token, TokenTree::Ident(ident) if ident == "fn");
+                }
+                true
             })
             .collect();
         Some(kept.to_string())
@@ -368,14 +376,19 @@ fn is_contract_whitespace(character: char) -> bool {
     matches!(character, '\t'..='\r' | ' ')
 }
 
-/// A literal before a lone `:` is a record or object key (`Pair { 0: a }`, `json!({"id": 1})`);
+/// A literal before a single `:` (not `::`) is a record or object key (`Pair { 0: a }`, `json!({"id":-1})`);
 /// inside a macro body, a literal before `=>` is a map key (`hashmap! {"id" => 1}`).
 ///
 /// `index` is the literal's position in `tokens` and `context` says whether it sits inside a macro body.
-/// Returns true when the next token is a lone `:`, or, in a macro body, the next two form `=>` with no space between them, false otherwise.
+/// Returns true when the next token is a single `:`, even one joined to a unary operator such as `-`.
+/// In a macro body it also returns true when the next two tokens form `=>`; otherwise false.
 fn is_key_literal(tokens: &[TokenTree], index: usize, context: LiteralContext) -> bool {
     let next = tokens.get(index + 1);
-    let colon = matches!(next, Some(TokenTree::Punct(punct)) if punct.as_char() == ':' && punct.spacing() == Spacing::Alone);
+    // A path separator is a joined `:` followed by another `:`, so `"k": ::std::u8::MAX` still has a single key colon.
+    let starts_path_separator = matches!(next, Some(TokenTree::Punct(punct)) if punct.as_char() == ':' && punct.spacing() == Spacing::Joint)
+        && matches!(tokens.get(index + 2), Some(TokenTree::Punct(punct)) if punct.as_char() == ':');
+    let colon = matches!(next, Some(TokenTree::Punct(punct)) if punct.as_char() == ':')
+        && !starts_path_separator;
     let arrow = context.in_macro
         && matches!(next, Some(TokenTree::Punct(punct)) if punct.as_char() == '=' && punct.spacing() == Spacing::Joint)
         && matches!(tokens.get(index + 2), Some(TokenTree::Punct(punct)) if punct.as_char() == '>');

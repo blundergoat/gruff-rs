@@ -560,10 +560,13 @@ fn top_level_handler_for_block<'a>(
         }
         _ => None,
     });
-    // Ambiguous top-level handlers or attributes may change what a user actually runs.
+    // Ambiguous top-level handlers or non-doc attributes may change what a user actually runs.
     let function = matching_functions.next()?;
     if matching_functions.next().is_some()
-        || !function.attrs.is_empty()
+        || function
+            .attrs
+            .iter()
+            .any(|attr| !attr.path().is_ident("doc"))
         || !function.sig.generics.params.is_empty()
     {
         return None;
@@ -733,8 +736,13 @@ fn has_named_import(import: &syn::UseTree, symbol: &str) -> bool {
 /// Confirm that Debug is derived for a finite enum whose variants have no request-carrying fields.
 ///
 /// `item_enum` is the enum declaration to check.
-/// Returns true only for 1 to 32 unit variants, no generics, and a single attribute that is a `derive` listing only `Debug`.
+/// Returns true only for 1 to 32 unit variants, no generics, and a single non-doc attribute that is a `derive` listing only `Debug`.
 fn enum_has_only_derived_debug_unit_variants(item_enum: &syn::ItemEnum) -> bool {
+    let non_doc_attrs: Vec<&syn::Attribute> = item_enum
+        .attrs
+        .iter()
+        .filter(|attr| !attr.path().is_ident("doc"))
+        .collect();
     // Empty, generic or payload-bearing enums need a different proof of what Debug can print.
     if item_enum.variants.is_empty()
         || item_enum.variants.len() > 32
@@ -743,11 +751,11 @@ fn enum_has_only_derived_debug_unit_variants(item_enum: &syn::ItemEnum) -> bool 
             .variants
             .iter()
             .all(|variant| matches!(variant.fields, syn::Fields::Unit))
-        || item_enum.attrs.len() != 1
+        || non_doc_attrs.len() != 1
     {
         return false;
     }
-    let derive_attribute = &item_enum.attrs[0];
+    let derive_attribute = non_doc_attrs[0];
     // Additional derives or a different attribute may alter the source shape being trusted.
     if !derive_attribute.path().is_ident("derive") {
         return false;

@@ -1,3 +1,8 @@
+//! Check Rust `#[test]` functions for missing assertions, weak `#[should_panic]` attributes, unwrap noise, and oversized test bodies.
+//!
+//! Runs during per-file analysis so reviewers see whether tests exercise real behaviour rather than low-signal ceremony.
+//! Calibration fixtures under `fixtures/` are skipped so intentionally noisy test inputs do not distort reports.
+
 use super::*;
 
 static TEST_ASSERTION_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -40,24 +45,19 @@ pub(crate) fn analyse_test_block(
 /// Tests marked `#[should_panic]` without `expected = "..."` cannot distinguish the intended panic from an unrelated panic that
 /// masks a real bug. Fires only when the attribute pins no non-empty message, either through an `expected` argument or the name-value shorthand.
 ///
-/// Report whether the test fn's `#[should_panic]` leaves its message unpinned and no recognised cfg predicate keeps the fn
-/// out of test builds. When `code` parses, only the fn's own attributes are read, so an attribute quoted in a string or
-/// on a nested item never counts; when syn cannot parse `code`, a text search answers instead, which can count either and ignores cfg.
+/// Report whether the parsed function's `#[should_panic]` attribute leaves its message unpinned and no recognised `#[cfg(...)]` predicate
+/// excludes the function from test builds. Reading `syn::Attribute` directly avoids losing attributes placed above a multi-line attribute.
 ///
-/// `code` is the test fn's source with its attributes, parsed as one `fn` item.
-/// Returns true for an unpinned attribute unless a successful parse lets `is_excluded_from_test_builds` exclude the fn, and false otherwise.
-fn has_unpinned_should_panic(code: &str) -> bool {
-    let Ok(item) = syn::parse_str::<syn::ItemFn>(code) else {
-        return has_unpinned_should_panic_text(code);
-    };
-    let Some(attr) = item
-        .attrs
+/// `attrs` are the test function's parsed attributes.
+/// Returns true for an unpinned `should_panic` attribute unless `is_excluded_from_test_builds` excludes the function, and false otherwise.
+pub(crate) fn has_unpinned_should_panic_attrs(attrs: &[syn::Attribute]) -> bool {
+    let Some(attr) = attrs
         .iter()
         .find(|attr| attr.path().is_ident("should_panic"))
     else {
         return false;
     };
-    !has_pinned_panic_message(&attr.meta) && !is_excluded_from_test_builds(&item)
+    !has_pinned_panic_message(&attr.meta) && !is_excluded_from_test_builds(attrs)
 }
 
 /// `#[should_panic = "msg"]` is the shorthand for `expected = "msg"` and pins the message just as well. An
@@ -89,31 +89,16 @@ fn is_non_empty_string(value: &syn::Expr) -> bool {
     matches!(value, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) if !text.value().is_empty())
 }
 
-/// Text fallback for a test fn syn cannot parse: a `#[should_panic]` with no non-empty pinned message.
-///
-/// `code` is searched for any `should_panic` attribute and for one that pins a message through `=` or an `expected` argument.
-/// Returns true when an attribute is found but no pinned non-empty message is, so a quoted or nested attribute can count too.
-fn has_unpinned_should_panic_text(code: &str) -> bool {
-    static SHOULD_PANIC_ATTR_REGEX: OnceLock<Regex> = OnceLock::new();
-    static SHOULD_PANIC_EXPECTED_REGEX: OnceLock<Regex> = OnceLock::new();
-    static_regex(&SHOULD_PANIC_ATTR_REGEX, r"#\s*\[\s*should_panic\b").is_match(code)
-        && !static_regex(
-            &SHOULD_PANIC_EXPECTED_REGEX,
-            r##"#\s*\[\s*should_panic\s*(?:=|\([^)]*\bexpected\s*=)\s*r?#*"[^"]"##,
-        )
-        .is_match(code)
-}
-
 /// Report whether the test fn's own `#[cfg(...)]` attributes are false in every test build, so it is never compiled as a test and
 /// never runs: `not(test)`, `all(..)` holding such a predicate, or a non-empty `any(..)` whose every branch is one.
 ///
 /// A member of a `#[cfg(not(test))] mod` is not caught, because the module's attributes are not the fn's; the rule's catalogue
 /// entry lists that shape.
 ///
-/// `item` is the parsed test fn; each `cfg` attribute that parses as one predicate is passed to `is_false_under_test`.
+/// `attrs` are the parsed test fn's attributes; each `cfg` attribute that parses as one predicate is passed to `is_false_under_test`.
 /// Returns true when `is_false_under_test` recognises an excluding predicate, and false when none is recognised or none parses.
-fn is_excluded_from_test_builds(item: &syn::ItemFn) -> bool {
-    item.attrs
+fn is_excluded_from_test_builds(attrs: &[syn::Attribute]) -> bool {
+    attrs
         .iter()
         .filter(|attr| attr.path().is_ident("cfg"))
         .filter_map(|attr| attr.parse_args::<syn::Meta>().ok())
@@ -172,17 +157,15 @@ fn cfg_combinator(predicate: &syn::Meta) -> Option<(String, Vec<syn::Meta>)> {
 
 /// Report a test whose `should_panic` attribute pins no non-empty expected message.
 ///
-/// `block` must be a test and is read with doc comments removed; `file` identifies the source file for the finding.
+/// `block` must be a test carrying `unpinned_should_panic`; `file` identifies the source file for the finding.
 /// One high-confidence `test-quality.should-panic-without-expected` finding is appended to `findings` when the check fires.
 pub(crate) fn analyse_should_panic_without_expected(
     file: &SourceFile,
     block: &FunctionBlock,
     findings: &mut Vec<Finding>,
 ) {
-    if !block.is_test {
-        return;
-    }
-    if !has_unpinned_should_panic(&body_without_doc_comments(&block.body)) {
+    // Only a test whose #[should_panic] names no expected message can pass on the wrong panic.
+    if !block.is_test || !block.unpinned_should_panic {
         return;
     }
     findings.push(block_finding_with_extras(

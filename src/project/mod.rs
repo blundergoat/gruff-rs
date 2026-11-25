@@ -117,7 +117,7 @@ pub(crate) fn parse_source_file(
     deep_scan_budget: &DeepScanBudget,
 ) -> ParsedSource {
     let file_owned = file.clone();
-    if !file_owned.is_rust {
+    if !file_owned.is_rust || !parse_rust {
         return parsed_source(file_owned, source, None, false, Vec::new());
     }
 
@@ -139,10 +139,6 @@ pub(crate) fn parse_source_file(
                 deep_scan_budget,
             )],
         );
-    }
-
-    if !parse_rust {
-        return parsed_source(file_owned, source, None, false, Vec::new());
     }
 
     parse_rust_source(file_owned, source)

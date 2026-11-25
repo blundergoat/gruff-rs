@@ -64,8 +64,26 @@ pub(crate) fn load_config_for(
     let Some((path, value)) = read_config_value(project_root, config_path)? else {
         return Ok(config);
     };
-    apply_config_value(&path, &value, &mut config)?;
+    let named = config_error_display_name(&path, config_path);
+    apply_config_value(&path, &value, &mut config)
+        .map_err(|error| error.replace(&path.display().to_string(), &named))?;
     Ok(config)
+}
+
+/// Format a config file name for user- and machine-visible errors without leaking an absolute host path.
+///
+/// `resolved` is the canonical or joined filesystem path, and `typed` is the caller's `--config` argument if one was passed.
+/// Returns the caller-typed path when given, otherwise the file's basename (or full display path if it has no basename).
+fn config_error_display_name(resolved: &Path, typed: Option<&Path>) -> String {
+    typed.map_or_else(
+        || {
+            resolved.file_name().map_or_else(
+                || resolved.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        },
+        |given| given.display().to_string(),
+    )
 }
 
 /// Read and parse the explicit config file or the first supported project default.
@@ -95,19 +113,11 @@ pub(crate) fn read_config_value(
 
     // The message reaches the analysis envelope, which may not publish a host path, so it names the file the way the
     // user typed it, or by its file name when it was discovered.
-    let raw = fs::read_to_string(&path).map_err(|error| {
-        let named = config.map_or_else(
-            || {
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                )
-            },
-            |typed| typed.display().to_string(),
-        );
-        format!("unable to read config {named}: {error}")
-    })?;
-    let value = parse_config_value(&path, &raw)?;
+    let named = config_error_display_name(&path, config);
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("unable to read config {named}: {error}"))?;
+    let value = parse_config_value(&path, &raw)
+        .map_err(|error| error.replace(&path.display().to_string(), &named))?;
     Ok(Some((path, value)))
 }
 
@@ -236,7 +246,7 @@ pub(crate) fn apply_schema_version_section(
     let version = value.as_str().ok_or_else(|| {
         "config key `schemaVersion` must be a string (expected `gruff-rs.config.v1`)".to_string()
     })?;
-    // A different version may have incompatible UI meaning, so the user must regenerate before continuing.
+    // A different version may have incompatible config meaning, so the user must regenerate or migrate before continuing.
     if version != SCHEMA_VERSION {
         return Err(format!(
             "unsupported schemaVersion `{version}`; this build expects `{SCHEMA_VERSION}`. Run `gruff-rs init --force` to regenerate."

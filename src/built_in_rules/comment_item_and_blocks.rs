@@ -55,11 +55,14 @@ pub(crate) fn analyse_commented_out_code(
     }
 }
 
-/// Report whether lines form disabled code: they parse as Rust and hold no pseudocode placeholder. Comment text
-/// is untrusted, so text the parser could recurse through too deeply is never parsed: a snippet longer than
-/// 16 KiB, or holding more than 256 tokens that can open a nested expression (a bracket, a prefix operator, a
-/// closure bar, or `return`, `break`, `yield`, `move` or `box`), counts as prose. A comment such as
-/// `// let x = ((((…1))));` nested thousands deep would otherwise overflow the stack and abort the run.
+/// Report whether lines form disabled code: they parse as Rust and hold no pseudocode placeholder.
+///
+/// Comment text is untrusted, so text the parser could recurse through too deeply counts as prose and is never parsed:
+/// - a snippet longer than 16 KiB;
+/// - a snippet with more than 256 tokens that can open a nested expression: a bracket, an assignment or prefix operator,
+///   a closure bar, or `return`, `break`, `yield`, `move`, `box`, `let` or `become`.
+///
+/// A comment such as `// let x = ((((…1))));` or `// a=a=a=…1;` nested thousands deep would otherwise overflow the stack and abort the run.
 ///
 /// Returns true when `lines`, joined with newlines, stay within both limits, hold no placeholder and parse as Rust items or statements.
 fn is_snippet(lines: &[&str]) -> bool {
@@ -74,13 +77,18 @@ fn is_snippet(lines: &[&str]) -> bool {
         .filter(|character| {
             matches!(
                 character,
-                '(' | '[' | '{' | '<' | '|' | '-' | '!' | '*' | '&'
+                '(' | '[' | '{' | '<' | '|' | '-' | '!' | '*' | '&' | '='
             )
         })
         .count();
     let nesting_words = text
         .split(|character: char| !character.is_alphanumeric() && character != '_')
-        .filter(|word| matches!(*word, "return" | "break" | "yield" | "move" | "box"))
+        .filter(|word| {
+            matches!(
+                *word,
+                "return" | "break" | "yield" | "move" | "box" | "let" | "become"
+            )
+        })
         .count();
     nesting_marks + nesting_words <= MAX_NESTING_TOKENS
         && !has_code_placeholder(&text)

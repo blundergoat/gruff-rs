@@ -26,6 +26,7 @@ pub(crate) struct FunctionBlock {
     pub(crate) is_async: bool,
     pub(crate) returns_result: bool,
     pub(crate) ignore_without_reason: bool,
+    pub(crate) unpinned_should_panic: bool,
     pub(crate) body_is_declarative_literal: bool,
     /// Cyclomatic, nesting and cognitive complexity counted on the parsed body.
     pub(crate) complexity: SyntaxComplexity,
@@ -111,6 +112,7 @@ pub(crate) fn function_block_from_parts(parts: FunctionBlockParts<'_>) -> Functi
         is_async: parts.is_async,
         returns_result: parts.returns_result,
         ignore_without_reason: has_ignore_without_reason(parts.attrs),
+        unpinned_should_panic: has_unpinned_should_panic_attrs(parts.attrs),
         body_is_declarative_literal: is_declarative_literal_body(parts.block),
         complexity: syntax_complexity(parts.block),
     }

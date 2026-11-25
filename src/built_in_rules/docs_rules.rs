@@ -22,7 +22,7 @@ pub(crate) fn analyse_public_function_doc(
 
     // Public functions without supported attached rustdoc need an intent description; with
     // `everyCallable` on, so does every other function outside test code.
-    let in_scope = block.is_externally_public || is_documentable_block(block, every_callable);
+    let in_scope = is_documentable_block(block, every_callable);
     if in_scope && !docs.is_present() {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {

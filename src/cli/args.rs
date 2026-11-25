@@ -1,3 +1,8 @@
+//! Define the clap argument structs for every `gruff-rs` subcommand and its CLI flags.
+//!
+//! Keeps flag help text, conflict rules, and default values in one place so `analyse`, `report`, `hook`, `init`, `dashboard`,
+//! `migrate-config`, and catalogue commands parse user invocations consistently.
+
 use super::*;
 
 const SUBCOMMAND_HELP_TEMPLATE: &str = "\
@@ -13,7 +18,7 @@ pub(crate) struct AnalyseArgs {
     pub(crate) paths: Vec<PathBuf>,
     #[arg(long)]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "config")]
     pub(crate) no_config: bool,
     /// Override paired deep Rust-analysis limits, or disable the budget.
     #[arg(long, value_name = "LINES:BYTES|off")]
@@ -121,7 +126,7 @@ pub(crate) struct HookArgs {
     pub(crate) paths: Vec<PathBuf>,
     #[arg(long)]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "config")]
     pub(crate) no_config: bool,
     /// Override paired deep Rust-analysis limits, or disable the budget.
     #[arg(long, value_name = "LINES:BYTES|off")]
@@ -179,7 +184,7 @@ pub(crate) struct ReportArgs {
     pub(crate) output: Option<PathBuf>,
     #[arg(long)]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "config")]
     pub(crate) no_config: bool,
     /// Override paired deep Rust-analysis limits, or disable the budget.
     #[arg(long, value_name = "LINES:BYTES|off")]
@@ -225,7 +230,7 @@ pub(crate) struct ListRulesArgs {
     pub(crate) selector: Option<String>,
     #[arg(long)]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "config")]
     pub(crate) no_config: bool,
 }
 
@@ -237,7 +242,7 @@ pub(crate) struct SummaryArgs {
     pub(crate) paths: Vec<PathBuf>,
     #[arg(long)]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "config")]
     pub(crate) no_config: bool,
     /// Override paired deep Rust-analysis limits, or disable the budget.
     #[arg(long, value_name = "LINES:BYTES|off")]

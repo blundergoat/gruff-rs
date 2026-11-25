@@ -284,7 +284,9 @@ fn parse_failure_does_not_publish_a_score_for_unevaluated_rust() {
     assert!(report["score"]["composite"]["score"].is_null());
 }
 
-/// Migrate a 0.5-style config with retired rules and empty `minimumSeverity:`, confirm unmigrated runs hint `migrate-config`, and keep CLI `--selector` errors free of config hints.
+/// Migrate a 0.5-style config with retired rules and empty `minimumSeverity:`.
+///
+/// Also verifies unmigrated runs suggest `migrate-config` while CLI `--selector` typos stay free of config migration hints.
 #[test]
 fn migrate_config_upgrades_legacy_05_config_and_unmigrated_shows_hint() {
     let project = tempdir().expect("project");
@@ -362,6 +364,42 @@ fn migrate_config_upgrades_legacy_05_config_and_unmigrated_shows_hint() {
     assert!(!cli_stderr.contains("migrate-config"), "{cli_stderr}");
 }
 
+/// Keep an inline YAML comment on an already-matching `schemaVersion:` line during comment-preserving config migration.
+#[test]
+fn migrate_config_preserves_inline_comment_on_schema_version() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    fs::write(
+        root.join(".gruff-rs.yaml"),
+        "schemaVersion: gruff-rs.config.v1  # pinned\nminimumSeverity:\n  # analyse: advisory\n",
+    )
+    .expect("legacy config");
+
+    let migrated = run(
+        root,
+        &[
+            "migrate-config",
+            "--no-ansi",
+            "--config",
+            ".gruff-rs.yaml",
+            "--output",
+            "migrated.yaml",
+        ],
+    );
+    assert_eq!(
+        migrated.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&migrated.stderr)
+    );
+    let output_text = fs::read_to_string(root.join("migrated.yaml")).expect("migrated");
+    assert!(
+        output_text.contains("schemaVersion: gruff-rs.config.v1  # pinned"),
+        "{output_text}"
+    );
+    assert!(!String::from_utf8_lossy(&migrated.stdout).contains("schemaVersion pinned"));
+}
+
 /// Scanning a nested Git repository inside a gitignored subdirectory of a parent Rust repo evaluates the child repo rather than zero files.
 #[test]
 fn nested_git_repo_under_ignored_parent_dir_scans_its_own_sources() {
@@ -405,4 +443,546 @@ fn nested_git_repo_under_ignored_parent_dir_scans_its_own_sources() {
     let report = json_output(&output);
     assert_eq!(report["score"]["evaluatedFiles"], 1, "{report}");
     assert_eq!(report["summary"]["discoveredFiles"], 3, "{report}");
+}
+
+/// Execute `git` inside `dir` with `arguments` and assert a zero exit status.
+fn run_git(dir: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(arguments)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        arguments,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Write minimal `Cargo.toml` and `README.md` markers inside `root` so temporary projects anchor their project root cleanly.
+fn write_project_markers(root: &Path) {
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"d\"\nlicense = \"MIT\"\n",
+    )
+    .expect("manifest");
+    fs::write(root.join("README.md"), "# demo\n").expect("readme");
+}
+
+/// Configured `exclude` and `sensitiveExclusions` precede baseline generation and application without marking excluded findings resolved.
+#[test]
+fn exclusions_precede_baseline_generation_and_application() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    write_project_markers(root);
+    fs::create_dir(root.join("src")).expect("src");
+    let secret = concat!("k9xP2mQ8vR4nL7wZ3jH", "6tB5cF1yD0aE8sG");
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "/// Unwrap `x` and return its inner integer.\n\
+             pub fn demo(x: Option<i32>) -> i32 {{\n\
+                 let _s = \"{secret}\";\n\
+                 x.unwrap()\n\
+             }}\n"
+        ),
+    )
+    .expect("source");
+    fs::write(
+        root.join("exclude.yaml"),
+        concat!(
+            "schemaVersion: gruff-rs.config.v1\n",
+            "exclude:\n",
+            "  - rule: waste.unwrap-expect\n",
+            "    reason: accepted unwrap\n",
+            "sensitiveExclusions:\n",
+            "  - rule: sensitive-data.high-entropy-string\n",
+            "    path: src/lib.rs\n",
+            "    reason: synthetic secret\n",
+        ),
+    )
+    .expect("config");
+
+    let gen_excluded = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--config",
+            "exclude.yaml",
+            "--include-rule",
+            "waste.unwrap-expect",
+            "--include-rule",
+            "sensitive-data.high-entropy-string",
+            "--generate-baseline",
+            "excluded-base.json",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(gen_excluded.status.code(), Some(0));
+    let generated: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("excluded-base.json")).expect("read"))
+            .expect("json");
+    assert_eq!(generated["occurrences"].as_array().expect("occ").len(), 0);
+    assert_eq!(generated["sensitive"]["counts"]["total"], 0);
+
+    let gen_full = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--no-config",
+            "--include-rule",
+            "waste.unwrap-expect",
+            "--include-rule",
+            "sensitive-data.high-entropy-string",
+            "--generate-baseline",
+            "full-base.json",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(gen_full.status.code(), Some(0));
+
+    let applied = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--config",
+            "exclude.yaml",
+            "--include-rule",
+            "waste.unwrap-expect",
+            "--include-rule",
+            "sensitive-data.high-entropy-string",
+            "--baseline",
+            "full-base.json",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(applied.status.code(), Some(0));
+    let applied_report = json_output(&applied);
+    assert_eq!(applied_report["baseline"]["resolvedFindings"], 0);
+    assert_eq!(applied_report["summary"]["findings"]["total"], 0);
+}
+
+/// Running `--diff` and `hook --diff` from a nested workspace member crate maps changed lines relative to the crate root.
+#[test]
+fn nested_member_crate_git_diff_and_hook_map_relative_paths() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    let member = root.join("crates/sub");
+    fs::create_dir_all(member.join("src")).expect("member src");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/sub\"]\n",
+    )
+    .expect("workspace");
+    fs::write(
+        member.join("Cargo.toml"),
+        "[package]\nname = \"sub\"\nversion = \"0.1.0\"\ndescription = \"sub\"\nlicense = \"MIT\"\n",
+    )
+    .expect("member manifest");
+    fs::write(member.join("README.md"), "# sub\n").expect("readme");
+    fs::write(
+        member.join("src/lib.rs"),
+        "/// Stable.\npub fn clean() {}\n",
+    )
+    .expect("lib");
+
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "dev@example.com"]);
+    run_git(root, &["config", "user.name", "Dev"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-q", "-m", "initial"]);
+
+    fs::write(
+        member.join("src/lib.rs"),
+        "/// Stable.\npub fn clean() {}\npub fn added(v: Option<i32>) -> i32 { v.unwrap() }\n",
+    )
+    .expect("modified lib");
+
+    let analyse_out = run(
+        &member,
+        &[
+            "analyse",
+            ".",
+            "--diff",
+            "working-tree",
+            "--diff-git-unsafe",
+            "--no-config",
+            "--no-baseline",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(analyse_out.status.code(), Some(0));
+    let report = json_output(&analyse_out);
+    assert!(report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .any(|item| item["file"] == "src/lib.rs" && item["ruleId"] == "waste.unwrap-expect"));
+
+    let hook_out = run(
+        &member,
+        &[
+            "hook",
+            ".",
+            "--diff",
+            "working-tree",
+            "--diff-git-unsafe",
+            "--no-config",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(hook_out.status.code(), Some(0));
+    let hook_json = json_output(&hook_out);
+    assert_eq!(hook_json["contractVersion"], "gruff.hook.v2");
+    assert!(hook_json["findings"]
+        .as_array()
+        .expect("hook findings")
+        .iter()
+        .any(|item| item["ruleId"] == "waste.unwrap-expect"));
+}
+
+/// Verify CLI execution selectors override config ignores and display flags validate rules and pillars.
+///
+/// Verifies `--include-rule` beats `rules.ignore` and `--exclude-rule` beats `--include-pillar`.
+/// Also checks unknown `--show-rule` exits 2 and `--show-pillar` matches case-insensitively.
+#[test]
+fn cli_selectors_override_config_ignore_and_validate_display_flags() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    write_project_markers(root);
+    fs::create_dir(root.join("src")).expect("src");
+    fs::write(
+        root.join("src/lib.rs"),
+        "/// Demo.\npub fn demo(v: Option<i32>) -> i32 { v.unwrap() }\n",
+    )
+    .expect("source");
+    fs::write(
+        root.join(".gruff-rs.yaml"),
+        "schemaVersion: gruff-rs.config.v1\nrules:\n  ignore: [\"waste.unwrap-expect\"]\n",
+    )
+    .expect("config");
+
+    let included = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--include-rule",
+            "waste.unwrap-expect",
+            "--no-baseline",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(included.status.code(), Some(0));
+    let included_report = json_output(&included);
+    assert!(included_report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .any(|item| item["ruleId"] == "waste.unwrap-expect"));
+
+    let excluded = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--include-pillar",
+            "Maintainability",
+            "--exclude-rule",
+            "waste.unwrap-expect",
+            "--no-baseline",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(excluded.status.code(), Some(0));
+    assert!(!json_output(&excluded)["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .any(|item| item["ruleId"] == "waste.unwrap-expect"));
+
+    let bad_show = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--no-config",
+            "--show-rule",
+            "bogus.nonexistent",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(bad_show.status.code(), Some(2));
+
+    let lower_pillar = run(
+        root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--no-config",
+            "--no-baseline",
+            "--show-pillar",
+            "maintainability",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(lower_pillar.status.code(), Some(0));
+    assert!(json_output(&lower_pillar)["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .any(|item| item["ruleId"] == "waste.unwrap-expect"));
+}
+
+/// Verify hook external baselines, hook diff failures, Markdown findings headings, and HTML cognitive fallback.
+///
+/// Checks external baselines report `applied: true` with `path: null`, diff errors emit `changed-region`, and Markdown emits `## Findings`.
+#[test]
+fn hook_external_baseline_diff_error_and_markdown_html_reports() {
+    let parent = tempdir().expect("parent");
+    let root = parent.path().join("proj");
+    fs::create_dir_all(root.join("src")).expect("src");
+    write_project_markers(&root);
+    fs::write(
+        root.join("src/lib.rs"),
+        concat!(
+            "/// Complex demo.\n",
+            "pub fn complex(a: bool, b: bool, c: bool, d: bool, e: bool) -> i32 {\n",
+            "    if a { if b { if c { if d { if e { return 1; } } } } }\n",
+            "    if a && b || c && d || e { return 2; }\n",
+            "    0\n",
+            "}\n",
+        ),
+    )
+    .expect("source");
+
+    let ext_base = parent.path().join("external-baseline.json");
+    let generated_baseline = run(
+        &root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--no-config",
+            "--generate-baseline",
+            ext_base.to_str().expect("path"),
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(generated_baseline.status.code(), Some(0));
+
+    let hook = run(
+        &root,
+        &[
+            "hook",
+            "src/lib.rs",
+            "--no-config",
+            "--baseline",
+            ext_base.to_str().expect("path"),
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(hook.status.code(), Some(0));
+    let hook_json = json_output(&hook);
+    assert_eq!(hook_json["run"]["baseline"]["applied"], true);
+    assert!(hook_json["run"]["baseline"]["path"].is_null());
+    assert_eq!(hook_json["run"]["scope"], "file");
+
+    let hook_diff_err = run(
+        &root,
+        &[
+            "hook",
+            "src/lib.rs",
+            "--no-config",
+            "--diff",
+            "working-tree",
+            "--diff-git-unsafe",
+        ],
+    );
+    assert_eq!(hook_diff_err.status.code(), Some(2));
+    assert_eq!(
+        json_output(&hook_diff_err)["diagnostics"][0]["type"],
+        "changed-region"
+    );
+
+    let markdown_out = run(
+        &root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--no-config",
+            "--no-baseline",
+            "--format",
+            "markdown",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(markdown_out.status.code(), Some(0));
+    let markdown_text = String::from_utf8_lossy(&markdown_out.stdout);
+    assert!(markdown_text.contains("## Findings"), "{markdown_text}");
+
+    let html = run(
+        &root,
+        &[
+            "analyse",
+            "src/lib.rs",
+            "--no-config",
+            "--no-baseline",
+            "--format",
+            "html",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(html.status.code(), Some(0));
+    let html_text = String::from_utf8_lossy(&html.stdout);
+    assert!(html_text.contains("cognitive complexity"), "{html_text}");
+}
+
+/// Multi-file `diff -ru` patches do not swallow subsequent file headers into hunk context.
+#[test]
+fn multifile_diff_ru_patch_retains_second_file() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    write_project_markers(root);
+    fs::create_dir(root.join("src")).expect("src");
+    fs::write(
+        root.join("src/a.rs"),
+        "/// A.\npub fn a(x: Option<i32>) -> i32 { x.unwrap() }\n",
+    )
+    .expect("a");
+    fs::write(
+        root.join("src/b.rs"),
+        "/// B.\npub fn b(x: Option<i32>) -> i32 { x.unwrap() }\n",
+    )
+    .expect("b");
+    fs::write(
+        root.join("changes.patch"),
+        concat!(
+            "--- src/a.rs\n",
+            "+++ src/a.rs\n",
+            "@@ -1,1 +1,1 @@\n",
+            "-/// old\n",
+            "+/// A.\n",
+            "--- src/b.rs\n",
+            "+++ src/b.rs\n",
+            "@@ -1,1 +1,1 @@\n",
+            "-/// old\n",
+            "+pub fn b(x: Option<i32>) -> i32 { x.unwrap() }\n",
+        ),
+    )
+    .expect("patch");
+
+    let output = run(
+        root,
+        &[
+            "analyse",
+            "src",
+            "--no-config",
+            "--no-baseline",
+            "--diff-patch",
+            "changes.patch",
+            "--include-rule",
+            "waste.unwrap-expect",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(json_output(&output)["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .any(|f| f["file"] == "src/b.rs"));
+}
+
+/// Every subcommand that accepts `--config` and `--no-config` rejects passing both flags together.
+#[test]
+fn subcommands_reject_conflicting_config_and_no_config_flags() {
+    let project = tempdir().expect("project");
+    for subcommand in ["summary", "report", "hook", "list-rules", "check-ignore"] {
+        let conflict = run(
+            project.path(),
+            &[subcommand, "--config", "a.yaml", "--no-config"],
+        );
+        assert_eq!(
+            conflict.status.code(),
+            Some(2),
+            "{subcommand} must reject --config + --no-config"
+        );
+    }
+}
+
+/// Explicit symlink targets matching `paths.ignore` remain ignored instead of resolving to an unignored path.
+#[cfg(unix)]
+#[test]
+fn explicit_symlink_matching_config_ignore_stays_ignored() {
+    use std::os::unix::fs::symlink;
+
+    let project = tempdir().expect("project");
+    let root = project.path();
+    write_project_markers(root);
+    fs::create_dir_all(root.join("src")).expect("src");
+    fs::create_dir_all(root.join("vendor")).expect("vendor");
+    fs::write(
+        root.join("src/real.rs"),
+        "/// Real.\npub fn real(x: Option<i32>) -> i32 { x.unwrap() }\n",
+    )
+    .expect("real");
+    symlink(root.join("src/real.rs"), root.join("vendor/link.rs")).expect("symlink");
+    fs::write(
+        root.join(".gruff-rs.yaml"),
+        "schemaVersion: gruff-rs.config.v1\npaths:\n  ignore:\n    - \"vendor/**\"\n",
+    )
+    .expect("config");
+
+    let output = run(
+        root,
+        &[
+            "analyse",
+            "vendor/link.rs",
+            "--no-baseline",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let report = json_output(&output);
+    assert_eq!(report["summary"]["analysedFiles"], 0);
+    assert_eq!(report["findings"].as_array().expect("findings").len(), 0);
 }

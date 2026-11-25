@@ -1,6 +1,6 @@
 # Glossary - gruff-rs
 
-Last reviewed 2026-11-23.
+Last reviewed 2026-11-26.
 
 This glossary defines terms used by `gruff-rs`, its public reports, and local project memory. Keep shared gruff-family terms aligned with the sibling implementations; keep Rust-specific differences explicit rather than making them look identical.
 
@@ -72,7 +72,7 @@ The set of built-in and configured custom rules plus their public metadata. `lis
 
 ### Rule ID
 
-Stable public identifier for one rule, using dotted gruff-family names such as `size.function-length`, `docs.stale-todo`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` may emit shared public pillars.
+Stable public identifier for one rule, using dotted gruff-family names such as `size.function-length`, `docs.missing-public-doc`, and `sensitive-data.high-entropy-string`. Rust-specific namespaces such as `architecture.*`, `metrics.*`, `dependency.*`, `concurrency.*`, and `error-handling.*` may emit shared public pillars.
 
 ### SARIF
 
@@ -122,7 +122,7 @@ The explicit `--diff-git-unsafe` opt-in that allows the older Git-backed diff pa
 
 ### Report-Level Exclusion
 
-A top-level `exclude` config entry with a required reason. It hides reviewed findings after analysis and baseline application; it does not prevent files from being read or rules from running.
+A top-level `exclude` config entry with a required reason. It hides reviewed findings after analysis and before baseline matching or generation, while preserving configured `exclude` counts so reviewed baseline rows are not reported as resolved; it does not prevent files from being read or rules from running.
 
 ### Custom Rule
 

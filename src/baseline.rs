@@ -297,10 +297,24 @@ fn validate_rows(path: &Path, raw: &str, entries: &[BaselineEntry]) -> Result<()
 /// `path` is the baseline file to load, and `declaration_position` gives each finding's declaration position for identity naming.
 /// `findings` is changed in place: every finding gets its baseline status, then the unchanged ones are removed.
 /// Returns the counts, per-rule deltas, collisions, and resolved rows, or an error when loading the baseline or naming identities fails.
+#[cfg(test)]
 pub(crate) fn apply_baseline(
     path: &Path,
     findings: &mut Vec<Finding>,
     declaration_position: &dyn Fn(&Finding) -> usize,
+) -> Result<BaselineApplication, String> {
+    apply_baseline_with_exclusions(path, findings, declaration_position, &BTreeMap::new())
+}
+
+/// Apply a baseline to this run while preserving counts for ordinary findings already removed by `exclude` entries.
+///
+/// `path` is the baseline to load, `findings` updates in place via `declaration_position`, and `excluded_identities` tracks `exclude` counts.
+/// Returns counts, per-rule deltas, collisions, and entry count, or an error when loading the file or naming identities fails.
+pub(crate) fn apply_baseline_with_exclusions(
+    path: &Path,
+    findings: &mut Vec<Finding>,
+    declaration_position: &dyn Fn(&Finding) -> usize,
+    excluded_identities: &BTreeMap<String, usize>,
 ) -> Result<BaselineApplication, String> {
     let document = load_baseline(path)?;
     let reviewed: BTreeMap<&str, usize> = document
@@ -319,6 +333,7 @@ pub(crate) fn apply_baseline(
         document.occurrences.as_deref().unwrap_or(&[]),
         &groups,
         &statuses,
+        excluded_identities,
     );
     let deltas = rule_deltas(findings, &statuses, &resolved);
     let collisions_by_identity = collided_identities(&groups);
@@ -427,16 +442,28 @@ fn require_distinct_paths(input_path: &Path, output_path: &Path) -> Result<(), S
     Ok(())
 }
 
-/// Report whether two paths name one file on disk, which a hard link makes true under two different names.
+/// Report whether two paths name one file on disk, which a hard link makes true under two different names on Unix.
 ///
-/// `input_path` and `output_path` are the two paths whose file metadata is compared.
-/// Returns true when both share a device and inode, and false when they differ or either cannot be read.
+/// `input_path` and `output_path` are the two paths whose file identity is compared.
+/// Returns true when both share a device and inode on Unix, or resolve to the same canonical path elsewhere.
+/// Returns false when they differ or either cannot be read.
 fn is_same_inode(input_path: &Path, output_path: &Path) -> bool {
-    let (Ok(input), Ok(output)) = (fs::metadata(input_path), fs::metadata(output_path)) else {
-        // A missing output is the ordinary case: there is nothing to collide with yet.
-        return false;
-    };
-    input.dev() == output.dev() && input.ino() == output.ino()
+    #[cfg(unix)]
+    {
+        let (Ok(input), Ok(output)) = (fs::metadata(input_path), fs::metadata(output_path)) else {
+            // A missing output is the ordinary case: there is nothing to collide with yet.
+            return false;
+        };
+        input.dev() == output.dev() && input.ino() == output.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let (Ok(input), Ok(output)) = (fs::canonicalize(input_path), fs::canonicalize(output_path))
+        else {
+            return false;
+        };
+        input == output
+    }
 }
 
 /// Read the rows of a 0.5 baseline, the only shape a migration accepts as its input.
@@ -493,10 +520,11 @@ fn legacy_rows(path: &Path, contents: &[u8]) -> Result<Vec<Value>, String> {
 fn accepted_by_legacy(rows: &[Value], findings: &[Finding]) -> Vec<Finding> {
     let mut budget: BTreeMap<String, usize> = BTreeMap::new();
     for row in rows {
-        let path = match row_text(row, "filePath") {
+        let raw_path = match row_text(row, "filePath") {
             path if path.is_empty() => row_text(row, "file"),
             path => path,
         };
+        let path = normalize_report_path(&raw_path);
         let key = acceptance_key(
             &row_text(row, "ruleId"),
             &path,
@@ -531,16 +559,12 @@ fn accepted_by_legacy(rows: &[Value], findings: &[Finding]) -> Vec<Finding> {
 /// Returns true when a shape with remaining budget was spent, and false when none covers the finding.
 fn can_spend_legacy_budget(budget: &mut BTreeMap<String, usize>, finding: &Finding) -> bool {
     let symbol = finding.symbol.as_deref().unwrap_or_default();
+    let path = normalize_report_path(&finding.file_path);
     for candidate in [
-        acceptance_key(
-            &finding.rule_id,
-            &finding.file_path,
-            symbol,
-            &finding.message,
-        ),
-        acceptance_key(&finding.rule_id, &finding.file_path, symbol, ""),
-        acceptance_key(&finding.rule_id, &finding.file_path, "", &finding.message),
-        acceptance_key(&finding.rule_id, &finding.file_path, "", ""),
+        acceptance_key(&finding.rule_id, &path, symbol, &finding.message),
+        acceptance_key(&finding.rule_id, &path, symbol, ""),
+        acceptance_key(&finding.rule_id, &path, "", &finding.message),
+        acceptance_key(&finding.rule_id, &path, "", ""),
     ] {
         if let Some(remaining) = budget.get_mut(&candidate) {
             if *remaining > 0 {
@@ -723,14 +747,16 @@ fn count_statuses(statuses: &[BaselineStatus]) -> BaselineCounts {
 
 /// Find every reviewed identity with fewer live occurrences than reviewed, which is debt the user has since fixed.
 ///
-/// `entries` are the baseline rows, `groups` this run's identity groups, and `statuses` the labels that mark a collided group.
-/// Returns one row per baseline row with more reviewed than live occurrences, holding the surplus; collided identities are skipped.
+/// `entries` are the baseline rows, `groups` this run's identity groups, `statuses` the labels that mark a collided group,
+/// and `excluded_identities` counts ordinary findings removed by configured `exclude` entries so they do not mark a reviewed row resolved.
+/// Returns one row per baseline row with more reviewed than live-plus-excluded occurrences, holding the surplus; collided identities are skipped.
 ///
 /// Panics when `statuses` has no entry for a matching group's first finding.
 fn resolved_surplus(
     entries: &[BaselineEntry],
     groups: &BTreeMap<&str, IdentityGroup>,
     statuses: &[BaselineStatus],
+    excluded_identities: &BTreeMap<String, usize>,
 ) -> Vec<BaselineEntry> {
     entries
         .iter()
@@ -740,7 +766,11 @@ fn resolved_surplus(
             if group.is_some_and(|group| statuses[group.indexes[0]] == BaselineStatus::Collision) {
                 return None;
             }
-            let live = group.map_or(0, |group| group.indexes.len());
+            let live = group.map_or(0, |group| group.indexes.len())
+                + excluded_identities
+                    .get(entry.identity.as_str())
+                    .copied()
+                    .unwrap_or(0);
             let surplus = entry.count.saturating_sub(live);
             (surplus > 0).then(|| BaselineEntry {
                 identity: entry.identity.clone(),
@@ -848,31 +878,41 @@ pub(crate) struct BaselineResolution {
 ///
 /// `findings` is updated in place when the selected baseline covers a reviewed occurrence.
 /// `project_root` anchors relative baseline paths, and `options` decides whether to generate, migrate, apply, or skip a baseline.
+///
 /// `declaration_position` gives each finding's declaration position for identity naming.
+/// `excluded_identities` records how many findings each configured `exclude` entry removed.
+///
 /// Returns the resolution, None when no baseline applies, paired with the pre-baseline summary, or the error from the chosen action.
 pub(crate) fn resolve_baseline(
     project_root: &Path,
     options: &AnalysisOptions,
     findings: &mut Vec<Finding>,
     declaration_position: &dyn Fn(&Finding) -> usize,
+    excluded_identities: &BTreeMap<String, usize>,
 ) -> Result<(Option<BaselineResolution>, Summary), String> {
     let all_findings_summary = summarize(findings);
-    let resolution = resolve_baseline_inner(project_root, options, findings, declaration_position)?;
+    let resolution = resolve_baseline_inner(
+        project_root,
+        options,
+        findings,
+        declaration_position,
+        excluded_identities,
+    )?;
     Ok((resolution, all_findings_summary))
 }
 
-/// Carry out the baseline action the options ask for: generate or migrate a file, apply an explicit or default baseline, or do nothing.
+/// Carry out the baseline action requested by `options`: generate or migrate a file, apply a baseline, or skip.
 ///
-/// `project_root` anchors relative paths, `options` holds the baseline flags, and `declaration_position` ranks same-named declarations.
-/// `findings` is changed in place only when a baseline is applied: each gains its status and the unchanged ones are removed.
-/// Returns the resolution, None when no baseline is generated or applied, or an error when migrating without generating or the action fails.
+/// `project_root` anchors relative paths, `declaration_position` ranks same-named declarations, and `excluded_identities` tracks `exclude` counts.
+/// `findings` is updated in place only when applying a baseline (attaching statuses and removing unchanged findings).
 ///
-/// An apply error has each occurrence of the resolved baseline path replaced by the `--baseline` value as given, or the default file name.
+/// Returns `Ok(None)` when no baseline runs, `Ok(Some(_))` on generation/application, or `Err` with host paths rewritten to caller-facing names.
 fn resolve_baseline_inner(
     project_root: &Path,
     options: &AnalysisOptions,
     findings: &mut Vec<Finding>,
     declaration_position: &dyn Fn(&Finding) -> usize,
+    excluded_identities: &BTreeMap<String, usize>,
 ) -> Result<Option<BaselineResolution>, String> {
     // The user asked to capture the current state, so write a baseline rather than compare against one.
     if let Some(path) = &options.generate_baseline {
@@ -905,6 +945,7 @@ fn resolve_baseline_inner(
         source,
         findings,
         declaration_position,
+        excluded_identities,
     )
     .map_err(|error| baseline_named_as_given(&error, &baseline_path, options))
     .map(Some)
@@ -940,15 +981,30 @@ fn generate_baseline_report(
     declaration_position: &dyn Fn(&Finding) -> usize,
 ) -> Result<BaselineResolution, String> {
     let baseline_path = absolutize(project_root, path);
+    let redact_paths = |error: String| -> String {
+        let mut message = error.replace(
+            &baseline_path.display().to_string(),
+            &path.display().to_string(),
+        );
+        if let Some(input) = migrate_path {
+            let resolved_input = absolutize(project_root, input);
+            message = message.replace(
+                &resolved_input.display().to_string(),
+                &input.display().to_string(),
+            );
+        }
+        message
+    };
     // A generate at the shared default path never destroys a 0.5 baseline by accident; --force is the way to mean it.
-    require_overwritable_default_path(&baseline_path, force)?;
+    require_overwritable_default_path(&baseline_path, force).map_err(&redact_paths)?;
     let (entries, sensitive_counted, source) = write_generated_baseline(
         project_root,
         &baseline_path,
         migrate_path,
         findings,
         declaration_position,
-    )?;
+    )
+    .map_err(&redact_paths)?;
 
     Ok(BaselineResolution {
         report: BaselineReport {
@@ -1018,19 +1074,26 @@ fn select_baseline_path(
     default.exists().then_some((default, "default"))
 }
 
-/// Apply the chosen baseline file to this run and describe the outcome as a baseline report.
+/// Apply the chosen baseline file to this run and describe the outcome as a `BaselineResolution`.
 ///
-/// `baseline_path` is the file to apply, shown relative to `project_root` when under it, and `source` says explicit or default.
-/// `findings` is changed in place as `apply_baseline` describes, and `declaration_position` gives each finding's declaration position.
-/// Returns the report, deltas, and collisions, or the error from applying the baseline.
+/// `baseline_path` displays under `project_root` with `source` (`explicit` or `default`); `findings` updates via `declaration_position`.
+/// `excluded_identities` preserves counts for findings removed by `exclude` so reviewed baseline rows are not falsely marked resolved.
+///
+/// Returns the baseline report, per-rule deltas, and collisions, or an error when reading or applying the baseline fails.
 fn apply_selected_baseline(
     project_root: &Path,
     baseline_path: &Path,
     source: &str,
     findings: &mut Vec<Finding>,
     declaration_position: &dyn Fn(&Finding) -> usize,
+    excluded_identities: &BTreeMap<String, usize>,
 ) -> Result<BaselineResolution, String> {
-    let application = apply_baseline(baseline_path, findings, declaration_position)?;
+    let application = apply_baseline_with_exclusions(
+        baseline_path,
+        findings,
+        declaration_position,
+        excluded_identities,
+    )?;
     Ok(BaselineResolution {
         report: BaselineReport {
             path: baseline_display_path(project_root, baseline_path),
@@ -1048,6 +1111,50 @@ fn apply_selected_baseline(
         deltas: application.deltas,
         collisions: application.collisions,
     })
+}
+
+/// Count durable baseline identities removed by configured `exclude` rules so baseline matching does not mark them resolved.
+///
+/// `suppressed_findings` holds every suppressed finding across configured, built-in, and inline channels.
+/// Returns a map from baseline identity to excluded count for `exclude` entries only, or an empty map when none match.
+pub(crate) fn excluded_baseline_identities(
+    suppressed_findings: &[SuppressedFinding],
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for suppressed in suppressed_findings {
+        // Only config `exclude` entries count; the baseline still treats other suppression kinds as absent findings.
+        if suppressed.suppression.config_key == "exclude" {
+            // A finding without a baseline identity, such as a sensitive-data finding, has no baseline row to keep.
+            if let Some(identity) = suppressed.finding.baseline_identity.as_deref() {
+                *counts.entry(identity.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Name every identity that covered two declarations, so a user sees which ones could not be told apart.
+///
+/// `collisions` lists the identities the baseline found shared between declarations.
+/// Returns one non-fatal `baseline-collision` diagnostic per collision naming its identity, subjects, rule, and file.
+pub(crate) fn collision_diagnostics(collisions: &[BaselineCollision]) -> Vec<RunDiagnostic> {
+    collisions
+        .iter()
+        .map(|collision| RunDiagnostic {
+            diagnostic_type: "baseline-collision".to_string(),
+            message: format!(
+                "collision: identity {} covers {} declarations of {} for rule {} in {}; none is suppressed",
+                collision.identity,
+                collision.subjects.len(),
+                collision.subjects.join(", "),
+                collision.rule_id,
+                collision.path,
+            ),
+            file_path: Some(collision.path.clone()),
+            line: None,
+            invalidates_run: Some(false),
+        })
+        .collect()
 }
 
 /// Returns the baseline `path` relative to `project_root` after resolving filesystem components when possible.

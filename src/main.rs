@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -220,8 +221,9 @@ fn run_analyse_command(args: AnalyseArgs, writer: OutputWriter) -> ExitCode {
     let fail_on_new = args.fail_on_new;
     let min_confidence = args.min_confidence;
     let deep_scan_budget = args.deep_scan_budget.clone();
-    let requested_options = options_from_analyse(args, FailThreshold::Advisory);
-    let (project_root, options, config) = match analyse_setup(
+    let requested_options =
+        options_from_analyse(args, cli_fail_on.unwrap_or(FailThreshold::Advisory));
+    let (project_root, mut options, config) = match analyse_setup(
         requested_options,
         cli_fail_on,
         deep_scan_budget.as_ref(),
@@ -232,7 +234,7 @@ fn run_analyse_command(args: AnalyseArgs, writer: OutputWriter) -> ExitCode {
     };
     // Apply flags such as `--include-rule` now so the same selection controls findings and scores.
     let scope = RequestedScope::from_options(&options);
-    let config = match analyse_run_config(config, &options, fail_on_new) {
+    let config = match analyse_run_config(config, &mut options, fail_on_new) {
         Ok(config) => config,
         // For example, a caller using a retired rule ID gets a config diagnostic instead of an empty scan.
         Err(error) => {
@@ -395,18 +397,20 @@ fn emit_analyse_report(
     outcome.exit_code()
 }
 
-/// Narrow the config to what this run executes, folding in `--fail-on-new` before the selectors.
+/// Narrow the config to what this run executes, folding in `--fail-on-new` and validating display and execution selectors.
 ///
-/// `config` is the loaded config to narrow, `options` supplies the execution selectors, and `fail_on_new` says whether the flag was given.
-/// Returns the narrowed config, whose gate is first forced to new-findings scope when `fail_on_new` is true.
+/// `config` is the loaded config to narrow, `options` supplies the execution and display selectors (normalized in place),
+/// and `fail_on_new` says whether the flag was given.
+/// Returns the narrowed config, whose gate is first forced to new-findings scope when `fail_on_new` is true, or an error on an unknown selector.
 fn analyse_run_config(
     mut config: Config,
-    options: &AnalysisOptions,
+    options: &mut AnalysisOptions,
     fail_on_new: bool,
 ) -> Result<Config, String> {
     if fail_on_new {
         apply_fail_on_new(&mut config);
     }
+    options.display = options.display.validated(&config)?;
     config.with_execution_selectors(&options.execution)
 }
 
@@ -987,6 +991,7 @@ fn run_completion(args: CompletionArgs, writer: OutputWriter) -> ExitCode {
 /// `unit` is the source unit to check, and `config` is the run's config, handed to both the built-in and the custom rule passes.
 ///
 /// Returns the built-in findings followed by the custom-rule findings, which is empty when nothing matched.
+#[cfg(test)]
 pub(crate) fn analyse_source(unit: &SourceUnit<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = built_in_rules::analyse(unit, config);
     findings.extend(custom_rules::analyse(unit, config));

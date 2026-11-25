@@ -2,7 +2,7 @@
 name = "gruff-rs"
 version = "0.6.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.88"
 description = "Rust static analyzer and quality linter for CI: dead-code, complexity, security, secrets, and architecture rules with deterministic SARIF/JSON output and baseline support."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/blundergoat/gruff-rs"
@@ -30,6 +30,7 @@ exclude = [
     "scripts/bump-version.sh",
     "scripts/dependency-install.sh",
     "scripts/dependency-update.sh",
+    "scripts/performance-baselines/**",
     "scripts/preflight-checks.sh",
     "scripts/publish-crates.sh",
     "scripts/start-dev.sh",

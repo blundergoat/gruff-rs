@@ -60,7 +60,7 @@ pub(crate) fn markdown_renderer_keeps_hostile_finding_fields_in_one_inert_bullet
         "hostile fields must render as one escaped finding:\n{markdown}"
     );
     assert_eq!(markdown.matches("\n- ").count(), 1, "{markdown}");
-    assert_eq!(markdown.matches("\n## ").count(), 1, "{markdown}");
+    assert_eq!(markdown.matches("\n## ").count(), 2, "{markdown}");
     assert!(markdown.contains("| Pillar | Grade | Score | Findings | Advisory | Warning | Error |"));
     // Hostile pipes cannot add a row to the fixed header, separator, and eleven pillar rows.
     assert_eq!(

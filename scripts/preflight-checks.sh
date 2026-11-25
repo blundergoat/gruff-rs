@@ -973,9 +973,18 @@ focused_github_metadata_scan() {
 
   # Package verification can leave a same-version binary built from target/package sources.
   # A distinct fingerprint makes this security scan compile the live contributor workspace.
+  # Explicitly include all six GitHub metadata rules so default-off checks
+  # (`ci.github-event-shell-interpolation` and `security.github-actions-broad-permissions`)
+  # execute against checked-in automation alongside the four default-on rules.
   CARGO_INCREMENTAL=0 cargo run --quiet -- analyse "${metadata_paths[@]}" \
     --no-config \
     --no-baseline \
+    --include-rule ci.github-event-shell-interpolation \
+    --include-rule security.github-actions-broad-permissions \
+    --include-rule security.github-actions-pull-request-target \
+    --include-rule security.github-actions-remote-shell \
+    --include-rule security.github-actions-secrets-in-pr \
+    --include-rule security.github-actions-unpinned-action \
     --format json \
     --fail-on none >"$report_file" || return $?
 
@@ -1053,9 +1062,14 @@ security_selector_listing_smoke() {
 summary_json_smoke() {
   local summary_file="$WORK_DIR/summary.json"
 
-  cargo run --quiet -- summary fixtures --format json --top 5 --include-ignored >"$summary_file" || return $?
-  grep -Eq '"schemaVersion"[[:space:]]*:[[:space:]]*"gruff\.summary\.v3"' "$summary_file" || return $?
-  grep -q '"topOffenders":' "$summary_file"
+  cargo run --quiet -- summary fixtures --no-config --format json --top 5 >"$summary_file" || return $?
+  jq -e '.schemaVersion == "gruff.summary.v3" and .summary.analysedFiles > 0 and (.score.topOffenders | length) > 0' "$summary_file" >/dev/null || {
+    printf 'summary JSON scan: schemaVersion=%s analysedFiles=%s topOffenders=%s\n' \
+      "$(jq -r '.schemaVersion // "<missing>"' "$summary_file")" \
+      "$(jq -r '.summary.analysedFiles // "<missing>"' "$summary_file")" \
+      "$(jq -r '(.score.topOffenders // []) | length' "$summary_file")" >&2
+    return 1
+  }
 }
 
 # Prove a user-provided patch limits findings to the changed source region.
@@ -1091,7 +1105,7 @@ PATCH
   grep -q 'patch-filter' "$patch_report"
 }
 
-# Prove an explicit rule selector excludes unrelated findings from the user report.
+# Prove an explicit rule selector keeps only the selected rule's findings in the user report.
 selector_smoke() {
   local config_file="$WORK_DIR/selector.yaml"
   local report_file="$WORK_DIR/selector.txt"
@@ -1099,13 +1113,17 @@ selector_smoke() {
   cat >"$config_file" <<'YAML'
 schemaVersion: gruff-rs.config.v1
 rules:
-  select: ["security.process-command"]
+  # Select a rule that actually emits findings on fixtures/sample.rs (security rules skip fixtures/).
+  select: ["waste.unwrap-expect"]
 YAML
 
   cargo run --quiet -- analyse fixtures/sample.rs --format text --fail-on none --no-baseline --config "$config_file" >"$report_file" || return $?
-  grep -q 'security.process-command' "$report_file" || return $?
-  # Seeing an unselected rule would violate the allow-list the user requested.
-  if grep -q 'sensitive-data.aws-access-key' "$report_file"; then
+  grep -Eq '^- \[.*waste\.unwrap-expect' "$report_file" || {
+    printf 'selector smoke expected at least one waste.unwrap-expect finding line\n' >&2
+    return 1
+  }
+  # Seeing any finding line from another rule would violate the allow-list the user requested.
+  if grep -E '^- \[' "$report_file" | grep -qv 'waste\.unwrap-expect'; then
     printf 'selector smoke reported a rule outside the explicit allow-list\n' >&2
     return 1
   fi

@@ -16,10 +16,14 @@ PLATFORM_SLUG="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 readonly PLATFORM_SLUG
 readonly DEFAULT_BASELINE="${REPO_ROOT}/scripts/performance-baselines/${PLATFORM_SLUG}.json"
 readonly LAST_RUN="${PERF_DIR}/last-run.json"
-readonly SCRATCH_BASELINE="${PERF_DIR}/scratch-baseline.json"
-readonly SCRATCH_HISTORY="${PERF_DIR}/scratch-history.json"
-readonly SCRATCH_PATCH="${PERF_DIR}/scratch-empty.patch"
-readonly SCRATCH_EXACT_RUST_CONFIG="${PERF_DIR}/scratch-exact-rust-rule.yaml"
+readonly SCRATCH_BASELINE_REL="target/perf/scratch-baseline.json"
+readonly SCRATCH_HISTORY_REL="target/perf/scratch-history.json"
+readonly SCRATCH_PATCH_REL="target/perf/scratch-empty.patch"
+readonly SCRATCH_EXACT_RUST_CONFIG_REL="target/perf/scratch-exact-rust-rule.yaml"
+readonly SCRATCH_BASELINE="${REPO_ROOT}/${SCRATCH_BASELINE_REL}"
+readonly SCRATCH_HISTORY="${REPO_ROOT}/${SCRATCH_HISTORY_REL}"
+readonly SCRATCH_PATCH="${REPO_ROOT}/${SCRATCH_PATCH_REL}"
+readonly SCRATCH_EXACT_RUST_CONFIG="${REPO_ROOT}/${SCRATCH_EXACT_RUST_CONFIG_REL}"
 readonly TIME_LOG="${PERF_DIR}/time.log"
 readonly BIN="${PERF_BUILD_TARGET}/release/gruff-rs"
 readonly PERF_SCHEMA="gruff-rs.perf.v1"
@@ -155,10 +159,10 @@ Environment variables:
   GRUFF_PERF_LARGE_CORPUS       Absolute path to an external corpus; enables one extra scenario.
 
 Scenarios (each runs ITERS times; the first run is warmup and discarded):
-  fixtures.text         analyse fixtures --format text
-  fixtures.json         analyse fixtures --format json
-  fixtures.sarif        analyse fixtures --format sarif
-  fixtures.html         analyse fixtures --format html
+  fixtures.text         analyse fixtures --no-config --format text
+  fixtures.json         analyse fixtures --no-config --format json
+  fixtures.sarif        analyse fixtures --no-config --format sarif
+  fixtures.html         analyse fixtures --no-config --format html
   src.json              analyse src --format json (self-scan)
   src.exact-rust-item   analyse src with rules.select=["docs.missing-public-doc"]
   src.with-baseline     analyse src --format json --baseline=<scratch>
@@ -309,15 +313,15 @@ add_scenario() {
     SCENARIO_CMDS+=("$(encode_argv "$@")")
 }
 
-add_scenario "fixtures.text"      analyse fixtures --format text --fail-on none --no-baseline
-add_scenario "fixtures.json"      analyse fixtures --format json --fail-on none --no-baseline
-add_scenario "fixtures.sarif"     analyse fixtures --format sarif --fail-on none --no-baseline
-add_scenario "fixtures.html"      analyse fixtures --format html --fail-on none --no-baseline
+add_scenario "fixtures.text"      analyse fixtures --no-config --format text --fail-on none --no-baseline
+add_scenario "fixtures.json"      analyse fixtures --no-config --format json --fail-on none --no-baseline
+add_scenario "fixtures.sarif"     analyse fixtures --no-config --format sarif --fail-on none --no-baseline
+add_scenario "fixtures.html"      analyse fixtures --no-config --format html --fail-on none --no-baseline
 add_scenario "src.json"           analyse src --format json --fail-on none --no-baseline
-add_scenario "src.exact-rust-item" analyse src --format json --fail-on none --config "${SCRATCH_EXACT_RUST_CONFIG}" --no-baseline
-add_scenario "src.with-baseline"  analyse src --format json --fail-on none --baseline "${SCRATCH_BASELINE}"
-add_scenario "src.with-history"   analyse src --format json --fail-on none --no-baseline --history-file "${SCRATCH_HISTORY}"
-add_scenario "src.diff-empty"     analyse src --format json --fail-on none --no-baseline --diff-patch "${SCRATCH_PATCH}"
+add_scenario "src.exact-rust-item" analyse src --format json --fail-on none --config "${SCRATCH_EXACT_RUST_CONFIG_REL}" --no-baseline
+add_scenario "src.with-baseline"  analyse src --format json --fail-on none --baseline "${SCRATCH_BASELINE_REL}"
+add_scenario "src.with-history"   analyse src --format json --fail-on none --no-baseline --history-file "${SCRATCH_HISTORY_REL}"
+add_scenario "src.diff-empty"     analyse src --format json --fail-on none --no-baseline --diff-patch "${SCRATCH_PATCH_REL}"
 add_scenario "list-rules.json"    list-rules --format json
 if [[ -n "${LARGE_CORPUS}" ]]; then
     [[ -d "${LARGE_CORPUS}" ]] || die "GRUFF_PERF_LARGE_CORPUS does not exist: ${LARGE_CORPUS}"

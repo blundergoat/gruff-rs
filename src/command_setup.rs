@@ -110,20 +110,71 @@ fn absolute_scan_targets(caller_root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> 
     }
     paths
         .iter()
-        .map(|path| {
-            let absolute = absolutize(caller_root, path);
-            absolute.canonicalize().unwrap_or(absolute)
-        })
+        .map(|path| resolve_scan_target(caller_root, path))
         .collect()
+}
+
+/// Resolve one caller-typed scan target without dereferencing symlinks inside `caller_root`.
+///
+/// For example, running `gruff-rs analyse vendor/link.rs` keeps the in-tree link path so it cannot escape the project or bypass `paths.ignore`.
+/// `caller_root` is the canonical launch directory and `path` is the scan target as typed; returns a canonical or lexically normalized path.
+fn resolve_scan_target(caller_root: &Path, path: &Path) -> PathBuf {
+    let normalized = lexical_normalize(&absolutize(caller_root, path));
+    // A target inside the folder the user ran the command from is walked part by part, so a symlink anywhere on the way is found.
+    if let Ok(relative) = normalized.strip_prefix(caller_root) {
+        let mut cursor = caller_root.to_path_buf();
+        for component in relative.components() {
+            cursor.push(component.as_os_str());
+            if cursor
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return normalized;
+            }
+        }
+    } else if normalized
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        // An outside symlink is resolved through its parent only, so the reported path keeps the link's own name.
+        if let (Some(parent), Some(name)) = (normalized.parent(), normalized.file_name()) {
+            if let Ok(canonical_parent) = parent.canonicalize() {
+                return canonical_parent.join(name);
+            }
+        }
+        return normalized;
+    }
+    normalized.canonicalize().unwrap_or(normalized)
+}
+
+/// Collapse lexical `.` and `..` components without consulting the filesystem or following symlinks.
+///
+/// `path` is an absolute path to normalize.
+/// Returns a cleaned path keeping prefix and root components intact.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // `..` removes the previous folder only when there is one; a leading `..` is kept so the path still points outside.
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Find the project root as the nearest directory at or above the targets' common directory that holds `Cargo.toml`, `.gruff-rs.yaml`, or `.git`.
 ///
-/// `targets` are the absolute scan targets.
-///
-/// Returns that directory canonicalized, or the canonical common directory when no ancestor holds any of those markers.
-/// Returns Err when `targets` is empty or has no common directory, or when canonicalizing fails.
-/// Several targets that meet only at a filesystem root holding no marker are also an Err.
+/// `targets` are the absolute scan targets; returns that marker directory canonicalized, or the canonical common directory when none has a marker.
+/// Returns `Err` when `targets` is empty, shares only a markerless filesystem root across multiple targets, or cannot be canonicalized.
 fn project_root_from_targets(targets: &[PathBuf]) -> Result<PathBuf, String> {
     let shared_directory = common_target_directory(targets)?;
     // The nearest project marker makes `analyse src/lib.rs` use the config intended for that source tree,

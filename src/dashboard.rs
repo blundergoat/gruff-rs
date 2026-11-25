@@ -40,25 +40,38 @@ pub(crate) fn run_dashboard(args: DashboardArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Read one HTTP request from a dashboard connection, route its target, and write the response back on the same connection.
+/// Read one HTTP request from a browser connection, route its target, and write the response on `stream`.
 ///
-/// `stream` is the accepted connection; one read of at most 4096 bytes is parsed, and a read error drops it without a response.
-/// `default_root` is the dashboard root that bounds scans, and `deep_scan_budget` is the budget override used when a request omits one.
-/// `allow_budget_override` is true only for loopback listeners.
+/// Serves only `GET` and `HEAD` (other methods receive `405`) with 5-second timeouts and a 16 KiB header cap against slow clients.
+/// `default_root` bounds scans, `deep_scan_budget` sets the default budget override, and `allow_budget_override` is true only on loopback.
 fn handle_dashboard_request(
     mut stream: TcpStream,
     default_root: &Path,
     deep_scan_budget: Option<&DeepScanBudgetOverride>,
     allow_budget_override: bool,
 ) {
-    let mut buffer = [0u8; 4096];
-    let bytes_read = match stream.read(&mut buffer) {
-        Ok(bytes_read) => bytes_read,
-        Err(_) => return,
+    let timeout = std::time::Duration::from_secs(5);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let Some(request) = read_http_request(&mut stream) else {
+        return;
     };
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
     let request_line = request.lines().next().unwrap_or_default();
-    let target = request_line.split_whitespace().nth(1).unwrap_or("/");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    // The dashboard only serves read-only pages, so browser or script writes (such as POST) receive 405.
+    if !matches!(method, "GET" | "HEAD") {
+        respond_with_headers(
+            &mut stream,
+            "405 Method Not Allowed",
+            "text/plain; charset=utf-8",
+            "Allow: GET, HEAD\r\n",
+            "method not allowed",
+            false,
+        );
+        return;
+    }
+    let target = parts.next().unwrap_or("/");
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let response = dashboard_response_with_budget(
         path,
@@ -67,12 +80,48 @@ fn handle_dashboard_request(
         deep_scan_budget,
         allow_budget_override,
     );
-    respond(
+    respond_with_headers(
         &mut stream,
         response.status,
         response.content_type,
+        "",
         &response.body,
+        method == "HEAD",
     );
+}
+
+/// Read HTTP request headers from `stream` until `\r\n\r\n` or `\n\n`, capped at 16 KiB.
+///
+/// `stream` is the accepted TCP connection with a read timeout already set.
+/// Returns lossy UTF-8 headers when bytes arrived, or `None` when the browser closed early or timed out before sending anything.
+fn read_http_request(stream: &mut TcpStream) -> Option<String> {
+    const MAX_REQUEST_BYTES: usize = 16 * 1024;
+    let mut buffer = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 1024];
+    // Read until the headers end or the size cap is hit, so a slow or endless request cannot hold memory forever.
+    while buffer.len() < MAX_REQUEST_BYTES {
+        let limit = (MAX_REQUEST_BYTES - buffer.len()).min(chunk.len());
+        let read_len = match stream.read(&mut chunk[..limit]) {
+            Ok(0) => break,
+            Ok(count) => count,
+            // A browser or client that times out after sending the request line can still be routed from buffered bytes.
+            Err(_) if !buffer.is_empty() => break,
+            // A preconnect socket that closes or times out before sending any bytes needs no response.
+            Err(_) => return None,
+        };
+        buffer.extend_from_slice(&chunk[..read_len]);
+        // A blank line ends the request headers; some clients send bare newlines instead of CRLF.
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n")
+            || buffer.windows(2).any(|window| window == b"\n\n")
+        {
+            break;
+        }
+    }
+    // A connection that closes without sending anything gets no response.
+    if buffer.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 /// One response to a browser or health-check request.
@@ -404,12 +453,21 @@ fn dashboard_shell(report: &AnalysisReport, scope: &RequestedScope, root: &Path)
 
 /// Write one complete HTTP/1.1 response that closes the connection and forbids caching.
 ///
-/// `stream` receives the whole response, and a write error is silently ignored.
-/// `status` is the status text, such as `200 OK`, and `content_type` is the `Content-Type` header value.
-/// `body` is sent as given, with its byte length as `Content-Length`.
-fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
+/// `stream` receives the response (write errors are ignored if the browser closed early).
+///
+/// `status` and `content_type` set the HTTP status line and MIME type; `extra_headers` adds pre-terminated header lines such as `Allow`.
+/// `body` sets `Content-Length` and payload text, with the body bytes omitted when `head_only` is true for `HEAD` requests.
+fn respond_with_headers(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    extra_headers: &str,
+    body: &str,
+    head_only: bool,
+) {
+    let payload = if head_only { "" } else { body };
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra_headers}Cache-Control: no-store\r\nConnection: close\r\n\r\n{payload}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());

@@ -476,6 +476,7 @@ fn function_block(
         is_async: false,
         returns_result: false,
         ignore_without_reason: false,
+        unpinned_should_panic: false,
         body_is_declarative_literal: false,
         complexity: crate::built_in_rules::SyntaxComplexity::default(),
     }

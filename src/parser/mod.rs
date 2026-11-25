@@ -48,9 +48,6 @@ pub(crate) fn byte_line_from_starts(line_starts: &[usize], byte_index: usize) ->
 ///
 /// `source` is Rust source text; comments are copied through unchanged so a quote inside one does not start a literal.
 /// Returns text of the same byte length in which each masked byte becomes a space, except newlines, which are kept.
-///
-/// A char literal that `char_literal_end` rejects, such as one holding a multi-byte character, is not skipped as one span:
-/// scanning resumes after its opening quote, so its closing quote can open a wrongly recognised literal that is then masked.
 pub(crate) fn strip_rust_string_literals(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut output = String::with_capacity(source.len());
@@ -115,12 +112,12 @@ pub(crate) fn rust_code_reference_source(source: &str) -> String {
     reference_source
 }
 
-/// Source with every comment blanked and string literals kept, so a serde attribute quoted in a comment or a doc example is not read as a reference.
+/// Source with every comment blanked and string literals kept, so comments do not affect literal-aware scans.
 ///
 /// The two maskers keep byte offsets, so they differ only on comments.
 ///
 /// Returns the rebuilt text; each blanked comment character becomes one space, so a multi-byte character in a comment shortens it.
-fn source_without_comments(source: &str) -> String {
+pub(crate) fn source_without_comments(source: &str) -> String {
     let string_masked = strip_rust_string_literals(source);
     let code_only = comments::strip_rust_comments_after_string_mask(&string_masked);
     source
@@ -202,9 +199,11 @@ fn mask_double_quoted_string(bytes: &[u8], start: usize, output: &mut String) ->
 
 /// Returns the byte index just past a Rust character literal that starts at `start`.
 ///
-/// Recognises `'X'`, escape sequences (`'\n'`, `'\''`), byte escapes (`'\x41'`), and unicode escapes (`'\u{0041}'`).
+/// Recognises single-byte and multi-byte UTF-8 chars (`'X'`, `'é'`) and escape sequences (`'\n'`, `'\''`).
+/// Byte escapes (`'\x41'`) and unicode escapes (`'\u{0041}'`) are recognised too.
+///
+/// `bytes` is the source being scanned.
 /// Returns `None` for lifetimes (`'a`, `'static`) and any other shape, so the masker copies this quote and scans on from the next character.
-/// `bytes` is the source being scanned; a literal holding a multi-byte character is one of those other shapes and also gets `None`.
 pub(crate) fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     if bytes.get(start).copied()? != b'\'' {
         return None;
@@ -213,18 +212,18 @@ pub(crate) fn char_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     (bytes.get(cursor).copied()? == b'\'').then_some(cursor + 1)
 }
 
-/// Advances past the character payload between the opening and closing quotes of a char literal.
+/// Advance past the character payload between the opening and closing quotes of a Rust char literal.
 ///
-/// Handles escape sequences (`\n`, `\x41`, `\u{0041}`, etc.) plus plain single-byte chars.
-/// `bytes` is the source being scanned and `cursor` the index just after the opening quote.
-/// `start` is the literal's opening-quote index, kept around for unicode-escape sanity bounds.
+/// Handles escape sequences (`\n`, `\x41`, `\u{0041}`) plus single- and multi-byte UTF-8 scalars (such as `'é'`).
+/// `bytes` is the source buffer, `cursor` is right after the opening quote, and `start` bounds `\u{...}` scans.
 ///
-/// Returns the index just past the payload, where the closing quote should sit; the caller checks that it does.
-/// Returns None when the source ends before the payload or its escape letter, or a `\u` escape lacks its opening brace or runs too long.
-/// A `\x` escape is assumed to span two more bytes, without checking that they exist or are hex digits.
+/// Returns the byte offset where the closing quote should sit (caller verifies `'`), or `None` when:
+/// - The input ends early, a non-escaped byte is not valid UTF-8, or a `\u` escape lacks `{` or exceeds bounds.
+/// - Note: `\x` advances two bytes without checking that they are hex digits.
 fn char_literal_body_end(bytes: &[u8], cursor: usize, start: usize) -> Option<usize> {
-    if bytes.get(cursor).copied()? != b'\\' {
-        return Some(cursor + 1);
+    let first = bytes.get(cursor).copied()?;
+    if first != b'\\' {
+        return Some(cursor + utf8_char_len(bytes, cursor)?);
     }
     let escape = bytes.get(cursor + 1).copied()?;
     let after_escape = cursor + 2;
@@ -233,6 +232,23 @@ fn char_literal_body_end(bytes: &[u8], cursor: usize, start: usize) -> Option<us
         b'u' => unicode_escape_end(bytes, after_escape, start),
         _ => Some(after_escape),
     }
+}
+
+/// Return the UTF-8 byte length of the single scalar character starting at `cursor` in `bytes`.
+///
+/// `bytes` holds valid UTF-8 source bytes and `cursor` points at the first byte of the character.
+/// Returns 1 to 4 when the slice forms one valid UTF-8 character, or `None` on invalid or truncated bytes.
+fn utf8_char_len(bytes: &[u8], cursor: usize) -> Option<usize> {
+    let width = match bytes.get(cursor).copied()? {
+        0x00..=0x7F => 1,
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return None,
+    };
+    let slice = bytes.get(cursor..cursor + width)?;
+    std::str::from_utf8(slice).ok()?;
+    Some(width)
 }
 
 /// Advances past a `\u{XXXX}` unicode escape.

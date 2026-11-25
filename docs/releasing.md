@@ -12,7 +12,7 @@ bash scripts/bump-version.sh --version X.Y.Z
 The script sets the crate version in `Cargo.toml`, the source of truth, and refreshes `Cargo.lock`. It never runs
 git. Then, by hand:
 
-- Rename the `## Unreleased` heading in `CHANGELOG.md` to `## vX.Y.Z - Unreleased`, and date it when you tag.
+- Rename the `## Unreleased` heading in `CHANGELOG.md` to `## vX.Y.Z - YYYY-MM-DD` (the dated heading format `preflight-checks.sh --release-check` requires).
 - Move the README's machine-checked release blocks to the new version: the published package line, the
   `cargo install --version` example, the action pin comment and `version:` input, and the active release line.
   The preflight's documentation drift guard names every stale value in one run.

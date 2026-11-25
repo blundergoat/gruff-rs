@@ -30,7 +30,7 @@ pub(crate) fn run_check_ignore(
 ) -> ExitCode {
     // For example, a caller can check `src/generated.rs` from a sibling directory by typing its relative path.
     let caller_root = match std::env::current_dir() {
-        Ok(launch_directory) => launch_directory,
+        Ok(launch_directory) => launch_directory.canonicalize().unwrap_or(launch_directory),
         // A deleted working directory prevents reliable lookup of the paths the caller typed.
         Err(error) => {
             eprintln!("gruff-rs: unable to resolve current directory: {error}");

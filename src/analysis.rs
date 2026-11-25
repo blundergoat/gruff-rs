@@ -589,23 +589,22 @@ fn collect_report_inputs(
     diff_filter: Option<&ResolvedDiffFilter>,
 ) -> Result<ReportInputs, String> {
     let analysed_paths = analysed_display_paths(&discovery.files);
-    let (mut findings, all_findings, function_blocks_by_file) =
+    let (findings, function_blocks_by_file) =
         analysed_findings(project_root, config, &discovery, coverage, &mut diagnostics);
+    // Apply configured, built-in, and inline suppressions before baseline matching or generation.
+    // This keeps explicit exclusions ahead of baseline states and out of newly generated baselines (`baseline.v3.json`).
+    let (mut findings, summaries, suppressed_findings) =
+        crate::inline_suppressions::apply_all_suppressions(findings, config, project_root);
+    let all_findings = findings.clone();
+    let excluded_identities = baseline::excluded_baseline_identities(&suppressed_findings);
     let (baseline_report, per_rule_deltas, all_findings_summary) = resolve_run_baseline(
         project_root,
         options,
         &mut findings,
         &function_blocks_by_file,
+        &excluded_identities,
         &mut diagnostics,
     )?;
-    let (findings, summaries, suppressed_findings) =
-        crate::inline_suppressions::apply_all_suppressions(findings, config, project_root);
-    let (all_findings, all_findings_summary) = crate::inline_suppressions::gate_scope_findings(
-        project_root,
-        config,
-        all_findings,
-        all_findings_summary,
-    );
     let inputs = ReportInputs {
         discovery,
         diagnostics,
@@ -629,26 +628,18 @@ fn collect_report_inputs(
     ))
 }
 
-/// Run the rules over the discovered sources and hand back the findings, a pre-baseline copy, and the parsed functions.
-///
-/// The pre-baseline copy is what a gate scoped to everything counts, so it is taken before suppression drops the
-/// debt the user already accepted; the parsed functions are what name a finding by the declaration it sits on.
+/// Run the rules over the discovered sources and hand back the named findings and the parsed functions.
 ///
 /// `project_root`, `config` and `discovery` give the root, rule settings and selected files; `coverage` says which Rust files the scan covered.
 /// `diagnostics` gains every source-read, parse and project-context diagnostic.
-/// Returns the sorted, deduplicated and named findings, an identical copy of them, and the parsed functions keyed by display path.
-#[allow(clippy::type_complexity)]
+/// Returns the sorted, deduplicated and named findings and the parsed functions keyed by display path.
 fn analysed_findings(
     project_root: &Path,
     config: &Config,
     discovery: &DiscoveryResult,
     coverage: ProjectCoverage,
     diagnostics: &mut Vec<RunDiagnostic>,
-) -> (
-    Vec<Finding>,
-    Vec<Finding>,
-    BTreeMap<String, Vec<FunctionBlock>>,
-) {
+) -> (Vec<Finding>, BTreeMap<String, Vec<FunctionBlock>>) {
     let AnalysisArtifacts {
         mut findings,
         function_blocks_by_file,
@@ -663,11 +654,10 @@ fn analysed_findings(
         diagnostics,
     );
     sort_and_dedupe_findings(&mut findings);
-    // Naming every finding before the baseline filters any of them keeps one alert one alert: code scanning reads
-    // the same identity the baseline does, and a finding hidden from this report keeps the ordinal it was ranked with.
+    // Naming every finding before suppressions or the baseline filter any of them keeps one alert one alert:
+    // code scanning reads the same identity the baseline does, and excluded siblings preserve full-file ordinals.
     name_findings(&mut findings, &function_blocks_by_file);
-    let all_findings = findings.clone();
-    (findings, all_findings, function_blocks_by_file)
+    (findings, function_blocks_by_file)
 }
 
 /// Attach each ordinary finding's durable identity, which SARIF publishes as its code-scanning fingerprint.
@@ -813,7 +803,8 @@ type RunBaseline = (Option<BaselineReport>, Option<Vec<RuleDelta>>, Summary);
 /// function share an identity while a same-named function gets another ordinal, which keeps one review from covering both.
 ///
 /// `project_root` and `options` locate the baseline; applying it can drop entries from `findings` and sets `baseline_status` on the rest.
-/// `function_blocks_by_file` supplies declaration positions, and `diagnostics` gains one `baseline-collision` entry per collision.
+/// `function_blocks_by_file` supplies declaration positions, and `excluded_identities` keeps counts for findings an `exclude` entry removed.
+/// `diagnostics` gains one `baseline-collision` entry per collision.
 ///
 /// Returns the report section, per-rule deltas and pre-baseline summary; Err holds a resolution failure.
 /// Both sections are None without a baseline, and the deltas are also None for a generated baseline or an empty delta list.
@@ -822,14 +813,20 @@ fn resolve_run_baseline(
     options: &AnalysisOptions,
     findings: &mut Vec<Finding>,
     function_blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+    excluded_identities: &BTreeMap<String, usize>,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> Result<RunBaseline, String> {
-    let declaration_position = declaration_position_from_blocks(function_blocks_by_file);
-    let (resolution, all_findings_summary) =
-        resolve_baseline(project_root, options, findings, &declaration_position)?;
+    let position = declaration_position_from_blocks(function_blocks_by_file);
+    let (resolution, summary) = resolve_baseline(
+        project_root,
+        options,
+        findings,
+        &position,
+        excluded_identities,
+    )?;
     let (report, deltas, collisions) = split_baseline_resolution(resolution);
-    diagnostics.extend(collision_diagnostics(&collisions));
-    Ok((report, deltas, all_findings_summary))
+    diagnostics.extend(baseline::collision_diagnostics(&collisions));
+    Ok((report, deltas, summary))
 }
 
 /// Unpack a baseline resolution into its report section, its per-rule deltas and the collisions it found.
@@ -854,33 +851,6 @@ fn split_baseline_resolution(
     };
     let deltas = (!report.generated && !deltas.is_empty()).then_some(deltas);
     (Some(report), deltas, collisions)
-}
-
-/// Name every identity that covered two declarations, so a user sees which ones could not be told apart.
-///
-/// Neither finding is suppressed and the run is not invalidated: hiding either would let one review cover a
-/// finding nobody read, which is exactly what the declaration ordinal exists to prevent.
-///
-/// `collisions` lists the identities the baseline found shared between declarations.
-/// Returns one `baseline-collision` diagnostic per collision, naming its identity, subjects, rule and file; no collisions yield an empty list.
-fn collision_diagnostics(collisions: &[BaselineCollision]) -> Vec<RunDiagnostic> {
-    collisions
-        .iter()
-        .map(|collision| RunDiagnostic {
-            diagnostic_type: "baseline-collision".to_string(),
-            message: format!(
-                "collision: identity {} covers {} declarations of {} for rule {} in {}; none is suppressed",
-                collision.identity,
-                collision.subjects.len(),
-                collision.subjects.join(", "),
-                collision.rule_id,
-                collision.path,
-            ),
-            file_path: Some(collision.path.clone()),
-            line: None,
-            invalidates_run: Some(false),
-        })
-        .collect()
 }
 
 /// Collect the display path of every analysed source file, Rust or not.
@@ -919,7 +889,10 @@ fn project_coverage(
     diff_filter: Option<&ResolvedDiffFilter>,
 ) -> ProjectCoverage {
     let analysed_rust_files = rust_display_paths(&discovery.files);
-    if !config.is_rule_enabled("dead-code.unused-private-item-candidate") {
+    let needs_universe = config.is_rule_enabled("dead-code.unused-private-item-candidate")
+        || config.is_rule_enabled("waste.unwrap-expect");
+    // Without the two rules that reason across the whole crate, the scanned files are all the coverage the report needs.
+    if !needs_universe {
         return ProjectCoverage {
             discoverable_rust_files: analysed_rust_files.clone(),
             analysed_rust_files,
@@ -989,19 +962,17 @@ pub(crate) struct AnalysisArtifacts {
     pub(crate) function_blocks_by_file: BTreeMap<String, Vec<FunctionBlock>>,
 }
 
-/// Analyze the selected sources and retain optional function evidence for the user's report.
-/// External test ownership is derived before per-file rules run, so an unselected parent cannot silence a warning.
+/// Analyze the selected sources and retain optional function evidence for the report.
 ///
-/// `project_root` roots the project context, `files` are the sources to read and parse, and `config` selects rules and the deep-scan budget.
-/// `coverage` decides whether external test ownership can be proved, and `retain_function_blocks` keeps each file's parsed functions when true.
-/// `diagnostics` gains every read, parse and project-context diagnostic.
+/// `project_root` roots project-wide checks, `files` are the sources to read, and `config` selects rules and the deep-scan budget.
+/// `coverage` proves external test ownership, `retain_function_blocks` keeps parsed functions, and `diagnostics` collects errors.
 ///
-/// Returns the project and per-file findings, unsorted, with the parsed functions by display path, empty unless `retain_function_blocks` is set.
+/// Returns unsorted project and per-file findings plus parsed function blocks keyed by display path (empty when `retain_function_blocks` is false).
 pub(crate) fn analyse_discovered_sources_with_artifacts(
     project_root: &Path,
     files: &[SourceFile],
     config: &Config,
-    coverage: ProjectCoverage,
+    mut coverage: ProjectCoverage,
     retain_function_blocks: bool,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> AnalysisArtifacts {
@@ -1012,31 +983,36 @@ pub(crate) fn analyse_discovered_sources_with_artifacts(
         &config.deep_scan_budget,
     );
     diagnostics.extend(read_diagnostics);
+    // Reflect unreadable, unparsed, or budget-bounded Rust files before proving external test ownership.
+    let parsed_rust_paths: BTreeSet<&str> = parsed_sources
+        .iter()
+        .filter(|parsed_source| parsed_source.file.is_rust && parsed_source.rust_ast.is_some())
+        .map(|parsed_source| parsed_source.file.display_path.as_str())
+        .collect();
+    coverage.parse_incomplete |= coverage
+        .analysed_rust_files
+        .iter()
+        .any(|path| !parsed_rust_paths.contains(path.as_str()));
     let mut blocks_by_file = BTreeMap::new();
-    let external_test_modules = source_proven_external_test_modules(&parsed_sources, &coverage);
-
+    let external_tests = source_proven_external_test_modules(&parsed_sources, &coverage);
+    // Skip building project-wide graphs when the caller selected only single-file rules.
     let mut findings = if capabilities.project_context {
-        let project_context = build_project_context(project_root, &parsed_sources, coverage);
-        diagnostics.extend(project_context.diagnostics.iter().cloned());
-        analyse_project(&project_context, config, diagnostics)
+        let context = build_project_context(project_root, &parsed_sources, coverage);
+        diagnostics.extend(context.diagnostics.iter().cloned());
+        analyse_project(&context, config, diagnostics)
     } else {
         Vec::new()
     };
     // Each selected file receives only test ownership proved by another selected Rust source.
-    for parsed_source in &parsed_sources {
-        let source_unit = parsed_source
-            .as_source_unit(external_test_modules.contains(&parsed_source.file.display_path));
-        if retain_function_blocks {
-            let source_artifacts =
-                crate::analyse_source_with_artifacts(&source_unit, config, retain_function_blocks);
-            if let Some(blocks) = source_artifacts.function_blocks {
-                blocks_by_file.insert(parsed_source.file.display_path.clone(), blocks);
-            }
-            findings.extend(source_artifacts.findings);
-        } else {
-            findings.extend(crate::analyse_source(&source_unit, config));
+    for parsed in &parsed_sources {
+        let unit = parsed.as_source_unit(external_tests.contains(&parsed.file.display_path));
+        let artifacts = crate::analyse_source_with_artifacts(&unit, config, retain_function_blocks);
+        // Keep parsed function spans when baselines or changed-symbol filters need declaration matching.
+        if let Some(blocks) = artifacts.function_blocks {
+            blocks_by_file.insert(parsed.file.display_path.clone(), blocks);
         }
-        diagnostics.extend(parsed_source.diagnostics.iter().cloned());
+        findings.extend(artifacts.findings);
+        diagnostics.extend(parsed.diagnostics.iter().cloned());
     }
     AnalysisArtifacts {
         findings,
@@ -1107,10 +1083,8 @@ fn external_test_declarations(parent: &ParsedSource) -> Option<(String, Vec<bool
     ) {
         return None;
     }
-    let child_path = parent_path
-        .with_file_name("tests.rs")
-        .to_string_lossy()
-        .to_string();
+    let child_path =
+        normalize_report_path(&parent_path.with_file_name("tests.rs").to_string_lossy());
     let mut declarations = Vec::new();
     // Only external declarations can assign this file; inline modules remain local to the parent.
     for item in &ast.items {

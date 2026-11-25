@@ -895,6 +895,7 @@ pub(crate) fn migration_refuses_an_ambiguous_input() {
     assert!(!output_path.exists(), "a refused migration wrote an output");
 }
 
+#[cfg(unix)]
 #[test]
 pub(crate) fn migration_refuses_a_hard_linked_output() {
     let dir = tempdir().expect("tempdir");

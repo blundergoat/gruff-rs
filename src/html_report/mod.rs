@@ -19,6 +19,13 @@ pub(crate) const DISTRIBUTION_BUCKETS: [DistributionBucket; 5] = [
     DistributionBucket::new("16-20", "fail"),
     DistributionBucket::new("21+", "fail"),
 ];
+pub(crate) const COGNITIVE_DISTRIBUTION_BUCKETS: [DistributionBucket; 5] = [
+    DistributionBucket::new("1-5", ""),
+    DistributionBucket::new("6-10", ""),
+    DistributionBucket::new("11-15", ""),
+    DistributionBucket::new("16-20", "warn"),
+    DistributionBucket::new("21+", "fail"),
+];
 
 /// Render the full HTML inspection report for the given analysis result.
 ///
@@ -43,6 +50,7 @@ pub(crate) struct ReportView<'a> {
     pub(crate) pillar_rows: Vec<PillarRow>,
     pub(crate) offender_rows: Vec<OffenderRow<'a>>,
     pub(crate) distribution: Vec<DistributionBar>,
+    pub(crate) distribution_label: &'static str,
     pub(crate) distribution_summary: String,
     pub(crate) findings_total: usize,
 }
@@ -124,7 +132,8 @@ impl<'a> ReportView<'a> {
         let offender_rows = build_offender_rows(
             &offenders[..offenders.len().min(crate::scoring::TOP_OFFENDER_LIMIT)],
         );
-        let (distribution, distribution_summary) = build_distribution(&report.findings);
+        let (distribution, distribution_label, distribution_summary) =
+            build_distribution(&report.findings);
 
         ReportView {
             report,
@@ -136,6 +145,7 @@ impl<'a> ReportView<'a> {
             pillar_rows,
             offender_rows,
             distribution,
+            distribution_label,
             distribution_summary,
             findings_total: report.findings.len(),
         }
@@ -187,13 +197,40 @@ fn build_offender_rows(offenders: &[FileScore]) -> Vec<OffenderRow<'_>> {
         .collect()
 }
 
-/// Builds the cyclomatic-complexity histogram bars and the sentence that summarises them.
+/// Builds the complexity histogram bars, metric label, and summary sentence.
 ///
-/// `findings` are searched for `complexity.cyclomatic` findings, which are counted into the `DISTRIBUTION_BUCKETS` ranges.
-/// Returns one bar per bucket with its label, count and class, together with the summary from `distribution_summary`.
-fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, String) {
-    let counts = cyclomatic_distribution_counts(findings);
-    let bars = DISTRIBUTION_BUCKETS
+/// Uses `complexity.cyclomatic` findings when present; otherwise falls back to `complexity.cognitive`,
+/// which is the default-on complexity rule in 0.6.0.
+/// Returns the bars in bucket order, the human metric label, and the summary sentence.
+fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, &'static str, String) {
+    let cyclomatic_counts = complexity_distribution_counts(findings, "complexity.cyclomatic");
+    // Prefer the cyclomatic chart; a scan with no cyclomatic findings falls back to cognitive complexity.
+    if cyclomatic_counts.iter().any(|&count| count > 0) {
+        let bars = distribution_bars(&DISTRIBUTION_BUCKETS, &cyclomatic_counts);
+        return (
+            bars,
+            "cyclomatic complexity",
+            cyclomatic_distribution_summary(&cyclomatic_counts),
+        );
+    }
+    let cognitive_counts = complexity_distribution_counts(findings, "complexity.cognitive");
+    let bars = distribution_bars(&COGNITIVE_DISTRIBUTION_BUCKETS, &cognitive_counts);
+    (
+        bars,
+        "cognitive complexity",
+        cognitive_distribution_summary(&cognitive_counts),
+    )
+}
+
+/// Pair static histogram bucket descriptors with their measured counts.
+///
+/// `buckets` supplies each bar's label and CSS class, and `counts` gives the matching finding count.
+/// Returns one `DistributionBar` per bucket in `buckets` order.
+fn distribution_bars(
+    buckets: &[DistributionBucket; 5],
+    counts: &[usize; 5],
+) -> Vec<DistributionBar> {
+    buckets
         .iter()
         .zip(counts.iter())
         .map(|(bucket, count)| DistributionBar {
@@ -201,31 +238,29 @@ fn build_distribution(findings: &[Finding]) -> (Vec<DistributionBar>, String) {
             count: *count,
             class: bucket.class,
         })
-        .collect();
-
-    (bars, distribution_summary(&counts))
+        .collect()
 }
 
-/// Counts cyclomatic-complexity findings into the five histogram buckets by their recorded complexity.
+/// Counts complexity findings for `rule_id` into the five histogram buckets by their recorded complexity.
 ///
-/// `findings` may hold any rule; a finding without a cyclomatic value is skipped.
-/// Returns the per-bucket counts in `DISTRIBUTION_BUCKETS` order.
-fn cyclomatic_distribution_counts(findings: &[Finding]) -> [usize; 5] {
+/// `findings` may hold any rule; findings with a different rule id or missing `complexity` metadata are skipped.
+/// Returns the per-bucket counts in bucket order.
+fn complexity_distribution_counts(findings: &[Finding], rule_id: &str) -> [usize; 5] {
     let mut counts = [0usize; 5];
     for finding in findings {
-        let Some(value) = cyclomatic_value(finding) else {
+        let Some(value) = complexity_value(finding, rule_id) else {
             continue;
         };
-        counts[cyclomatic_bucket_index(value)] += 1;
+        counts[complexity_bucket_index(value)] += 1;
     }
     counts
 }
 
-/// Reads the complexity a cyclomatic-complexity finding recorded in its `complexity` metadata.
+/// Reads the complexity a complexity finding recorded in its `complexity` metadata.
 ///
-/// Returns the value when `finding` has the rule id `complexity.cyclomatic`, and None otherwise or when it is missing or not an unsigned integer.
-fn cyclomatic_value(finding: &Finding) -> Option<u64> {
-    (finding.rule_id == "complexity.cyclomatic")
+/// Returns the value when `finding.rule_id` equals `rule_id`, and `None` otherwise or when missing or non-integer.
+fn complexity_value(finding: &Finding, rule_id: &str) -> Option<u64> {
+    (finding.rule_id == rule_id)
         .then(|| {
             finding
                 .metadata
@@ -235,11 +270,11 @@ fn cyclomatic_value(finding: &Finding) -> Option<u64> {
         .flatten()
 }
 
-/// Maps a cyclomatic complexity onto its histogram bucket.
+/// Maps a measured complexity score onto its histogram bucket.
 ///
 /// `value` is the complexity recorded on the finding.
-/// Returns 0 for up to 5, 1 for 6-10, 2 for 11-15, 3 for 16-20 and 4 for anything higher, matching `DISTRIBUTION_BUCKETS`.
-fn cyclomatic_bucket_index(value: u64) -> usize {
+/// Returns 0 for up to 5, 1 for 6-10, 2 for 11-15, 3 for 16-20 and 4 for anything higher.
+fn complexity_bucket_index(value: u64) -> usize {
     match value {
         0..=5 => 0,
         6..=10 => 1,
@@ -249,11 +284,11 @@ fn cyclomatic_bucket_index(value: u64) -> usize {
     }
 }
 
-/// Builds the histogram's summary sentence, which counts methods above cyclomatic complexity 10.
+/// Builds the cyclomatic histogram's summary sentence, counting methods above cyclomatic complexity 10.
 ///
-/// `counts` are the per-bucket counts in `DISTRIBUTION_BUCKETS` order; only the last three buckets, all above 10, are summed.
-/// Returns a no-methods sentence when they are all zero, and otherwise the total with its split across the 11-15, 16-20 and 21+ ranges.
-fn distribution_summary(counts: &[usize; 5]) -> String {
+/// `counts` are the per-bucket counts in `DISTRIBUTION_BUCKETS` order; the last three buckets exceed 10.
+/// Returns a no-methods sentence when zero, or the total with its split across 11-15, 16-20 and 21+.
+fn cyclomatic_distribution_summary(counts: &[usize; 5]) -> String {
     let moderate = counts[2];
     let high = counts[3];
     let severe = counts[4];
@@ -265,6 +300,33 @@ fn distribution_summary(counts: &[usize; 5]) -> String {
             "{exceeds} {noun} {verb} cyclomatic complexity 10 ({moderate} in 11-15, {high} in 16-20, {severe} at 21+).",
             noun = if exceeds == 1 { "method" } else { "methods" },
             verb = if exceeds == 1 { "exceeds" } else { "exceed" },
+        )
+    }
+}
+
+/// Builds the cognitive histogram's summary sentence, counting methods flagged for cognitive complexity.
+///
+/// `counts` are the per-bucket counts in `COGNITIVE_DISTRIBUTION_BUCKETS` order.
+/// Returns a no-methods sentence when empty, the default over-15 split when all flagged methods exceed 15,
+/// or a full bucket breakdown when a lowered threshold flagged methods at 15 or below.
+fn cognitive_distribution_summary(counts: &[usize; 5]) -> String {
+    let below_or_at_default = counts[0] + counts[1] + counts[2];
+    let high = counts[3];
+    let severe = counts[4];
+    let total = below_or_at_default + high + severe;
+    // The caption tells the reader how many methods exceed the default threshold of 15, and by how much.
+    if total == 0 {
+        "No methods exceed cognitive complexity 15 in this scan.".to_string()
+    } else if below_or_at_default == 0 {
+        format!(
+            "{total} {noun} {verb} cognitive complexity 15 ({high} in 16-20, {severe} at 21+).",
+            noun = if total == 1 { "method" } else { "methods" },
+            verb = if total == 1 { "exceeds" } else { "exceed" },
+        )
+    } else {
+        format!(
+            "{total} {noun} flagged for cognitive complexity ({below_or_at_default} in 1-15, {high} in 16-20, {severe} at 21+).",
+            noun = if total == 1 { "method" } else { "methods" },
         )
     }
 }

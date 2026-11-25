@@ -1,13 +1,17 @@
+//! Filter low-signal unwrap and clone patterns so waste rules report avoidable boilerplate instead of idiomatic Rust.
+//!
+//! Used by per-file analysis when deciding whether a `.clone()`, `.unwrap()`, or `.expect()` call deserves a finding.
+//! Recognises ownership-consuming clones, substantive `.expect(...)` rationales, Cargo build-script variables, and literal constructors.
+
 use super::*;
 
-/// Returns true when the line contains a `.clone()` whose result is
-/// immediately consumed by an ownership-taking method (known exemptions:
-/// `unwrap_or*`, `into*`, `collect*`, `?` propagation) or is being used
-/// in a position where the surrounding code requires owned data (struct
-/// field initialisation, `Some(_)` field wrap, `Entry::*` insertion,
-/// tuple keys for entry/insert, `.map(...).collect()` chains). In those
-/// cases the clone is not avoidable, so the candidate rule should stay
-/// silent.
+/// Report whether a `.clone()` on `line` is immediately consumed or required for owned data, keeping the clone rule silent.
+///
+/// Matches idiomatic ownership positions where cloning is usually intentional rather than avoidable waste:
+/// - Ownership-taking consumers such as `unwrap_or*`, `into*`, `collect*`, and `?` propagation.
+/// - Owned positions such as struct fields, `Some(...)` wraps, map entry/insert keys, and `.map(...).collect()` chains.
+///
+/// Returns true when any ownership pattern matches `line`, and false when the clone looks avoidable.
 pub(crate) fn clone_is_consumed_or_owned(line: &str) -> bool {
     CLONE_OWNERSHIP_PATTERNS
         .iter()
@@ -82,13 +86,13 @@ const CLONE_OWNERSHIP_PATTERNS: &[CloneOwnershipPattern] = &[
 /// Returns true when a `.expect("...")` call carries a substantive rationale string (at least 15 bytes after trimming surrounding whitespace).
 /// The waste rule accepts these because the author has already declared why the unwrap is safe; a trivial `.expect("ok")` gets no exemption here.
 ///
-/// `line` is one source line searched for textual `.expect("...")` matches; quote matching does not account for Rust escapes.
-/// Any one match with such a rationale passes. A raw-string argument such as `.expect(r#"..."#)` is not itself matched, but
-/// `.expect("...")` text inside any string literal on the line still is.
+/// `line` is one source line whose comments are stripped first before searching for textual `.expect("...")` matches.
+/// Any one match with such a rationale passes.
 pub(crate) fn expect_has_substantive_rationale(line: &str) -> bool {
     static EXPECT_RATIONALE_REGEX: OnceLock<Regex> = OnceLock::new();
+    let code = crate::parser::source_without_comments(line);
     let regex = static_regex(&EXPECT_RATIONALE_REGEX, r#"\.expect\(\s*"([^"]*)"\s*\)"#);
-    regex.captures_iter(line).any(|captures| {
+    regex.captures_iter(&code).any(|captures| {
         captures
             .get(1)
             .map(|rationale| rationale.as_str().trim().len() >= 15)
@@ -129,43 +133,54 @@ const CARGO_BUILD_SCRIPT_VARIABLES: &[&str] = &[
     "CARGO_CFG_TARGET_VENDOR",
 ];
 
-/// Returns true when every `unwrap()` or `expect()` on the line follows a call whose outcome the source fixes: a
-/// Cargo-set variable read in a build script, or a constructor given one literal, which succeeds or fails the same
-/// way on every run. Any other unwrap on the line keeps it reporting.
+/// Report whether every `unwrap()` or `expect()` on `raw_line` follows a call whose outcome is fixed by the source.
 ///
-/// Only `CString::new`, `Regex::new`, `Url::parse` and IP or socket address `from_str` count as fixed-outcome constructors.
-/// A `CString` literal holding `\0`, `\x00` or an all-zero `\u` escape without underscores is excluded, because that unwrap always panics.
-/// Variables count only when listed in `CARGO_BUILD_SCRIPT_VARIABLES` and `display_path` is `build.rs` or ends in `/build.rs`.
+/// Exempts deterministic calls so `waste.unwrap-expect` avoids noisy findings when any non-exempt unwrap keeps reporting:
+/// - Cargo-set build variables in `CARGO_BUILD_SCRIPT_VARIABLES` when `display_path` is `build.rs` or ends in `/build.rs`.
+/// - `CString::new`, `Regex::new`, `Url::parse`, and IP/socket `from_str` with a string literal (excluding NUL in `CString::new`).
 ///
-/// `raw_line` is one source line with its string literals intact, since the literal arguments and variable names are read.
-/// Returns false for a line with no `unwrap` or `expect` call.
+/// `raw_line` keeps string literals intact after stripping comments; returns false when the line has no `unwrap` or `expect` call.
 fn has_only_fixed_outcome_unwraps(raw_line: &str, display_path: &str) -> bool {
     static UNWRAP_CALL_REGEX: OnceLock<Regex> = OnceLock::new();
     static BUILD_VARIABLE_REGEX: OnceLock<Regex> = OnceLock::new();
     static LITERAL_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
     static STRING_ESCAPE_REGEX: OnceLock<Regex> = OnceLock::new();
+    let code = crate::parser::source_without_comments(raw_line);
     let calls = static_regex(&UNWRAP_CALL_REGEX, r"\.(?:unwrap|expect)\s*\(")
-        .find_iter(raw_line)
+        .find_iter(&code)
         .count();
     let is_build_script = display_path == "build.rs" || display_path.ends_with("/build.rs");
     let build_variables = static_regex(
         &BUILD_VARIABLE_REGEX,
         r#"\benv::var(?:_os)?\(\s*"([A-Z_]+)"\s*\)\s*\.(?:unwrap|expect)\s*\("#,
     )
-    .captures_iter(raw_line)
+    .captures_iter(&code)
     .filter(|captures| is_build_script && CARGO_BUILD_SCRIPT_VARIABLES.contains(&&captures[1]))
     .count();
-    // CString rejects NUL escapes. Consume other escapes too, so an escaped backslash before `0` is not a NUL.
+    // CString rejects NUL bytes and escapes. Consume other escapes too, so an escaped backslash before `0` is not a NUL.
     let literal_constructors = static_regex(
         &LITERAL_CONSTRUCTOR_REGEX,
-        r#"\b(CString::new|Regex::new|Url::parse|(?:IpAddr|Ipv4Addr|Ipv6Addr|SocketAddr)::from_str)\(\s*"((?:[^"\\]|\\.)*)"\s*\)\s*\.(?:unwrap|expect)\s*\("#,
+        r####"\b(CString::new|Regex::new|Url::parse|(?:IpAddr|Ipv4Addr|Ipv6Addr|SocketAddr)::from_str)\(\s*(?:"((?:[^"\\]|\\.)*)"|r(?:"([^"]*)"|#"((?:[^"]|"[^#])*)"#|##"((?:[^"]|"[^#]|"#[^#])*)"##))\s*\)\s*\.(?:unwrap|expect)\s*\("####,
     )
-    .captures_iter(raw_line)
+    .captures_iter(&code)
     .filter(|captures| {
-        &captures[1] != "CString::new"
-            || !static_regex(&STRING_ESCAPE_REGEX, r"\\(?:(0|x00|u\{0+\})|.)")
-                .captures_iter(&captures[2])
-                .any(|escape| escape.get(1).is_some())
+        // Only CString::new can panic on its literal, so every other constructor stays a fixed outcome.
+        if &captures[1] != "CString::new" {
+            return true;
+        }
+        // A normal string literal can spell NUL as an escape, so both a raw NUL byte and the escapes are checked.
+        if let Some(regular) = captures.get(2) {
+            return !regular.as_str().contains('\0')
+                && !static_regex(&STRING_ESCAPE_REGEX, r"\\(?:(0|x00|u\{0[0_]*\})|.)")
+                    .captures_iter(regular.as_str())
+                    .any(|escape| escape.get(1).is_some());
+        }
+        let raw = captures
+            .get(3)
+            .or_else(|| captures.get(4))
+            .or_else(|| captures.get(5))
+            .map_or("", |matched| matched.as_str());
+        !raw.contains('\0')
     })
     .count();
     calls > 0 && build_variables + literal_constructors == calls

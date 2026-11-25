@@ -245,6 +245,22 @@ rules: {}
 }
 
 #[test]
+pub(crate) fn init_escapes_control_characters_in_preserved_ignore_entries() {
+    let dir = tempdir().expect("tempdir");
+    let config_path = dir.path().join(".gruff-rs.yaml");
+    let preserved = vec!["build\u{7}out/**".to_string()];
+    let body = render_default_config(&rules::builtin_registry(), &preserved, &BTreeMap::new());
+    fs::write(&config_path, &body).expect("generated config write");
+
+    load_config(dir.path(), &default_test_options())
+        .expect("a regenerated config with a control character still loads");
+    assert!(
+        read_existing_ignore_patterns(&config_path).contains(&"build\u{7}out/**".to_string()),
+        "the escaped entry must read back exactly",
+    );
+}
+
+#[test]
 pub(crate) fn init_preserves_existing_fail_on_thresholds_on_regenerate() {
     let dir = tempdir().expect("tempdir");
     let config_path = dir.path().join(".gruff-rs.yaml");

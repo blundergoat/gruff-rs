@@ -105,15 +105,19 @@ fn mark_rejected(nodes: &[GuardNode], index: usize, blocked: &mut BTreeSet<usize
     }
 }
 
-/// Strip only unquoted YAML comments; unmatched quotes cannot establish ownership.
+/// Strip only unquoted YAML comments; unmatched quotes started at a scalar boundary cannot establish ownership.
 ///
 /// `raw` is one source line of the workflow file.
-/// Returns the line trimmed and cut before a `#` that starts a comment, or `None` when a quote character opens no complete quoted span.
+/// Returns the line trimmed and cut before a `#` that starts a comment, or `None` when a boundary quote opens no complete quoted span.
 fn yaml_text(raw: &str) -> Option<&str> {
     let bytes = raw.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
-        if matches!(bytes[index], b'\'' | b'"') {
+        let at_quote_boundary = index == 0
+            || bytes[index - 1].is_ascii_whitespace()
+            || matches!(bytes[index - 1], b':' | b'[' | b',' | b'{' | b'-');
+        // Skip a quoted value whole, so a `#` or bracket inside quotes never ends the line early.
+        if at_quote_boundary && matches!(bytes[index], b'\'' | b'"') {
             let quoted = QUOTE.find(&raw[index..])?;
             index += quoted.end();
             continue;
@@ -171,6 +175,26 @@ fn ownership(source: &str) -> Option<Vec<GuardNode>> {
     Some(nodes)
 }
 
+/// Report whether a `- ` sequence item shares its parent mapping key's indentation (YAML indentless sequence).
+///
+/// `nodes` holds the outline tree, `top` is the candidate parent index, `indent` is the item's column, and `prefix` is the sequence marker prefix.
+/// Returns true when `prefix` is non-empty and `nodes[top]` is an empty mapping key at `indent` whose existing children are all sequence items.
+fn is_indentless_sequence_child(
+    nodes: &[GuardNode],
+    top: usize,
+    indent: usize,
+    prefix: &str,
+) -> bool {
+    !prefix.is_empty()
+        && nodes[top].indent == indent
+        && !nodes[top].is_item
+        && nodes[top].content.is_empty()
+        && nodes[top]
+            .children
+            .iter()
+            .all(|&child| nodes[child].is_item)
+}
+
 /// Close siblings before attaching the next mapping sequence item.
 ///
 /// `nodes` is the tree and `stack` the path of open entries; entries indented at least `indent` spaces are popped and closed before this line.
@@ -183,7 +207,12 @@ fn parent_node(
     line_index: usize,
     prefix: &str,
 ) -> Option<usize> {
-    while stack.len() > 1 && nodes[*stack.last()?].indent >= indent {
+    while stack.len() > 1 {
+        let top = *stack.last()?;
+        // A deeper line, or a "- item" written at its parent key's indent, still belongs to the open block.
+        if nodes[top].indent < indent || is_indentless_sequence_child(nodes, top, indent, prefix) {
+            break;
+        }
         nodes[stack.pop()?].end = line_index;
     }
     let parent = *stack.last()?;

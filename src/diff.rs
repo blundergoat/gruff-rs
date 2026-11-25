@@ -54,6 +54,8 @@ pub(crate) fn read_diff_patch(project_root: &Path, path: &Path) -> Result<String
 pub(crate) struct DiffPatchState {
     current_file: Option<String>,
     current_new_line: Option<usize>,
+    remaining_old: usize,
+    remaining_new: usize,
 }
 
 /// Decide how a patch line affects the location of a finding on the new side.
@@ -119,10 +121,20 @@ pub(crate) fn should_handle_diff_header(
     }
 
     if line.starts_with("@@") {
-        state.current_new_line = parse_hunk_new_start(line);
-        ensure_diff_file_entry(line_map, &state.current_file);
-        if state.current_new_line.is_some() {
+        if let Some((old_count, new_start, new_count)) = parse_hunk_header(line) {
+            state.current_new_line = Some(new_start);
+            state.remaining_old = old_count;
+            state.remaining_new = new_count;
+            ensure_diff_file_entry(line_map, &state.current_file);
             line_map.saw_hunk = true;
+            // A header-only hunk, such as @@ -3,0 +3,0 @@, has no body lines to count.
+            if state.remaining_old == 0 && state.remaining_new == 0 {
+                state.current_new_line = None;
+            }
+        } else {
+            state.current_new_line = None;
+            state.remaining_old = 0;
+            state.remaining_new = 0;
         }
         return true;
     }
@@ -142,11 +154,10 @@ pub(crate) fn ensure_diff_file_entry(
     }
 }
 
-/// Advance the new-side line counter over one hunk line, recording the line number when the line was added.
+/// Advance the new-side line counter over one hunk line, recording its line number when added.
 ///
-/// `line` is the patch line; nothing happens unless `state` has both a current file and an open hunk.
-/// `state` advances its new-side line on added and context lines and closes the hunk on a line that cannot be hunk content.
-/// `line_map` gains the new-side number of each added line under the current file.
+/// `line` is ignored unless `state` has both a current file and an open hunk; added lines are recorded in `line_map`.
+/// Added and context lines advance the new-side counter, while non-hunk text or reaching zero remaining lines closes the hunk.
 pub(crate) fn record_diff_hunk_line(
     line: &str,
     state: &mut DiffPatchState,
@@ -167,12 +178,27 @@ pub(crate) fn record_diff_hunk_line(
                 .or_default()
                 .insert(*new_line);
             *new_line += 1;
+            state.remaining_new = state.remaining_new.saturating_sub(1);
         }
         DiffHunkLineKind::Context => {
             *new_line += 1;
+            state.remaining_old = state.remaining_old.saturating_sub(1);
+            state.remaining_new = state.remaining_new.saturating_sub(1);
         }
-        DiffHunkLineKind::OldSideOnly | DiffHunkLineKind::NoNewlineMarker => {}
-        DiffHunkLineKind::OutsideHunk => state.current_new_line = None,
+        DiffHunkLineKind::OldSideOnly => {
+            state.remaining_old = state.remaining_old.saturating_sub(1);
+        }
+        DiffHunkLineKind::NoNewlineMarker => {}
+        DiffHunkLineKind::OutsideHunk => {
+            state.current_new_line = None;
+            state.remaining_old = 0;
+            state.remaining_new = 0;
+            return;
+        }
+    }
+    // Close the hunk once all declared old and new lines are consumed, so a non-git `diff -ru` header like `--- file` is not read as a deletion.
+    if state.remaining_old == 0 && state.remaining_new == 0 {
+        state.current_new_line = None;
     }
 }
 
@@ -322,19 +348,52 @@ mod git_quoted {
     }
 }
 
-/// Read the new-side start line from an `@@` hunk header.
+/// Read the old-side count, new-side start line, and new-side count from an `@@ -a[,b] +c[,d] @@` hunk header.
 ///
-/// `line` is the hunk header; the digits after its first `+` are taken.
-/// Returns the start line, raised to 1 when the header says 0, or None without a `+` or digits after it, or when they overflow `usize`.
-pub(crate) fn parse_hunk_new_start(line: &str) -> Option<usize> {
+/// `line` is the hunk header; omitted counts default to 1 per unified diff syntax, and start line 0 becomes 1.
+/// Returns `(old_count, new_start, new_count)`, or `None` when the header does not contain a valid `+start`.
+fn parse_hunk_header(line: &str) -> Option<(usize, usize, usize)> {
     let plus = line.find('+')?;
-    let rest = &line[plus + 1..];
-    let digits: String = rest
+    let old_count = line[..plus]
+        .find('-')
+        .and_then(|minus| parse_hunk_range_count(&line[minus + 1..plus]))
+        .unwrap_or(1);
+    let new_rest = &line[plus + 1..];
+    let new_start = parse_leading_usize(new_rest)?.max(1);
+    let new_count = parse_hunk_range_count(new_rest).unwrap_or(1);
+    Some((old_count, new_start, new_count))
+}
+
+/// Read the optional `,count` portion of a unified-diff hunk range such as `10,4` or `10`.
+///
+/// `range_text` starts immediately after `-` or `+` in an `@@` header.
+/// Returns the parsed count when `,digits` immediately follows the start line, `Some(1)` when no comma follows, or `None` on overflow.
+fn parse_hunk_range_count(range_text: &str) -> Option<usize> {
+    let start_digits = range_text
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    // A range without a start line, such as @@ -,2 +,3 @@, is not a hunk header.
+    if start_digits == 0 {
+        return None;
+    }
+    let after_start = &range_text[start_digits..];
+    if let Some(after_comma) = after_start.strip_prefix(',') {
+        parse_leading_usize(after_comma)
+    } else {
+        Some(1)
+    }
+}
+
+/// Parse a leading run of ASCII decimal digits at the start of `text` as a `usize`.
+///
+/// Returns `Some(value)` when at least one digit is present and fits in `usize`, otherwise `None`.
+fn parse_leading_usize(text: &str) -> Option<usize> {
+    let digits: String = text
         .chars()
         .take_while(|character| character.is_ascii_digit())
         .collect();
-    let start = digits.parse::<usize>().ok()?;
-    Some(start.max(1))
+    digits.parse::<usize>().ok()
 }
 
 /// Bring a patch or finding path into one form, so the two can be compared directly.
@@ -345,16 +404,27 @@ pub(crate) fn normalize_report_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
-/// Returns whether `path` consists of project-relative components without parent traversal.
+/// Returns whether `path` consists of project-relative components without parent traversal, drive prefixes, or bare `.`.
 pub(crate) fn is_relative_scan_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains('\0')
-        && Path::new(path).components().all(|component| {
-            matches!(
-                component,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            )
-        })
+    // An empty path or one holding a NUL byte cannot name a file in the project.
+    if path.is_empty() || path.contains('\0') {
+        return false;
+    }
+    let bytes = path.as_bytes();
+    // A Windows drive path such as C:\src is absolute, even on a Unix host.
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+    let mut has_normal = false;
+    // Every part must be a plain folder or file name; `..` or a root would climb out of the project.
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(_) => has_normal = true,
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+    has_normal
 }
 
 /// Exercise the hunk-only behavior of `--diff-patch` on an existing report in a test.

@@ -1,3 +1,8 @@
+//! Mask or extract Rust line (`//`) and nested block (`/* ... */`) comments while keeping line numbers aligned.
+//!
+//! Operates on string-masked source so comment markers inside string literals are never misread as comments.
+//! Used by regex rules to ignore commented-out code and by documentation rules to inspect doc comments.
+
 use super::*;
 
 /// Masks every `//` and nested `/* */` comment in string-masked Rust source with spaces, keeping newlines so lines still line up.
@@ -174,18 +179,15 @@ fn consume_line_comment(bytes: &[u8], index: usize, line: usize) -> (RustComment
     (RustComment { line, text, is_doc }, end)
 }
 
-/// Reads one block comment out of the string-masked source, following nested comments to the matching close.
+/// Read one `/* ... */` block comment from string-masked source, following nested comments to the matching close.
 ///
-/// Consumes a `/* ... */` block comment starting at `index` (with current `line`) and returns the captured comment, the new cursor position
-/// (past the closing `*/` if present), and the updated line counter.
-///
-/// `bytes` is the string-masked source; a `*` right after the opener marks the comment as doc, and `line` is the opener's line.
-/// Its text is the trimmed body inside the outer markers, and is empty when that byte range is not valid UTF-8.
-/// An unterminated comment can drop its last byte from the range, which can split a multibyte character and so empty the text.
-///
-/// An empty `/**/` counts as doc and its scan starts after the closing star, so the text and the cursor can run on into the following source.
+/// `bytes` is the string-masked source, `index` points at `/*`, and `line` is the opener's 1-based line number.
+/// Returns the captured comment, the cursor past `*/`, and the updated line counter:
+/// - A `*` right after `/*` marks a doc comment, except for an empty `/**/` block comment.
+/// - Text is empty if the inner bytes are invalid UTF-8 (such as an unterminated comment splitting a multibyte char).
 fn consume_block_comment(bytes: &[u8], index: usize, line: usize) -> (RustComment, usize, usize) {
-    let is_doc = bytes.get(index + 2).copied() == Some(b'*');
+    let is_empty = starts_with_two(bytes, index + 2, b'*', b'/');
+    let is_doc = !is_empty && bytes.get(index + 2).copied() == Some(b'*');
     let text_start = if is_doc { index + 3 } else { index + 2 };
     let (end, current_line) = scan_block_comment_body(bytes, text_start, line);
     let text = std::str::from_utf8(&bytes[text_start..end])

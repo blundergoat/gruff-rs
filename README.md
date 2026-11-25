@@ -23,7 +23,7 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 | Field | Value |
 | --- | --- |
 | Release line | Published `0.6.0` package line |
-| Runtime | Prebuilt binary, or Rust `1.82+` when building from source |
+| Runtime | Prebuilt binary, or Rust `1.88+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
 | Rule catalogue | 71 rules across 11 pillars |
@@ -40,7 +40,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 ## Requirements
 
 - No Rust toolchain is needed when using a prebuilt binary through `cargo-binstall`.
-- Rust `1.82+` is required when building from source with Cargo.
+- Rust `1.88+` is required when building from source with Cargo.
 - Git is not used by default; Git-backed changed-region modes run only when `--diff`/`--since` is explicitly passed.
 
 ## Install
@@ -257,6 +257,7 @@ rules:
     threshold: 15
     severity: warning
   security.process-command:
+    enabled: true
     severity: error
   sensitive-data.high-entropy-string:
     thresholds:

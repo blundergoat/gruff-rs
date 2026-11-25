@@ -347,6 +347,16 @@ fn duplicate_groups_preserve_executable_differences() {
             0,
         ),
         (
+            "object key before an absolute path value",
+            &[
+                "let value = json!({\"a\": ::std::u8::MAX}); check(value);",
+                "let value = json!({\"b\": ::std::u8::MAX}); check(value);",
+                "let value = json!({\"c\": ::std::u8::MAX}); check(value);",
+            ],
+            true,
+            0,
+        ),
+        (
             "map key",
             &[
                 "let value = hashmap! {\"a\" => 1}; check(value);",

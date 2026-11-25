@@ -8,7 +8,7 @@ use super::*;
 /// Its value when config leaves it unset, true for the three documentation rules, comes from `Config::boolean_option_default`.
 const EVERY_CALLABLE_OPTIONS: &[OptionDefinition] = &[OptionDefinition {
     name: "everyCallable",
-    description: "Check every callable, not only public functions; true by default, false checks public functions only.",
+    description: "Check every callable outside test code, not only public API items; true by default, false narrows to public API scope.",
     value_kind: OptionValueKind::Boolean,
 }];
 
