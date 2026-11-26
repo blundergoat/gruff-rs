@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.0 - 2026-11-25
+## v0.6.0 - 2026-11-27
 
 0.6.0 is a coordinated family release aligning machine JSON (`gruff.analysis.v3`, `gruff.summary.v3`), baselines (`gruff.baseline.v3`), coding-agent hooks (`gruff.hook.v2`), normalized scoring, fallback discovery, config keys, and precision-calibrated rules across all five ports (rule catalogue `85 -> 71`: 15 rules removed, 1 added; 61 default-on, 10 opt-in). Upgrading from 0.5.x: this release changes every machine-readable contract at once; `UPGRADING.md` lists every migration command and the retreat path (pin the 0.5 line and keep the pre-upgrade config and baseline files, which 0.5 still reads).
 
