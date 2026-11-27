@@ -8,11 +8,15 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Locate the workflow a maintainer dispatches or triggers with a release tag.
+///
+/// Returns `.github/workflows/release.yml` joined onto the crate's `CARGO_MANIFEST_DIR`, without checking that the file exists.
 fn release_workflow_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".github/workflows/release.yml")
 }
 
 /// Parse the live workflow exactly as GitHub receives it from the selected ref.
+///
+/// Returns the parsed YAML document from `release_workflow_path`, and panics when the file cannot be read or is not valid YAML.
 fn read_release_workflow() -> Value {
     let workflow_path = release_workflow_path();
     // A missing file means the selected ref offers maintainers no release workflow.
@@ -22,11 +26,16 @@ fn read_release_workflow() -> Value {
 }
 
 /// Build a YAML mapping key without scattering representation details through tests.
+///
+/// Returns `key` copied into a `Value::String` for mapping lookups and inserts.
 fn yaml_key(key: &str) -> Value {
     Value::String(key.to_string())
 }
 
 /// Read a required mapping whose absence means the workflow graph is incomplete.
+///
+/// `value` is the YAML node to view as a mapping, and `context` names that node in the error message.
+/// Returns the borrowed mapping, or an Err saying `context` must be a mapping when `value` is any other YAML shape.
 fn required_mapping<'a>(value: &'a Value, context: &str) -> Result<&'a Mapping, String> {
     // A non-mapping value means the maintainer-facing workflow section is missing.
     value
@@ -35,6 +44,9 @@ fn required_mapping<'a>(value: &'a Value, context: &str) -> Result<&'a Mapping, 
 }
 
 /// Read one required field so missing YAML becomes actionable contract feedback.
+///
+/// Looks up the `field` key in `mapping`, and `context` names the owner of that key in the error message.
+/// Returns the field's value, or an Err saying `context` is missing `field` when the key is absent.
 fn required_field<'a>(
     mapping: &'a Mapping,
     field: &str,
@@ -47,6 +59,9 @@ fn required_field<'a>(
 }
 
 /// Read one named job from the graph a candidate or tag run will traverse.
+///
+/// `workflow` is the parsed workflow document, and `job_name` is the key looked up under its top-level `jobs` mapping.
+/// Returns that job's mapping, or an Err when the root or `jobs` is not a mapping, `jobs` is absent, or the job is absent or not a mapping.
 fn required_job<'a>(workflow: &'a Value, job_name: &str) -> Result<&'a Mapping, String> {
     let workflow_mapping = required_mapping(workflow, "workflow")?;
     let jobs = required_mapping(
@@ -60,6 +75,10 @@ fn required_job<'a>(workflow: &'a Value, job_name: &str) -> Result<&'a Mapping, 
 }
 
 /// Read mutable job YAML for a deliberate negative graph mutation.
+///
+/// `workflow` is the parsed workflow document to edit, and `job_name` is the key looked up under its top-level `jobs` mapping.
+/// Returns a mutable borrow of that job's mapping.
+/// Returns an Err when the root is not a mapping, or when `jobs` or the named job is absent or not a mapping.
 fn required_job_mut<'a>(
     workflow: &'a mut Value,
     job_name: &str,
@@ -80,6 +99,10 @@ fn required_job_mut<'a>(
 }
 
 /// Normalize scalar or list-shaped `needs` into the prerequisite jobs users rely on.
+///
+/// `job` is the job mapping whose `needs` field is read, and `job_name` names that job in error messages.
+/// Returns one name for a scalar `needs`, or every name in list order for a sequence.
+/// Returns an Err when `needs` is absent, is another YAML shape, or lists a non-string item.
 fn job_needs(job: &Mapping, job_name: &str) -> Result<Vec<String>, String> {
     let needs = required_field(job, "needs", &format!("job `{job_name}`"))?;
     match needs {
@@ -98,6 +121,10 @@ fn job_needs(job: &Mapping, job_name: &str) -> Result<Vec<String>, String> {
 }
 
 /// Join every run step so the graph test can inspect user-visible release stages.
+///
+/// `job` is the job mapping whose `steps` sequence is read; steps that are not mappings or lack a text `run` value are skipped.
+/// Returns the `run` texts joined with newlines in step order, or an empty string when no step has one.
+/// Returns an Err when `steps` is absent or is not a sequence.
 fn job_run_script(job: &Mapping) -> Result<String, String> {
     // Missing or non-list steps mean the job cannot run its visible release gates.
     let steps = required_field(job, "steps", "job")?
@@ -113,6 +140,9 @@ fn job_run_script(job: &Mapping) -> Result<String, String> {
 }
 
 /// Require a dependency edge that prevents a job from bypassing verification.
+///
+/// Reads the `needs` of `job`, which `job_name` names in errors, and passes when `prerequisite` is one of its job names.
+/// Returns an Err when `needs` cannot be read or does not include `prerequisite`.
 fn require_job_need(job: &Mapping, job_name: &str, prerequisite: &str) -> Result<(), String> {
     let prerequisites = job_needs(job, job_name)?;
     prerequisites
@@ -123,6 +153,9 @@ fn require_job_need(job: &Mapping, job_name: &str, prerequisite: &str) -> Result
 }
 
 /// Require one command fragment that represents a user-visible release gate.
+///
+/// Passes when `stage` occurs anywhere in the joined `run` text of `job`, and `job_name` names the job in the missing-stage error.
+/// Returns an Err when the steps cannot be read or `stage` is absent.
 fn require_run_stage(job: &Mapping, job_name: &str, stage: &str) -> Result<(), String> {
     job_run_script(job)?
         .contains(stage)
@@ -131,6 +164,9 @@ fn require_run_stage(job: &Mapping, job_name: &str, stage: &str) -> Result<(), S
 }
 
 /// Require one complete shell line so a related command cannot mask its removal.
+///
+/// Passes when one line of the joined `run` text of `job`, trimmed of surrounding whitespace, equals `command` exactly.
+/// `job_name` names the job in the missing-command error. Returns an Err when the steps cannot be read or no line matches.
 fn require_run_command(job: &Mapping, job_name: &str, command: &str) -> Result<(), String> {
     job_run_script(job)?
         .lines()
@@ -139,7 +175,11 @@ fn require_run_command(job: &Mapping, job_name: &str, command: &str) -> Result<(
         .ok_or_else(|| format!("job `{job_name}` is missing release command `{command}`"))
 }
 
-/// Require publication to be reachable only from an exact tag-push event.
+/// Require both reviewed tag-push fragments in a publication job's condition.
+///
+/// Passes when the `if` condition of `job` contains the `github.event_name == 'push'` and `startsWith(github.ref, 'refs/tags/v')` fragments.
+/// Other clauses, such as an added `|| true`, are not checked.
+/// `job_name` names the job in errors. Returns an Err when `if` is absent, is not text, or lacks either fragment.
 fn require_tag_only_publication(job: &Mapping, job_name: &str) -> Result<(), String> {
     // Missing or non-text conditions could let a candidate reach publication.
     let condition = required_field(job, "if", &format!("job `{job_name}`"))?
@@ -153,6 +193,9 @@ fn require_tag_only_publication(job: &Mapping, job_name: &str) -> Result<(), Str
 }
 
 /// Require the reviewed GitHub glob that reaches exact SemVer validation.
+///
+/// `triggers` is the workflow's `on` mapping, whose `push.tags` list must hold only the reviewed `v`-prefixed three-part version glob.
+/// Returns an Err when `push` is absent or not a mapping, `tags` is absent or not a sequence, or the list is not that single glob.
 fn require_release_tag_trigger(triggers: &Mapping) -> Result<(), String> {
     let push = required_mapping(
         required_field(triggers, "push", "workflow triggers")?,
@@ -173,6 +216,9 @@ fn require_release_tag_trigger(triggers: &Mapping) -> Result<(), String> {
 }
 
 /// Require a candidate job to stay read-only and outside publication environments.
+///
+/// Passes when `job` has a `permissions` mapping whose only entry is `contents: read` and has no `environment` key.
+/// Returns an Err naming `job_name` for a missing or non-mapping `permissions`, any other scope or access, or an `environment` key.
 fn require_candidate_job_is_read_only(job: &Mapping, job_name: &str) -> Result<(), String> {
     let permissions = required_mapping(
         required_field(job, "permissions", &format!("job `{job_name}`"))?,
@@ -192,6 +238,9 @@ fn require_candidate_job_is_read_only(job: &Mapping, job_name: &str) -> Result<(
 }
 
 /// Require shared candidate jobs to remain free of publication secret references.
+///
+/// `candidate_jobs` holds the three candidate job mappings, which are serialized back to YAML and must not mention `secrets.` anywhere.
+/// Returns an Err when serialization fails or any job's YAML contains `secrets.`.
 fn require_candidate_jobs_have_no_secrets(candidate_jobs: [&Mapping; 3]) -> Result<(), String> {
     let shared_job_yaml = candidate_jobs
         .into_iter()
@@ -207,6 +256,18 @@ fn require_candidate_jobs_have_no_secrets(candidate_jobs: [&Mapping; 3]) -> Resu
 }
 
 /// Validate the read-only source, build, and asset path a candidate traverses.
+///
+/// `source_verify`, `build` and `asset_verify` are the named job mappings; each must grant only `contents: read` and have no `environment` key.
+/// None of their serialized YAML may contain `secrets.`.
+///
+/// `source_verify` must contain `resolve-source`, `scripts/preflight-checks.sh` and `write-source-manifest` in its joined run text,
+/// plus a trimmed run line equal to `cargo package --locked`.
+///
+/// `build` must need `source_verify` and contain `stage-archive` in its joined run text.
+/// Its serialized YAML must contain `fromJSON(needs.source_verify.outputs.build_matrix)` and `if-no-files-found: error` anywhere.
+/// `asset_verify` must need `source_verify` and `build` and contain `verify-assets` in its joined run text.
+///
+/// Returns the first failing check's Err.
 fn validate_candidate_verification_jobs(
     source_verify: &Mapping,
     build: &Mapping,
@@ -245,6 +306,10 @@ fn validate_candidate_verification_jobs(
 }
 
 /// Validate the crate gate that runs after source and all assets are proven.
+///
+/// `publish_crate` is the crate publication job mapping, which must need `source_verify` and `asset_verify`.
+/// Its `if` condition must contain both tag-push fragments, and its joined run text must contain `verify-package` and `cargo publish --locked`.
+/// Returns the first failing check's Err.
 fn validate_crate_publication_job(publish_crate: &Mapping) -> Result<(), String> {
     require_job_need(publish_crate, "publish_crate", "source_verify")?;
     require_job_need(publish_crate, "publish_crate", "asset_verify")?;
@@ -253,7 +318,14 @@ fn validate_crate_publication_job(publish_crate: &Mapping) -> Result<(), String>
     require_run_stage(publish_crate, "publish_crate", "cargo publish --locked")
 }
 
-/// Validate draft creation, exact asset upload, and final GitHub publication order.
+/// Validate publication prerequisites, tag-push condition fragments, and the order of draft, upload, verify and publish markers.
+///
+/// `publish_github` is the GitHub release job mapping, which must need `source_verify`, `asset_verify` and `publish_crate`.
+/// Its `if` condition must contain both tag-push fragments, and it must pass `require_fail_stop_draft_recovery`.
+/// Its joined run text must contain `--draft` and `--verify-tag`.
+///
+/// The first occurrences of `gh release create`, `gh release upload`, `verify-draft` and `gh release edit` must all exist and appear in that order.
+/// Returns the first failing check's Err.
 fn validate_github_publication_job(publish_github: &Mapping) -> Result<(), String> {
     require_job_need(publish_github, "publish_github", "source_verify")?;
     require_job_need(publish_github, "publish_github", "asset_verify")?;
@@ -297,12 +369,18 @@ fn validate_github_publication_job(publish_github: &Mapping) -> Result<(), Strin
 /// Pin the fail-stop recovery policy for a rerun that meets an existing draft.
 ///
 /// 0.5.0 deliberately has no reconciliation path. `gh release create` fails when a release already exists for the tag, and
-/// `gh release upload` fails on an asset that is already attached, so a rerun stops rather than adopting remote state this
-/// run never verified. That is the whole policy, and each assertion here blocks one way of quietly dissolving it: adding
-/// `--clobber` would overwrite assets belonging to a draft built from a different commit; deleting an existing release
-/// would discard evidence an operator needs to investigate; and probing for a release before creating one would let a
-/// rerun skip creation and upload into whatever draft happened to be there. Real resumability is deferred, and building it
-/// means verifying an existing draft against the release manifest first, not relaxing one of these guards.
+/// `gh release upload` fails on an asset that is already attached, so a rerun stops rather than adopting remote state this run never verified.
+///
+/// That is the whole policy, and each assertion here blocks one way of quietly dissolving it: adding `--clobber` would overwrite assets
+/// belonging to a draft built from a different commit; deleting an existing release would discard evidence an operator needs to investigate;
+/// and probing for a release before creating one would let a rerun skip creation and upload into whatever draft happened to be there.
+///
+/// Real resumability is deferred, and building it means verifying an existing draft against the release manifest first,
+/// not relaxing one of these guards.
+///
+/// `publish_github` is the GitHub release job mapping whose joined run text must contain neither `--clobber` nor `gh release delete`.
+/// It must contain `gh release create`, and the first `gh release view`, if any, must come after the first `gh release create`.
+/// Returns an Err for the first broken guard, or when the job's steps cannot be read.
 fn require_fail_stop_draft_recovery(publish_github: &Mapping) -> Result<(), String> {
     let github_release_script = job_run_script(publish_github)?;
     (!github_release_script.contains("--clobber"))
@@ -325,6 +403,10 @@ fn require_fail_stop_draft_recovery(publish_github: &Mapping) -> Result<(), Stri
 }
 
 /// Validate the candidate path and serialized crate-then-release publication path.
+///
+/// `workflow` is the parsed release workflow, whose `on` mapping must hold the reviewed push tag trigger and a `workflow_dispatch` key.
+/// The `source_verify`, `build`, `asset_verify`, `publish_crate` and `publish_github` jobs must exist and pass their job validators.
+/// Returns the first failing check's Err.
 fn validate_release_workflow(workflow: &Value) -> Result<(), String> {
     let workflow_mapping = required_mapping(workflow, "workflow")?;
     let triggers = required_mapping(
@@ -345,8 +427,11 @@ fn validate_release_workflow(workflow: &Value) -> Result<(), String> {
     validate_github_publication_job(publish_github)
 }
 
-/// Replace one job prerequisite to model a bypass a future edit might introduce.
+/// Replace one job's prerequisite list to model a bypass a future edit might introduce.
+///
+/// Overwrites the whole `needs` value of the `job_name` job in `workflow` with `prerequisites` as a YAML list of names.
 /// An empty slice models a job users could run without any verification gate.
+/// Panics when `workflow` has no `job_name` job mapping.
 fn set_job_needs(workflow: &mut Value, job_name: &str, prerequisites: &[&str]) {
     let job = required_job_mut(workflow, job_name).expect("negative-test job exists");
     job.insert(
@@ -360,13 +445,20 @@ fn set_job_needs(workflow: &mut Value, job_name: &str, prerequisites: &[&str]) {
     );
 }
 
-/// Replace one text job field to model an unsafe maintainer-facing workflow edit.
+/// Set one text job field to model an unsafe maintainer-facing workflow edit.
+///
+/// Inserts `value` as a YAML string under the `field` key of the `job_name` job in `workflow`, overwriting any existing value.
+/// Panics when `workflow` has no `job_name` job mapping.
 fn set_job_text_field(workflow: &mut Value, job_name: &str, field: &str, value: &str) {
     let job = required_job_mut(workflow, job_name).expect("negative-test job exists");
     job.insert(yaml_key(field), Value::String(value.to_string()));
 }
 
-/// Rewrite controlled workflow YAML to prove the validator notices a removed gate.
+/// Rewrite controlled workflow YAML to prove the validator notices a removed or weakened gate.
+///
+/// Serializes `workflow` to YAML text and replaces the first occurrence of `original_text` with `replacement_text`; `workflow` is not changed.
+/// Returns the edited text parsed as a new workflow value.
+/// Panics when serialization fails, `original_text` is absent from the serialized text, or the edited text is not valid YAML.
 fn replace_workflow_yaml_text(
     workflow: &Value,
     original_text: &str,
@@ -382,6 +474,10 @@ fn replace_workflow_yaml_text(
 }
 
 /// Rewrite controlled job YAML so a negative test changes the intended graph edge.
+///
+/// Serializes the `job_name` job of `workflow` and replaces the first occurrence of `original_text` with `replacement_text`.
+/// The reparsed mapping then replaces that job in `workflow`.
+/// Panics when the job is missing or does not serialize, `original_text` is absent from its YAML, or the edited text is not a YAML mapping.
 fn replace_job_yaml_text(
     workflow: &mut Value,
     job_name: &str,
@@ -404,7 +500,11 @@ fn replace_job_yaml_text(
         .clone();
 }
 
-/// Prove one removed YAML marker produces the expected operator-facing error.
+/// Prove one YAML text replacement makes validation fail with the expected operator-facing error.
+///
+/// Reads the live release workflow, replaces the first occurrence of `original_text` with `replacement_text`, and validates the result.
+/// Panics when `validate_release_workflow` accepts the edit or returns an error that does not contain `expected_error`.
+/// Also panics when the workflow cannot be read, `original_text` is absent, or the edited text does not parse.
 fn assert_workflow_yaml_mutation_rejected(
     original_text: &str,
     replacement_text: &str,

@@ -1,7 +1,7 @@
-//! Supply-chain contract tests for workflows maintainers and contributors run.
-//! They reject moving action references, unexpected GitHub write authority,
-//! floating Rust/Cargo tools, and incomplete platform pins before hosted CI can
-//! execute them. A negative mutation proves the action-ref guard really fires.
+//! Check the supply-chain settings used by contributors and release maintainers.
+//!
+//! Reject floating action or tool versions, unexpected GitHub write authority, and incomplete platform pins before CI executes them.
+//! A deliberately unpinned action proves the reference guard can catch the failure.
 
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeSet;
@@ -11,28 +11,28 @@ use std::path::PathBuf;
 const EXPECTED_ACTION_PINS: &[(&str, &str, &str)] = &[
     (
         "actions/checkout",
-        "34e114876b0b11c390a56381ad16ebd13914f8d5",
-        "v4.3.1",
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "v7.0.1",
     ),
     (
         "actions/upload-artifact",
-        "ea165f8d65b6e75b540449e92b4886f43607fa02",
-        "v4.6.2",
+        "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+        "v7.0.2",
     ),
     (
         "actions/download-artifact",
-        "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-        "v4.3.0",
+        "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+        "v8.0.2",
     ),
     (
         "Swatinem/rust-cache",
-        "c19371144df3bb44fab255c43d04cbc2ab54d1c4",
-        "v2.9.1",
+        "d1527c8f67ef9af357290475d4af4b0fab8f12e0",
+        "v2.9.3",
     ),
     (
         "dtolnay/rust-toolchain",
-        "4be7066ada62dd38de10e7b70166bc74ed198c30",
-        "stable snapshot for Rust 1.97.0",
+        "39008827e6b4319a349e9a42dfc90579dd25f1ca",
+        "stable snapshot for Rust 1.100.1",
     ),
 ];
 
@@ -52,11 +52,17 @@ const EXPECTED_ACTIONLINT_CHECKSUMS: &[&str] = &[
 ];
 
 /// Locate one checked-in contract relative to the workspace users run from.
+///
+/// `relative_path` is joined onto the crate root that `CARGO_MANIFEST_DIR` records at compile time.
+/// Returns the joined path without checking that the file exists.
 fn workspace_path(relative_path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative_path)
 }
 
-/// Read one workflow or script exactly as a contributor and hosted runner receive it.
+/// Read one checked-in file exactly as a contributor and hosted runner receive it.
+///
+/// `relative_path` names the file under the crate root, as resolved by `workspace_path`.
+/// Returns the file's text, and panics with the resolved path and I/O error when it cannot be read or is not valid UTF-8.
 fn read_workspace_text(relative_path: &str) -> String {
     let contract_path = workspace_path(relative_path);
     fs::read_to_string(&contract_path)
@@ -64,6 +70,9 @@ fn read_workspace_text(relative_path: &str) -> String {
 }
 
 /// Parse workflow YAML so permission checks follow the structure GitHub consumes.
+///
+/// `relative_path` names the workflow file under the crate root.
+/// Returns the parsed YAML document, and panics when the file cannot be read or its text is not valid YAML.
 fn read_workflow_yaml(relative_path: &str) -> Value {
     let workflow_text = read_workspace_text(relative_path);
     serde_yaml::from_str(&workflow_text)
@@ -71,6 +80,9 @@ fn read_workflow_yaml(relative_path: &str) -> Value {
 }
 
 /// Read a required mapping whose absence would remove a visible workflow section.
+///
+/// `value` is the YAML node to view as a mapping, and `context` names that node in the error message.
+/// Returns the borrowed mapping, or an Err saying `context` must be a mapping when `value` is any other YAML shape.
 fn required_mapping<'a>(value: &'a Value, context: &str) -> Result<&'a Mapping, String> {
     // A non-mapping value means GitHub cannot apply the expected workflow contract.
     value
@@ -79,6 +91,9 @@ fn required_mapping<'a>(value: &'a Value, context: &str) -> Result<&'a Mapping, 
 }
 
 /// Read a required YAML field so missing workflow authority has actionable feedback.
+///
+/// Looks up the `field_name` key in `mapping`, and `context` names the owner of that key in the error message.
+/// Returns the field's value, or an Err saying `context` is missing `field_name` when the key is absent.
 fn required_field<'a>(
     mapping: &'a Mapping,
     field_name: &str,
@@ -91,6 +106,9 @@ fn required_field<'a>(
 }
 
 /// Read one named workflow job that users see in a hosted run.
+///
+/// `workflow` is the parsed workflow document, and `job_name` is the key looked up under its top-level `jobs` mapping.
+/// Returns that job's mapping, or an Err when the root or `jobs` is not a mapping, `jobs` is absent, or the job is absent or not a mapping.
 fn required_job<'a>(workflow: &'a Value, job_name: &str) -> Result<&'a Mapping, String> {
     let workflow_mapping = required_mapping(workflow, "workflow")?;
     let jobs = required_mapping(
@@ -104,6 +122,10 @@ fn required_job<'a>(workflow: &'a Value, job_name: &str) -> Result<&'a Mapping, 
 }
 
 /// Require exactly one contents permission so a job cannot silently gain authority.
+///
+/// `permissions_owner` is a workflow root or job mapping whose `permissions` mapping is checked, and `owner_name` names it in errors.
+/// Passes only when that mapping has a single `contents` entry whose access text equals `expected_access`, such as `read` or `write`.
+/// Returns an Err when `permissions` is absent or not a mapping, or holds any other scope or access.
 fn require_contents_permission(
     permissions_owner: &Mapping,
     owner_name: &str,
@@ -136,7 +158,11 @@ fn validate_ci_workflow_permissions() -> Result<(), String> {
     Ok(())
 }
 
-/// Keep every release job on its reviewed read or write contents scope.
+/// Keep the workflow root and the five named release jobs on their reviewed read or write contents scope.
+///
+/// `release_workflow` is the parsed release workflow, whose root permissions must be exactly `contents: read`.
+/// Each of the `source_verify`, `build`, `asset_verify` and `publish_crate` jobs must grant only `contents: read`.
+/// The `publish_github` job must grant only `contents: write`; other jobs are not checked. Returns the first failing check's Err.
 fn validate_release_job_permissions(release_workflow: &Value) -> Result<(), String> {
     let release_mapping = required_mapping(release_workflow, "release workflow")?;
     require_contents_permission(release_mapping, "release workflow", "read")?;
@@ -163,7 +189,11 @@ fn validate_release_job_permissions(release_workflow: &Value) -> Result<(), Stri
     Ok(())
 }
 
-/// Keep the crates.io credential on its tag-only publish step and reject broad shorthand.
+/// Keep the single crate-token reference inside the `publish_crate` job and reject broad permission shorthand.
+///
+/// `release_text` is the raw release workflow text, which must mention `secrets.CARGO_REGISTRY_TOKEN` exactly once.
+/// `release_workflow` is the same workflow parsed, and its serialized `publish_crate` job must hold that one reference.
+/// The raw text must also contain neither `write-all` nor `read-all`. Returns an Err for the first broken rule or a missing `publish_crate` job.
 fn validate_release_secret_scope(
     release_workflow: &Value,
     release_text: &str,
@@ -198,7 +228,10 @@ fn validate_workflow_permissions() -> Result<(), String> {
     validate_release_secret_scope(&release_workflow, &release_text)
 }
 
-/// Report whether an action ref is the immutable 40-hex identity maintainers reviewed.
+/// Report whether an action ref has the 40-hex shape of an immutable full commit SHA.
+///
+/// `action_ref` is the text after the last `@` in a `uses:` reference.
+/// Returns true only when it is exactly 40 ASCII hex digits, in either letter case; it does not check the reviewed pin inventory.
 fn is_full_commit_sha(action_ref: &str) -> bool {
     action_ref.len() == 40
         && action_ref
@@ -207,6 +240,10 @@ fn is_full_commit_sha(action_ref: &str) -> bool {
 }
 
 /// Parse one external action identity, or return None for a commit-bound local action.
+///
+/// `reference_with_comment` is the text after `uses:` on one workflow line, and `workflow_name` with `line_number` locate it in error messages.
+/// Returns Ok(None) for a `./` local action, otherwise the action name, ref and trimmed version comment borrowed from that text.
+/// Returns an Err when the `#` version comment is missing or empty, the identity has no `@`, or the ref is not a full 40-hex commit SHA.
 fn parsed_external_action<'a>(
     workflow_name: &str,
     line_number: usize,
@@ -245,6 +282,10 @@ fn parsed_external_action<'a>(
 }
 
 /// Match one immutable action identity to the reviewed release inventory.
+///
+/// Looks up `action_name` in `EXPECTED_ACTION_PINS` and requires `action_ref` and `version_comment` to equal its reviewed SHA and comment.
+/// `workflow_name` and `line_number` locate the `uses:` line in error messages.
+/// Returns an Err when the action is not in the inventory or either value differs from it.
 fn require_reviewed_action_pin(
     workflow_name: &str,
     line_number: usize,
@@ -270,7 +311,11 @@ fn require_reviewed_action_pin(
     Ok(())
 }
 
-/// Validate every third-party action ref and its human-readable update comment.
+/// Validate the pin and update comment of each action ref on a line that starts with `uses:` after leading whitespace.
+///
+/// `workflow_files` pairs each file name with its text; a list-item line such as `- uses:` does not match and is skipped.
+/// Each such reference must be a local `./` action or match its reviewed pin, and every `EXPECTED_ACTION_PINS` action must appear at least once.
+/// Returns the first parse or pin Err, or an Err naming a reviewed action that no file uses.
 fn validate_action_references(workflow_files: &[(&str, &str)]) -> Result<(), String> {
     let mut seen_action_names = BTreeSet::new();
 
@@ -315,6 +360,10 @@ fn validate_action_references(workflow_files: &[(&str, &str)]) -> Result<(), Str
 }
 
 /// Join shell continuation lines so version checks inspect the command users execute.
+///
+/// `script_text` is shell or workflow text; blank lines and lines starting with `#` after trimming are skipped, even inside a continuation.
+/// A line ending in a backslash continues into the next kept line, and the trimmed fragments are joined with single spaces.
+/// Returns one string per logical command in source order, including a final command left open by a trailing backslash.
 fn logical_shell_commands(script_text: &str) -> Vec<String> {
     let mut logical_commands = Vec::new();
     let mut pending_command = String::new();
@@ -350,7 +399,11 @@ fn logical_shell_commands(script_text: &str) -> Vec<String> {
     logical_commands
 }
 
-/// Reject direct Cargo installs that float a version or ignore the crate lockfile.
+/// Require `--version` and `--locked` markers in every direct Cargo install command.
+///
+/// `executable_files` pairs each file name with its text, which is split into logical shell commands by `logical_shell_commands`.
+/// Every command containing the text `cargo install` followed by a space must also contain `--version` and `--locked` as substrings.
+/// The version value is not checked. Returns an Err naming the file and the first command that lacks either marker.
 fn validate_direct_cargo_installs(executable_files: &[(&str, &str)]) -> Result<(), String> {
     // Every executable workflow/script is checked because either can install release tools.
     for (file_name, file_text) in executable_files {
@@ -372,6 +425,9 @@ fn validate_direct_cargo_installs(executable_files: &[(&str, &str)]) -> Result<(
 }
 
 /// Require a reviewed literal that binds one tool or target to its expected identity.
+///
+/// Passes when `file_text` contains `required_text` as a substring, and `file_name` names that file in the error.
+/// Returns an Err saying `file_name` is missing the reviewed pin `required_text` otherwise.
 fn require_contract_text(
     file_name: &str,
     file_text: &str,
@@ -383,7 +439,11 @@ fn require_contract_text(
         .ok_or_else(|| format!("{file_name} is missing reviewed pin `{required_text}`"))
 }
 
-/// Validate the exact Rust and cross versions users receive from hosted workflows.
+/// Require the reviewed Rust toolchain and cross version pins in the CI and release workflow texts.
+///
+/// `ci_workflow` is the CI workflow text, which must contain the reviewed `CI_RUST_TOOLCHAIN` pin as a substring.
+/// `release_workflow` is the release workflow text, which must contain the reviewed `RELEASE_RUST_TOOLCHAIN` pin as a substring.
+/// It must also contain the reviewed locked `cross` install text as a substring. Returns an Err for the first missing pin.
 fn validate_workflow_tool_versions(
     ci_workflow: &str,
     release_workflow: &str,
@@ -391,12 +451,12 @@ fn validate_workflow_tool_versions(
     require_contract_text(
         ".github/workflows/ci.yml",
         ci_workflow,
-        "CI_RUST_TOOLCHAIN: 1.97.0",
+        "CI_RUST_TOOLCHAIN: 1.100.1",
     )?;
     require_contract_text(
         ".github/workflows/release.yml",
         release_workflow,
-        "RELEASE_RUST_TOOLCHAIN: 1.97.0",
+        "RELEASE_RUST_TOOLCHAIN: 1.100.1",
     )?;
     require_contract_text(
         ".github/workflows/release.yml",
@@ -405,7 +465,11 @@ fn validate_workflow_tool_versions(
     )
 }
 
-/// Validate exact Cargo and Go checker versions shared by local and hosted preflight.
+/// Require the reviewed Cargo and Go checker version assignments in the installer and preflight scripts.
+///
+/// `dependency_installer` is the `scripts/dependency-install.sh` text and `preflight` is the `scripts/preflight-checks.sh` text.
+/// The installer must contain the reviewed cargo-audit, action-validator and actionlint version assignments as substrings.
+/// Preflight must contain the same cargo-audit and actionlint assignments. Returns an Err for the first missing pin.
 fn validate_local_checker_versions(
     dependency_installer: &str,
     preflight: &str,
@@ -413,12 +477,12 @@ fn validate_local_checker_versions(
     require_contract_text(
         "scripts/dependency-install.sh",
         dependency_installer,
-        "CARGO_AUDIT_VERSION=0.22.2",
+        "CARGO_AUDIT_VERSION=0.23.0",
     )?;
     require_contract_text(
         "scripts/preflight-checks.sh",
         preflight,
-        "CARGO_AUDIT_VERSION=0.22.2",
+        "CARGO_AUDIT_VERSION=0.23.0",
     )?;
     require_contract_text(
         "scripts/dependency-install.sh",
@@ -437,7 +501,10 @@ fn validate_local_checker_versions(
     )
 }
 
-/// Validate every platform digest used before actionlint executes for a contributor.
+/// Require every reviewed actionlint platform digest in the dependency installer text.
+///
+/// `dependency_installer` is the `scripts/dependency-install.sh` text.
+/// Each `EXPECTED_ACTIONLINT_CHECKSUMS` digest must occur in it as a substring. Returns an Err naming the first missing digest.
 fn validate_actionlint_checksums(dependency_installer: &str) -> Result<(), String> {
     // Each platform checksum prevents a downloaded actionlint binary changing unnoticed.
     for expected_checksum in EXPECTED_ACTIONLINT_CHECKSUMS {
@@ -450,7 +517,11 @@ fn validate_actionlint_checksums(dependency_installer: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// Require checksum failure to stop setup before the downloaded archive reaches `tar`.
+/// Require the installer's first checksum call to carry the reviewed `|| fail_install` guard.
+///
+/// `dependency_installer` is the `scripts/dependency-install.sh` text, read as logical commands joined across backslash continuations.
+/// The first logical command starting with `verify_download_checksum` and a space must begin with the reviewed call followed by `|| fail_install`.
+/// Returns an Err when no such command exists or it does not begin with that guarded call.
 fn validate_actionlint_checksum_is_fail_closed(dependency_installer: &str) -> Result<(), String> {
     let checksum_command = logical_shell_commands(dependency_installer)
         .into_iter()
@@ -467,7 +538,10 @@ fn validate_actionlint_checksum_is_fail_closed(dependency_installer: &str) -> Re
         })
 }
 
-/// Validate every target that becomes a downloadable release archive for users.
+/// Require every reviewed release target triple in the release target script text.
+///
+/// `release_targets` is the `scripts/release-targets.sh` text, which must contain every triple in `EXPECTED_RELEASE_TARGETS` as a substring.
+/// Other targets in the script are not checked. Returns an Err naming the first missing target.
 fn validate_release_target_pins(release_targets: &str) -> Result<(), String> {
     // Each target binds one downloadable archive row to a user-visible platform.
     for expected_target in EXPECTED_RELEASE_TARGETS {
@@ -518,9 +592,9 @@ fn live_release_paths_are_pinned_and_least_privilege() {
     validate_tool_and_target_pins().expect("release tools and targets must stay exact");
 }
 
-/// Prove Codex denies every env-file suffix while keeping the reviewed sample editable.
+/// Prove Codex uses supported env denies while keeping the reviewed sample editable.
 #[test]
-fn codex_env_permissions_cover_nonstandard_variants() {
+fn codex_env_permissions_use_supported_access_modes() {
     let config_text = read_workspace_text(".codex/config.toml");
     let config: toml::Value =
         toml::from_str(&config_text).expect("Codex project config must remain valid TOML");
@@ -537,15 +611,17 @@ fn codex_env_permissions_cover_nonstandard_variants() {
             .get("**/.env*")
             .and_then(toml::Value::as_str),
         Some("deny"),
-        "one broad deny must cover standard and nonstandard env filenames"
+        "native tools must deny the full dotenv filename family"
     );
-    assert_eq!(
-        workspace_rules
-            .get("**/.env.example")
-            .and_then(toml::Value::as_str),
-        Some("write"),
-        "the non-secret sample must retain normal workspace editing access"
-    );
+    for (pattern, access) in workspace_rules {
+        let access = access
+            .as_str()
+            .expect("Codex workspace access values must be strings");
+        assert!(
+            access == "deny" || !pattern.contains('*') || pattern.ends_with("/**"),
+            "Codex filename glob {pattern} cannot grant {access} access"
+        );
+    }
 }
 
 /// Prove a familiar moving checkout tag fails with an actionable repair message.
@@ -557,7 +633,7 @@ fn mutable_action_tag_is_rejected_by_contract() {
         EXPECTED_ACTION_PINS[0].1, EXPECTED_ACTION_PINS[0].2
     );
     let mutable_ci_workflow =
-        ci_workflow.replacen(&pinned_checkout, "actions/checkout@v4 # v4.3.1", 1);
+        ci_workflow.replacen(&pinned_checkout, "actions/checkout@v7 # v7.0.1", 1);
     let contract_error =
         validate_action_references(&[(".github/workflows/ci.yml", &mutable_ci_workflow)])
             .expect_err("a moving checkout tag must fail the supply-chain contract");

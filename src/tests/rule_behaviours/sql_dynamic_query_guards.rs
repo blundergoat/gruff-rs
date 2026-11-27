@@ -278,15 +278,21 @@ pub fn from_less(expression: &str) {
     );
 }
 
-/// Analyses one synthetic Rust source as a config-free project from a CLI user's perspective.
+/// Analyses one synthetic Rust source as a temporary project from a CLI user's perspective, with `security.sql-dynamic-query` enabled.
+///
+/// `body` is the Rust source written as the temporary project's library file.
+/// Returns the project's analysis report, produced with baseline loading disabled.
+/// Panics if creating or writing the temporary project or its config fails, or if the analysis returns an error.
 fn analyse_sql_fixture(body: &str) -> AnalysisReport {
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), body);
+    // The rule is off by default (ADR-024), so the fixture enables it the way a project would.
+    enable_builtin_rule(dir.path(), "security.sql-dynamic-query");
     run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -295,6 +301,8 @@ fn analyse_sql_fixture(body: &str) -> AnalysisReport {
 }
 
 /// Returns only SQL dynamic-query findings so exact rule contracts remain easy to review.
+/// `report` is the analysis report whose findings are filtered by rule ID, keeping their report order.
+/// An empty vector means no finding in `report` came from `security.sql-dynamic-query`.
 fn sql_dynamic_findings(report: &AnalysisReport) -> Vec<&Finding> {
     report
         .findings

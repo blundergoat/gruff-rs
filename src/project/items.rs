@@ -6,6 +6,11 @@ pub(crate) struct ProjectIndexBuilders<'a> {
     pub(crate) call_names: &'a mut Vec<CallNameSummary>,
 }
 
+/// Index one parsed Rust file for project-wide analysis by recording its modules, items and call names.
+///
+/// `file` is the scanned file the summaries point back to, and `source` is its text, which the call-name scan reads.
+/// `ast` is the parsed file whose top-level items are walked, and `module_path` is the module path they belong to.
+/// `builders` holds the vectors this appends module, item and call-name summaries to; the walk starts outside any cfg or test context.
 pub(crate) fn collect_project_rust_index(
     file: &SourceFile,
     source: &str,
@@ -18,15 +23,15 @@ pub(crate) fn collect_project_rust_index(
         module_path,
         cfg_context: false,
         test_context: false,
-        // A crate- or module-level `#![allow(dead_code)]` lives on the file's inner
-        // attributes, so honour it for every item in the file (generated/plugin
-        // modules keep intentionally-unused items on purpose).
-        allow_dead_code_context: has_allow_dead_code_attr(&ast.attrs),
     };
     collect_project_items(scope, &ast.items, builders.modules, builders.items);
     collect_call_names(file, source, builders.call_names);
 }
 
+/// Walk the items declared in one module scope and record a summary for each kind the project index tracks.
+///
+/// `scope` carries the file, module path and inherited cfg and test flags, and `syn_items` are the items declared directly in that module.
+/// Module summaries are appended to `modules` and all other summaries to `items`; the bodies of inline modules are walked as well.
 pub(crate) fn collect_project_items(
     scope: ProjectItemScope<'_>,
     syn_items: &[Item],
@@ -44,9 +49,12 @@ pub(crate) struct ProjectItemScope<'a> {
     pub(crate) module_path: &'a str,
     pub(crate) cfg_context: bool,
     pub(crate) test_context: bool,
-    pub(crate) allow_dead_code_context: bool,
 }
 
+/// Send one syntax item to the collector for its kind, skipping kinds the project index does not track.
+///
+/// `scope` is the enclosing module context and `item` is the item to record; `use` declarations, macros and other unlisted kinds add nothing.
+/// A module records itself in `modules` and its inline items through `collect_project_items`; other tracked kinds record summaries in `items`.
 pub(crate) fn collect_project_item(
     scope: ProjectItemScope<'_>,
     item: &Item,
@@ -67,6 +75,11 @@ pub(crate) fn collect_project_item(
     }
 }
 
+/// Record a free function in the project index as a `function` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_fn` is the function whose name, line, visibility and attributes fill the summary appended to `items`.
+/// A test or cfg-test attribute marks it as test code, and an export attribute or `is_reached_without_rust_reference` sets its exported flag.
 pub(crate) fn collect_project_function(
     scope: ProjectItemScope<'_>,
     item_fn: &syn::ItemFn,
@@ -86,13 +99,17 @@ pub(crate) fn collect_project_function(
                 || has_cfg_test_attr(&item_fn.attrs),
             container: None,
             trait_impl: false,
-            exported_by_attr: has_export_attr(&item_fn.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_fn.attrs),
+            exported_by_attr: has_export_attr(&item_fn.attrs)
+                || is_reached_without_rust_reference(&item_fn.attrs, &item_fn.sig, &item_fn.block),
         },
     ));
 }
 
+/// Record a struct in the project index as a `struct` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_struct` is the struct whose name, line, visibility and attributes fill the summary appended to `items`.
+/// Only a test scope or a cfg-test attribute marks it as test code, and only an export attribute sets its exported flag.
 pub(crate) fn collect_project_struct(
     scope: ProjectItemScope<'_>,
     item_struct: &syn::ItemStruct,
@@ -111,12 +128,15 @@ pub(crate) fn collect_project_struct(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_struct.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_struct.attrs),
         },
     ));
 }
 
+/// Record an enum in the project index as an `enum` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_enum` is the enum whose name, line, visibility and attributes fill the summary appended to `items`.
+/// Only a test scope or a cfg-test attribute marks it as test code, and only an export attribute sets its exported flag.
 pub(crate) fn collect_project_enum(
     scope: ProjectItemScope<'_>,
     item_enum: &syn::ItemEnum,
@@ -135,12 +155,15 @@ pub(crate) fn collect_project_enum(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_enum.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_enum.attrs),
         },
     ));
 }
 
+/// Record a trait in the project index as a `trait` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_trait` is the trait whose name, line, visibility and attributes fill the summary appended to `items`.
+/// Only a test scope or a cfg-test attribute marks it as test code, and only an export attribute sets its exported flag.
 pub(crate) fn collect_project_trait(
     scope: ProjectItemScope<'_>,
     item_trait: &syn::ItemTrait,
@@ -159,12 +182,15 @@ pub(crate) fn collect_project_trait(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_trait.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_trait.attrs),
         },
     ));
 }
 
+/// Record a constant in the project index as a `const` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_const` is the constant whose name, line, visibility and attributes fill the summary appended to `items`.
+/// Only a test scope or a cfg-test attribute marks it as test code, and only an export attribute sets its exported flag.
 pub(crate) fn collect_project_const(
     scope: ProjectItemScope<'_>,
     item_const: &syn::ItemConst,
@@ -183,12 +209,15 @@ pub(crate) fn collect_project_const(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_const.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_const.attrs),
         },
     ));
 }
 
+/// Record a static in the project index as a `static` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_static` is the static whose name, line, visibility and attributes fill the summary appended to `items`.
+/// Only a test scope or a cfg-test attribute marks it as test code, and only an export attribute sets its exported flag.
 pub(crate) fn collect_project_static(
     scope: ProjectItemScope<'_>,
     item_static: &syn::ItemStatic,
@@ -207,12 +236,15 @@ pub(crate) fn collect_project_static(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_static.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_static.attrs),
         },
     ));
 }
 
+/// Record a type alias in the project index as a `type alias` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags.
+/// `item_type` is the alias whose name, line, visibility and attributes fill the summary appended to `items`.
+/// Only a test scope or a cfg-test attribute marks it as test code, and only an export attribute sets its exported flag.
 pub(crate) fn collect_project_type_alias(
     scope: ProjectItemScope<'_>,
     item_type: &syn::ItemType,
@@ -231,12 +263,14 @@ pub(crate) fn collect_project_type_alias(
             container: None,
             trait_impl: false,
             exported_by_attr: has_export_attr(&item_type.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_type.attrs),
         },
     ));
 }
 
+/// Record every method of an impl block in the project index, skipping associated constants, types and macros.
+///
+/// `scope` is the enclosing module context and `item_impl` is the impl block whose `fn` items are walked.
+/// Each method summary is appended to `items` by `collect_project_method`.
 pub(crate) fn collect_project_impl(
     scope: ProjectItemScope<'_>,
     item_impl: &syn::ItemImpl,
@@ -249,6 +283,11 @@ pub(crate) fn collect_project_impl(
     }
 }
 
+/// Record one method of an impl block in the project index as a `method` item.
+///
+/// `scope` gives the file, module path and inherited cfg and test flags, and `item_impl` is the enclosing impl block.
+/// `method` is the method whose summary is appended to `items`; cfg or test attributes on the block or the method set its matching flags.
+/// Its container is the impl's self type name, a trait impl sets its trait flag, and export detection matches `collect_project_function`.
 pub(crate) fn collect_project_method(
     scope: ProjectItemScope<'_>,
     item_impl: &syn::ItemImpl,
@@ -273,14 +312,16 @@ pub(crate) fn collect_project_method(
                 || has_cfg_test_attr(&method.attrs),
             container: impl_self_type_name(item_impl),
             trait_impl: item_impl.trait_.is_some(),
-            exported_by_attr: has_export_attr(&method.attrs),
-            allow_dead_code: scope.allow_dead_code_context
-                || has_allow_dead_code_attr(&item_impl.attrs)
-                || has_allow_dead_code_attr(&method.attrs),
+            exported_by_attr: has_export_attr(&method.attrs)
+                || is_reached_without_rust_reference(&method.attrs, &method.sig, &method.block),
         },
     ));
 }
 
+/// Record a module declaration in the project index and walk the items of an inline module body under the module's own scope.
+///
+/// `scope` is the parent module context, and `item_mod` is the `mod` item whose summary is appended to `modules`.
+/// An inline body's items go to `modules` and `items` under the joined module path, inheriting the module's cfg gating and test context.
 pub(crate) fn collect_project_module(
     scope: ProjectItemScope<'_>,
     item_mod: &syn::ItemMod,
@@ -290,8 +331,6 @@ pub(crate) fn collect_project_module(
     let current_module = module_name(scope.module_path, &item_mod.ident.to_string());
     let module_cfg_gated = scope.cfg_context || has_cfg_attr(&item_mod.attrs);
     let module_test_context = scope.test_context || is_test_module(item_mod);
-    let module_allow_dead_code =
-        scope.allow_dead_code_context || has_allow_dead_code_attr(&item_mod.attrs);
     modules.push(ModuleSummary {
         file_path: scope.file.display_path.clone(),
         module_path: current_module.clone(),
@@ -306,12 +345,16 @@ pub(crate) fn collect_project_module(
             module_path: &current_module,
             cfg_context: module_cfg_gated,
             test_context: module_test_context,
-            allow_dead_code_context: module_allow_dead_code,
         };
         collect_project_items(nested_scope, nested, modules, items);
     }
 }
 
+/// Build the item summary the project index stores for one declaration.
+///
+/// `scope` supplies the file display path and module path, `name` is the declared identifier, and `kind` is the item kind label such as `method`.
+/// `line` is the declared name's line, and `context` holds the container name and the visibility, cfg, test, trait-impl and export flags.
+/// Returns the `ItemSummary` holding those values, with `kind` copied into an owned string.
 pub(crate) fn project_item(
     scope: ProjectItemScope<'_>,
     name: String,
@@ -332,11 +375,15 @@ pub(crate) fn project_item(
         test_context: context.test_context,
         trait_impl: context.trait_impl,
         exported_by_attr: context.exported_by_attr,
-        allow_dead_code: context.allow_dead_code,
     }
 }
 
-fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
+/// Tell whether an item carries an attribute that exports it by symbol name or to Python, such as `no_mangle` or `pyfunction`.
+///
+/// `attrs` are the item's attributes, each matched on the last segment of its path by `attr_ident_is_export`.
+/// A Rust 2024 `unsafe(...)` wrapper also counts when its inner tokens contain `no_mangle` or `export_name` as text.
+/// Returns true when any attribute matches and false otherwise, including for an empty slice.
+pub(crate) fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         let Some(segment) = attr.path().segments.last() else {
             return false;
@@ -356,22 +403,18 @@ fn has_export_attr(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Match an attribute name against the export markers `no_mangle`, `export_name`, `pymodule` and `pyfunction`.
+///
+/// `ident` is the last segment of an attribute path, as `has_export_attr` passes it.
+/// Returns true only for one of those four names.
 fn attr_ident_is_export(ident: &syn::Ident) -> bool {
     ident == "no_mangle" || ident == "export_name" || ident == "pymodule" || ident == "pyfunction"
 }
 
-fn has_allow_dead_code_attr(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        if !attr.path().is_ident("allow") {
-            return false;
-        }
-        let syn::Meta::List(list) = &attr.meta else {
-            return false;
-        };
-        list.tokens.to_string().contains("dead_code")
-    })
-}
-
+/// Name the type an impl block is written for, so its method summaries can record a container.
+///
+/// `item_impl` is the impl block whose self type is read.
+/// Returns the last segment of a path self type, such as `Config` for `crate::Config`, or None for a reference, tuple or other non-path type.
 fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
     let syn::Type::Path(path) = item_impl.self_ty.as_ref() else {
         return None;
@@ -382,6 +425,10 @@ fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
+/// Join a child module name onto its parent module path with `::`.
+///
+/// `parent` is the enclosing module path, which may be empty, and `name` is the child module's identifier.
+/// Returns `name` alone when `parent` is empty, otherwise the two joined by `::`.
 pub(crate) fn module_name(parent: &str, name: &str) -> String {
     if parent.is_empty() {
         name.to_string()
@@ -390,6 +437,11 @@ pub(crate) fn module_name(parent: &str, name: &str) -> String {
     }
 }
 
+/// Derive a source file's module path from its display path under `src/`.
+///
+/// `file` is the scanned source file whose display path is read.
+/// Returns the path with `/` turned into `::` after dropping `src/` and a trailing `/mod.rs` or `.rs`, so `src/a/b.rs` gives `a::b`.
+/// Returns an empty string for `src/lib.rs`, `src/main.rs` and any display path that does not start with `src/`.
 pub(crate) fn inferred_file_module_path(file: &SourceFile) -> String {
     let Some(path) = file.display_path.strip_prefix("src/") else {
         return String::new();

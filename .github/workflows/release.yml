@@ -16,7 +16,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_RUST_TOOLCHAIN: 1.97.0
+  RELEASE_RUST_TOOLCHAIN: 1.100.1
 
 jobs:
   source_verify:
@@ -31,16 +31,17 @@ jobs:
       build_matrix: ${{ steps.source.outputs.build_matrix }}
     steps:
       - name: Check out the triggering commit and release history
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up the shared Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable snapshot for Rust 1.100.1
         with:
           toolchain: ${{ env.RELEASE_RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
 
       - name: Install verification tools
         run: bash scripts/dependency-install.sh
@@ -88,7 +89,7 @@ jobs:
             "$RUNNER_TEMP/package-files.txt"
 
       - name: Upload source verification evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-source-${{ steps.source.outputs.commit }}
           path: ${{ runner.temp }}/source-verification/*
@@ -105,12 +106,12 @@ jobs:
       matrix: ${{ fromJSON(needs.source_verify.outputs.build_matrix) }}
     steps:
       - name: Check out verified source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.source_verify.outputs.commit }}
 
       - name: Set up the shared Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable snapshot for Rust 1.100.1
         with:
           toolchain: ${{ needs.source_verify.outputs.rust_toolchain }}
           targets: ${{ matrix.target }}
@@ -149,7 +150,7 @@ jobs:
             "$PWD/release-build"
 
       - name: Upload exact target artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-build-${{ matrix.target }}-${{ needs.source_verify.outputs.commit }}
           path: release-build/*
@@ -163,18 +164,18 @@ jobs:
       contents: read
     steps:
       - name: Check out verified source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.source_verify.outputs.commit }}
 
       - name: Download source verification evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-source-${{ needs.source_verify.outputs.commit }}
           path: source-verification
 
       - name: Download all target artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-build-*-${{ needs.source_verify.outputs.commit }}
           path: build-artifacts
@@ -197,7 +198,7 @@ jobs:
             "$RELEASE_TOOLCHAIN"
 
       - name: Upload verified candidate evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-verified-${{ needs.source_verify.outputs.commit }}
           path: verified-release/*
@@ -213,17 +214,17 @@ jobs:
       contents: read
     steps:
       - name: Check out verified source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.source_verify.outputs.commit }}
 
       - name: Set up the shared Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable snapshot for Rust 1.97.0
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable snapshot for Rust 1.100.1
         with:
           toolchain: ${{ needs.source_verify.outputs.rust_toolchain }}
 
       - name: Download source package evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-source-${{ needs.source_verify.outputs.commit }}
           path: source-verification
@@ -255,12 +256,12 @@ jobs:
       contents: write
     steps:
       - name: Check out verified source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.source_verify.outputs.commit }}
 
       - name: Download verified release files
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-verified-${{ needs.source_verify.outputs.commit }}
           path: verified-release

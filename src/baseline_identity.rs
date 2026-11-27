@@ -1,0 +1,375 @@
+//! Identify findings across scans using the family contract in `contracts/core/finding-identity.v1.json`.
+//!
+//! Use this when generating or applying a baseline and when comparing hook scans. A blank line added above a function preserves its review.
+//! Separate same-named declarations by ordinal and retain occurrence counts when no declaration identifies the finding.
+//!
+//! Use the message with measured values normalized for findings without a declaration, including custom rules with byte offsets.
+//! Withhold identities for sensitive findings and ambiguous symbols so an unsafe match cannot hide either finding.
+
+use super::*;
+
+/// Token gruff-rs contributes to every identity, so the same rule on the same path never collides with another port's.
+pub(crate) const TOOL_LANGUAGE: &str = "rs";
+
+/// Joins a symbol to its declaration ordinal; a symbol carrying it could forge another symbol's ordinal.
+const ORDINAL_SEPARATOR: char = '#';
+
+/// What every measured value becomes in a subject, so a file that grew from 1010 to 1200 lines keeps its review.
+const MEASURED_VALUE_PLACEHOLDER: char = '#';
+
+/// One finding's durable name, plus the two facts matching needs alongside it.
+///
+/// `declaration_key` is equal for two findings on one declaration; two different keys under one identity are a
+/// collision, which the run reports and never hides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FindingIdentity {
+    pub(crate) identity: String,
+    pub(crate) subject: String,
+    pub(crate) declaration_key: String,
+}
+
+/// Report whether a finding clears the sensitive-data restriction on baseline identities; `has_separator_in_symbol` is checked separately.
+///
+/// A sensitive finding never does: it stays visible and blocking on every run until the user fixes it or
+/// excludes it with a written reason under `sensitiveExclusions`.
+///
+/// Returns `false` when `finding` is in the sensitive-data pillar or its rule id starts with `sensitive-data.`, otherwise `true`.
+pub(crate) fn is_baseline_eligible(finding: &Finding) -> bool {
+    !matches!(finding.pillar, Pillar::SensitiveData)
+        && !finding.rule_id.starts_with("sensitive-data.")
+}
+
+/// Replace every measured value in a message with `#`, per the identity amendment of 2026-09-05.
+///
+/// A file-level message such as "file has 1010 lines" becomes "file has # lines", so growing the file does not
+/// re-key the finding; rewording it still does, because the message is the only stable name such a finding has.
+///
+/// Returns a copy of `message` in which each run of ASCII digits, with any single `.` or `,` between two runs, becomes one `#`.
+pub(crate) fn normalise_measured_values(message: &str) -> String {
+    let mut normalised = String::with_capacity(message.len());
+    let mut inside_number = false;
+    let mut characters = message.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if character.is_ascii_digit() {
+            // A run of digits, and any single `.` or `,` joining two runs, is one measured value.
+            if !inside_number {
+                normalised.push(MEASURED_VALUE_PLACEHOLDER);
+                inside_number = true;
+            }
+            continue;
+        }
+        if inside_number
+            && (character == '.' || character == ',')
+            && characters.peek().is_some_and(char::is_ascii_digit)
+        {
+            continue;
+        }
+        inside_number = false;
+        normalised.push(character);
+    }
+
+    normalised
+}
+
+/// Build the identity subject: `symbol#ordinal` for a symbol-bearing finding, else the normalised message.
+///
+/// The ordinal keeps two same-named functions apart; without it, reviewing one silently baselines the other.
+///
+/// `finding` supplies the symbol without raw `r#` prefixes, or its message when it has no declaration name.
+/// `ordinal` is the declaration's 1-based rank among same-named declarations in its file; it is unused for a message subject.
+/// Returns the subject; an `Err` names a finding with neither symbol nor message, a symbol still containing `#`, or an `ordinal` below 1.
+pub(crate) fn baseline_subject(finding: &Finding, ordinal: usize) -> Result<String, String> {
+    // A custom rule's byte offset can move after an unrelated edit. Use the message if there is no declaration name.
+    let Some(symbol) = named_symbol(finding) else {
+        // A finding with neither a usable symbol nor a message cannot safely inherit a review.
+        if finding.message.is_empty() {
+            return Err(format!(
+                "finding {} in {} names neither a symbol nor a message",
+                finding.rule_id, finding.file_path
+            ));
+        }
+        return Ok(normalise_measured_values(&finding.message));
+    };
+
+    let symbol = identity_symbol(symbol);
+    // A symbol carrying the separator could pose as another symbol's ordinal, so it is refused rather than guessed at.
+    if symbol.contains(ORDINAL_SEPARATOR) {
+        return Err(format!(
+            "finding {} in {} has symbol {symbol:?} containing {ORDINAL_SEPARATOR:?}",
+            finding.rule_id, finding.file_path
+        ));
+    }
+    // Defaulting a missing ordinal to 1 would merge namesakes back together, the collision the ordinal prevents.
+    if ordinal < 1 {
+        return Err(format!(
+            "finding {} in {} has symbol {symbol:?} without a declaration ordinal",
+            finding.rule_id, finding.file_path
+        ));
+    }
+
+    Ok(format!("{symbol}{ORDINAL_SEPARATOR}{ordinal}"))
+}
+
+/// Spell a symbol the way its identity names it. A raw identifier names the same item as its plain form, so
+/// `r#match` is `match` and `Parser::r#type` is `Parser::type`; left raw, its `#` would read as the ordinal
+/// separator and the finding could not be baselined at all.
+///
+/// Returns `symbol` with a leading `r#` removed from each `::`-separated segment, every other character unchanged.
+fn identity_symbol(symbol: &str) -> String {
+    symbol
+        .split("::")
+        .map(|segment| segment.strip_prefix("r#").unwrap_or(segment))
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Whether a finding's symbol, spelled the way its identity names it, still contains the ordinal separator.
+///
+/// A raw identifier does not, because its `r#` is stripped first; a manifest key such as `"bad#dep"` does.
+///
+/// Returns `false` when `finding` names no symbol or is not baseline-eligible, otherwise whether its identity spelling contains `#`.
+fn has_separator_in_symbol(finding: &Finding) -> bool {
+    named_symbol(finding).is_some_and(|symbol| identity_symbol(symbol).contains(ORDINAL_SEPARATOR))
+}
+
+/// Hash the ratified identity under an explicit tool language.
+///
+/// Conformance tests use it to reproduce the digests the family oracle pins for other ports, which is the only
+/// proof the rule is one rule rather than five that happen to agree today.
+///
+/// `tool_language`, `rule_id`, `path` and `subject` are hashed with SHA-256 in that order, separated by single NUL bytes.
+/// Returns the first 16 lowercase hex characters of the digest.
+pub(crate) fn compute_identity_for(
+    tool_language: &str,
+    rule_id: &str,
+    path: &str,
+    subject: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    for (index, field) in [tool_language, rule_id, path, subject].iter().enumerate() {
+        if index > 0 {
+            hasher.update(b"\0");
+        }
+        hasher.update(field.as_bytes());
+    }
+    crate::report_identity::lower_hex(&hasher.finalize())[..16].to_string()
+}
+
+/// Name every eligible finding in one run, ranking same-named declarations as it goes.
+///
+/// Use the same identity rules when a caller writes a baseline and when a later scan matches it.
+/// Sensitive findings and symbols containing the separator stay visible without an identity. Other findings can still be compared.
+///
+/// `findings` are the run's findings, named in input order without the same-named inventory.
+/// `declaration_position` maps a finding to its declaration's start position, used to rank namesakes and to key collision checks.
+/// Returns one entry per finding in input order; any `baseline_subject` error, such as a finding with no symbol or message, is the `Err`.
+pub(crate) fn finding_identities(
+    findings: &[Finding],
+    declaration_position: &dyn Fn(&Finding) -> usize,
+) -> Result<Vec<Option<FindingIdentity>>, String> {
+    finding_identities_with_inventory(findings, declaration_position, None)
+}
+
+/// Lists the start line of every parsed function in a finding's file that shares its symbol; see
+/// [`same_named_lines_from_blocks`].
+pub(crate) type SameNamedLines<'a> = &'a dyn Fn(&Finding) -> Vec<usize>;
+
+/// Name every eligible finding like [`finding_identities`], also giving a slot to every same-named declaration
+/// `same_named` lists, whether or not it has a finding this run.
+///
+/// Without the inventory a clean earlier declaration takes no slot, so the day it first warns it takes the later
+/// declaration's ordinal and its stored review. A finding the analysis already named keeps that identity, so a
+/// later consumer handed a filtered subset never re-ranks it.
+///
+/// `findings` are named in input order, and `declaration_position` maps each to its declaration's start position for ranking and collision keys.
+/// `same_named` is optional; `None` ranks only declarations that carry a finding, as `finding_identities` does.
+/// Returns one entry per finding in input order, `None` for a sensitive or separator-bearing finding; a `baseline_subject` failure is the `Err`.
+pub(crate) fn finding_identities_with_inventory(
+    findings: &[Finding],
+    declaration_position: &dyn Fn(&Finding) -> usize,
+    same_named: Option<SameNamedLines<'_>>,
+) -> Result<Vec<Option<FindingIdentity>>, String> {
+    let ordinals = symbol_ordinals(findings, declaration_position, same_named);
+    let mut identities = Vec::with_capacity(findings.len());
+
+    for (index, finding) in findings.iter().enumerate() {
+        // A sensitive finding is skipped before any hashing, so no secret ever reaches a stored identity; a symbol
+        // carrying the separator is skipped beside it, so one unnameable finding costs the run nothing else.
+        if !is_baseline_eligible(finding) || has_separator_in_symbol(finding) {
+            identities.push(None);
+            continue;
+        }
+        if let (Some(identity), Some(subject)) =
+            (&finding.baseline_identity, &finding.baseline_subject)
+        {
+            // Two findings carrying one stored subject sit on one declaration, so they share a key and are counted.
+            let declaration_key = match named_symbol(finding) {
+                Some(_) => format!("declaration:subject:{subject}"),
+                None => "declaration:file".to_string(),
+            };
+            identities.push(Some(FindingIdentity {
+                identity: identity.clone(),
+                subject: subject.clone(),
+                declaration_key,
+            }));
+            continue;
+        }
+        let subject = baseline_subject(finding, ordinals[index])?;
+        identities.push(Some(FindingIdentity {
+            identity: compute_identity_for(
+                TOOL_LANGUAGE,
+                &finding.rule_id,
+                &finding.file_path,
+                &subject,
+            ),
+            subject,
+            declaration_key: declaration_key(finding, declaration_position),
+        }));
+    }
+
+    Ok(identities)
+}
+
+/// Rank each symbol-bearing finding's declaration among same-named declarations in its file.
+///
+/// Two findings on one declaration share a position and therefore an ordinal; a second declaration of that name
+/// takes the next one, which is what stops one review from covering both.
+///
+/// `findings` are grouped by file and identity-spelled symbol, then ranked by the position `declaration_position` gives each one.
+/// `same_named`, when present, adds the start line of every parsed same-named declaration to the group, warned or not.
+/// Returns one 1-based ordinal per finding in input order, or `0` for a finding with no eligible symbol.
+fn symbol_ordinals(
+    findings: &[Finding],
+    declaration_position: &dyn Fn(&Finding) -> usize,
+    same_named: Option<SameNamedLines<'_>>,
+) -> Vec<usize> {
+    // Symbols are ranked by their identity spelling, so `r#match` and `match` count as one name.
+    let mut positions_by_symbol: BTreeMap<(&str, String), BTreeSet<usize>> = BTreeMap::new();
+    for finding in findings {
+        if let Some(symbol) = named_symbol(finding) {
+            let positions = positions_by_symbol
+                .entry((finding.file_path.as_str(), identity_symbol(symbol)))
+                .or_default();
+            positions.insert(declaration_position(finding));
+            // Every same-named declaration the parser saw takes a slot, whether or not it warned this run.
+            if let Some(same_named) = same_named {
+                positions.extend(same_named(finding));
+            }
+        }
+    }
+
+    findings
+        .iter()
+        .map(|finding| {
+            // A symbol-less finding is named by its message, so it needs no ordinal and takes the sentinel zero.
+            let Some(symbol) = named_symbol(finding) else {
+                return 0;
+            };
+            let position = declaration_position(finding);
+            positions_by_symbol
+                .get(&(finding.file_path.as_str(), identity_symbol(symbol)))
+                .and_then(|positions| positions.iter().position(|ranked| *ranked == position))
+                .map_or(0, |rank| rank + 1)
+        })
+        .collect()
+}
+
+/// Name the declaration a finding sits on, for collision detection only.
+///
+/// A file-level finding names no declaration at all, so every symbol-less occurrence shares one key and is matched
+/// by count; keying them by message would report two measurements of one file as an unresolvable collision.
+///
+/// `finding` decides whether a declaration is named, and `declaration_position` gives the position a symbol-bearing key is built from.
+/// Returns `declaration:` followed by that position, or `declaration:file` when `finding` names no symbol.
+fn declaration_key(finding: &Finding, declaration_position: &dyn Fn(&Finding) -> usize) -> String {
+    match named_symbol(finding) {
+        Some(_) => format!("declaration:{}", declaration_position(finding)),
+        None => "declaration:file".to_string(),
+    }
+}
+
+/// Read the semantic symbol of a finding. A custom rule's byte offset identifies a location without naming a declaration.
+///
+/// Returns the non-empty symbol of `finding`, or `None` when it has none, has an empty one, or is not baseline-eligible.
+fn named_symbol(finding: &Finding) -> Option<&str> {
+    if !is_baseline_eligible(finding) {
+        return None;
+    }
+    finding
+        .symbol
+        .as_deref()
+        .filter(|symbol| !symbol.is_empty() && !symbol.starts_with("byte:"))
+}
+
+/// Build the resolver that maps a finding to the line its declaration begins on, from this run's parsed functions.
+///
+/// The ordinal then counts declarations rather than lines: inserting code above a function moves its line and not
+/// its ordinal, which is the whole point of a line-free identity.
+///
+/// `blocks_by_file` maps a finding's file path to its parsed function blocks, matched against the last `::` segment of the symbol.
+/// Returns a resolver giving the start line of the matching block containing the finding's line, else the finding's line, defaulting to 1.
+pub(crate) fn declaration_position_from_blocks(
+    blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+) -> impl Fn(&Finding) -> usize + '_ {
+    move |finding: &Finding| {
+        let line = finding.line.unwrap_or(1).max(1);
+        let Some(symbol) = finding
+            .symbol
+            .as_deref()
+            .filter(|symbol| !symbol.is_empty())
+        else {
+            return line;
+        };
+        let wanted = symbol.rsplit("::").next().unwrap_or(symbol);
+        blocks_by_file
+            .get(&finding.file_path)
+            .and_then(|blocks| {
+                blocks.iter().find(|block| {
+                    block.name == wanted
+                        && block.start_line <= line
+                        && line <= block.start_line + block.line_count.saturating_sub(1)
+                })
+            })
+            .map_or(line, |block| block.start_line)
+    }
+}
+
+/// Build the inventory that lists, for a finding, the start line of every parsed function in its file that shares
+/// its symbol.
+///
+/// A qualified symbol such as `Widget::process` returns nothing: blocks carry only the short name, so counting every
+/// `process` in the file would merge two types' methods into one sequence. A raw identifier matches its plain name.
+///
+/// `blocks_by_file` maps a finding's file path to its parsed function blocks.
+/// Returns a closure yielding an empty list for an ineligible, symbol-less or qualified finding, or one whose file has no blocks.
+pub(crate) fn same_named_lines_from_blocks(
+    blocks_by_file: &BTreeMap<String, Vec<FunctionBlock>>,
+) -> impl Fn(&Finding) -> Vec<usize> + '_ {
+    move |finding: &Finding| {
+        let Some(symbol) = named_symbol(finding) else {
+            return Vec::new();
+        };
+        if symbol.contains("::") {
+            return Vec::new();
+        }
+        let wanted = identity_symbol(symbol);
+        blocks_by_file
+            .get(&finding.file_path)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| identity_symbol(&block.name) == wanted)
+                    .map(|block| block.start_line)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Rank a symbol on its own line when no parsed functions are available, as a direct API call has.
+///
+/// Returns the line of `finding`, or 1 when it has no line or its line is 0.
+pub(crate) fn declaration_position_by_line(finding: &Finding) -> usize {
+    finding.line.unwrap_or(1).max(1)
+}

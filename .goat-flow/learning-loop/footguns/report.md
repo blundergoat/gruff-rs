@@ -1,6 +1,6 @@
 ---
 category: report
-last_reviewed: 2026-06-05
+last_reviewed: 2026-10-03
 ---
 
 ## Footgun: Per-Format Renderer Helpers Tend To Duplicate
@@ -25,17 +25,17 @@ Pattern for the canonical-helper-next-to-enum approach: [[architecture]] in patt
 
 **Status:** active | **Created:** 2026-05-25 | **Evidence:** OBSERVED
 
-`src/report.rs` (search: `pub(crate) struct AnalysisReport`) and every type reachable from it (`Summary`, `Finding`, `ScoreReport`, `PillarScore`, `FileScore`, `RunInfo`, `BaselineReport`, etc.) are `#[derive(Serialize)]`. The `--format json` renderer in `src/analysis.rs` (search: `schema_version: "gruff.analysis.v2"`) calls `serde_json::to_string_pretty(&report)` on the whole tree, so any new `pub(crate)` field on any struct in that tree lands in the v2 JSON output bytes.
+The title records the historical v2 surface. At that time derived serialization of `AnalysisReport` and nested types made internal struct additions visible in JSON. Current v3 uses `src/report.rs` (search: `impl Serialize for AnalysisReport`) to delegate to `src/machine_contract.rs` (search: `pub(crate) fn serialize_analysis`). Inspect that adapter and its nested serializers before deciding whether a struct change reaches output; a field addition is no longer automatically a top-level JSON addition.
 
 Concrete instance from 2026-05-25 (PR #3): adding `pub(crate) penalty: f64` to `PillarScore` changed the v1 `score.pillars[]` shape from 3 fields (`pillar`, `score`, `findings`) to 4 (adding `penalty`). The PR shipped without flagging because there is no compiler signal — `src/scoring.rs` populated the field; the cascade through `ScoreReport → AnalysisReport → JSON` was invisible. CodeRabbit caught it as a P1 in review.
 
-The non-obvious failure mode is that the struct may live in a module that *feels* internal (`src/scoring.rs` populates `PillarScore`, `src/baseline.rs` populates `BaselineReport`) but its serialized form is part of the v2 contract. The struct's `pub(crate)` visibility lies about its true blast radius.
+The failure mode remains: crate-local types can contribute to a public JSON contract. Visibility alone does not establish the change's scope.
 
 **How to apply:**
 
-- Before adding a field to any `pub(crate) struct` in `src/report.rs`, check whether the struct is reachable from `AnalysisReport` (directly, or transitively via `Vec`/`Option`/nested struct). If yes, the new field is part of the v2 JSON shape.
-- The no-bc-ceremony rule for this codebase (see ../lessons/release.md) means the response is *not* to bump the schema version string. The response is to note the shape change factually in the changelog (`Analysis JSON gains <field>` rather than `unchanged`). The agent doing the field addition is the only one who can spot the cascade.
-- Tests asserting on field-set equality (e.g. `src/tests/renderers/output.rs` search: `summary_json_pillar_shape_includes_canonical_fields_with_penalty`) catch additions only inside the *tested* struct. New fields on untested structs pass silently — add a contract test alongside the struct change.
+- Follow the current adapter and nested serialization calls from `AnalysisReport` to the emitted field before changing a report type.
+- Check FAMILY-CONTRACT and all five ports for any contracted shape change. The historical local policy is not authority to alter the family schema.
+- `src/tests/renderers/pillar_sections.rs` (search: `summary_json_pillar_shape_includes_canonical_fields_with_penalty`) checks the current pillar field set. Field-set tests cover only the objects they assert; check the affected object explicitly.
 
 
 ## Footgun: Digest Helpers That Pull From Registry Defaults Instead Of Findings
@@ -53,7 +53,7 @@ The same trap exists for any future digest field sourced from `RuleDefinition.*`
 - For any per-rule digest field, ask: "is this configurable through `rules.<id>.*` in `.gruff-rs.yaml`?" If yes, source it from a representative finding (or `config.<field>(rule_id, default)`), not from `RuleDefinition.default_*`.
 - The registry value is the right source ONLY for fields that are immutable at config time: `description`, `pillar` (built-in pillar is fixed), `default_enabled`, `kind` (Rust / Text / Project).
 - When the report has findings for the rule, the most reliable source is the first matching finding's field — every finding for the same rule carries the same configured severity (resolved once at rule-emission time).
-- Add a contract test that configures an override and asserts the digest matches: PR #3 review comment thread pinned this for `severity` via `summary_top_rules_severity_reflects_configured_override` (search: in `src/tests/scenarios/summary_enrichment.rs`).
+- Add a contract test that configures an override and asserts the digest matches: PR #3 review comment thread pinned this for `severity`; the pin now lives in `src/tests/scenarios/summary_enrichment.rs` (search: `summary_text_top_rules_severity_reflects_configured_override`).
 
 Related: [[verification]] — "verify bot claims against current code before fixing" — covers the inverse, where a bot points at an already-fixed surface.
 
@@ -96,7 +96,7 @@ The same trap applies to any future step that derives per-rule / per-pillar / pe
 - When introducing a new mid-pipeline aggregate, audit every step that runs after it. Each subsequent step that mutates `findings` is a potential drift source.
 - For changed-region filters, do not rebuild an "all" aggregate from the visible post-baseline report list unless the aggregate is explicitly new-only. `scope: all` needs the pre-baseline list filtered by the same patch/symbol logic.
 - Prefer computing aggregates AFTER all mutations are done — at `build_report` time, on the final findings list. Where that is not possible (because an earlier step is the only one with access to the right inputs — e.g. `apply_baseline` needs the baseline entries to compute `removed`), capture only what cannot be reconstructed later and recompute the rest at the end.
-- Add a regression test that constructs the failure mode the ordering bug would produce. For the baseline-then-dedupe case, the failing input is "raw findings with duplicates by fingerprint + empty baseline"; the assertion is "introduced count equals final per-rule count". See `baseline_deltas_do_not_over_count_duplicate_findings` (search: in `src/tests/scenarios/baseline.rs`).
+- Add a regression test that constructs the failure mode the ordering bug would produce. For the baseline-then-dedupe case, the failing input is "raw findings with duplicates by fingerprint + empty baseline"; the assertion is "introduced count equals final per-rule count". The original pin, `baseline_deltas_do_not_over_count_duplicate_findings`, was rewritten on 2026-09-05 (commit d4515c3) into a baseline tri-state test that no longer builds duplicates, so this order is currently held only by code structure: `src/analysis.rs` (search: `fn analysed_findings`) dedupes inside the call that `run_analysis_in_project` makes before `resolve_run_baseline`. Restore a duplicate-fixture pin before reordering that pipeline.
 - When reading `run_analysis_in_project` in code review, treat the comment annotations on the dedupe/baseline order as load-bearing. They are documenting a constraint the code's structure cannot itself enforce.
 
 ## Footgun: Shared Analysis Core Must Stay Command-Neutral

@@ -5,6 +5,9 @@
 use super::*;
 
 /// Builds one positive and one quiet project for each calibrated rule in these families.
+///
+/// Each case holds a rule ID, a closure that writes under a given root a fixture the rule must flag, and one writing a fixture it must not flag.
+/// Returns one `CalibrationCase` per rule in source order, covering the security, dependency, CI, sensitive-data, size, test-quality and waste rules.
 pub(crate) fn cases() -> Vec<CalibrationCase> {
     vec![
         // ----- security -----
@@ -203,7 +206,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n",
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: acme/tool@v4\n",
                 )
                 .expect("workflow write");
             }),
@@ -212,7 +215,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@1111111111111111111111111111111111111111\n",
+                    "name: ci\njobs:\n  test:\n    steps:\n      - uses: acme/tool@1111111111111111111111111111111111111111\n",
                 )
                 .expect("workflow write");
             }),
@@ -287,7 +290,7 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 fs::create_dir_all(root.join(".github/workflows")).expect("workflow dir");
                 fs::write(
                     root.join(".github/workflows/ci.yml"),
-                    "name: ci\non:\n  pull_request:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+                    "name: ci\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
                 )
                 .expect("workflow write");
             }),
@@ -390,21 +393,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
             }),
         ),
         case(
-            "sensitive-data.database-url-password",
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"postgres://user:secret@db/app\"; }\n",
-                )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"postgres://db/app\"; }\n",
-                )
-            }),
-        ),
-        case(
             "sensitive-data.url-embedded-credentials",
             Box::new(|root| {
                 baseline_with_lib(
@@ -416,21 +404,6 @@ gitdep = { git = "https://example.invalid/repo.git", rev = "11111111111111111111
                 baseline_with_lib(
                     root,
                     "/// Probe.\npub fn entry() { let _ = \"https://example.invalid/path\"; }\n",
-                )
-            }),
-        ),
-        case(
-            "sensitive-data.hardcoded-env-value",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD=correct-horse-battery-123\"; }\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                    root,
-                    "/// Probe.\npub fn entry() { let _ = \"DATABASE_PASSWORD\"; }\n",
                 )
             }),
         ),
@@ -567,18 +540,21 @@ pub fn entry() {
         ),
         // ----- test quality -----
         case(
-            "test-quality.conditional-logic",
+            "test-quality.duplicate-test-body",
             Box::new(|root| {
                 baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let value = 1;\n        if value > 0 { assert_eq!(value, 1); } else { assert_eq!(value, 0); }\n    }\n}\n",
-                    )
+                    root,
+                    concat!(
+                        "#[test] fn one() { let input = 1; let parsed = parse(input); let again = parse(input); assert_eq!(parsed, 2); assert_eq!(parsed, again); }\n",
+                        "#[test] fn two() { let input = 3; let parsed = parse(input); let again = parse(input); assert_eq!(parsed, 4); assert_eq!(parsed, again); }\n",
+                        "#[test] fn three() { let input = 5; let parsed = parse(input); let again = parse(input); assert_eq!(parsed, 6); assert_eq!(parsed, again); }\n"
+                    ),
+                )
             }),
             Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2 + 2, 4); }\n}\n",
-                    )
+                baseline_with_lib(root,
+                "#[test] fn cases() { for (input, expected) in [(1, 2), (3, 4), (5, 6)] { let parsed = parse(input); let again = parse(input); assert_eq!(parsed, expected); assert_eq!(parsed, again); } }\n"
+            )
             }),
         ),
         case(
@@ -613,21 +589,6 @@ pub fn entry() {
                 baseline_with_lib(
                         root,
                         "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn quick() { assert_eq!(2 + 2, 4); }\n}\n",
-                    )
-            }),
-        ),
-        case(
-            "test-quality.sleep-in-test",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        std::thread::sleep(std::time::Duration::from_millis(1));\n        assert_eq!(1, 1);\n    }\n}\n",
-                    )
-            }),
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2, 2); }\n}\n",
                     )
             }),
         ),
@@ -678,16 +639,6 @@ pub fn entry() {
             }),
         ),
         case(
-            "waste.unreachable-code",
-            Box::new(|root| {
-                baseline_with_lib(
-                        root,
-                        "/// Probe.\npub fn entry() -> i32 {\n    return 1;\n    let _ignored = 2;\n    3\n}\n",
-                    )
-            }),
-            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 1 }\n")),
-        ),
-        case(
             "waste.unwrap-expect",
             Box::new(|root| {
                 baseline_with_lib(
@@ -701,6 +652,54 @@ pub fn entry() {
                     "/// Probe.\nfn entry(value: Option<i32>) -> Option<i32> { value }\n",
                 )
             }),
+        ),
+    ]
+}
+
+/// Preserve the historical positive and negative fixtures as native retirement guards.
+///
+/// Returns one `CalibrationCase` per retired rule, holding that rule's historical positive and negative fixture builders.
+pub(crate) fn retired_cases() -> Vec<CalibrationCase> {
+    vec![
+        case(
+            "test-quality.conditional-logic",
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        let value = 1;\n        if value > 0 { assert_eq!(value, 1); } else { assert_eq!(value, 0); }\n    }\n}\n",
+                    )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2 + 2, 4); }\n}\n",
+                    )
+            }),
+        ),
+        case(
+            "test-quality.sleep-in-test",
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() {\n        std::thread::sleep(std::time::Duration::from_millis(1));\n        assert_eq!(1, 1);\n    }\n}\n",
+                    )
+            }),
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn check() { assert_eq!(2, 2); }\n}\n",
+                    )
+            }),
+        ),
+        case(
+            "waste.unreachable-code",
+            Box::new(|root| {
+                baseline_with_lib(
+                        root,
+                        "/// Probe.\npub fn entry() -> i32 {\n    return 1;\n    let _ignored = 2;\n    3\n}\n",
+                    )
+            }),
+            Box::new(|root| baseline_with_lib(root, "/// Probe.\npub fn entry() -> i32 { 1 }\n")),
         ),
     ]
 }

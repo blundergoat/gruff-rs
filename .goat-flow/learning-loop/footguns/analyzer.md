@@ -1,6 +1,6 @@
 ---
 category: analyzer
-last_reviewed: 2026-08-16
+last_reviewed: 2026-11-25
 ---
 
 ## Footgun: Cross-File Dead-Code Signal Breaks Under Partial Discovery
@@ -34,9 +34,9 @@ produced Rust ASTs and marks any missing selected input incomplete. Keep the
 definition with no optional sections, and an enriched definition that requires both
 `false_positives:` and `related:`. There is no macro arm for `false_positives:` alone.
 
-The trap surfaced while enriching `security.path-traversal-candidate` in
-`src/rules/idiom_security_size_test_definitions.rs` (search:
-`security.path-traversal-candidate`): adding `false_positives:` without `related:` made
+The trap surfaced while enriching `security.path-traversal-candidate`, retired in 0.6.0 (ADR-024), in
+~~`src/rules/idiom_security_size_test_definitions.rs` (search:
+`security.path-traversal-candidate`)~~ at gruff-rs `3324dd6`: adding `false_positives:` without `related:` made
 `cargo run --quiet -- list-rules security.path-traversal-candidate` fail at macro expansion with
 `unexpected end of macro invocation`.
 
@@ -95,7 +95,7 @@ Regression coverage: `src/tests/rule_behaviours/false_positive_guards.rs` (searc
 
 **Status:** active | **Created:** 2026-05-22 | **Evidence:** OBSERVED
 
-`src/report.rs` (search: `hasher.update(symbol.clone().unwrap_or_default().as_bytes())`) derives finding fingerprints from rule id, file path, line, and symbol. `sensitive-data.hardcoded-env-value` findings in `src/built_in_rules/secret_rules.rs` (search: `analyse_env_like_secrets`) currently carry `symbol: None`, so two env-style secret matches for the same file and line collapse during `sort_and_dedupe_findings`.
+`src/report.rs` (search: `fn line_sensitive_fingerprint`) derives finding fingerprints from rule id, file path, line, and symbol. Regex secret findings in `src/built_in_rules/secret_rules.rs` (search: `fn push_regex_pattern_matches`) carry `symbol: None`, so two matches of one rule on the same file and line collapse during `sort_and_dedupe_findings`: two AWS-shaped keys on one line report once (probed 2026-10-05). The first case was `sensitive-data.hardcoded-env-value`, retired in 0.6.0 (ADR-024).
 
 The non-obvious failure mode is testing multi-secret JSON on one physical line and expecting one finding per key. Unless a rule intentionally changes symbol/fingerprint identity, put multi-match regression fixtures on separate lines or assert at least one same-line finding rather than exact per-key cardinality.
 
@@ -131,7 +131,9 @@ Concrete instance from the 0.3.0 release check: `git check-ignore src/generated.
 
 The non-obvious failure mode is treating all string-literal references as equally fake. Over-masking fixes comment/prose false negatives but can make valid serde defaults look unused; under-masking makes comments and fixture strings hide genuinely dead functions. Regression coverage: `src/tests/rule_behaviours/rubric_false_positive_guards.rs` (search: `dead_code_unused_private_function_recognises_indirect_references`) and `src/tests/project_tests/dead_code.rs` (search: `project_dead_code_ignores_comment_mentions_and_test_cfg_helpers`).
 
-**2026-06-14 extension (external scan, OPEN gap):** the structured-reference extractor `src/parser/mod.rs` (search: `fn append_serde_default_references`) recognises only the `default = "..."` serde key (regex `\bdefault\s*=\s*"..."`). An external scan of a serde-heavy repo (goose) flagged custom `deserialize_with` / `serialize_with` / `skip_serializing_if` / `with` functions (e.g. `deserialize_modalities` via `#[serde(deserialize_with = "...")]`, `is_default_permissions` via `skip_serializing_if`) as `dead-code.unused-private-function` and `dead-code.unused-private-item-candidate`, because those attribute strings are the functions' only call sites and the extractor never appends them. Not yet fixed. Before treating dead-code findings on serde-heavy crates as authoritative, broaden the recognised serde attribute keys to the reference-bearing set (`with`, `serialize_with`, `deserialize_with`, `skip_serializing_if`, `default`), and add a fixture per key.
+**2026-06-14 extension (closed in 0.6.0):** `src/parser/mod.rs` (search: `fn append_serde_default_references`) was widened to the full reference-bearing serde attribute set (`default`, `deserialize_with`, `serialize_with`, `with`, `skip_serializing_if`, including `cfg_attr`).
+
+**2026-11-25 extension (standard format-macro captures):** `rust_code_reference_source` also invokes `src/parser/format_captures.rs` (search: `fn append_format_macro_references`) on comment-blanked source so inline `{ident}`, `{ident:...}`, and `{val:WIDTH$.PREC$}` captures inside standard formatting macros (`format!`, `println!`, `eprintln!`, `print!`, `eprint!`, `write!`, `writeln!`, `panic!`, `format_args!`) count as live references while comments, ordinary strings, and `{{escaped}}` braces stay masked. Always test writer-first 2nd-argument templates (`write!`/`writeln!`), raw templates, and escaped quotes when changing parser masking (`src/tests/parser/masker_invariants.rs`, search: `format_macro_captures`).
 
 ## Footgun: Loop-Scoped Rules Must Mask Comments
 
@@ -188,6 +190,15 @@ The non-obvious failure mode is that the rule appears correct (calibration passe
 
 Regression coverage for this specific case: `src/tests/calibration/cases_pillar_expansion.rs` (search: `security.hardcoded-bind-all-interfaces`); the positive case is a Rust fn returning a `"0.0.0.0:8080"` literal, the negative returns `"127.0.0.1:8080"`. Calibration would not have caught the self-fire because calibration runs in a tempdir; only dogfood revealed it. Pairs with [[rule-precision]] for the broader candidate-rule defence pattern.
 
+**2026-08-24 extension: removing a path-only suppression exposes every intentional sentinel at once.** M04's FAMILY-CONTRACT section 13a repair deleted the implicit test-and-calibration early return from `src/built_in_rules/secret_rules.rs` (search: `A test or calibration path receives the same scan`). The detector became correct and the dogfood gate went red in the same run: `bin/gruff-rs analyse . --format text --no-baseline` reported 47 `sensitive-data.*` findings in seven Rust test files that had always carried deliberate sentinels. `scripts/preflight-checks.sh` (search: `tail -20`) prints only a failed check's last 20 lines, so the visible slice looked like a stray handful rather than a bounded, reviewable population; `.goat-flow/learning-loop/footguns/preflight.md` (search: `## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check`) records that trap on its own.
+
+**How to apply when a text-pattern rule fires on this project's own tests:**
+
+- Re-run the scan as JSON before judging its size: `bin/gruff-rs analyse . --format json --no-baseline --fail-on none`. The `--fail-on none` flag returns the whole population instead of preflight's tail.
+- Group the findings by exact file-path and rule-id identity rather than by file or by raw count. Here 47 findings collapsed to 27 reviewable scopes across 7 files.
+- Write one reason-bearing `sensitiveExclusions` entry per reviewed scope, each naming why that specific literal is synthetic. The 27 entries suppressed exactly 47 findings, left the run at zero findings, and published one audit row per scope.
+- Never add the test directory to `paths.ignore` and never restore a path condition inside the detector. Both hide the next real secret in the same files. The exclusion channel keeps every other sensitive-data rule reporting there, and each row carries its own suppressed count.
+
 ## Footgun: Wrapper-Module Fan-Out Hits 8 When Adding New Rule Files
 
 **Status:** active | **Created:** 2026-05-24 | **Evidence:** ACTUAL_MEASURED
@@ -228,8 +239,8 @@ Regression coverage: this footgun re-fires every time the catalogue grows and a 
 **hallucination-risk:** high
 **Symptoms:** Control-flow words inside Rust comments inflated cyclomatic and NPath measurements, so well-documented functions could receive complexity findings for decisions they did not contain.
 **Why it happened:** `analyse_block_complexity` originally consumed the string-masked `searchable_body` without removing comments. The stale entry also pointed at `.goat-flow/decisions/ADR-015-mission-agent-code-governance.md` instead of the live `.goat-flow/learning-loop/decisions/ADR-015-mission-agent-code-governance.md` decision.
-**Resolution:** `src/built_in_rules/blocks.rs` (search: `let code_only_body = strip_rust_comments_after_string_mask(searchable_body);`) now comment-masks the body before cyclomatic, nesting, and cognitive analysis. `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `complexity_rules_ignore_comment_keywords_and_question_marks`) proves comment-only keywords stay silent. `complexity.npath` was separately removed under ADR-016.
-**Prevention:** Keep every complexity metric on `code_only_body`, and retain the comment-keyword regression whenever the scanner or Rust masking pipeline changes.
+**Resolution:** `src/built_in_rules/syntax_complexity.rs` (search: `pub(crate) fn syntax_complexity`) counts cyclomatic, nesting, and cognitive complexity on the parsed `syn` block, which holds no comments; this replaced the comment-masked text body on 2026-10-09 (precision-floor M14). `src/tests/rule_behaviours/mission_retune_guards.rs` (search: `complexity_rules_ignore_comment_keywords_and_question_marks`) proves comment-only keywords stay silent. `complexity.npath` was separately removed under ADR-016.
+**Prevention:** Keep every complexity metric on the syntax tree, and retain the comment-keyword regression whenever the complexity visitor changes.
 
 ## Footgun: Report Exclusions Are Not Discovery Ignores
 

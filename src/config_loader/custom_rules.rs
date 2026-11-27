@@ -36,6 +36,14 @@ struct CustomRulePathsAndDoc {
     remediation: Option<String>,
 }
 
+/// Parses one entry of the `custom_rules` config list into a validated custom rule.
+///
+/// `index` is the entry's position in the list, used to build the config key path named in error messages.
+/// `entry_value` is the raw JSON entry, which must be an object using only the known custom rule keys.
+/// `registry` holds the built-in rule ids that the custom rule id must not reuse.
+///
+/// Returns the `CustomRule` with its regex and path matchers compiled, or an `Err` naming the config key that failed validation.
+/// Panics when a wildcard in `include_paths` or `exclude_paths` yields a path matcher regex that fails to compile.
 pub(crate) fn parse_custom_rule(
     index: usize,
     entry_value: &Value,
@@ -71,6 +79,13 @@ pub(crate) fn parse_custom_rule(
     })
 }
 
+/// Reads and validates the required `id` and `message` fields of a custom rule entry.
+///
+/// `entry` is the custom rule's JSON object.
+/// `entry_path` is the entry's config key path, used as the prefix of the key paths in error messages.
+/// `registry` holds the built-in rule ids that the custom `id` must not reuse.
+///
+/// Returns the id and message, or an `Err` when either field is missing or invalid or the id fails `validate_custom_rule_id`.
 fn parse_custom_rule_identity(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -82,6 +97,13 @@ fn parse_custom_rule_identity(
     Ok(CustomRuleIdentity { id, message })
 }
 
+/// Reads a custom rule entry's required `pillar` and `severity` fields and its optional `confidence` score.
+///
+/// `entry` is the custom rule's JSON object.
+/// `entry_path` is the entry's config key path, used as the prefix of the key paths in error messages.
+///
+/// Returns the pillar, severity and confidence, or an `Err` when `pillar` or `severity` is missing or unknown or `confidence` is invalid.
+/// A missing `confidence` defaults to `Confidence::Medium`.
 fn parse_custom_rule_classification(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -100,6 +122,12 @@ fn parse_custom_rule_classification(
     })
 }
 
+/// Reads a custom rule entry's `scope` and `pattern` fields and compiles the pattern as a regular expression.
+///
+/// `entry` is the custom rule's JSON object.
+/// `entry_path` is the entry's config key path, used as the prefix of the key paths in error messages.
+///
+/// Returns the scope, pattern source and compiled `Regex`, or an `Err` when either field is missing or invalid or the regex fails to compile.
 fn parse_custom_rule_pattern(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -119,6 +147,13 @@ fn parse_custom_rule_pattern(
     })
 }
 
+/// Reads a custom rule entry's optional `include_paths`, `exclude_paths` and `remediation` fields.
+///
+/// `entry` is the custom rule's JSON object.
+/// `entry_path` is the entry's config key path, used as the prefix of the key paths in error messages.
+///
+/// Returns the normalized include and exclude paths, empty when absent, and the remediation text, `None` when absent.
+/// An `Err` is returned instead when a path list is not a valid string array or `remediation` is not a string.
 fn parse_custom_rule_paths_and_doc(
     entry: &serde_json::Map<String, Value>,
     entry_path: &str,
@@ -149,6 +184,15 @@ fn parse_custom_rule_paths_and_doc(
     })
 }
 
+/// Checks that a custom rule id is in the reserved `custom.` namespace and does not collide with a built-in rule id.
+///
+/// The slug after `custom.` must be non-empty lowercase ASCII letters, digits and hyphens, not starting or ending with a hyphen.
+///
+/// `id` is the configured rule id to check.
+/// `path` is the config key path named in error messages.
+/// `registry` holds the built-in rule ids that `id` must not match.
+///
+/// Returns `Ok(())` for a valid id, or an `Err` saying whether the prefix, the slug or a built-in collision failed.
 pub(crate) fn validate_custom_rule_id(
     id: &str,
     path: &str,
@@ -178,6 +222,13 @@ pub(crate) fn validate_custom_rule_id(
     Ok(())
 }
 
+/// Reads a required string field from a config object and resolves it to a public pillar.
+///
+/// `object` is the JSON object holding the field.
+/// `key` is the field name to read.
+/// `path` is the full config key path named in error messages.
+///
+/// Returns the `Pillar` matched by `parse_pillar_selector`, or an `Err` when the field is missing or invalid or names no known pillar.
 pub(crate) fn parse_required_pillar(
     object: &serde_json::Map<String, Value>,
     key: &str,
@@ -191,6 +242,13 @@ pub(crate) fn parse_required_pillar(
     })
 }
 
+/// Reads a required string field from a config object and resolves it to a finding severity.
+///
+/// `object` is the JSON object holding the field.
+/// `key` is the field name to read.
+/// `path` is the full config key path named in error messages.
+///
+/// Returns the `Severity` matched by `parse_severity_name`, or an `Err` when the field is missing, invalid or not advisory, warning or error.
 pub(crate) fn parse_required_severity(
     object: &serde_json::Map<String, Value>,
     key: &str,
@@ -202,6 +260,11 @@ pub(crate) fn parse_required_severity(
     })
 }
 
+/// Parses a severity name, ignoring surrounding whitespace and letter case.
+///
+/// `value` is the severity text from config, expected to be advisory, warning or error.
+///
+/// Returns the matching `Severity`, or `None` for any other text.
 pub(crate) fn parse_severity_name(value: &str) -> Option<Severity> {
     match value.trim().to_ascii_lowercase().as_str() {
         "advisory" => Some(Severity::Advisory),
@@ -211,6 +274,13 @@ pub(crate) fn parse_severity_name(value: &str) -> Option<Severity> {
     }
 }
 
+/// Converts a custom rule's numeric confidence score into a confidence band.
+///
+/// `value` is the configured JSON value, which must be a number from 0.0 to 1.0 inclusive.
+/// `path` is the config key path named in error messages.
+///
+/// Returns `Confidence::High` from 0.85, `Confidence::Medium` from 0.5 and `Confidence::Low` below that.
+/// An `Err` is returned instead when `value` is not a number or lies outside 0.0 to 1.0.
 pub(crate) fn parse_custom_confidence(value: &Value, path: &str) -> Result<Confidence, String> {
     let number = value
         .as_f64()
@@ -227,6 +297,12 @@ pub(crate) fn parse_custom_confidence(value: &Value, path: &str) -> Result<Confi
     }
 }
 
+/// Maps a custom rule's configured scope name, ignoring surrounding whitespace, to its `CustomRuleScope` variant.
+///
+/// `value` is the scope text, one of text, rust-code or comments, matched case-sensitively.
+/// `path` is the config key path named in error messages.
+///
+/// Returns `CustomRuleScope::Text`, `CustomRuleScope::RustCode` or `CustomRuleScope::Comments`, or an `Err` for any other name.
 pub(crate) fn parse_custom_rule_scope(value: &str, path: &str) -> Result<CustomRuleScope, String> {
     match value.trim() {
         "text" => Ok(CustomRuleScope::Text),
@@ -238,6 +314,13 @@ pub(crate) fn parse_custom_rule_scope(value: &str, path: &str) -> Result<CustomR
     }
 }
 
+/// Reads an optional array of path strings from a config object and normalizes each with `normalize_report_path`.
+///
+/// `object` is the JSON object that may hold the field.
+/// `key` is the field name to read.
+/// `path` is the config key path named in error messages.
+///
+/// Returns the normalized paths, an empty list when the field is absent, or an `Err` when the value is not a valid string array.
 pub(crate) fn optional_normalized_string_array(
     object: &serde_json::Map<String, Value>,
     key: &str,

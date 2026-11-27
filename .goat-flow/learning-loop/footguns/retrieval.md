@@ -1,9 +1,9 @@
 ---
 category: retrieval
-last_reviewed: 2026-08-14
+last_reviewed: 2026-11-23
 ---
 
-## Footgun: A Recursive Grep Rooted At `.goat-flow/` Returns Zero For The Whole Committed Surface
+## Footgun: A Repository-Root Grep Drops Every `.goat-flow/` Hit
 
 **Status:** active | **Created:** 2026-08-14 | **Evidence:** ACTUAL_MEASURED
 **Decision changed:** Anchor every learning-loop or skill-doc grep at the bucket directory, never at `.goat-flow/` or the repository root. A zero-hit result from either of those roots is a tooling artifact, not evidence that the term is absent.
@@ -12,13 +12,15 @@ last_reviewed: 2026-08-14
 
 `CLAUDE.md` Key Resources instructs the agent to grep `.goat-flow/learning-loop/footguns/`, `lessons/`, `patterns/`, and `decisions/` before changes, and `.goat-flow/skill-docs/skill-preamble.md` (search: `Learning-Loop Retrieval`) allows grepping individual buckets after the INDEX pass. Both are safe only when the search path names the bucket. Raise the root one level and the same search silently reports nothing.
 
-**Symptoms:** a term you can see in an open editor buffer returns no matches; `grep -rn <term> .goat-flow/` exits 1 while `grep -rn <term> .goat-flow/learning-loop/lessons/` finds it; a repository-root grep returns some hits but none from `.goat-flow/`, so the result looks plausible rather than empty. The failure mode is a confident "no prior learnings" that ends retrieval before it started.
+**Symptoms:** a term you can see in an open editor buffer returns no matches; a repository-root grep returns some hits but none from `.goat-flow/`, so the result looks plausible rather than empty. The failure mode is a confident "no prior learnings" that ends retrieval before it started.
 
-**Why it happens:** `.goat-flow/.gitignore` (search: `# Ignore everything by default`) opens with `*` and re-admits each committed path with a `!` rule, because the directory mixes committed content with local-only workspace state. The agent harness replaces `grep` with a shell function that delegates to `ugrep --ignore-files` (confirm with `type grep`). That walker reads `.goat-flow/.gitignore` whenever the walk starts at or above `.goat-flow/`, applies the leading `*`, and does not restore the subtree from the `!` re-includes the way Git does. A walk that starts inside a subdirectory never reads that file, which is why bucket-anchored searches behave correctly.
+**Why it happens:** `.goat-flow/.gitignore` (search: `# Ignore everything by default`) opens with `*` and re-admits each committed path, because the directory mixes committed content with local-only workspace state. The agent harness replaces `grep` with a shell function that delegates to `ugrep --ignore-files` (confirm with `type grep`), and that walker applies the file differently from Git. When this was first measured, a walk rooted at `.goat-flow/` returned zero as well. The goat-flow 1.17.0 upgrade rewrote the re-includes as `**/name/**` for exactly this walker. Since then a `.goat-flow/`-rooted walk returns the full committed set and drops only gitignored local content such as plans and logs, which is correct. A walk rooted at the repository root still drops every `.goat-flow/` hit. A walk that starts inside a bucket has always behaved correctly.
 
-**Evidence:** first measured 2026-08-14 in this repository. Reproduce it as a comparison, never against a recorded count — every root that contains `.goat-flow/logs/` moves as local reports and review bundles accumulate, so absolute totals are noise:
+**Evidence:** first measured 2026-08-14 in this repository and re-measured 2026-11-23. Reproduce it as a comparison, never against a recorded count — every root that contains `.goat-flow/logs/` moves as local reports and review bundles accumulate, so absolute totals are noise:
 
 ```bash
+echo "committed: $(git grep -l '## Footgun:' -- .goat-flow/ | wc -l)"
+echo "repo-root wrapper: $(grep -rl '## Footgun:' . 2>/dev/null | command grep -c '^\./\.goat-flow/')"
 for root in .goat-flow/ .goat-flow/learning-loop/footguns/; do
   printf '%-40s wrapper=%-6s real=%s\n' "$root" \
     "$(grep -rc '## Footgun:' "$root" 2>/dev/null | awk -F: '{n+=$NF} END{print n+0}')" \
@@ -26,12 +28,11 @@ for root in .goat-flow/ .goat-flow/learning-loop/footguns/; do
 done
 ```
 
-Two invariants hold regardless of the numbers, and they are the finding:
+Three invariants held on 2026-11-23 regardless of the numbers, and they are the finding:
 
-- Rooted at `.goat-flow/`, the wrapper returns **zero** while `command grep` returns the full set. The same holds for any term that lives only under `.goat-flow/`, such as `ADR-022`.
+- Rooted at the repository root, the wrapper returns **zero** `.goat-flow/` files while `git grep` lists every committed one. Non-`.goat-flow/` hits still come through, so the result looks plausible rather than empty. That is the dangerous shape.
+- Rooted at `.goat-flow/`, the wrapper's count equals the committed `git grep` count. `command grep` returns more only because it also reads gitignored plans and logs. Until the 1.17.0 `.gitignore` rewrite this root returned zero too.
 - Rooted at a bucket such as `.goat-flow/learning-loop/footguns/`, wrapper and `command grep` return **exactly the same count**.
-
-A repository-root search sits between the two: non-`.goat-flow/` hits come through, every `.goat-flow/` hit is dropped, so the result looks plausible rather than empty. That is the dangerous shape.
 
 **Prevention:**
 

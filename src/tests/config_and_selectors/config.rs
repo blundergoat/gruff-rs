@@ -5,6 +5,56 @@
 use super::*;
 
 #[test]
+pub(crate) fn unreadable_config_is_named_as_typed_not_by_its_host_path() {
+    // The message reaches the analysis envelope, which may not publish a host path, so a missing `--config` file is
+    // named the way the user typed it rather than by the absolute path the loader resolved.
+    let dir = tempdir().expect("tempdir");
+    let options = AnalysisOptions {
+        config: Some(PathBuf::from("missing.yaml")),
+        ..default_test_options()
+    };
+
+    let error = load_config(dir.path(), &options).expect_err("a missing config is an error");
+
+    assert!(
+        error.starts_with("unable to read config missing.yaml: "),
+        "{error}"
+    );
+    assert!(
+        !error.contains(&dir.path().display().to_string()),
+        "{error}"
+    );
+}
+
+#[test]
+pub(crate) fn explicit_relative_config_is_read_from_the_launch_directory() {
+    // `--config` means the path the user typed, so from a nested directory `../../cfg.yaml` is read against that
+    // directory, as scan targets are, and not against the project root the targets resolve to.
+    let _guard = analysis_lock();
+    let sandbox = tempdir().expect("tempdir");
+    let project = sandbox.path().join("project");
+    let nested = project.join("a/b");
+    fs::create_dir_all(&nested).expect("nested launch directory");
+    fs::write(
+        project.join("cfg.yaml"),
+        "schemaVersion: gruff-rs.config.v1\nminimumSeverity: error\n",
+    )
+    .expect("config write");
+    let options = AnalysisOptions {
+        config: Some(PathBuf::from("../../cfg.yaml")),
+        ..default_test_options()
+    };
+
+    let original_cwd = std::env::current_dir().expect("original cwd");
+    std::env::set_current_dir(&nested).expect("enter the nested launch directory");
+    let loaded = load_config(&project, &options);
+    std::env::set_current_dir(original_cwd).expect("restore cwd");
+
+    let config = loaded.expect("the typed path names the file from the launch directory");
+    assert_eq!(config.display_floor, Some(Severity::Error));
+}
+
+#[test]
 pub(crate) fn config_rejects_unknown_root_keys_and_rule_ids() {
     let dir = tempdir().expect("tempdir");
     let options = default_test_options();
@@ -69,6 +119,72 @@ pub(crate) fn config_rejects_threshold_maps_and_unknown_options() {
     assert!(error.contains("unknown option `bogus`"), "{error}");
 }
 
+/// The high-entropy detector reads two named knobs under `thresholds`, each validated at load time and
+/// refused rather than clamped, while ADR-011's single `threshold` still governs every rubric.
+#[test]
+pub(crate) fn high_entropy_thresholds_are_named_and_validated_at_load_time() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+    let rule = "sensitive-data.high-entropy-string";
+    let rule_config = |body: &str| format!(r#"{{ "rules": {{ "{rule}": {body} }} }}"#);
+
+    write_config(
+        dir.path(),
+        &rule_config(r#"{ "thresholds": { "minLength": 65535, "entropy": 3.5 } }"#),
+    );
+    let config = load_config(dir.path(), &options).expect("both knobs accepted at the cap");
+    assert_eq!(config.detector_parameter(rule, "minLength"), 65535.0);
+    assert_eq!(config.detector_parameter(rule, "entropy"), 3.5);
+
+    for (thresholds, expected) in [
+        (
+            r#"{ "minLength": 0 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "minLength": 65536 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "minLength": 12.5 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "minLength": -1 }"#,
+            "must be a whole number from 1 to 65535",
+        ),
+        (
+            r#"{ "entropy": -0.5 }"#,
+            "must be a finite number of zero or more",
+        ),
+        (
+            r#"{ "entropy": "high" }"#,
+            "must be a finite number of zero or more",
+        ),
+        (r#"{ "bogus": 1 }"#, "unknown key `bogus`"),
+    ] {
+        write_config(
+            dir.path(),
+            &rule_config(&format!(r#"{{ "thresholds": {thresholds} }}"#)),
+        );
+        let error = load_config(dir.path(), &options).expect_err(thresholds);
+        assert!(error.contains(expected), "{thresholds}: {error}");
+    }
+
+    // A standalone severity override keeps working, and the single `threshold` key stays refused.
+    write_config(dir.path(), &rule_config(r#"{ "severity": "error" }"#));
+    assert!(load_config(dir.path(), &options).is_ok());
+    write_config(
+        dir.path(),
+        &rule_config(r#"{ "threshold": 20, "severity": "warning" }"#),
+    );
+    let error = load_config(dir.path(), &options).expect_err("single threshold refused");
+    assert!(
+        error.contains("only supported for rules with one numeric threshold"),
+        "{error}"
+    );
+}
+
 #[test]
 pub(crate) fn rust_yaml_config_is_the_only_default_config_name() {
     let _guard = analysis_lock();
@@ -125,7 +241,7 @@ pub(crate) fn unsupported_config_extensions_are_rejected() {
     let error = load_config(
         dir.path(),
         &AnalysisOptions {
-            config: Some(PathBuf::from("config.json")),
+            config: Some(dir.path().join("config.json")),
             ..default_test_options()
         },
     )
@@ -255,6 +371,7 @@ pub(crate) fn standalone_severity_override_changes_security_finding() {
         r#"
 rules:
   security.process-command:
+    enabled: true
     severity: error
 "#,
     );
@@ -406,12 +523,9 @@ pub(crate) fn config_accepts_schema_version_and_records_it() {
 #[test]
 pub(crate) fn minimum_severity_accepts_valid_keys_and_values() {
     let dir = tempdir().expect("tempdir");
-    write_config(
-        dir.path(),
-        "minimumSeverity:\n  analyse: warning\n  report: none\n",
-    );
-    let config = load_config(dir.path(), &default_test_options())
-        .expect("valid minimumSeverity block accepted");
+    write_config(dir.path(), "failOn:\n  analyse: warning\n  report: none\n");
+    let config =
+        load_config(dir.path(), &default_test_options()).expect("valid failOn block accepted");
     assert_eq!(
         config.minimum_severity.get("analyse"),
         Some(&FailThreshold::Warning)
@@ -425,11 +539,11 @@ pub(crate) fn minimum_severity_accepts_valid_keys_and_values() {
 #[test]
 pub(crate) fn minimum_severity_rejects_non_gating_subcommands() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity:\n  summary: advisory\n");
+    write_config(dir.path(), "failOn:\n  summary: advisory\n");
     let error = load_config(dir.path(), &default_test_options())
         .expect_err("non-gating subcommand rejected");
     assert!(
-        error.contains("unknown command `summary` in `minimumSeverity`"),
+        error.contains("unknown command `summary` in `failOn`"),
         "{error}"
     );
     assert!(error.contains("Valid keys: analyse, report"), "{error}");
@@ -438,27 +552,366 @@ pub(crate) fn minimum_severity_rejects_non_gating_subcommands() {
 #[test]
 pub(crate) fn minimum_severity_rejects_unknown_threshold_values() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity:\n  analyse: never\n");
+    write_config(dir.path(), "failOn:\n  analyse: never\n");
     let error = load_config(dir.path(), &default_test_options())
         .expect_err("never is not a valid threshold");
-    assert!(error.contains("minimumSeverity.analyse"), "{error}");
+    assert!(error.contains("failOn.analyse"), "{error}");
     assert!(error.contains("advisory, warning, error, none"), "{error}");
 }
 
 #[test]
 pub(crate) fn minimum_severity_empty_block_is_accepted() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity: {}\n");
-    let config =
-        load_config(dir.path(), &default_test_options()).expect("empty minimumSeverity accepted");
+    write_config(dir.path(), "failOn: {}\n");
+    let config = load_config(dir.path(), &default_test_options()).expect("empty failOn accepted");
     assert!(config.minimum_severity.is_empty());
 }
 
 #[test]
 pub(crate) fn minimum_severity_rejects_non_mapping_shape() {
     let dir = tempdir().expect("tempdir");
-    write_config(dir.path(), "minimumSeverity: advisory\n");
-    let error = load_config(dir.path(), &default_test_options())
-        .expect_err("scalar minimumSeverity rejected");
+    write_config(dir.path(), "failOn: advisory\n");
+    let error =
+        load_config(dir.path(), &default_test_options()).expect_err("scalar failOn rejected");
     assert!(error.contains("must be an object"), "{error}");
+}
+
+#[test]
+/// The pre-0.6.0 map form is refused rather than reinterpreted: reading it as a display floor would change what a
+/// committed configuration does without changing what it says.
+pub(crate) fn minimum_severity_refuses_the_pre_060_gate_map() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity:\n  analyse: error\n");
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("per-command minimumSeverity rejected");
+    assert!(
+        error.contains("move the per-command exit gate to `failOn`"),
+        "{error}"
+    );
+}
+
+#[test]
+/// A scalar minimumSeverity is the display floor the family ratified, and it never gates.
+pub(crate) fn minimum_severity_reads_the_scalar_display_floor() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), "minimumSeverity: warning\n");
+    let config = load_config(dir.path(), &default_test_options()).expect("display floor accepted");
+    assert_eq!(config.display_floor, Some(Severity::Warning));
+    assert!(config.minimum_severity.is_empty());
+}
+
+#[test]
+pub(crate) fn deep_scan_budget_loads_valid_config_and_cli_wins_atomically() {
+    let dir = tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        "deepScanBudget:\n  enabled: true\n  maxLines: 12\n  maxBytes: 345\n",
+    );
+    let mut config =
+        load_config(dir.path(), &default_test_options()).expect("deep scan budget loads");
+
+    assert_eq!(config.deep_scan_budget.max_lines, 12);
+    assert_eq!(config.deep_scan_budget.max_bytes, 345);
+    assert_eq!(config.deep_scan_budget.override_state, "config");
+
+    let cli: DeepScanBudgetOverride = "7:89".parse().expect("CLI budget parses");
+    config.apply_deep_scan_budget_override(Some(&cli));
+    assert!(config.deep_scan_budget.enabled);
+    assert_eq!(config.deep_scan_budget.max_lines, 7);
+    assert_eq!(config.deep_scan_budget.max_bytes, 89);
+    assert_eq!(config.deep_scan_budget.override_state, "cli");
+
+    let off: DeepScanBudgetOverride = "off".parse().expect("off parses");
+    config.apply_deep_scan_budget_override(Some(&off));
+    assert!(!config.deep_scan_budget.enabled);
+    assert_eq!(config.deep_scan_budget.override_state, "cli");
+}
+
+#[test]
+pub(crate) fn deep_scan_budget_rejects_malformed_config_and_cli_values() {
+    let dir = tempdir().expect("tempdir");
+    for body in [
+        "deepScanBudget: true\n",
+        "deepScanBudget:\n  unknown: 1\n",
+        "deepScanBudget:\n  enabled: yes\n",
+        "deepScanBudget:\n  maxLines: 0\n",
+        "deepScanBudget:\n  maxBytes: 1.5\n",
+    ] {
+        write_config(dir.path(), body);
+        let error = load_config(dir.path(), &default_test_options())
+            .expect_err("malformed deep scan budget rejected");
+        assert!(error.contains("deepScanBudget"), "{body}: {error}");
+    }
+
+    for value in ["", "1", "1:2:3", "0:1", "1:0", "x:2", "2:x"] {
+        let error = value
+            .parse::<DeepScanBudgetOverride>()
+            .expect_err("malformed CLI budget rejected");
+        assert!(error.contains("LINES:BYTES"), "{value:?}: {error}");
+    }
+}
+
+/// `everyCallable` is stored per documentation rule, and a rule that does not set it reads as true.
+#[test]
+pub(crate) fn every_callable_boolean_option_is_stored_per_docs_rule() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+
+    write_config(
+        dir.path(),
+        r#"{ "rules": {
+            "docs.missing-param-doc": { "options": { "everyCallable": true } },
+            "docs.missing-return-doc": { "options": { "everyCallable": false } } } }"#,
+    );
+    let config = load_config(dir.path(), &options).expect("boolean option accepted");
+
+    assert!(config.is_rule_option_enabled("docs.missing-param-doc", "everyCallable"));
+    assert!(!config.is_rule_option_enabled("docs.missing-return-doc", "everyCallable"));
+    assert!(config.is_rule_option_enabled("docs.missing-public-doc", "everyCallable"));
+}
+
+/// With no rule options configured, `everyCallable` is on for the three documentation rules and nowhere else.
+#[test]
+pub(crate) fn every_callable_defaults_to_true_without_config() {
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), r#"{ "rules": {} }"#);
+    let config = load_config(dir.path(), &default_test_options()).expect("empty rules load");
+
+    for rule_id in [
+        "docs.missing-param-doc",
+        "docs.missing-return-doc",
+        "docs.missing-public-doc",
+    ] {
+        assert!(
+            config.is_rule_option_enabled(rule_id, "everyCallable"),
+            "{rule_id}"
+        );
+    }
+    assert!(!config.is_rule_option_enabled("naming.placeholder-identifier", "everyCallable"));
+}
+
+/// A non-boolean `everyCallable` value is refused at load time rather than read as false.
+#[test]
+pub(crate) fn every_callable_option_rejects_a_non_boolean_value() {
+    let dir = tempdir().expect("tempdir");
+    write_config(
+        dir.path(),
+        r#"{ "rules": { "docs.missing-public-doc": { "options": { "everyCallable": "yes" } } } }"#,
+    );
+    let error = load_config(dir.path(), &default_test_options()).expect_err("string rejected");
+
+    assert!(
+        error.contains(
+            "config key `rules.docs.missing-public-doc.options.everyCallable` must be a boolean"
+        ),
+        "{error}"
+    );
+}
+
+/// Migrating a 0.5 config drops all 15 retired rule IDs across sections and removes empty `minimumSeverity:` placeholders while preserving scalar display floors.
+#[test]
+pub(crate) fn migrate_config_drops_retired_rules_and_empty_minimum_severity() {
+    let original = concat!(
+        "schemaVersion: gruff-rs.config.v1\n",
+        "minimumSeverity:\n",
+        "  # analyse: advisory\n",
+        "allowlists:\n",
+        "  secretPreviews: []\n",
+        "rules:\n",
+        "  select:\n",
+        "    - naming.short-variable\n",
+        "    - docs.stale-todo\n",
+        "  ignore:\n",
+        "    - waste.unreachable-code\n",
+        "  naming.short-variable:\n",
+        "    enabled: true\n",
+        "  concurrency.unbounded-channel:\n",
+        "    enabled: true\n",
+        "  dependency.path-source:\n",
+        "    enabled: true\n",
+        "  error-handling.public-unwrap:\n",
+        "    enabled: true\n",
+        "  modernisation.manual-is-empty:\n",
+        "    enabled: true\n",
+        "  naming.boolean-prefix:\n",
+        "    enabled: true\n",
+        "  naming.generic-function:\n",
+        "    enabled: true\n",
+        "  performance.clone-in-loop:\n",
+        "    enabled: true\n",
+        "  performance.format-in-loop:\n",
+        "    enabled: true\n",
+        "  security.path-traversal-candidate:\n",
+        "    enabled: true\n",
+        "  test-quality.conditional-logic:\n",
+        "    enabled: true\n",
+        "  test-quality.sleep-in-test:\n",
+        "    enabled: true\n",
+        "exclude:\n",
+        "  - rule: docs.stale-todo\n",
+        "    reason: Legacy suppression\n",
+        "sensitiveExclusions:\n",
+        "  - rule: sensitive-data.database-url-password\n",
+        "    path: src/db.rs\n",
+        "    reason: Legacy fixture\n",
+        "  - rule: sensitive-data.hardcoded-env-value\n",
+        "    path: src/env.rs\n",
+        "    reason: Legacy fixture\n",
+    );
+
+    let migration =
+        crate::migrate_config::migrate_config_text(original).expect("0.5 config migrates cleanly");
+    assert!(
+        migration
+            .changes
+            .iter()
+            .any(|change| change.contains("minimumSeverity: empty placeholder removed")),
+        "{:?}",
+        migration.changes
+    );
+    let registry = rules::builtin_registry();
+    assert_eq!(crate::migrate_config::RETIRED_0_5_RULES.len(), 15);
+    for retired in crate::migrate_config::RETIRED_0_5_RULES {
+        assert!(
+            !registry.contains(retired),
+            "retired rule {retired} must not be registered in built-in catalogue"
+        );
+        assert!(
+            migration
+                .changes
+                .iter()
+                .any(|change| change.contains(retired)),
+            "missing change report for {retired}: {:?}",
+            migration.changes
+        );
+        assert!(
+            !migration.text.contains(retired),
+            "retired rule {retired} leaked into migrated YAML:\n{}",
+            migration.text
+        );
+    }
+    assert!(!migration.text.contains("minimumSeverity"));
+    assert!(!migration.text.contains("exclude:"));
+    assert!(!migration.text.contains("sensitiveExclusions:"));
+
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), &migration.text);
+    load_config(dir.path(), &default_test_options()).expect("migrated config loads cleanly");
+
+    let scalar = "schemaVersion: gruff-rs.config.v1\nminimumSeverity: warning\n";
+    let unchanged = crate::migrate_config::migrate_config_text(scalar)
+        .expect("scalar minimumSeverity stays untouched");
+    assert!(unchanged.changes.is_empty(), "{:?}", unchanged.changes);
+    assert_eq!(unchanged.text, scalar);
+}
+
+/// Migration refuses to empty a non-empty `rules.select` and leaves non-retired rule typos untouched for the loader to reject.
+#[test]
+pub(crate) fn migrate_config_refuses_emptied_select_and_preserves_unknown_typos() {
+    let retired_only_select = concat!(
+        "schemaVersion: gruff-rs.config.v1\n",
+        "rules:\n",
+        "  select:\n",
+        "    - docs.stale-todo\n",
+        "    - waste.unreachable-code\n",
+    );
+    let refused = crate::migrate_config::migrate_config_text(retired_only_select)
+        .expect_err("emptying non-empty rules.select must fail");
+    assert!(refused.contains("rules.select"), "{refused}");
+
+    let with_typo = concat!(
+        "schemaVersion: gruff-rs.config.v1\n",
+        "rules:\n",
+        "  docs.stale-todo:\n",
+        "    enabled: true\n",
+        "  naming.not-a-real-rule:\n",
+        "    enabled: false\n",
+    );
+    let migrated =
+        crate::migrate_config::migrate_config_text(with_typo).expect("typo stays in migrated YAML");
+    assert!(!migrated.text.contains("docs.stale-todo"));
+    assert!(migrated.text.contains("naming.not-a-real-rule"));
+
+    let dir = tempdir().expect("tempdir");
+    write_config(dir.path(), &migrated.text);
+    let error = load_config(dir.path(), &default_test_options())
+        .expect_err("non-retired typo stays rejected");
+    assert!(error.contains("naming.not-a-real-rule"), "{error}");
+    assert!(!error.contains("migrate-config"), "{error}");
+}
+
+/// Config load errors point to `gruff-rs migrate-config` for legacy keys and retired 0.5 rules across all four loader sites, while keeping non-retired typos and CLI `rules --selector` free of config hints.
+#[test]
+pub(crate) fn config_errors_include_migrate_hint_only_for_legacy_and_retired_config() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+    let legacy_cases = [
+        ("secret-previews", "allowlists:\n  secretPreviews: []\n"),
+        ("legacy-gate-map", "minimumSeverity:\n  analyse: error\n"),
+        (
+            "retired-rule-setting",
+            "rules:\n  docs.stale-todo:\n    enabled: true\n",
+        ),
+        (
+            "retired-select",
+            "rules:\n  select:\n    - naming.boolean-prefix\n",
+        ),
+        (
+            "retired-ignore",
+            "rules:\n  ignore:\n    - performance.clone-in-loop\n",
+        ),
+        (
+            "retired-exclude",
+            "exclude:\n  - rule: waste.unreachable-code\n    reason: legacy\n",
+        ),
+        (
+            "retired-sensitive-exclusion",
+            "sensitiveExclusions:\n  - rule: sensitive-data.database-url-password\n    path: src/db.rs\n    reason: legacy\n",
+        ),
+    ];
+    for (case_name, yaml) in legacy_cases {
+        write_config(dir.path(), yaml);
+        let error = load_config(dir.path(), &options).expect_err(case_name);
+        assert!(
+            error.contains("gruff-rs migrate-config --config <old> --output <new>"),
+            "case={case_name}: {error}"
+        );
+    }
+
+    let typo_cases = [
+        (
+            "typo-rule-setting",
+            "rules:\n  naming.not-a-real-rule:\n    enabled: true\n",
+        ),
+        (
+            "typo-select",
+            "rules:\n  select:\n    - naming.not-a-real-rule\n",
+        ),
+        (
+            "typo-sensitive-exclusion",
+            "sensitiveExclusions:\n  - rule: sensitive-data.not-a-real-rule\n    path: src/db.rs\n    reason: typo\n",
+        ),
+    ];
+    for (case_name, yaml) in typo_cases {
+        write_config(dir.path(), yaml);
+        let error = load_config(dir.path(), &options).expect_err(case_name);
+        assert!(
+            !error.contains("migrate-config"),
+            "case={case_name} should not emit migrate-config hint: {error}"
+        );
+    }
+
+    let cli_error = render_rule_list(
+        Path::new("."),
+        &ListRulesArgs {
+            rule_id: None,
+            format: RuleListFormat::Text,
+            selector: Some("docs.stale-todo".to_string()),
+            config: None,
+            no_config: true,
+        },
+    )
+    .expect_err("CLI rules --selector rejects retired ID");
+    assert!(cli_error.contains("rules --selector"), "{cli_error}");
+    assert!(!cli_error.contains("migrate-config"), "{cli_error}");
 }

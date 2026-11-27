@@ -1,8 +1,20 @@
+//! Render each HTML section of the standalone report shown by `report --format html` and the local browser dashboard.
+//!
+//! Formats the masthead, diagnostics, suppression audit, verdict, pillar table, top offenders, complexity chart, and findings list.
+//! Every finding field and path is HTML-escaped so untrusted repository content cannot inject markup into the viewer's browser.
+
 use super::styles::css;
 use super::{severity_text, DistributionBar, OffenderRow, PillarRow, ReportView, SCHEMA_VERSION};
-use crate::{html_escape, pillar_label, Finding, RunDiagnostic, Severity};
+use crate::{
+    html_escape, pillar_label, scoring::score_text, Finding, RunDiagnostic, Severity,
+    SuppressionSummary,
+};
 use std::fmt::Write as _;
 
+/// Render the complete standalone HTML inspection report page.
+///
+/// `view` supplies the grade for the title, whether there are diagnostics for the stylesheet, and the data for every section.
+/// Returns the page with inline CSS and, in order, the masthead, diagnostics, verdict, pillars, offenders, distribution, findings and footer.
 pub(crate) fn document(view: &ReportView<'_>) -> String {
     let mut out = String::with_capacity(16 * 1024);
     out.push_str("<!DOCTYPE html>\n");
@@ -14,12 +26,15 @@ pub(crate) fn document(view: &ReportView<'_>) -> String {
         html_escape(&view.grade_letter)
     ));
     out.push_str("<style>");
-    out.push_str(&css(!view.report.diagnostics.is_empty()));
+    out.push_str(&css(
+        !view.report.diagnostics.is_empty() || !view.report.suppressions.is_empty()
+    ));
     out.push_str("</style>\n</head>\n<body>\n");
     out.push_str("<main class=\"paper\">");
     out.push_str("<span class=\"corner-tr\"></span><span class=\"corner-bl\"></span>");
     out.push_str(&masthead(view));
     out.push_str(&diagnostics_section(&view.report.diagnostics));
+    out.push_str(&suppressions_section(&view.report.suppressions));
     out.push_str(&verdict_section(view));
     out.push_str(&pillars_section(view));
     out.push_str(&offenders_section(view));
@@ -33,6 +48,12 @@ pub(crate) fn document(view: &ReportView<'_>) -> String {
     out
 }
 
+/// Render the report header with the gruff wordmark and the run's metadata.
+///
+/// `view` supplies the scanned paths, shown as `.` when none were given, and the diff label, shown as `full project` when absent.
+/// It also supplies the output format, the `fail_on` setting and the tool version.
+///
+/// Returns the escaped `header` element.
 fn masthead(view: &ReportView<'_>) -> String {
     let paths_label = if view.scope.paths.is_empty() {
         ".".to_string()
@@ -62,6 +83,10 @@ fn masthead(view: &ReportView<'_>) -> String {
     )
 }
 
+/// Render one label and value pair of the masthead metadata.
+///
+/// `label` and `value` are HTML-escaped into the label and value spans.
+/// Returns the row as a `div` element.
 fn meta_row(label: &str, value: &str) -> String {
     format!(
         "<div><span class=\"label\">{}</span><span class=\"val\">{}</span></div>",
@@ -70,6 +95,10 @@ fn meta_row(label: &str, value: &str) -> String {
     )
 }
 
+/// Render the run diagnostics section of the report.
+///
+/// `diagnostics` are the run messages to list, one row each.
+/// Returns an empty string when there are no diagnostics, so the section is left out of the page.
 fn diagnostics_section(diagnostics: &[RunDiagnostic]) -> String {
     if diagnostics.is_empty() {
         return String::new();
@@ -87,6 +116,49 @@ fn diagnostics_section(diagnostics: &[RunDiagnostic]) -> String {
     out
 }
 
+/// Render the suppression audit section of the report so HTML never filters findings in silence (`FAMILY-CONTRACT.md` section 13a).
+///
+/// `suppressions` are the suppression summary rows from configured, built-in, and inline channels.
+/// Returns an empty string when there are no suppressions, leaving the page unchanged on clean scans.
+fn suppressions_section(suppressions: &[SuppressionSummary]) -> String {
+    // A clean scan with no suppressions keeps the page unchanged.
+    if suppressions.is_empty() {
+        return String::new();
+    }
+    let total: usize = suppressions.iter().map(|row| row.suppressed).sum();
+    let mut out = String::new();
+    out.push_str("<section class=\"diagnostics\">");
+    let _ = write!(
+        out,
+        "<h2 class=\"section-head\">suppressions <span class=\"aside\">{total} suppressed across {} {}</span></h2>",
+        suppressions.len(),
+        if suppressions.len() == 1 { "entry" } else { "entries" }
+    );
+    out.push_str("<div class=\"diagnostic-list\">");
+    // One row per suppression entry, with its reason, so a reviewer can check each one.
+    for row in suppressions {
+        let scope = if row.paths.is_empty() {
+            row.rule.clone()
+        } else {
+            format!("{} ({})", row.rule, row.paths.join(", "))
+        };
+        let _ = write!(
+            out,
+            "<div class=\"diagnostic\"><span class=\"diagnostic-type\">{}</span><span class=\"diagnostic-message\">{} suppressed: {}</span><span class=\"diagnostic-location\">{}</span></div>",
+            html_escape(row.config_key),
+            row.suppressed,
+            html_escape(&row.reason),
+            html_escape(&scope)
+        );
+    }
+    out.push_str("</div></section>");
+    out
+}
+
+/// Render one run diagnostic as a row of type, message and optional location.
+///
+/// `diagnostic` supplies the type and message, and a location of `file:line`, or the file alone when it has no line.
+/// Returns the escaped `div` element; the location span is omitted when the diagnostic has no file path.
 fn diagnostic_row(diagnostic: &RunDiagnostic) -> String {
     let location = match (diagnostic.file_path.as_deref(), diagnostic.line) {
         (Some(file), Some(line)) => Some(format!("{file}:{line}")),
@@ -114,6 +186,10 @@ fn diagnostic_row(diagnostic: &RunDiagnostic) -> String {
     )
 }
 
+/// Render the verdict section with the grade stamp, composite score, summary sentence and severity counts.
+///
+/// `view` supplies the grade class and letter, the composite score text, the verdict summary and the finding totals by severity.
+/// Returns the section HTML with one stat block each for total, error, warning and advisory findings.
 fn verdict_section(view: &ReportView<'_>) -> String {
     let summary = &view.report.summary;
     format!(
@@ -140,6 +216,10 @@ fn verdict_section(view: &ReportView<'_>) -> String {
     )
 }
 
+/// Render one verdict statistic as a number above a caption.
+///
+/// `value` is the number shown, `label` its caption and `class` the extra CSS class on the number, empty for none; all three are HTML-escaped.
+/// Returns the stat `div` element.
 fn stat_block(value: &str, label: &str, class: &str) -> String {
     format!(
         "<div class=\"stat\"><div class=\"num {class}\">{value}</div><div class=\"lbl\">{label}</div></div>",
@@ -149,6 +229,10 @@ fn stat_block(value: &str, label: &str, class: &str) -> String {
     )
 }
 
+/// Render the pillars table with each pillar's grade, score and finding counts by severity.
+///
+/// `view` supplies the pillar rows.
+/// Returns the section HTML; the table holds a single `No pillars.` row when there are no pillar rows.
 fn pillars_section(view: &ReportView<'_>) -> String {
     let mut out = String::new();
     out.push_str("<section class=\"pillars\">");
@@ -177,13 +261,17 @@ fn pillars_section(view: &ReportView<'_>) -> String {
     out
 }
 
+/// Render one pillar as a table row.
+///
+/// `row` supplies the pillar label, grade class and letter, score, total findings and the advisory, warning and error counts.
+/// Returns the `tr` element; a severity count is highlighted only when it is not zero.
 fn pillar_row(row: &PillarRow) -> String {
     format!(
         concat!(
             "<tr>",
             "<td class=\"pillar-name\">{name}</td>",
             "<td class=\"num\"><span class=\"grade-pill {class}\">{letter}</span></td>",
-            "<td class=\"num\">{score:.2}</td>",
+            "<td class=\"num\">{score}</td>",
             "<td class=\"num\">{findings}</td>",
             "{advisory_cell}{warning_cell}{error_cell}",
             "</tr>"
@@ -191,7 +279,7 @@ fn pillar_row(row: &PillarRow) -> String {
         name = html_escape(pillar_label(row.pillar)),
         class = row.grade_class,
         letter = html_escape(&row.grade_letter),
-        score = row.score,
+        score = score_text(row.score),
         findings = row.findings,
         advisory_cell = severity_count_cell(row.advisories, "note"),
         warning_cell = severity_count_cell(row.warnings, "warn"),
@@ -199,6 +287,10 @@ fn pillar_row(row: &PillarRow) -> String {
     )
 }
 
+/// Render one severity count cell for the pillars table.
+///
+/// `count` is the number shown and `tier` the CSS class that highlights it, applied only when `count` is not zero.
+/// Returns the `td` element; `tier` is not HTML-escaped, so callers pass fixed class names.
 fn severity_count_cell(count: usize, tier: &str) -> String {
     if count == 0 {
         format!("<td class=\"num\">{count}</td>")
@@ -207,6 +299,10 @@ fn severity_count_cell(count: usize, tier: &str) -> String {
     }
 }
 
+/// Render the top offenders table of files.
+///
+/// `view` supplies the offender rows, rendered in the order given.
+/// Returns the section HTML; the table holds a single `No offenders found.` row when there are none.
 fn offenders_section(view: &ReportView<'_>) -> String {
     let mut out = String::new();
     out.push_str("<section class=\"offenders\">");
@@ -232,6 +328,10 @@ fn offenders_section(view: &ReportView<'_>) -> String {
     out
 }
 
+/// Render one offending file as a table row.
+///
+/// `row` supplies the file path, its finding count and its grade class and letter.
+/// Returns the `tr` element; the cyclomatic, cognitive and LOC cells always read `n/a`.
 fn offender_row(row: &OffenderRow<'_>) -> String {
     format!(
         concat!(
@@ -251,6 +351,10 @@ fn offender_row(row: &OffenderRow<'_>) -> String {
     )
 }
 
+/// Render the complexity histogram section.
+///
+/// `view` supplies the metric label, distribution buckets, and summary sentence shown above the chart.
+/// Returns the section HTML with one bar and one axis label per bucket, bar heights scaled to the largest bucket.
 fn distribution_section(view: &ReportView<'_>) -> String {
     let max = distribution_max(&view.distribution);
     let mut bars = String::new();
@@ -262,19 +366,24 @@ fn distribution_section(view: &ReportView<'_>) -> String {
     format!(
         concat!(
             "<section class=\"chart-section\">",
-            "<h2 class=\"section-head\">distribution <span class=\"aside\">cyclomatic complexity</span></h2>",
+            "<h2 class=\"section-head\">distribution <span class=\"aside\">{label}</span></h2>",
             "<p class=\"chart-summary\">{summary}</p>",
-            "<div class=\"chart-card\"><div class=\"title\">cyclomatic complexity · flagged methods</div>",
+            "<div class=\"chart-card\"><div class=\"title\">{label} · flagged methods</div>",
             "<div class=\"histogram\">{bars}</div>",
             "<div class=\"histogram-axis\">{axis}</div>",
             "</div></section>"
         ),
+        label = html_escape(view.distribution_label),
         summary = html_escape(&view.distribution_summary),
         bars = bars,
         axis = axis,
     )
 }
 
+/// Find the largest bucket count, used to scale histogram bar heights.
+///
+/// `distribution` is the list of histogram buckets.
+/// Returns that count, never less than 1, so an empty or all-zero distribution is still safe to divide by.
 fn distribution_max(distribution: &[DistributionBar]) -> usize {
     distribution
         .iter()
@@ -284,6 +393,10 @@ fn distribution_max(distribution: &[DistributionBar]) -> usize {
         .max(1)
 }
 
+/// Append one histogram bucket's bar and axis label to the chart HTML being built.
+///
+/// `bars` gains a bar `div` whose height comes from `distribution_bar_height` and that shows the count, and `axis` gains the bucket label.
+/// `bucket_bar` supplies the class, count and label, and `max` is the largest bucket count the height is scaled against.
 fn push_distribution_bar(
     bars: &mut String,
     axis: &mut String,
@@ -301,6 +414,10 @@ fn push_distribution_bar(
     let _ = write!(axis, "<span>{}</span>", html_escape(bucket_bar.label));
 }
 
+/// Compute a histogram bar's height as a percentage of the tallest bar.
+///
+/// `count` is the bucket's count and `max` the largest count, which `distribution_max` keeps at 1 or more.
+/// Returns the rounded percentage, never below 4 so an empty bucket still shows a stub.
 fn distribution_bar_height(count: usize, max: usize) -> i64 {
     if count == 0 {
         4
@@ -310,6 +427,10 @@ fn distribution_bar_height(count: usize, max: usize) -> i64 {
     .max(4)
 }
 
+/// Render the flagged findings list.
+///
+/// `findings` are rendered one row each in the order given; `total` is printed in the heading as the number of findings shown.
+/// Returns the section HTML, with a `No findings.` placeholder when `findings` is empty.
 fn findings_section(findings: &[Finding], total: usize) -> String {
     let mut out = String::new();
     out.push_str("<section class=\"findings\">");
@@ -329,6 +450,10 @@ fn findings_section(findings: &[Finding], total: usize) -> String {
     out
 }
 
+/// Render one finding as a list entry.
+///
+/// `finding` supplies the severity, which picks the label and the `fail`, `warn` or `note` class, and the rule id, message, path, line and pillar.
+/// Returns the escaped `div` element; the location is `path:line`, or the path alone when the finding has no line.
 fn finding_row(finding: &Finding) -> String {
     let severity_class = match finding.severity {
         Severity::Error => "fail",
@@ -362,6 +487,10 @@ fn finding_row(finding: &Finding) -> String {
     )
 }
 
+/// Render the report footer with the tool version and report schema version.
+///
+/// `view` supplies the tool version; the schema version is the `SCHEMA_VERSION` constant.
+/// Returns the `footer` element.
 fn footer_section(view: &ReportView<'_>) -> String {
     format!(
         concat!(

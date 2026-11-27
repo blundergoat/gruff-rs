@@ -1,4 +1,10 @@
+//! Line rules turn Rust source into safety and maintainability findings.
+//!
+//! A developer sees these warnings during project and single-file scans.
+//! Selected-parent evidence can silence a test-only unwrap without changing production warnings.
+
 use super::*;
+use std::collections::HashSet;
 
 #[path = "safety_rationale.rs"]
 mod safety_rationale;
@@ -12,14 +18,25 @@ static PROCESS_SHELL_INTERPRETER_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_SHELL_ARG_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_EXECUTABLE_REGEX: OnceLock<Regex> = OnceLock::new();
 static PROCESS_DYNAMIC_ARGUMENT_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_BARE_ARGS_IDENTIFIER_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LET_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LITERAL_ARRAY_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
+static PROCESS_LITERAL_PROGRAM_REGEX: OnceLock<Regex> = OnceLock::new();
 static INSECURE_RNG_FOR_SECRETS_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_IMPORT_REGEX: OnceLock<Regex> = OnceLock::new();
 static WEAK_CRYPTO_CONSTRUCTOR_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// Check each source line for unsafe and waste patterns in the user's scan.
+/// A proved external test module affects only `waste.unwrap-expect`.
+///
+/// `file` is the file each finding names, and `source` is its full text, which the rules also read through string- and comment-masked copies.
+/// `blocks` are the parsed functions whose test-context line ranges silence both waste rules, and new findings are appended to `findings`.
+/// `external_test_module` is true when another selected file proved this file is a test module.
 pub(crate) fn analyse_line_rules(
     file: &SourceFile,
     source: &str,
     blocks: &[FunctionBlock],
+    external_test_module: bool,
     findings: &mut Vec<Finding>,
 ) {
     let source_lines: Vec<&str> = source.lines().collect();
@@ -38,24 +55,31 @@ pub(crate) fn analyse_line_rules(
         raw_lines: &raw_lines,
         code_only_lines: &code_only_lines,
         test_context_ranges: &test_context_ranges,
+        external_test_module,
     };
 
     for line_index in 0..raw_lines.len() {
         context.analyse_line(line_index, findings);
     }
-
-    analyse_unreachable(file, &code_only_source, findings);
 }
 
+/// Source and test-context facts used while producing line-level findings.
+///
+/// The external-module fact comes from another selected parsed file.
+/// A developer scanning only this file receives no parent-module exception.
 pub(crate) struct LineRuleContext<'a> {
     file: &'a SourceFile,
     source_lines: &'a [&'a str],
     raw_lines: &'a [&'a str],
     code_only_lines: &'a [&'a str],
     test_context_ranges: &'a [(usize, usize)],
+    external_test_module: bool,
 }
 
 impl LineRuleContext<'_> {
+    /// Run the safety and waste line rules on one source line.
+    ///
+    /// `line_index` is the zero-based position of the line, and new findings are appended to `findings`.
     fn analyse_line(&self, line_index: usize, findings: &mut Vec<Finding>) {
         let line_number = line_index + 1;
         let source_line = self.source_lines[line_index];
@@ -64,6 +88,10 @@ impl LineRuleContext<'_> {
         self.analyse_waste_line(code_only_line, source_line, line_number, findings);
     }
 
+    /// Decide whether a line belongs to test code that the waste rules leave silent.
+    ///
+    /// `line_number` is the one-based source line to check.
+    /// Returns true when the file path marks test code or the line falls inside a test-context function, and false otherwise.
     fn line_is_in_test_context(&self, line_number: usize) -> bool {
         if file_path_is_test_code(&self.file.display_path) {
             return true;
@@ -93,6 +121,11 @@ fn file_path_is_test_code(display_path: &str) -> bool {
 }
 
 impl LineRuleContext<'_> {
+    /// Flag an `unsafe` block on one line whose nearby SAFETY rationale is missing or too weak.
+    ///
+    /// `code_only_line` is the line with strings and comments masked; `line_index` is its zero-based position for the rationale search.
+    /// `line_number` is the one-based line each finding reports.
+    /// A missing rationale appends `security.unsafe-block` to `findings`, and a weak one appends `docs.weak-safety-rationale`.
     fn analyse_safety_line(
         &self,
         code_only_line: &str,
@@ -106,14 +139,18 @@ impl LineRuleContext<'_> {
             return;
         }
         match find_nearby_safety_rationale(self.raw_lines, line_index) {
-            None => findings.push(finding(SimpleFindingDescriptor {
-                rule_id: "security.unsafe-block",
-                message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
-                file: self.file,
-                line: Some(line_number),
-                severity: Severity::Warning,
-                pillar: Pillar::Security,
-            })),
+            None => {
+                let mut result = finding(SimpleFindingDescriptor {
+                    rule_id: "security.unsafe-block",
+                    message: "Unsafe block lacks a nearby SAFETY rationale.".into(),
+                    file: self.file,
+                    line: Some(line_number),
+                    severity: Severity::Warning,
+                    pillar: Pillar::Security,
+                });
+                result.remediation = Some("Keep the unsafe block as small as possible and add a `// SAFETY:` comment stating the invariant that makes it sound.".to_string());
+                findings.push(result);
+            }
             Some(rationale) if is_weak_safety_rationale(&rationale) => {
                 findings.push(Finding::new(FindingDescriptor {
                         rule_id: "docs.weak-safety-rationale".to_string(),
@@ -138,6 +175,11 @@ impl LineRuleContext<'_> {
         }
     }
 
+    /// Flag `unwrap`/`expect` calls and possibly avoidable `clone()` calls on one line, skipping test-context lines.
+    ///
+    /// `line` is the code-only text the patterns match; `raw_line` is the original text used to recognise accepted unwrap shapes.
+    /// `line_number` is the one-based line reported, and new findings are appended to `findings`.
+    /// The unwrap check also stays silent when the file is a proved external test module.
     fn analyse_waste_line(
         &self,
         line: &str,
@@ -145,19 +187,23 @@ impl LineRuleContext<'_> {
         line_number: usize,
         findings: &mut Vec<Finding>,
     ) {
+        // A proved external test module is test code; other unwrap calls remain in the user's report.
         if static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(").is_match(line)
-            && !expect_has_substantive_rationale(raw_line)
+            && !is_accepted_unwrap_line(raw_line, &self.file.display_path)
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
+            && !self.external_test_module
         {
-            findings.push(finding(SimpleFindingDescriptor {
+            let mut result = finding(SimpleFindingDescriptor {
                 rule_id: "waste.unwrap-expect",
                 message: "unwrap()/expect() can turn recoverable errors into panics.".into(),
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
                 pillar: Pillar::Maintainability,
-            }));
+            });
+            result.remediation = Some("Propagate the error with `?` or handle the None/Err case explicitly; if failure is impossible, document the invariant that rules it out.".to_string());
+            findings.push(result);
         }
 
         if static_regex(&CLONE_CALL_REGEX, r"\.clone\(\)").is_match(line)
@@ -165,19 +211,25 @@ impl LineRuleContext<'_> {
             && !line.contains("#[test]")
             && !self.line_is_in_test_context(line_number)
         {
-            findings.push(finding(SimpleFindingDescriptor {
+            let mut result = finding(SimpleFindingDescriptor {
                 rule_id: "waste.unnecessary-clone-candidate",
                 message: "clone() call may be avoidable; confirm ownership requires it.".into(),
                 file: self.file,
                 line: Some(line_number),
                 severity: Severity::Advisory,
                 pillar: Pillar::Maintainability,
-            }));
+            });
+            result.remediation = Some("Remove the clone and borrow or move the value if it is not used again after this point.".to_string());
+            findings.push(result);
         }
     }
 }
 
 /// Report risky standard-library process builders after resolving their constructor imports.
+///
+/// `file` is the file each finding names, `source` is its text, and `ast` is its parsed tree for resolving `Command` imports by scope.
+/// Each line constructing a standard-library `Command` with a risk signal appends one `security.process-command` finding to `findings`.
+/// Lines matching the command-factory or fixed `taskkill` cleanup patterns are skipped before signals are read.
 pub(crate) fn analyse_process_commands(
     file: &SourceFile,
     source: &str,
@@ -190,11 +242,10 @@ pub(crate) fn analyse_process_commands(
     );
     let import_scopes = ProcessCommandImportScopes::from_ast(ast);
     let source_views = ProcessCommandSourceViews::from_source(source);
-    let literal_preserving_lines: Vec<&str> =
-        source_views.literal_preserving_code.lines().collect();
-    let code_only_lines: Vec<&str> = source_views.code_only.lines().collect();
+    let literal_lines: Vec<&str> = source_views.literal_preserving_code.lines().collect();
+    let code_lines: Vec<&str> = source_views.code_only.lines().collect();
     // Keep each finding anchored to the source line that constructs the process command.
-    for (line_index, line) in code_only_lines.iter().enumerate() {
+    for (line_index, line) in code_lines.iter().enumerate() {
         let line_number = line_index + 1;
         let imports = import_scopes.imports_at_line(line_number);
         let constructs_std_process_command = command_regex.captures_iter(line).any(|captures| {
@@ -207,20 +258,19 @@ pub(crate) fn analyse_process_commands(
         if !constructs_std_process_command {
             continue;
         }
-        let window_end = process_command_window_end(&code_only_lines, line_index);
-        let literal_preserving_window = literal_preserving_lines[line_index..window_end].join("\n");
-        let code_only_window = code_only_lines[line_index..window_end].join("\n");
+        let window_end = process_command_window_end(&code_lines, line_index);
+        let literal_window = literal_lines[line_index..window_end].join("\n");
+        let code_window = code_lines[line_index..window_end].join("\n");
         // Builder factories and fixed test cleanup lack the execution risk this rule reports.
-        if process_command_is_returned_builder(
-            &literal_preserving_lines,
-            line_index,
-            &literal_preserving_window,
-        ) || process_command_is_fixed_taskkill_cleanup(&literal_preserving_window)
+        if process_command_is_returned_builder(&literal_lines, line_index, &literal_window)
+            || process_command_is_fixed_taskkill_cleanup(&literal_window)
         {
             continue;
         }
+        let literal_arrays =
+            literal_argument_array_bindings(&literal_lines, &code_lines, line_index, window_end);
         let risk_signals =
-            process_command_risk_signals(&literal_preserving_window, &code_only_window);
+            process_command_risk_signals(&literal_window, &code_window, &literal_arrays);
         // Fixed commands without a concrete risk shape do not warrant a security warning.
         if risk_signals.is_empty() {
             continue;
@@ -232,6 +282,9 @@ pub(crate) fn analyse_process_commands(
 /// Reject a constructor match captured as the suffix of another qualified Rust path.
 /// A leading `::` root qualifier names the same standard-library type, so only an
 /// identifier or generic close before the separator proves a longer containing path.
+///
+/// `line` is the code-only line the match came from, and `constructor` is the captured constructor spelling within it.
+/// Returns true when the match is not the tail of a longer path, and false when an identifier character or `>` precedes its `::` separator.
 fn constructor_has_no_outer_path(line: &str, constructor: regex::Match<'_>) -> bool {
     let Some(before_separator) = line[..constructor.start()].trim_end().strip_suffix("::") else {
         return true;
@@ -250,6 +303,10 @@ struct ProcessCommandSourceViews {
 
 impl ProcessCommandSourceViews {
     /// Mask comments in both views while retaining string literals only for literal risk checks.
+    ///
+    /// `source` is the original file text; both views keep its byte length, and debug builds panic if a mask changes it.
+    /// Returns the literal-preserving view, with only comment bytes blanked, and the code-only view, with strings and comments masked.
+    /// Panics if blanking comment bytes leaves invalid UTF-8.
     fn from_source(source: &str) -> Self {
         let string_masked = strip_rust_string_literals(source);
         let code_only = strip_rust_comments_after_string_mask(&string_masked);
@@ -287,6 +344,9 @@ enum ProcessImportProvenance {
 
 impl ProcessImportProvenance {
     /// Add an explicit binding without guessing which conflicting import Rust resolves.
+    ///
+    /// `new_provenance` is the origin of one more binding: an `Unbound` `self` adopts it, while an `Unbound` or equal value changes nothing.
+    /// Any other pair sets `self` to `Conflicting`.
     fn record(&mut self, new_provenance: Self) {
         *self = match (*self, new_provenance) {
             (Self::Unbound, provenance) => provenance,
@@ -326,6 +386,9 @@ impl ProcessCommandImports {
     }
 
     /// Apply bindings declared in a nested block while retaining unshadowed outer names.
+    ///
+    /// `local` holds the bindings declared directly in the nested block.
+    /// Returns the block's imports: a name `local` binds takes its value, and a name it leaves `Unbound` keeps the value from `self`.
     fn shadowed_by(self, local: Self) -> Self {
         Self {
             bare_command: self.bare_command.shadow(local.bare_command),
@@ -334,6 +397,10 @@ impl ProcessCommandImports {
     }
 
     /// Record only bindings that can affect the two constructor spellings this rule accepts.
+    ///
+    /// `source_path` is the imported path, ending in the imported item, and `local_name` is the name the `use` binds in this scope.
+    /// Only a `Command` or `process` name whose path also ends in that name is recorded on `self`.
+    /// It counts as standard-library only for exactly `std::process::Command` or `std::process`, and as another origin otherwise.
     fn record_binding(&mut self, source_path: &[String], local_name: &str) {
         // Only a local `Command` binding can resolve the bare constructor spelling.
         if local_name == "Command"
@@ -381,6 +448,9 @@ struct ProcessCommandImportScopes {
 
 impl ProcessCommandImportScopes {
     /// Collect file, module, function, and nested-block imports from the parsed source.
+    ///
+    /// `ast` is the parsed file; its top-level `use` items form the file scope, and its other items are walked for nested scopes.
+    /// Returns the file-level imports together with one scoped entry per visited block or inline module.
     fn from_ast(ast: &syn::File) -> Self {
         let file_imports = process_command_imports_from_items(&ast.items);
         let mut collector = ProcessCommandScopeCollector {
@@ -401,6 +471,9 @@ impl ProcessCommandImportScopes {
     }
 
     /// Return the innermost import scope containing a one-based source line.
+    ///
+    /// `line_number` is the one-based line of a constructor match.
+    /// Returns the imports of the deepest scope whose line span includes it, or the file-level imports when no nested scope does.
     fn imports_at_line(&self, line_number: usize) -> ProcessCommandImports {
         self.nested_scopes
             .iter()
@@ -420,6 +493,9 @@ struct ProcessCommandScopeCollector {
 
 impl ProcessCommandScopeCollector {
     /// Enter one source range with the imports that resolve names inside it.
+    ///
+    /// `span` gives the scope's first and last source lines, and `imports` are the bindings in effect there.
+    /// The entry is appended to the collector's nested scopes at the current depth.
     fn push_scope(&mut self, span: proc_macro2::Span, imports: ProcessCommandImports) {
         self.nested_scopes.push(ScopedProcessCommandImports {
             start_line: span.start().line,
@@ -444,6 +520,9 @@ impl<'ast> Visit<'ast> for ProcessCommandScopeCollector {
     }
 
     /// Start each inline module with its own imports; module children do not inherit `use` items.
+    ///
+    /// `item_mod` is the module item; a module declared without an inline body is skipped.
+    /// An inline module is recorded one level deeper with only its own imports, and the enclosing imports return after its items are visited.
     fn visit_item_mod(&mut self, item_mod: &'ast syn::ItemMod) {
         let Some((_, module_items)) = &item_mod.content else {
             return;
@@ -464,6 +543,9 @@ impl<'ast> Visit<'ast> for ProcessCommandScopeCollector {
 }
 
 /// Collect relevant imports declared directly in one module or source file.
+///
+/// `items` are the top-level items of the module or file; only the `use` items among them are read.
+/// Returns the merged `Command` and `process` bindings, each `Unbound` when no matching `use` appears.
 fn process_command_imports_from_items(items: &[syn::Item]) -> ProcessCommandImports {
     let use_trees = items.iter().filter_map(|item| match item {
         syn::Item::Use(item_use) => Some(&item_use.tree),
@@ -473,6 +555,9 @@ fn process_command_imports_from_items(items: &[syn::Item]) -> ProcessCommandImpo
 }
 
 /// Collect relevant imports declared directly in one executable block.
+///
+/// `statements` are the block's statements; only `use` items among them are read.
+/// Returns the merged `Command` and `process` bindings, each `Unbound` when the block has no matching `use`.
 fn process_command_imports_from_statements(statements: &[syn::Stmt]) -> ProcessCommandImports {
     let use_trees = statements.iter().filter_map(|statement| match statement {
         syn::Stmt::Item(syn::Item::Use(item_use)) => Some(&item_use.tree),
@@ -482,6 +567,10 @@ fn process_command_imports_from_statements(statements: &[syn::Stmt]) -> ProcessC
 }
 
 /// Merge relevant `use` trees that share one lexical namespace.
+///
+/// `use_trees` are the `use` trees declared in that namespace.
+/// Returns the merged bindings, all `Unbound` when no tree binds a relevant name.
+/// Recorded bindings of one name with both standard-library and other origins are marked `Conflicting`.
 fn process_command_imports_from_trees<'a>(
     use_trees: impl Iterator<Item = &'a syn::UseTree>,
 ) -> ProcessCommandImports {
@@ -493,6 +582,9 @@ fn process_command_imports_from_trees<'a>(
 }
 
 /// Walk one `use` tree and retain bindings relevant to process-command provenance.
+///
+/// `tree` is the subtree to walk, and `path_prefix` holds the path segments above it; segments pushed while recursing are popped again.
+/// Bindings found are recorded in `imports`, and a `std::process::*` glob marks the bare `Command` as standard-library.
 fn collect_process_command_bindings(
     tree: &syn::UseTree,
     path_prefix: &mut Vec<String>,
@@ -545,10 +637,18 @@ fn collect_process_command_bindings(
 }
 
 /// Compare a collected import path with the standard-library path required by the caller.
+///
+/// `path` is the collected segments, and `expected` is the required path.
+/// Returns true only when both hold the same segments in the same order, and false otherwise.
 fn is_import_path(path: &[String], expected: &[&str]) -> bool {
     path.iter().map(String::as_str).eq(expected.iter().copied())
 }
 
+/// Flag a secret-named function whose body calls `rand::thread_rng` or `rand::random`.
+///
+/// `block` is the function; the check runs only when a name segment is a word such as token, secret, key, password, nonce or salt.
+/// `searchable_body` is its body text, searched after comments are masked, and `file` is the file the finding names.
+/// Only the first matching call is reported, as one `security.insecure-rng-for-secrets` finding appended to `findings`.
 pub(crate) fn analyse_insecure_rng_for_secrets(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -578,10 +678,19 @@ pub(crate) fn analyse_insecure_rng_for_secrets(
     }
 }
 
+/// Extract the `rand` function name an insecure RNG call uses on one line.
+///
+/// `line` is one comment-masked body line, and `regex` is the insecure-RNG pattern with a `call` group.
+/// Returns the first matched `thread_rng` or `random` name, or None when the line has no such call.
 fn insecure_rng_call<'a>(line: &'a str, regex: &Regex) -> Option<&'a str> {
     regex.captures(line)?.name("call").map(|call| call.as_str())
 }
 
+/// Build the warning for a secret-named function that uses non-cryptographic `rand`.
+///
+/// `file` and `block` give the file and function the finding names, and `line_offset` is the call's line within the body, counted from zero.
+/// `call` is the matched `rand` function name, recorded in the metadata as a `rand::` path.
+/// Returns a medium-confidence `security.insecure-rng-for-secrets` warning on the function's start line plus `line_offset`.
 fn insecure_rng_for_secrets_finding(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -601,13 +710,17 @@ fn insecure_rng_for_secrets_finding(
         confidence: Confidence::Medium,
         symbol: Some(block.name.clone()),
         remediation: Some(
-            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords. If the call is in a test fixture that intentionally uses a seeded RNG, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Use a cryptographically secure RNG such as rand::rngs::OsRng for tokens, keys, nonces, salts, and passwords."
                 .to_string(),
         ),
         metadata: json!({ "function": block.name, "call": format!("rand::{call}") }),
     })
 }
 
+/// Decide whether a function name suggests it produces secret material.
+///
+/// `name` is the function name, ASCII-lowercased and split at every character that is not an ASCII letter or digit.
+/// Returns true when any segment is token, secret, key, password, nonce or salt, singular or plural, and false otherwise.
 fn is_secret_like_rng_function_name(name: &str) -> bool {
     name.to_ascii_lowercase()
         .split(|character: char| character == '_' || !character.is_ascii_alphanumeric())
@@ -630,6 +743,10 @@ fn is_secret_like_rng_function_name(name: &str) -> bool {
         })
 }
 
+/// Flag imports and constructors of weak cryptographic primitives: MD5, SHA-1, RC4 and DES.
+///
+/// `source` is the file text, searched with string literals and comments masked, and `file` is the file each finding names.
+/// Each primitive is reported once, at its first `use` or else its first constructor, as a `security.weak-crypto` finding in `findings`.
 pub(crate) fn analyse_weak_crypto(file: &SourceFile, source: &str, findings: &mut Vec<Finding>) {
     let searchable = strip_rust_comments_after_string_mask(&strip_rust_string_literals(source));
     let starts = line_starts(source);
@@ -671,6 +788,10 @@ struct WeakCryptoReporter<'a, 'b> {
 }
 
 impl WeakCryptoReporter<'_, '_> {
+    /// Record a `security.weak-crypto` finding for one primitive unless that primitive was already reported.
+    ///
+    /// `primitive` is the matched spelling; variants such as `md5`, `md_5` and `Md5` normalise to one name and are reported once.
+    /// `byte_index` is the match's byte offset, which picks the reported line.
     fn push(&mut self, primitive: &str, byte_index: usize) {
         let normalized = normalize_weak_crypto_primitive(primitive);
         if !self.emitted.insert(normalized.to_string()) {
@@ -689,7 +810,7 @@ impl WeakCryptoReporter<'_, '_> {
             confidence: Confidence::Medium,
             symbol: Some(primitive.to_string()),
             remediation: Some(
-                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses. If the legacy primitive is required for interoperability with an existing artefact, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+                "Use modern primitives such as SHA-256/SHA-3 or audited password/key-derivation APIs for security-sensitive uses. If interoperability with an existing artefact requires the legacy primitive, keep it out of security decisions and say why in a comment."
                     .to_string(),
             ),
             metadata: json!({ "primitive": primitive }),
@@ -697,6 +818,10 @@ impl WeakCryptoReporter<'_, '_> {
     }
 }
 
+/// Map a matched weak-crypto spelling to one canonical name for de-duplication.
+///
+/// `primitive` is the spelling captured from a `use` path or constructor.
+/// Returns `md5`, `sha1`, `rc4` or `des`, or `unknown` for a spelling the patterns do not produce.
 fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     match primitive {
         "md5" | "md_5" | "Md5" => "md5",
@@ -707,9 +832,142 @@ fn normalize_weak_crypto_primitive(primitive: &str) -> &'static str {
     }
 }
 
+/// Return local variable names in the same function that still hold an immutable array of plain string literals at a `Command::new` call.
+///
+/// Keeps command-injection rules quiet on safe constant arg lists while staying conservative against reassignment or shadowing:
+/// - Only the nearest `let` for a name counts; `mut` bindings and bindings inside closed inner blocks are rejected.
+/// - Any intervening mention (such as `if let`, `for`, match arm, or closure param) or repeated use on the command line drops the name.
+///
+/// `literal_preserving_lines` keeps strings while `code_only_lines` masks them (both mask comments); `line_index`..`window_end` spans the call.
+/// Returns qualifying variable names, or an empty set when no safe literal-array bindings exist.
+fn literal_argument_array_bindings(
+    literal_preserving_lines: &[&str],
+    code_only_lines: &[&str],
+    line_index: usize,
+    window_end: usize,
+) -> HashSet<String> {
+    let let_binding = static_regex(
+        &PROCESS_LET_BINDING_REGEX,
+        r"\blet\s+(?P<mutable>mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+    );
+    let literal_array = static_regex(
+        &PROCESS_LITERAL_ARRAY_BINDING_REGEX,
+        r#"^\s*(?::[^=]*)?=\s*&?\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*(?:"(?:[^"\\]|\\.)*"\s*,?\s*)?\]\s*;"#,
+    );
+    let mut nearest_seen = HashSet::new();
+    let mut literal_arrays = HashSet::new();
+    // Walk back to the enclosing function's signature; bindings above it belong to other code.
+    for (index, (line, code_line)) in literal_preserving_lines[..line_index]
+        .iter()
+        .zip(code_only_lines[..line_index].iter())
+        .enumerate()
+        .rev()
+    {
+        // Match bindings on `code_only_lines` so string literals cannot forge a `let` declaration,
+        // visiting right to left so the later of two bindings on one line is the nearer.
+        let bindings: Vec<_> = let_binding.captures_iter(code_line).collect();
+        for binding in bindings.iter().rev() {
+            let name = binding["name"].to_string();
+            let binding_end = binding.get(0).map_or(0, |whole| whole.end());
+            // The nearest binding decides; a non-`mut` literal array still in scope and untouched is the only one accepted.
+            if nearest_seen.insert(name.clone())
+                && binding.name("mutable").is_none()
+                && line
+                    .get(binding_end..)
+                    .is_some_and(|rest| literal_array.is_match(rest))
+                && is_binding_live_at_command(
+                    code_only_lines,
+                    index,
+                    binding_end,
+                    line_index,
+                    window_end,
+                    &name,
+                )
+            {
+                literal_arrays.insert(name);
+            }
+        }
+        if code_line.contains("fn ") {
+            break;
+        }
+    }
+    literal_arrays
+}
+
+/// Report whether a binding is still in scope, unmentioned between its own end and the command statement, and named exactly
+/// once within the command statement window.
+///
+/// `code_only_lines` are the masked source lines, and `binding_index` is the binding's line.
+/// `binding_end` is the byte offset just after its `let name`, and `name` is the bound local.
+/// `command_index`..`command_end` is the command statement's line range.
+///
+/// Returns true when the block stays open, no line in between mentions `name`, and the command statement names it once; false otherwise.
+fn is_binding_live_at_command(
+    code_only_lines: &[&str],
+    binding_index: usize,
+    binding_end: usize,
+    command_index: usize,
+    command_end: usize,
+    name: &str,
+) -> bool {
+    let between = std::iter::once(
+        code_only_lines[binding_index]
+            .get(binding_end..)
+            .unwrap_or(""),
+    )
+    .chain(
+        code_only_lines[binding_index + 1..command_index]
+            .iter()
+            .copied(),
+    );
+    let mut depth = 0i32;
+    for text in between {
+        for character in text.chars() {
+            depth += match character {
+                '{' => 1,
+                '}' => -1,
+                _ => 0,
+            };
+            // A closing brace with no opening after the binding ends the binding's own block.
+            if depth < 0 {
+                return false;
+            }
+        }
+        if identifier_mentions(text, name) > 0 {
+            return false;
+        }
+    }
+    let command_mentions: usize = code_only_lines[command_index..command_end]
+        .iter()
+        .map(|line| identifier_mentions(line, name))
+        .sum();
+    command_mentions == 1
+}
+
+/// Count whole-identifier mentions of a local name in code-only text, so `.args` and `path::args` do not count.
+///
+/// `text` is one code-only line or line tail, and `name` is the local to count.
+/// Returns how many mentions have no identifier character, `.` or `:` before them and no identifier character after, or zero when none do.
+fn identifier_mentions(text: &str, name: &str) -> usize {
+    text.match_indices(name)
+        .filter(|(start, _)| {
+            let before = text[..*start].chars().next_back();
+            let after = text[start + name.len()..].chars().next();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':')
+                && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+        .count()
+}
+
+/// List the risk signals that make one process-command statement worth a security warning.
+///
+/// `literal_preserving_window` is the statement with string literals kept, used to read shell names, shell flags and bare program names.
+/// `code_only_window` is the same text with literals masked, and `literal_argument_arrays` names locals bound to fixed string-literal arrays.
+/// Returns the signal names, such as `shell-interpreter` or `dynamic-arguments`, in detection order, or an empty list when none apply.
 fn process_command_risk_signals(
     literal_preserving_window: &str,
     code_only_window: &str,
+    literal_argument_arrays: &HashSet<String>,
 ) -> Vec<&'static str> {
     let mut signals = Vec::new();
 
@@ -737,25 +995,74 @@ fn process_command_risk_signals(
     {
         signals.push("dynamic-executable");
     }
-    if static_regex(
-        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
-        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
-    )
-    .is_match(code_only_window)
-    {
+    if has_dynamic_process_arguments(code_only_window, literal_argument_arrays) {
         signals.push("dynamic-arguments");
     }
     if code_only_window.contains(".env(") || code_only_window.contains(".envs(") {
         signals.push("custom-environment");
     }
-    if code_only_window.contains(".current_dir(") {
+    // A bare program name is found through `PATH`, not the working directory, so with no arguments and no other risk
+    // signal `.current_dir(...)` changes only where a fixed program runs. A relative path such as `./configure` runs
+    // whatever the chosen directory holds, so it keeps the working-directory signal.
+    if code_only_window.contains(".current_dir(")
+        && !(signals.is_empty()
+            && is_bare_program_without_arguments(literal_preserving_window, code_only_window))
+    {
         signals.push("custom-working-directory");
     }
 
     signals
 }
 
+/// Report whether an `.arg` or `.args` call passes an identifier, or an array holding an identifier or `format!`,
+/// other than `.args(name)` over a local array of plain string literals.
+///
+/// `code_only_window` is the command statement with literals masked; `literal_argument_arrays` names locals proven to hold fixed arrays.
+/// Returns true when any such call remains after that exemption, and false otherwise.
+fn has_dynamic_process_arguments(
+    code_only_window: &str,
+    literal_argument_arrays: &HashSet<String>,
+) -> bool {
+    let bare_args_identifier = static_regex(
+        &PROCESS_BARE_ARGS_IDENTIFIER_REGEX,
+        r"^\.args\s*\(\s*&?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\)",
+    );
+    // `.args(name)` over a local array of plain string literals passes fixed arguments, not dynamic ones.
+    static_regex(
+        &PROCESS_DYNAMIC_ARGUMENT_REGEX,
+        r"\.(?:arg|args)\s*\(\s*(?:&?[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*(?:&?[A-Za-z_][A-Za-z0-9_]*|format!\s*\())",
+    )
+    .find_iter(code_only_window)
+    .any(|argument| {
+        !bare_args_identifier
+            .captures(&code_only_window[argument.start()..])
+            .is_some_and(|bare| literal_argument_arrays.contains(&bare["name"]))
+    })
+}
+
+/// Report whether the command runs a bare program name, with no path separator, and has no `.arg` or `.args` call.
+///
+/// `literal_preserving_window` is the statement with string literals kept, so the quoted program name can be checked.
+/// `code_only_window` is the same statement with literals masked, searched for the exact text `.arg(` and `.args(`.
+/// Returns true for a quoted program name with no slash or backslash when neither `.arg(` nor `.args(` appears, and false otherwise.
+fn is_bare_program_without_arguments(
+    literal_preserving_window: &str,
+    code_only_window: &str,
+) -> bool {
+    static_regex(
+        &PROCESS_LITERAL_PROGRAM_REGEX,
+        r#"\b(?:std::process::Command|process::Command|Command)::new\s*\(\s*"[^"\\/]*"\s*\)"#,
+    )
+    .is_match(literal_preserving_window)
+        && !code_only_window.contains(".arg(")
+        && !code_only_window.contains(".args(")
+}
+
 /// End one bounded process-builder statement before risk evidence can leak from its neighbour.
+///
+/// `code_only_lines` are the masked source lines, and `line_index` is the zero-based line of the `Command::new` call.
+/// Returns the exclusive end index, at most `line_index` plus eight: the line after the first `;`, or that cap when none appears.
+/// When the builder is bound with `let`, the window also covers the following non-blank lines that still name that binding.
 fn process_command_window_end(code_only_lines: &[&str], line_index: usize) -> usize {
     let maximum_end = usize::min(line_index + 8, code_only_lines.len());
     let statement_end = code_only_lines[line_index..maximum_end]
@@ -798,6 +1105,9 @@ fn process_command_binding_name(line: &str) -> Option<&str> {
 }
 
 /// Match one Rust identifier without accepting it as a prefix or suffix of another name.
+///
+/// `line` is the text to search, and `identifier` is the binding name to find.
+/// Returns true when some occurrence has no ASCII identifier character on either side, and false otherwise.
 fn line_contains_identifier(line: &str, identifier: &str) -> bool {
     line.match_indices(identifier).any(|(start, _)| {
         let before_is_identifier = line[..start]
@@ -813,6 +1123,13 @@ fn line_contains_identifier(line: &str, identifier: &str) -> bool {
     })
 }
 
+/// Recognise a likely command factory from a nearby `Command` return type and no execution-call text in the builder statement.
+///
+/// `source_lines` are the literal-preserving lines; the nearest `fn ` line among the 24 ending at `line_index` starts the signature.
+/// `command_window` is the builder statement, searched for execution-call text such as `.spawn(` or `.output(`.
+/// Returns true when the text from that line to the command has a `Command` return type and `command_window` has no such text; false otherwise.
+///
+/// The match does not prove that this builder is the value the function returns.
 fn process_command_is_returned_builder(
     source_lines: &[&str],
     line_index: usize,
@@ -835,6 +1152,10 @@ fn process_command_is_returned_builder(
         && !process_command_has_execution_sink(command_window)
 }
 
+/// Look for execution-method text in a builder statement.
+///
+/// `raw_window` is the builder statement text to search; a match inside a string literal also counts.
+/// Returns true when `.spawn`, `.output`, `.status` or `.wait_with_output` is followed by `(`, and false otherwise.
 fn process_command_has_execution_sink(raw_window: &str) -> bool {
     static COMMAND_EXECUTION_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(
@@ -844,6 +1165,10 @@ fn process_command_has_execution_sink(raw_window: &str) -> bool {
     .is_match(raw_window)
 }
 
+/// Append one `security.process-command` warning for a risky process builder.
+///
+/// `file` and `line` locate the constructor, and `risk_signals` are the signal names stored in the finding's metadata.
+/// The high-confidence finding is appended to `findings`.
 fn push_process_command_finding(
     file: &SourceFile,
     line: usize,
@@ -861,13 +1186,17 @@ fn push_process_command_finding(
         confidence: Confidence::High,
         symbol: None,
         remediation: Some(
-            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs. If the command construction is in a test fixture or build script, add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Prefer direct executable arguments, avoid shell command strings, and validate any user-controlled inputs."
                 .to_string(),
         ),
         metadata: json!({ "riskSignals": risk_signals }),
     }));
 }
 
+/// Recognise the fixed `taskkill` cleanup pattern that names one process id with `/F` and `/T`.
+///
+/// `raw_window` is the literal-preserving builder statement; no execution call is required.
+/// Returns true when it builds `taskkill` and later passes the array `/PID`, an identifier's `.to_string()`, `/F`, `/T`; false otherwise.
 fn process_command_is_fixed_taskkill_cleanup(raw_window: &str) -> bool {
     static TASKKILL_PID_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(

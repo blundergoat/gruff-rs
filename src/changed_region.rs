@@ -1,16 +1,14 @@
-//! Narrows a scan to the lines a change touched, so a gate reports the work in hand rather than the
-//! whole tree.
+//! Limit findings to the changed code a developer or hook asked to check.
 //!
-//! An operator arrives here through a coding-agent hook passing `--changed-ranges 3-3,8-10`, a CI step passing
-//! `--diff-patch` a saved unified diff, or the `--diff-git-unsafe` modes that shell out to Git. The first two never execute
-//! Git, which is why they are the paths a hook is expected to use; the Git modes carry the extra hardening in
-//! `git_command` and `git_diff_patch` because they read an untrusted tree. Everything here decides which findings survive,
-//! never whether a finding was correct.
+//! A hook can pass `--changed-ranges 3-3,8-10` or `--diff-patch` without invoking Git.
+//! Git-backed modes invoke Git explicitly. All modes use the selected hunk or symbol scope to decide which findings remain visible.
 
 use super::*;
 
-/// Whether a touched line pulls in its whole enclosing symbol (`Symbol`) or only
-/// the changed hunk (`Hunk`) when scoping findings to a change.
+/// Choose how far a changed-code scan looks beyond a touched line.
+///
+/// `Symbol` includes the enclosing declaration. `Hunk` keeps findings within the edited lines.
+/// The CLI and hook use this setting to explain the scope in their output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ChangedScope {
     Symbol,
@@ -29,6 +27,10 @@ pub(crate) struct ResolvedDiffFilter {
 /// Resolve the requested diff selection into a `ResolvedDiffFilter`, or `None`
 /// when no diff mode was requested. Acquires the line map per mode: a unified
 /// patch (`--diff-patch`), a Git diff (`--diff`/`--since`), or explicit ranges.
+///
+/// `project_root` is passed to the patch reader and is the directory Git runs in; `options` carries the diff selection and Git's path operands.
+/// `files` is the analysed file set that explicit ranges are applied to; the patch and Git modes ignore it.
+/// Returns `Ok(None)` when no diff was requested, otherwise the filter; an `Err` carries the patch, Git or range-parsing failure message.
 pub(crate) fn resolve_diff_filter(
     project_root: &Path,
     options: &AnalysisOptions,
@@ -60,9 +62,20 @@ pub(crate) fn resolve_diff_filter(
 
 /// Read and parse a `--diff-patch` file into a line map, erroring when the input
 /// is not a parseable unified diff.
+///
+/// `project_root` and `path` are handed to `read_diff_patch` to load the file, and `path` is named in the not-a-diff error.
+/// Returns the parsed line map; an `Err` carries a read failure, or the not-a-diff error when neither a hunk nor a changed file was found.
 fn parse_patch_selection(project_root: &Path, path: &Path) -> Result<DiffPatchLineMap, String> {
     let patch_text = read_diff_patch(project_root, path)?;
     let patch = parse_unified_diff(&patch_text);
+    // A patch from a different layout can name an outside path. Reject it before reporting a misleading changed-file scope.
+    if patch
+        .changed_files()
+        .iter()
+        .any(|path| !crate::diff::is_relative_scan_path(path))
+    {
+        return Err("--diff-patch contains a path outside the project".to_string());
+    }
     // Neither a hunk nor a filename came out, so the file is not a diff at all - usually a log or an empty capture. Failing
     // here matters: a silently empty patch would filter away every finding and report a clean scan.
     if !patch.saw_hunk && patch.changed_files().is_empty() {
@@ -77,6 +90,9 @@ fn parse_patch_selection(project_root: &Path, path: &Path) -> Result<DiffPatchLi
 /// Narrow discovery to the patch's changed files for file-based diff modes;
 /// explicit-range mode keeps every analysed file because the ranges already
 /// scope the findings.
+///
+/// `discovery` is changed in place: its `files` keep only entries whose display path the patch lists as changed.
+/// `diff_filter` is the resolved filter; `None`, a full scan, leaves `discovery` untouched.
 pub(crate) fn apply_diff_file_selection(
     discovery: &mut DiscoveryResult,
     diff_filter: Option<&ResolvedDiffFilter>,
@@ -99,6 +115,9 @@ pub(crate) fn apply_diff_file_selection(
 /// Build a `DiffPatchLineMap` from explicit `--changed-ranges` (e.g. `3-3,8-10`)
 /// applied to every analysed file. Git-free: the caller already knows which lines
 /// changed, so a coding-agent hook can pass them straight in.
+///
+/// `ranges` is the raw `--changed-ranges` value, and every file in `files` is keyed by its display path to the same line set.
+/// Returns the line map with `saw_hunk` set; an `Err` carries the `parse_changed_ranges` message for a malformed or empty `ranges`.
 pub(crate) fn explicit_ranges_patch(
     ranges: &str,
     files: &[SourceFile],
@@ -117,18 +136,26 @@ pub(crate) fn explicit_ranges_patch(
     Ok(line_map)
 }
 
-/// Build a `DiffPatchLineMap` by running `git diff` for `mode` (a ref or one of
-/// `working-tree`/`staged`/`unstaged`). Executes Git, so it is only reached from
-/// the `--diff-git-unsafe`-gated modes. `working-tree` also folds in untracked
-/// files as whole-file changes.
+/// Read changes for a caller who explicitly enabled Git-backed scanning with `--diff-git-unsafe`.
+/// With `working-tree`, new untracked files enter the report as whole-file changes.
+/// `mode` selects `working-tree`, `staged`, `unstaged`, or a Git ref to compare against.
+///
+/// `project_root` is the repository Git runs in, and `paths` are the operands passed after `--` to both the diff and the untracked-file listing.
+/// Returns the parsed diff; an `Err` carries a spawn failure or Git's stderr when `git diff` or `git ls-files` fails.
 pub(crate) fn git_diff_patch(
     project_root: &Path,
     mode: &str,
     paths: &[PathBuf],
 ) -> Result<DiffPatchLineMap, String> {
-    // `--no-ext-diff`/`--no-textconv` stop an untrusted repo's configured diff
-    // drivers from executing under this `--diff-git-unsafe`-gated path.
-    let mut diff_arguments = vec!["diff", "--no-ext-diff", "--no-textconv", "--unified=0"];
+    // `--relative` keeps patch paths relative to `project_root` even inside a nested member crate;
+    // `--no-ext-diff`/`--no-textconv` stop an untrusted repo's configured diff drivers from executing.
+    let mut diff_arguments = vec![
+        "diff",
+        "--relative",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=0",
+    ];
     match mode {
         // Compare the working tree against the last commit, which is what an operator means by "what have I changed".
         "working-tree" => diff_arguments.push("HEAD"),
@@ -155,6 +182,9 @@ pub(crate) fn git_diff_patch(
 /// Parse a `--changed-ranges` value (comma-separated `start-end` or single lines)
 /// into the set of 1-based line numbers it covers. Errors on non-integers,
 /// zero/negative lines, reversed ranges, or an empty result.
+///
+/// Blank parts between commas in `ranges` are skipped.
+/// Returns the covered line numbers in ascending order; an `Err` quotes the offending part, or says no line was given.
 fn parse_changed_ranges(ranges: &str) -> Result<BTreeSet<usize>, String> {
     let mut lines = BTreeSet::new();
     // e.g. a hook passed `--changed-ranges 3-3,8-10` after rewriting two regions of one file.
@@ -195,6 +225,9 @@ fn parse_changed_ranges(ranges: &str) -> Result<BTreeSet<usize>, String> {
 }
 
 /// Parse one `--changed-ranges` line number, requiring a `>= 1` integer.
+///
+/// `raw` is parsed as given, without trimming, and `original` is the whole range part quoted in either error message.
+/// Returns the line number; an `Err` says it is not an integer or is zero.
 fn parse_positive_line(raw: &str, original: &str) -> Result<usize, String> {
     let value = raw.parse::<usize>().map_err(|_| {
         format!("invalid changed range `{original}`: line numbers must be integers")
@@ -211,6 +244,8 @@ fn parse_positive_line(raw: &str, original: &str) -> Result<usize, String> {
 
 /// Build a git argv: `prefix` tokens, a `--` separator, then the paths. Keeps the
 /// path operands after `--` so a path that looks like a flag is never misread.
+///
+/// Returns the owned argument list; with empty `paths` it ends at the `--` separator.
 pub(crate) fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<String> {
     prefix
         .iter()
@@ -220,16 +255,13 @@ pub(crate) fn git_args_with_paths(prefix: &[&str], paths: &[PathBuf]) -> Vec<Str
         .collect()
 }
 
-/// Build a `git -C <root> <args>` command without running it. Arguments go to
-/// git as argv entries, never through a shell, so a ref or path in `args` is
-/// inert data git receives rather than an interpreted command line - the reason
-/// this is safe despite the dynamic arguments. Construction is split from
-/// execution so the call site stays a plain builder.
+/// Prepare `git -C <root> <args>` for an explicitly requested Git operation. Refs and paths are passed as separate arguments.
 ///
-/// The environment hardening below neutralises the environment, not the scanned repository. A tree can still point git at
-/// an external diff driver through its own committed `diff.external` or a `.gitattributes` `diff=` mapping, and no setting
-/// here disables that. `git_diff_patch` passes `--no-ext-diff`/`--no-textconv` for exactly that reason; those are diff-only
-/// options that `cat-file` and `ls-tree` reject, so they cannot be hoisted into this shared builder.
+/// Git can still get diff drivers from repository settings and attributes. `git_diff_patch` disables external diff and text conversion separately.
+/// Keep those flags off other Git commands because `cat-file` and `ls-tree` reject them.
+///
+/// `project_root` is passed as the `-C` directory, so Git runs inside the scanned repository.
+/// Returns the unspawned `Command` with system and global config, system attributes, hooks, pager and the external-diff variable disabled.
 fn git_command(project_root: &Path, args: &[String]) -> std::process::Command {
     let mut command = std::process::Command::new("git");
     command
@@ -248,10 +280,13 @@ fn git_command(project_root: &Path, args: &[String]) -> std::process::Command {
     command
 }
 
-/// Run a git command under `project_root` and return its stdout, mapping a
-/// non-zero exit or spawn failure to an `Err` with git's stderr. Callers build
-/// argv with `git_args_with_paths` or fixed argument vectors so refs and paths
-/// remain inert argv data, never shell input.
+/// Run a git command under `project_root` and return its stdout, mapping a non-zero exit to an `Err` with git's stderr,
+/// and a spawn failure to an `Err` naming the subcommand.
+///
+/// Callers build argv with `git_args_with_paths` or fixed argument vectors so refs and paths remain inert argv data, never shell input.
+///
+/// `args` is the argv after git's global options; its first entry names the subcommand in a spawn-failure message.
+/// Returns stdout decoded as UTF-8 with invalid bytes replaced; an `Err` carries the failure text described above.
 pub(crate) fn git_output(project_root: &Path, args: &[String]) -> Result<String, String> {
     let output = git_output_bytes(project_root, args)?;
     Ok(String::from_utf8_lossy(&output).to_string())
@@ -260,14 +295,18 @@ pub(crate) fn git_output(project_root: &Path, args: &[String]) -> Result<String,
 /// Run a git command that produces bytes rather than text, for output such as blob contents that is not required to be
 /// valid UTF-8. An empty `Ok` result means git succeeded and had nothing to say, which is a normal answer for a query that
 /// matched no paths.
+///
+/// `project_root` is the repository Git runs in and `args` the argv after git's global options; no stdin pipe is opened.
+/// Returns raw stdout; an `Err` carries git's stderr on a non-zero exit, or a spawn-failure message naming the subcommand.
 pub(crate) fn git_output_bytes(project_root: &Path, args: &[String]) -> Result<Vec<u8>, String> {
     git_output_bytes_with_stdin(project_root, args, &[])
 }
 
-/// Run a git command, optionally feeding it a query on stdin, and hand back its raw stdout.
-/// Use the `stdin` form for batched subcommands such as `cat-file --batch`; pass an empty slice and git is run without a
-/// stdin pipe at all. Any non-zero exit becomes an `Err` carrying git's own stderr, so the operator reads git's wording
-/// rather than a message invented here.
+/// Run an opted-in Git query for changed-code scanning and return its raw output.
+/// Pass stdin for batch queries such as `cat-file --batch`. Empty input runs without a pipe, and nonzero exits report Git's own stderr.
+///
+/// `project_root` is the repository Git runs in and `args` the argv after git's global options, its first entry naming the subcommand in errors.
+/// Returns raw stdout; an `Err` also reports a failed spawn, an unavailable stdin pipe, or a failure waiting for git's output.
 pub(crate) fn git_output_bytes_with_stdin(
     project_root: &Path,
     args: &[String],
@@ -312,8 +351,11 @@ pub(crate) fn git_output_bytes_with_stdin(
 }
 
 /// Turn a finished git process into stdout bytes, or into git's own stderr text when it failed.
-/// The failure string is git's message verbatim, so an operator searching for it finds git's documentation rather than
+/// The failure string keeps git's own wording, so an operator searching for it finds git's documentation rather than
 /// gruff's paraphrase; an empty stderr on failure yields an empty error string rather than a fabricated reason.
+///
+/// `output` is the completed process; on failure its stderr is trimmed and decoded with invalid UTF-8 replaced.
+/// Returns the stdout bytes unchanged on a successful exit status, otherwise that stderr text as the `Err`.
 fn git_stdout_or_error(output: std::process::Output) -> Result<Vec<u8>, String> {
     // git rejected the request - a bad ref, an unreadable object, a path outside the repo - so there is no diff to trust
     // and the caller must surface the failure rather than scan an empty result as if nothing had changed.
@@ -326,6 +368,9 @@ fn git_stdout_or_error(output: std::process::Output) -> Result<Vec<u8>, String> 
 /// List untracked, non-ignored files under `paths` via `git ls-files --others
 /// --exclude-standard`, normalised to report paths. Used to treat new files as
 /// whole-file changes in `working-tree` mode.
+///
+/// `project_root` is the repository Git runs in.
+/// Returns the normalised paths with empty lines dropped; an `Err` carries the `git_output` failure for `git ls-files`.
 fn git_untracked_files(project_root: &Path, paths: &[PathBuf]) -> Result<Vec<String>, String> {
     let output = git_output(
         project_root,
@@ -339,10 +384,12 @@ fn git_untracked_files(project_root: &Path, paths: &[PathBuf]) -> Result<Vec<Str
         .collect())
 }
 
-/// Decide whether a finding falls inside the changed region, honouring the
-/// symbol/hunk scope. Under `Symbol`, a finding on an unchanged line still counts
-/// when its enclosing function block overlaps a changed line (so a signature
-/// finding survives a body-only edit); under `Hunk`, only the changed lines do.
+/// Check which findings the caller should see for their change.
+/// For example, a signature finding stays visible after a body-only edit in symbol scope. Hunk scope keeps only the edited lines.
+///
+/// `finding` first goes through `patch_intersects_finding` with `patch` and `changed_files` under both scopes; `scope` only governs widening.
+/// `function_blocks_by_file` maps a normalised report path to its parsed function blocks, searched only for a line-bearing finding.
+/// Returns `true` when that check accepts the finding or, under `Symbol`, its enclosing block overlaps `patch`; else `false`.
 pub(crate) fn patch_intersects_finding_with_scope(
     finding: &Finding,
     patch: &DiffPatchLineMap,
@@ -378,6 +425,9 @@ pub(crate) fn patch_intersects_finding_with_scope(
 /// Find the smallest function block containing `line` - preferring one whose name
 /// matches `symbol`, then falling back to any block - so a finding maps to the
 /// tightest enclosing function for symbol-scope checks.
+///
+/// `blocks` are the parsed function blocks of the finding's file.
+/// Returns the chosen block, or `None` when no block in `blocks` contains `line`.
 fn enclosing_block<'a>(
     line: usize,
     symbol: Option<&str>,
@@ -407,6 +457,9 @@ fn enclosing_block<'a>(
 
 /// Match a finding's `symbol` against a block name, accepting an exact match or a
 /// dotted suffix (e.g. `Type.method` matches block `method`). `None` matches any.
+///
+/// `block_name` is the short name of the parsed function block being tested.
+/// Returns `true` for an exact or dotted-suffix match, or whenever `symbol` is `None`.
 fn symbol_matches(symbol: Option<&str>, block_name: &str) -> bool {
     symbol.is_none_or(|symbol| symbol == block_name || symbol.ends_with(&format!(".{block_name}")))
 }

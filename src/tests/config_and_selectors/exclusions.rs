@@ -1,5 +1,11 @@
 use super::*;
 
+// The sensitive-data suppression channel stays nested here because users meet it as the second
+// half of one suppression contract, and a sibling module would push this directory past the
+// architecture.module-fan-out budget.
+#[path = "sensitive_exclusions.rs"]
+mod sensitive_exclusions;
+
 #[test]
 pub(crate) fn exclusion_filter_counts_rule_path_message_and_unmatched_entries() {
     let registry = rules::builtin_registry();
@@ -88,7 +94,7 @@ pub(crate) fn exclusion_filter_counts_rule_path_message_and_unmatched_entries() 
         },
     ];
 
-    let (kept, summaries, suppressed) = apply_report_exclusions(findings, &exclusions);
+    let (kept, summaries, suppressed) = apply_report_exclusions(findings, &exclusions, &[]);
     eprintln!(
         "exclusion kept rule ids: {:?}; suppression counts: {:?}",
         kept.iter()
@@ -204,6 +210,9 @@ pub(crate) fn report_level_exclusions_hide_findings_without_skipping_discovery()
     write_config(
         dir.path(),
         r#"
+rules:
+  security.process-command:
+    enabled: true
 exclude:
   - rule: security.process-command
     paths: ["tests/**"]
@@ -247,7 +256,112 @@ exclude:
         .expect("findings")
         .iter()
         .all(|finding| {
-            finding["ruleId"] != "security.process-command"
-                || finding["filePath"] != "tests/process.rs"
+            finding["ruleId"] != "security.process-command" || finding["file"] != "tests/process.rs"
         }));
+}
+
+/// Reject custom sensitive-data rules in ordinary `exclude` so they stay confined to `sensitiveExclusions`.
+#[test]
+pub(crate) fn exclusion_config_rejects_custom_sensitive_data_rule() {
+    let dir = tempdir().expect("tempdir");
+    let options = default_test_options();
+
+    for selector in ["custom.internal-secret", "custom.*"] {
+        write_config(
+            dir.path(),
+            &format!(
+                r#"
+custom_rules:
+  - id: custom.internal-secret
+    pillar: sensitive-data
+    severity: error
+    scope: text
+    pattern: "INTERNAL_SECRET_[0-9]+"
+    message: "Internal token detected."
+exclude:
+  - rule: {selector}
+    reason: "broad exclude should be rejected"
+"#
+            ),
+        );
+        let error = load_config(dir.path(), &options).expect_err("custom sensitive rule rejected");
+        assert!(
+            error.contains(
+                "`exclude[0].rule` matches a sensitive-data rule; use `sensitiveExclusions`"
+            ),
+            "{selector}: {error}"
+        );
+    }
+
+    write_config(
+        dir.path(),
+        r#"
+custom_rules:
+  - id: custom.internal-secret
+    pillar: sensitive-data
+    severity: error
+    scope: text
+    pattern: "INTERNAL_SECRET_[0-9]+"
+    message: "Internal token detected."
+sensitiveExclusions:
+  - rule: custom.internal-secret
+    path: src/fixture.rs
+    reason: "Reviewed synthetic token in fixture."
+"#,
+    );
+    let config =
+        load_config(dir.path(), &options).expect("sensitiveExclusions accepts custom rule");
+    assert_eq!(config.sensitive_exclusions.len(), 1);
+    assert_eq!(
+        config.sensitive_exclusions[0].rule_id,
+        "custom.internal-secret"
+    );
+}
+
+/// Keep sensitive-data findings out of ordinary `exclude` matching even if a config bypasses the loader.
+#[test]
+pub(crate) fn ordinary_exclusions_never_suppress_sensitive_findings_at_runtime() {
+    let findings = vec![
+        test_finding(
+            "sensitive-data.aws-access-key",
+            "src/keys.rs",
+            4,
+            Severity::Error,
+            Pillar::SensitiveData,
+        ),
+        test_finding(
+            "custom.internal-secret",
+            "src/keys.rs",
+            9,
+            Severity::Error,
+            Pillar::SensitiveData,
+        ),
+    ];
+    let exclusions = vec![
+        ExclusionRule {
+            selector: "sensitive-data.aws-access-key".to_string(),
+            rule_ids: BTreeSet::from(["sensitive-data.aws-access-key".to_string()]),
+            paths: Vec::new(),
+            message_contains: None,
+            reason: "programmatic bypass attempt".to_string(),
+        },
+        ExclusionRule {
+            selector: "custom.internal-secret".to_string(),
+            rule_ids: BTreeSet::from(["custom.internal-secret".to_string()]),
+            paths: Vec::new(),
+            message_contains: None,
+            reason: "programmatic custom bypass attempt".to_string(),
+        },
+    ];
+
+    let (kept, summaries, suppressed) = apply_report_exclusions(findings, &exclusions, &[]);
+    assert_eq!(kept.len(), 2);
+    assert!(suppressed.is_empty());
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|summary| summary.suppressed)
+            .collect::<Vec<_>>(),
+        vec![0, 0]
+    );
 }

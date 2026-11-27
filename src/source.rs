@@ -1,3 +1,8 @@
+//! Source records connect discovered files with parsed Rust and the scan report.
+//!
+//! A project scan records which files were selected before rules run.
+//! A file scanned alone keeps production warnings when no parent module was selected.
+
 use super::*;
 
 #[derive(Clone)]
@@ -14,10 +19,16 @@ pub(crate) enum SourceOrigin {
     Directory,
 }
 
+/// One selected source as the rules see it during a scan.
+///
+/// A complete project scan can attach test-only ownership from a selected parent module.
+/// A single-file scan carries no such ownership proof.
 pub(crate) struct SourceUnit<'a> {
     pub(crate) file: &'a SourceFile,
     pub(crate) source: &'a str,
     pub(crate) rust_ast: Option<&'a syn::File>,
+    pub(crate) external_test_module: bool,
+    pub(crate) bounded_deep_scan: bool,
     line_starts: &'a OnceLock<Vec<usize>>,
 }
 
@@ -25,22 +36,35 @@ pub(crate) struct ParsedSource {
     pub(crate) file: SourceFile,
     pub(crate) source: String,
     pub(crate) rust_ast: Option<syn::File>,
+    pub(crate) bounded_deep_scan: bool,
     pub(crate) diagnostics: Vec<RunDiagnostic>,
     pub(crate) line_starts: OnceLock<Vec<usize>>,
 }
 
 impl ParsedSource {
-    pub(crate) fn as_source_unit(&self) -> SourceUnit<'_> {
+    /// Pass the selected parent module's test-only ownership into rules for this source file.
+    ///
+    /// `external_test_module` says whether a selected parent module owns this file as test-only code; it is copied into the unit unchanged.
+    ///
+    /// Returns a `SourceUnit` borrowing this record's file, source text, optional AST and lazily filled line-start cache.
+    pub(crate) fn as_source_unit(&self, external_test_module: bool) -> SourceUnit<'_> {
         SourceUnit {
             file: &self.file,
             source: &self.source,
             rust_ast: self.rust_ast.as_ref(),
+            external_test_module,
+            bounded_deep_scan: self.bounded_deep_scan,
             line_starts: &self.line_starts,
         }
     }
 }
 
 impl SourceUnit<'_> {
+    /// Gives the line-start offsets of this unit's source, computing them with `crate::line_starts` on the first call.
+    ///
+    /// The cache is borrowed from the owning `ParsedSource`, so units built from the same record compute the offsets only once.
+    ///
+    /// Returns the cached slice of offsets exactly as `crate::line_starts` produced them for this source.
     pub(crate) fn line_starts(&self) -> &[usize] {
         self.line_starts
             .get_or_init(|| crate::line_starts(self.source))
@@ -57,6 +81,12 @@ pub(crate) struct ProjectCoverage {
 }
 
 impl ProjectCoverage {
+    /// Reports whether the scan saw only part of the project's Rust files or failed to parse a selected input.
+    ///
+    /// An incomplete parse always counts as partial; otherwise an empty analysed set does not.
+    /// When files were analysed, a narrowed diff selection or any discoverable Rust file missing from the analysed set makes it partial.
+    ///
+    /// Returns `true` for an incomplete parse or partial coverage, and `false` otherwise, including a complete parse that analysed nothing.
     pub(crate) fn is_partial(&self) -> bool {
         if self.parse_incomplete {
             return true;
@@ -104,7 +134,6 @@ pub(crate) struct DependencySummary {
     pub(crate) section: String,
     pub(crate) line: usize,
     pub(crate) requirement: Option<String>,
-    pub(crate) path: Option<String>,
     pub(crate) git: Option<String>,
     pub(crate) rev: Option<String>,
 }
@@ -151,8 +180,9 @@ pub(crate) struct ItemSummary {
     pub(crate) cfg_gated: bool,
     pub(crate) test_context: bool,
     pub(crate) trait_impl: bool,
+    /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
+    /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
-    pub(crate) allow_dead_code: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -163,8 +193,9 @@ pub(crate) struct ProjectItemContext {
     pub(crate) test_context: bool,
     pub(crate) container: Option<String>,
     pub(crate) trait_impl: bool,
+    /// Reached without a countable Rust reference: an export attribute, and for a fn also a harness entry,
+    /// a foreign ABI or a compile-time `where` assertion (`is_reached_without_rust_reference`).
     pub(crate) exported_by_attr: bool,
-    pub(crate) allow_dead_code: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

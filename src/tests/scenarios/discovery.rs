@@ -130,6 +130,139 @@ pub(crate) fn discovery_includes_security_relevant_text_names_and_extensions() {
 }
 
 #[test]
+pub(crate) fn fallback_matches_any_depth_and_keeps_ordinary_control_directories() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    for path in [
+        "target/root.rs",
+        "nested/target/deep.rs",
+        "cache/visible.rs",
+        "generated/visible.rs",
+        "tmp/visible.rs",
+        ".goat-flow/visible.rs",
+    ] {
+        let absolute = dir.path().join(path);
+        fs::create_dir_all(absolute.parent().expect("fixture parent")).expect("fixture dir");
+        fs::write(absolute, "pub fn visible() {}\n").expect("fixture file");
+    }
+
+    let discovery = discover_sources(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    );
+    let discovered: BTreeSet<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+
+    assert_eq!(
+        discovered,
+        BTreeSet::from([
+            ".goat-flow/visible.rs",
+            "cache/visible.rs",
+            "generated/visible.rs",
+            "tmp/visible.rs",
+        ])
+    );
+    assert!(discovery.ignored_paths.iter().any(|path| path == "target"));
+    assert!(discovery
+        .ignored_paths
+        .iter()
+        .any(|path| path == "nested/target"));
+}
+
+#[test]
+pub(crate) fn ancestor_gitignore_disables_fallback_for_its_subtree() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    for path in ["packages/app/target", "packages/other/target"] {
+        fs::create_dir_all(dir.path().join(path)).expect("fixture dir");
+    }
+    fs::write(dir.path().join("packages/app/.gitignore"), "*.log\n").expect("gitignore write");
+    fs::write(
+        dir.path().join("packages/app/target/visible.rs"),
+        "pub fn visible() {}\n",
+    )
+    .expect("visible file");
+    fs::write(
+        dir.path().join("packages/other/target/hidden.rs"),
+        "pub fn hidden() {}\n",
+    )
+    .expect("hidden file");
+
+    let discovery = discover_sources(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    );
+    let discovered: BTreeSet<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+
+    assert!(discovered.contains("packages/app/target/visible.rs"));
+    assert!(!discovered.contains("packages/other/target/hidden.rs"));
+}
+
+#[test]
+pub(crate) fn explicit_files_bypass_git_and_fallback_but_not_vcs_internals() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::create_dir_all(dir.path().join("dist")).expect("dist dir");
+    fs::create_dir_all(dir.path().join(".git")).expect("vcs dir");
+    fs::write(dir.path().join(".gitignore"), "dist/\n").expect("gitignore write");
+    fs::write(dir.path().join("dist/explicit.rs"), "pub fn visible() {}\n").expect("explicit file");
+    fs::write(dir.path().join(".git/config.rs"), "pub fn hidden() {}\n").expect("vcs file");
+
+    let discovery = discover_sources(
+        dir.path(),
+        &AnalysisOptions {
+            paths: vec![
+                PathBuf::from("dist/explicit.rs"),
+                PathBuf::from(".git/config.rs"),
+            ],
+            include_ignored: true,
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+        &Config::default(),
+    );
+
+    assert_eq!(
+        discovery
+            .files
+            .iter()
+            .map(|file| file.display_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dist/explicit.rs"]
+    );
+    assert!(discovery
+        .ignored_path_details
+        .iter()
+        .any(|entry| entry.path == ".git/config.rs" && entry.pattern.as_deref() == Some(".git")));
+    assert!(crate::discovery::classify_explicit_file(
+        dir.path(),
+        &dir.path().join("dist/explicit.rs"),
+        &Config::default()
+    )
+    .is_none());
+}
+
+#[test]
 pub(crate) fn broad_scan_skips_invalid_utf8_low_risk_text_non_fatally() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
@@ -248,6 +381,9 @@ pub(crate) fn explicit_invalid_utf8_file_stays_fatal_and_visible() {
 const RISKY_RS: &str =
     "pub fn risky() -> i32 {\n    let value: Option<i32> = None;\n    value.unwrap()\n}\n";
 
+/// Build a configuration whose ignore list is `vendor/**` and `src/generated.rs`, leaving every other setting at its default.
+///
+/// Returns a `Config` whose `ignored_paths` hold those two patterns in that order and whose `ignored_path_matchers` are compiled from them.
 fn vendor_ignore_config() -> Config {
     let patterns = vec!["vendor/**".to_string(), "src/generated.rs".to_string()];
     Config {
@@ -433,6 +569,11 @@ pub(crate) fn check_ignore_gitignore_matcher_loads_nested_gitignore_files() {
     );
 }
 
+/// Name the gitignore pattern that ignores a path, so a test can assert which loaded rule matched.
+///
+/// `gitignore` is the matcher to query, and `path` is the path matched together with its parent directories.
+/// Returns the original text of the ignoring pattern, or `None` when the matcher reports anything other than an ignore match.
+/// A nonempty `gitignore` may panic when `path` is absolute and outside its root.
 fn ignored_gitignore_pattern(
     gitignore: &ignore::gitignore::Gitignore,
     path: &str,
@@ -483,4 +624,154 @@ pub(crate) fn include_ignored_still_honours_config_ignore() {
         classify_ignored_path(dir.path(), &dir.path().join("vendor/lib.rs"), &config, true)
             .expect("config ignore authoritative even under include_ignored");
     assert_eq!(ignored.source, IgnoreSource::Config);
+}
+
+/// Write each relative path with a one-line Rust body, creating its directories.
+///
+/// `root` is the directory each of the `paths` is joined to; every file gets the same `pub fn copied() {}` body, overwriting any existing file.
+/// It panics if a directory or file cannot be written.
+fn write_rust_files(root: &Path, paths: &[&str]) {
+    for path in paths {
+        let absolute = root.join(path);
+        fs::create_dir_all(absolute.parent().expect("fixture parent")).expect("fixture dir");
+        fs::write(absolute, "pub fn copied() {}\n").expect("fixture file");
+    }
+}
+
+/// Discover every source under `root` with the given `--include-ignored` setting and explicit paths.
+///
+/// `root` is the directory the relative `paths` resolve against, and `paths` are the scan arguments, such as `.` or single files.
+/// `include_ignored` mirrors `--include-ignored`; config loading and the baseline are off, and the default `Config` applies.
+/// Returns the discovery result, holding the files to analyse and the ignored paths with their source and pattern.
+fn discover_paths(root: &Path, paths: &[&str], include_ignored: bool) -> DiscoveryResult {
+    discover_sources(
+        root,
+        &AnalysisOptions {
+            paths: paths.iter().map(PathBuf::from).collect(),
+            no_config: true,
+            no_baseline: true,
+            include_ignored,
+            ..default_test_options()
+        },
+        &Config::default(),
+    )
+}
+
+/// FAMILY-CONTRACT.md section 7 (precision-floor M04): copied, built and minified code is skipped at any depth and in any
+/// ASCII case even under a governing .gitignore, and each skip is listed with its lowercase pattern.
+#[test]
+pub(crate) fn third_party_classes_skip_whatever_the_gitignore_says() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join(".gitignore"), "*.log\n").expect("gitignore write");
+    write_rust_files(
+        dir.path(),
+        &[
+            "src/lib.rs",
+            "vendor/copied.rs",
+            "Vendors/copied.rs",
+            "pkg/THIRD_PARTY/copied.rs",
+            "pkg/third-party/copied.rs",
+            "web/bower_components/copied.rs",
+            "app/Dist/built.rs",
+        ],
+    );
+    fs::write(dir.path().join("src/settings.min.json"), "{}\n").expect("minified json");
+    fs::write(dir.path().join("src/jquery.min.js"), "var a=1;\n").expect("minified script");
+
+    let discovery = discover_paths(dir.path(), &["."], false);
+    let discovered: Vec<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+    let skipped: Vec<(&str, Option<&str>)> = discovery
+        .ignored_path_details
+        .iter()
+        .map(|ignored| (ignored.path.as_str(), ignored.pattern.as_deref()))
+        .collect();
+
+    assert_eq!(discovered, vec!["src/lib.rs"]);
+    // gruff-rs never scans .js, so the minified script is unsupported rather than listed as ignored.
+    assert_eq!(
+        skipped,
+        vec![
+            ("Vendors", Some("vendors")),
+            ("app/Dist", Some("dist")),
+            ("pkg/THIRD_PARTY", Some("third_party")),
+            ("pkg/third-party", Some("third-party")),
+            ("src/settings.min.json", Some("*.min.*")),
+            ("vendor", Some("vendor")),
+            ("web/bower_components", Some("bower_components")),
+        ]
+    );
+}
+
+/// `--include-ignored` and explicit files bring the section 7 classes back.
+#[test]
+pub(crate) fn include_ignored_and_explicit_files_bring_third_party_classes_back() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    write_rust_files(dir.path(), &["vendor/copied.rs", "dist/built.rs"]);
+    fs::write(dir.path().join("settings.min.json"), "{}\n").expect("minified json");
+
+    let included = discover_paths(dir.path(), &["."], true);
+    let explicit = discover_paths(
+        dir.path(),
+        &["vendor/copied.rs", "settings.min.json"],
+        false,
+    );
+    let paths = |result: &DiscoveryResult| {
+        result
+            .files
+            .iter()
+            .map(|file| file.display_path.clone())
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert_eq!(
+        paths(&included),
+        BTreeSet::from([
+            "dist/built.rs".to_string(),
+            "settings.min.json".to_string(),
+            "vendor/copied.rs".to_string()
+        ])
+    );
+    assert_eq!(
+        paths(&explicit),
+        BTreeSet::from([
+            "settings.min.json".to_string(),
+            "vendor/copied.rs".to_string()
+        ])
+    );
+}
+
+/// The control: names that only resemble the classes, and the build, external and lib directories, stay in scope.
+/// The root .gitignore turns off the no-gitignore fallback, which would otherwise prune build/.
+#[test]
+pub(crate) fn first_party_names_resembling_third_party_classes_stay_in_scope() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    fs::write(dir.path().join(".gitignore"), "*.log\n").expect("gitignore write");
+    let controls = [
+        "build/scripts/release.rs",
+        "distro/x.rs",
+        "external/typings.rs",
+        "lib/helpers.rs",
+        "src/admin.mini.rs",
+        "src/dist.rs",
+        "src/vendor.rs",
+        "vendoring/x.rs",
+    ];
+    write_rust_files(dir.path(), &controls);
+
+    let discovery = discover_paths(dir.path(), &["."], false);
+    let discovered: BTreeSet<&str> = discovery
+        .files
+        .iter()
+        .map(|file| file.display_path.as_str())
+        .collect();
+
+    assert_eq!(discovered, controls.into_iter().collect());
+    assert!(discovery.ignored_path_details.is_empty());
 }

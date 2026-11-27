@@ -15,6 +15,8 @@ mod function_block_metrics;
 mod function_block_rules;
 #[path = "rustdoc_parsing.rs"]
 mod rustdoc_parsing;
+#[path = "syntax_complexity.rs"]
+mod syntax_complexity;
 #[path = "test_rules.rs"]
 mod test_rules;
 
@@ -24,4 +26,5 @@ pub(crate) use docs_rules::*;
 pub(crate) use function_block_metrics::*;
 pub(crate) use function_block_rules::*;
 pub(crate) use rustdoc_parsing::*;
+pub(crate) use syntax_complexity::*;
 pub(crate) use test_rules::*;

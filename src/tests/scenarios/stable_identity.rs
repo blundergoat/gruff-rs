@@ -1,12 +1,13 @@
-//! Stable finding identity and score-policy contracts for serialized reports.
-//! These tests distinguish line-sensitive baseline fingerprints from the
-//! line-insensitive identities consumed by hook new-only comparisons.
+//! Verify how baseline and hook consumers recognize findings between scans.
+//!
+//! The cases distinguish location-sensitive fingerprints from the line-free identities used for reviewed findings.
+//! They also check report redaction and the score policy a developer sees after analysis.
 
 use super::*;
 
-/// Outcome B preserves fixture-PII messages, fingerprints, and stable identities byte-for-byte.
+/// Fixture-PII messages carry only the ratified zero-payload marker, and their identities stay deterministic.
 #[test]
-pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
+pub(crate) fn fixture_pii_message_and_identity_carry_no_matched_value() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
@@ -30,21 +31,21 @@ pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
     let expected = [
         (
             "email",
-            "Realistic email value `alic....com (redacted, 21 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "Realistic email value `[redacted:email]` found in a fixture/sample file; replace with synthetic placeholder.",
             "70348abd6bb12274",
-            "9144b3113699deeb",
+            "1e0d8c9dc9bffd24",
         ),
         (
             "ssn",
-            "Realistic ssn value `123-...6789 (redacted, 11 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "Realistic ssn value `[redacted:ssn]` found in a fixture/sample file; replace with synthetic placeholder.",
             "55bf45dde170be2d",
-            "f4a38a9c11617562",
+            "ed8f1d6d8d8b5d61",
         ),
         (
             "phone",
-            "Realistic phone value `212-...5309 (redacted, 12 chars)` found in a fixture/sample file; replace with synthetic placeholder.",
+            "Realistic phone value `[redacted:phone]` found in a fixture/sample file; replace with synthetic placeholder.",
             "919d252a926d85b6",
-            "3a7eeefbb3712de5",
+            "6476a7454a38f17c",
         ),
     ];
 
@@ -60,6 +61,24 @@ pub(crate) fn outcome_b_keeps_structured_pii_message_and_identity_contract() {
         assert_eq!(finding.message, message, "{kind}");
         assert_eq!(finding.fingerprint, fingerprint, "{kind}");
         assert_eq!(finding.stable_identity, stable_identity, "{kind}");
+        assert!(
+            !finding.message.contains("(redacted,"),
+            "FAMILY-CONTRACT section 5 forbids a length-bearing preview in {kind}"
+        );
+    }
+    let serialized = serde_json::to_string(&report.findings).expect("findings serialize");
+    for fragment in [
+        "alice.smith",
+        "gmail.com",
+        "123-45",
+        "6789",
+        "212-867",
+        "5309",
+    ] {
+        assert!(
+            !serialized.contains(fragment),
+            "fixture-PII output leaked the matched fragment {fragment}"
+        );
     }
 }
 
@@ -96,6 +115,9 @@ pub(crate) fn outcome_b_keeps_structured_pii_hook_new_only_identity_compatible()
 }
 
 /// Analyse the focused fixture path used by the Outcome B hook compatibility guard.
+///
+/// `root` is the project directory to scan; only its `tests/fixtures/users.txt` is analysed, with config and baseline loading turned off.
+/// Returns the analysis report for that fixture; it panics when the analysis fails.
 fn analyse_structured_pii_fixture(root: &Path) -> AnalysisReport {
     run_project_analysis(
         root,
@@ -109,6 +131,13 @@ fn analyse_structured_pii_fixture(root: &Path) -> AnalysisReport {
     .expect("analysis succeeds")
 }
 
+/// Build a synthetic advisory naming finding for the stable-identity and fingerprint tests.
+///
+/// `rule_id` and `file` set the rule and path that both hashes include, and `line` sets the reported line, which the message also names.
+/// `symbol` is the identity subject when present, so the stable identity ignores `line`; with `None` it may fall back to the message instead.
+/// The fingerprint always hashes `line`, so it changes with the line either way.
+///
+/// Returns the `Finding` that `Finding::new` builds from these values, with high confidence, no remediation and empty metadata.
 fn make_finding(rule_id: &str, file: &str, line: usize, symbol: Option<&str>) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: rule_id.to_string(),
@@ -124,6 +153,7 @@ fn make_finding(rule_id: &str, file: &str, line: usize, symbol: Option<&str>) ->
     })
 }
 
+/// Adding lines above a finding should leave comparison tooling able to recognize it.
 #[test]
 pub(crate) fn stable_identity_is_invariant_under_line_shifts() {
     let same_symbol_line_1 = make_finding("naming.short", "src/foo.rs", 1, Some("x"));
@@ -139,6 +169,7 @@ pub(crate) fn stable_identity_is_invariant_under_line_shifts() {
     );
 }
 
+/// Findings from different rules remain separate even when they point at the same code.
 #[test]
 pub(crate) fn stable_identity_distinguishes_rule_ids() {
     let one_rule = make_finding("naming.short", "src/foo.rs", 10, Some("x"));
@@ -150,6 +181,7 @@ pub(crate) fn stable_identity_distinguishes_rule_ids() {
     );
 }
 
+/// The same rule in another file must not inherit the first file's comparison identity.
 #[test]
 pub(crate) fn stable_identity_distinguishes_files() {
     let in_first_file = make_finding("naming.short", "src/auth.rs", 10, Some("x"));
@@ -161,8 +193,11 @@ pub(crate) fn stable_identity_distinguishes_files() {
     );
 }
 
+/// A finding without a named symbol remains comparable by its message across line edits.
 #[test]
 pub(crate) fn stable_identity_falls_back_to_message_when_symbol_is_none() {
+    /// Build a symbol-free finding to compare the same `message` and `file` at different `line` values.
+    /// Returns the fixture with only those parts varied between calls.
     fn finding_with(message: &str, file: &str, line: usize) -> Finding {
         Finding::new(FindingDescriptor {
             rule_id: "sensitive-data.api-key".to_string(),
@@ -192,6 +227,7 @@ pub(crate) fn stable_identity_falls_back_to_message_when_symbol_is_none() {
     );
 }
 
+/// Keep the stored identity format readable by the baseline loader and downstream consumers.
 #[test]
 pub(crate) fn stable_identity_is_sixteen_hex_chars() {
     let finding = make_finding("naming.short", "src/foo.rs", 1, Some("x"));
@@ -210,12 +246,10 @@ pub(crate) fn stable_identity_is_sixteen_hex_chars() {
     );
 }
 
+/// Keep the legacy fingerprint shape available to existing report consumers.
 #[test]
 pub(crate) fn fingerprint_byte_identical_to_pre_m02_formula() {
-    // The fingerprint formula hashes rule_id, file_path, line (or 0), and
-    // symbol (or empty) with `\0` separators. This test pins the
-    // byte-for-byte output so any accidental change to the formula breaks
-    // here before consumer baselines break.
+    // Pin the legacy fingerprint for comparison tools: hash rule, path, line or 0, and symbol or empty with NUL separators.
     let finding = make_finding("naming.short", "src/foo.rs", 42, Some("x"));
     let mut hasher = sha2::Sha256::new();
     sha2::Digest::update(&mut hasher, b"naming.short");
@@ -225,10 +259,16 @@ pub(crate) fn fingerprint_byte_identical_to_pre_m02_formula() {
     sha2::Digest::update(&mut hasher, b"42");
     sha2::Digest::update(&mut hasher, b"\0");
     sha2::Digest::update(&mut hasher, b"x");
-    let expected = format!("{:x}", hasher.finalize())[..16].to_string();
+    let expected: String = hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     assert_eq!(finding.fingerprint, expected);
 }
 
+/// Prove which severity gate a caller gets from an explicit flag, project config, or neither.
 #[test]
 pub(crate) fn analyse_resolution_falls_through_cli_then_config_then_default() {
     let mut config = Config::default();
@@ -259,6 +299,7 @@ pub(crate) fn analyse_resolution_falls_through_cli_then_config_then_default() {
     );
 }
 
+/// Report users who set no threshold can still get a document containing findings.
 #[test]
 pub(crate) fn report_resolution_returns_none_default_when_unset() {
     let empty = Config::default();
@@ -286,6 +327,7 @@ pub(crate) fn report_resolution_returns_none_default_when_unset() {
     );
 }
 
+/// A gate configured for one CLI command must not change the exit policy of another.
 #[test]
 pub(crate) fn config_entry_for_one_command_does_not_leak_to_another() {
     let mut config = Config::default();
@@ -304,6 +346,12 @@ pub(crate) fn config_entry_for_one_command_does_not_leak_to_another() {
         FailThreshold::None
     );
 }
+/// Build a synthetic finding at `src/auth.rs` line 10 for the composite-score exclusion tests.
+///
+/// `rule_id` is the rule that `rule_settings` exclusions match, and it also appears in the message.
+/// `severity` sets the finding's penalty weight in `score_report`, and `pillar` picks the pillar whose penalty bucket receives it.
+///
+/// Returns the `Finding` that `Finding::new` builds with high confidence, no symbol, no remediation and empty metadata.
 fn synth_finding(rule_id: &str, severity: Severity, pillar: Pillar) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: rule_id.to_string(),
@@ -319,6 +367,7 @@ fn synth_finding(rule_id: &str, severity: Severity, pillar: Pillar) -> Finding {
     })
 }
 
+/// A rule can stay visible in the report without changing scores when config excludes its weight.
 #[test]
 pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     let findings = vec![
@@ -335,9 +384,9 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     ];
 
     let baseline_config = Config::default();
-    let baseline_score = score_report(&findings, &baseline_config);
+    let baseline_score = score_report(&findings, &baseline_config, 10);
     assert!(
-        baseline_score.composite < 100.0,
+        baseline_score.composite < Some(100.0),
         "advisory findings should depress the score under default config",
     );
 
@@ -349,9 +398,10 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
             ..RuleSetting::default()
         },
     );
-    let excluded_score = score_report(&findings, &exclusion_config);
+    let excluded_score = score_report(&findings, &exclusion_config, 10);
     assert_eq!(
-        excluded_score.composite, 100.0,
+        excluded_score.composite,
+        Some(100.0),
         "exclusion must zero out the rule's penalty contribution",
     );
 
@@ -370,6 +420,7 @@ pub(crate) fn excluded_rule_findings_do_not_affect_composite_penalty() {
     );
 }
 
+/// An ordinary actionable finding still contributes its configured scoring weight.
 #[test]
 pub(crate) fn non_excluded_rule_scores_normally() {
     let findings = vec![synth_finding(
@@ -377,8 +428,8 @@ pub(crate) fn non_excluded_rule_scores_normally() {
         Severity::Advisory,
         Pillar::Naming,
     )];
-    let baseline = score_report(&findings, &Config::default());
-    assert!(baseline.composite < 100.0);
+    let baseline = score_report(&findings, &Config::default(), 10);
+    assert!(baseline.composite < Some(100.0));
 
     let mut other_excluded = Config::default();
     other_excluded.rule_settings.insert(
@@ -388,13 +439,14 @@ pub(crate) fn non_excluded_rule_scores_normally() {
             ..RuleSetting::default()
         },
     );
-    let still_penalised = score_report(&findings, &other_excluded);
+    let still_penalised = score_report(&findings, &other_excluded, 10);
     assert_eq!(
         still_penalised.composite, baseline.composite,
         "excluding one rule does not affect penalty contributions from others",
     );
 }
 
+/// Show reviewers when a security rule is visible but no longer affects the grade.
 #[test]
 pub(crate) fn excluding_security_rule_emits_warning_diagnostic() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -426,6 +478,7 @@ pub(crate) fn excluding_security_rule_emits_warning_diagnostic() {
     );
 }
 
+/// An ordinary score exclusion needs no security warning.
 #[test]
 pub(crate) fn excluding_non_security_rule_emits_no_diagnostic() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -451,6 +504,7 @@ pub(crate) fn excluding_non_security_rule_emits_no_diagnostic() {
     );
 }
 
+/// Reject a malformed score exclusion before the caller relies on the grade.
 #[test]
 pub(crate) fn exclude_from_score_rejects_non_boolean_value() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -470,12 +524,10 @@ pub(crate) fn exclude_from_score_rejects_non_boolean_value() {
     );
 }
 
+/// Keep score-exclusion warnings in a predictable order for review and automation.
 #[test]
 pub(crate) fn excluded_security_rule_diagnostics_are_sorted_by_rule_id() {
-    // Two Security/SensitiveData built-ins excluded at the same time.
-    // `rule_settings` is a HashMap, so the iteration order of the source
-    // is non-deterministic; the diagnostics list must still come out in
-    // a stable sorted order so JSON/HTML output stays reproducible.
+    // Several security-related rules may be excluded from scoring. Stable diagnostic order lets callers compare JSON or HTML across scans.
     let dir = tempfile::tempdir().expect("tempdir");
     write_config(
         dir.path(),
@@ -510,15 +562,10 @@ pub(crate) fn excluded_security_rule_diagnostics_are_sorted_by_rule_id() {
     );
 }
 
+/// Report an unsupported scoring setting on a user-authored rule before scanning.
 #[test]
 pub(crate) fn custom_rules_cannot_set_exclude_from_score() {
-    // ADR-014 + the config-loader restriction together mean custom
-    // rules can only carry `enabled` under `rules.<id>:`. PR #3 review
-    // worried about a "silent scoring blind spot" when a custom
-    // Security/SensitiveData rule sets `excludeFromScore: true`, but the
-    // loader rejects that combination outright. Pin the loader behaviour
-    // so the assumption stays explicit; future lifts must update this
-    // test alongside the analysis-side diagnostic coverage.
+    // `enabled` is the only custom-rule setting under `rules.<id>`. An unsupported score setting must fail before the caller sees a grade.
     let dir = tempfile::tempdir().expect("tempdir");
     write_config(
         dir.path(),
@@ -542,4 +589,256 @@ custom_rules:
             && error.contains("only supports `enabled`"),
         "error names the rule + the loader restriction: {error}",
     );
+}
+
+/// A target named from outside its project gets the same project-wide checks as an in-project call.
+#[test]
+pub(crate) fn explicit_scan_target_makes_project_context_caller_cwd_invariant() {
+    let _guard = analysis_lock();
+    let sandbox = tempfile::tempdir().expect("sandbox");
+    let project = sandbox.path().join("project");
+    let empty_cwd = sandbox.path().join("empty-cwd");
+    let stray_cwd = sandbox.path().join("stray-cwd");
+    fs::create_dir_all(project.join("src")).expect("project source directory");
+    fs::create_dir_all(&empty_cwd).expect("empty caller directory");
+    fs::create_dir_all(&stray_cwd).expect("stray caller directory");
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"cwd-proof\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("project manifest");
+    fs::write(project.join("README.md"), "# CWD proof\n").expect("project readme");
+    fs::write(
+        project.join("src/lib.rs"),
+        "mod sibling;\nfn private_candidate() {}\n",
+    )
+    .expect("selected source");
+    fs::write(project.join("src/sibling.rs"), "pub fn used() {}\n").expect("unselected sibling");
+    fs::write(
+        stray_cwd.join("Cargo.toml"),
+        "[package]\nname = \"stray\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("stray manifest");
+    fs::write(stray_cwd.join("stray.rs"), "fn caller_only() {}\n").expect("stray Rust source");
+
+    let original_cwd = std::env::current_dir().expect("original cwd");
+    let _restore = RestoreCurrentDir(original_cwd);
+    let target = project
+        .join("src/lib.rs")
+        .canonicalize()
+        .expect("selected source canonical path");
+    let scan = |caller: &Path| {
+        std::env::set_current_dir(caller).expect("set caller cwd");
+        let cli = Cli::try_parse_from([
+            "gruff-rs",
+            "analyse",
+            "--no-config",
+            "--no-baseline",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            target.to_str().expect("UTF-8 fixture path"),
+        ])
+        .expect("CLI target parses");
+        let Commands::Analyse(args) = cli.command else {
+            panic!("expected analyse command");
+        };
+        let cli_fail_on = args.fail_on;
+        let deep_scan_budget = args.deep_scan_budget.clone();
+        let base = options_from_analyse(*args, FailThreshold::Advisory);
+        let (root, options, config) = resolve_command_setup(
+            base,
+            cli_fail_on,
+            "analyse",
+            FailThreshold::Advisory,
+            deep_scan_budget.as_ref(),
+        )
+        .expect("command setup resolves");
+        let report = run_analysis_in_project(&root, &options, &config).expect("analysis succeeds");
+        (root, options, report)
+    };
+
+    let (empty_root, empty_options, empty_report) = scan(&empty_cwd);
+    let (stray_root, stray_options, stray_report) = scan(&stray_cwd);
+    let expected_root = project.canonicalize().expect("project canonical root");
+
+    assert_eq!(empty_root, expected_root);
+    assert_eq!(stray_root, expected_root);
+    assert_eq!(empty_options.paths, vec![PathBuf::from("src/lib.rs")]);
+    assert_eq!(stray_options.paths, empty_options.paths);
+    assert_eq!(empty_report.run.project_root, stray_report.run.project_root);
+    assert_eq!(
+        serde_json::to_value(&empty_report.paths).expect("paths serialize"),
+        serde_json::to_value(&stray_report.paths).expect("paths serialize")
+    );
+    assert_eq!(empty_report.diagnostics, stray_report.diagnostics);
+    assert_eq!(
+        serde_json::to_value(&empty_report.findings).expect("findings serialize"),
+        serde_json::to_value(&stray_report.findings).expect("findings serialize")
+    );
+    assert_eq!(
+        serde_json::to_value(&empty_report.score).expect("score serializes"),
+        serde_json::to_value(&stray_report.score).expect("score serializes")
+    );
+    assert!(diagnostic_types(&empty_report).contains(&"partial-context-rule-suppressed"));
+}
+
+/// Explicit baseline paths retain their shell meaning when analysis loads config from another directory.
+#[test]
+pub(crate) fn typed_baseline_paths_are_read_from_the_launch_directory() {
+    // `--generate-baseline ../../base.json` and `--baseline ../../base.json` typed two levels inside the project name
+    // the project's own file. Read against the project root they named a file above it: the write landed outside the
+    // project, and the read missed and published the joined host path.
+    let _guard = analysis_lock();
+    let sandbox = tempfile::tempdir().expect("sandbox");
+    let project = sandbox.path().join("outer/inner/project");
+    let nested = project.join("a/b");
+    fs::create_dir_all(&nested).expect("nested launch directory");
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"baseline-proof\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("project manifest");
+    fs::write(
+        project.join("lib.rs"),
+        "pub fn probe(rx: i32) -> i32 {\n    rx + rx\n}\n",
+    )
+    .expect("project source");
+
+    let original_cwd = std::env::current_dir().expect("original cwd");
+    let _restore = RestoreCurrentDir(original_cwd);
+    std::env::set_current_dir(&nested).expect("enter the nested launch directory");
+    let scan = |baseline_flag: &str, baseline_path: &str| {
+        let cli = Cli::try_parse_from([
+            "gruff-rs",
+            "analyse",
+            "--no-config",
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            baseline_flag,
+            baseline_path,
+            "../..",
+        ])
+        .expect("CLI parses");
+        let Commands::Analyse(args) = cli.command else {
+            panic!("expected analyse command");
+        };
+        let cli_fail_on = args.fail_on;
+        let deep_scan_budget = args.deep_scan_budget.clone();
+        let base = options_from_analyse(*args, FailThreshold::Advisory);
+        let (root, options, config) = resolve_command_setup(
+            base,
+            cli_fail_on,
+            "analyse",
+            FailThreshold::Advisory,
+            deep_scan_budget.as_ref(),
+        )
+        .expect("command setup resolves");
+        run_analysis_in_project(&root, &options, &config)
+    };
+
+    scan("--generate-baseline", "../../base.json").expect("generate succeeds");
+    assert!(project.join("base.json").is_file());
+    assert!(!sandbox.path().join("outer/base.json").exists());
+
+    let applied = scan("--baseline", "../../base.json").expect("apply succeeds");
+    let baseline = applied.baseline.expect("the baseline is applied");
+    assert_eq!(baseline.path, "base.json");
+
+    let missing =
+        scan("--baseline", "../../missing.json").expect_err("a missing baseline is an error");
+    assert!(
+        !missing
+            .message()
+            .contains(&sandbox.path().display().to_string()),
+        "{missing}"
+    );
+}
+
+/// Nested Git repositories (standard `.git` directory or worktree `.git` file) stop project-root discovery from escaping into an ancestor repository.
+#[test]
+pub(crate) fn project_root_stops_at_git_boundary_for_nested_repos() {
+    let sandbox = tempfile::tempdir().expect("sandbox");
+    let parent = sandbox.path().join("parent");
+    let nested_dir_repo = parent.join("scratch/polyglot");
+    let nested_file_repo = parent.join("scratch/worktree");
+    fs::create_dir_all(nested_dir_repo.join(".git")).expect("git dir");
+    fs::create_dir_all(nested_dir_repo.join("docs")).expect("docs dir");
+    fs::create_dir_all(nested_dir_repo.join("src-tauri/src")).expect("nested crate");
+    fs::create_dir_all(nested_file_repo.join("sub")).expect("worktree subdir");
+    fs::write(parent.join("Cargo.toml"), "[package]\nname = \"parent\"\n").expect("parent cargo");
+    fs::write(
+        parent.join(".gruff-rs.yaml"),
+        format!("schemaVersion: {SCHEMA_VERSION}\n"),
+    )
+    .expect("parent config");
+    fs::write(
+        nested_dir_repo.join("src-tauri/Cargo.toml"),
+        "[package]\nname = \"app\"\n",
+    )
+    .expect("nested cargo");
+    fs::write(
+        nested_dir_repo.join("src-tauri/src/lib.rs"),
+        "pub fn ok() {}\n",
+    )
+    .expect("nested source");
+    fs::write(nested_file_repo.join(".git"), "gitdir: /tmp/example\n").expect("git file");
+
+    let canonical_parent = parent.canonicalize().expect("canonical parent");
+    let canonical_dir_repo = nested_dir_repo.canonicalize().expect("canonical dir repo");
+    let canonical_crate = nested_dir_repo
+        .join("src-tauri")
+        .canonicalize()
+        .expect("canonical nested crate");
+    let canonical_file_repo = nested_file_repo
+        .canonicalize()
+        .expect("canonical worktree repo");
+
+    let (root, paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/polyglot")],
+    )
+    .expect("resolve nested git dir repo");
+    assert_eq!(root, canonical_dir_repo);
+    assert_eq!(paths, vec![PathBuf::from(".")]);
+
+    let (docs_root, docs_paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/polyglot/docs")],
+    )
+    .expect("resolve subdir inside nested git repo");
+    assert_eq!(docs_root, canonical_dir_repo);
+    assert_eq!(docs_paths, vec![PathBuf::from("docs")]);
+
+    let (crate_root, crate_paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/polyglot/src-tauri/src/lib.rs")],
+    )
+    .expect("resolve nested crate");
+    assert_eq!(crate_root, canonical_crate);
+    assert_eq!(crate_paths, vec![PathBuf::from("src/lib.rs")]);
+
+    let (wt_root, wt_paths) = command_setup::resolve_scan_context(
+        &canonical_parent,
+        &[PathBuf::from("scratch/worktree/sub")],
+    )
+    .expect("resolve nested git worktree file");
+    assert_eq!(wt_root, canonical_file_repo);
+    assert_eq!(wt_paths, vec![PathBuf::from("sub")]);
+}
+
+/// Restore the caller's working directory after exercising a CLI path lookup in a test.
+///
+/// The guard runs during ordinary cleanup and if the assertion panics.
+/// Later tests start from the original directory when restoration succeeds.
+struct RestoreCurrentDir(PathBuf);
+
+impl Drop for RestoreCurrentDir {
+    /// Switch the process back to the working directory this guard saved, ignoring any error so cleanup never panics.
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
 }

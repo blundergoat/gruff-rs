@@ -3,12 +3,17 @@
 //! use plain-text escaping so an untrusted source tree cannot add structure.
 
 use super::*;
-use crate::{pillar_label, summary::pillar_digests};
+use crate::{pillar_label, scoring::score_text, summary::pillar_digests};
+use std::fmt::Write as _;
 
 const RULE_DELTA_BLOCK_LIMIT: usize = 5;
 
 /// Encode a finding identifier or path in a delimiter-safe Markdown code span.
 /// Empty text becomes a blank inert span, and line endings remain visible.
+///
+/// `value` is the untrusted identifier or path; each carriage return or newline in it is written as a visible backslash escape.
+/// Returns the span, delimited by one backtick more than the longest backtick run in `value`.
+/// A space pads each side inside the delimiters when `value` has a backtick, is empty, or both starts and ends with a space.
 fn markdown_code_span(value: &str) -> String {
     let mut visible_value = String::with_capacity(value.len());
     let mut current_backtick_run = 0usize;
@@ -56,6 +61,9 @@ fn markdown_code_span(value: &str) -> String {
 
 /// Encode a finding message as inert Markdown plain text.
 /// Line endings remain visible, HTML is encoded, and Markdown punctuation is escaped.
+///
+/// `value` is the untrusted message; characters other than line endings and ASCII punctuation pass through unchanged.
+/// Returns the encoded text, with `&`, `<` and `>` as HTML entities and every other ASCII punctuation character preceded by a backslash.
 fn markdown_plain_text(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     // Each message character is encoded for plain text without reprocessing inserted entities.
@@ -85,6 +93,9 @@ fn markdown_plain_text(value: &str) -> String {
 
 /// Render the full Markdown report shown in pull-request or release review text.
 /// The report layout stays static while finding-controlled fields are encoded by context.
+///
+/// Returns `report` as Markdown: title, any rule delta blocks, score and severity counts, pillar table, any diagnostics, and at most fifty findings.
+/// The score reads `n/a (nothing evaluated)` when the report has no composite score or no grade.
 pub(super) fn render_markdown(report: &AnalysisReport) -> String {
     let pillars = pillar_digests(report);
     let finding_count = report.findings.len().min(50);
@@ -93,16 +104,22 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
     );
     output.push_str("# gruff-rs report\n");
     render_rule_delta_blocks(&mut output, report);
+    let composite_text = match (report.score.composite, report.score.grade.as_deref()) {
+        (Some(composite), Some(grade)) => format!("{composite:.1} ({grade})"),
+        // A run that evaluated nothing renders no number, matching the text and machine views.
+        _ => "n/a (nothing evaluated)".to_string(),
+    };
     output.push_str(&format!(
-        "\nScore: **{:.1} ({})**\n\nFindings: {} advisory, {} warning, {} error.\n",
-        report.score.composite,
-        report.score.grade,
-        report.summary.advisory,
-        report.summary.warning,
-        report.summary.error
+        "\nScore: **{}**\n\nFindings: {} advisory, {} warning, {} error.\n",
+        composite_text, report.summary.advisory, report.summary.warning, report.summary.error
     ));
+    render_markdown_baseline_and_suppressions(&mut output, report);
     render_pillars_section(&mut output, &pillars);
+    render_diagnostics_section(&mut output, report);
     // The review shows at most fifty findings in deterministic report order.
+    if !report.findings.is_empty() {
+        output.push_str("\n## Findings\n");
+    }
     for finding in report.findings.iter().take(50) {
         let rule_id = markdown_code_span(&finding.rule_id);
         let file_path = markdown_code_span(&finding.file_path);
@@ -114,8 +131,74 @@ pub(super) fn render_markdown(report: &AnalysisReport) -> String {
     output
 }
 
+/// Append one-line baseline and suppression audit notes to `output` when `report` has baseline or suppression entries.
+///
+/// Keeps Markdown consistent with `FAMILY-CONTRACT.md` section 13a so suppressions are never silent.
+fn render_markdown_baseline_and_suppressions(output: &mut String, report: &AnalysisReport) {
+    // A run that used or wrote a baseline says so, so the reader knows reviewed findings may be hidden.
+    if let Some(baseline) = &report.baseline {
+        if baseline.generated {
+            let _ = writeln!(
+                output,
+                "\nBaseline: generated {} ({} entries).",
+                markdown_code_span(&baseline.path),
+                baseline.entries
+            );
+        } else {
+            let _ = writeln!(
+                output,
+                "\nBaseline: {} {} ({} new, {} unchanged, {} resolved).",
+                markdown_plain_text(&baseline.source),
+                markdown_code_span(&baseline.path),
+                baseline.new_count,
+                baseline.unchanged_count,
+                baseline.absent_count
+            );
+        }
+    }
+    // List suppression entries, so a reviewer can see which findings config or attributes removed and why.
+    if !report.suppressions.is_empty() {
+        let suppressed_total: usize = report.suppressions.iter().map(|row| row.suppressed).sum();
+        let _ = writeln!(
+            output,
+            "\nSuppressed findings: {} across {} audit {}.",
+            suppressed_total,
+            report.suppressions.len(),
+            if report.suppressions.len() == 1 {
+                "entry"
+            } else {
+                "entries"
+            }
+        );
+    }
+}
+
+/// Append a Diagnostics section to `output` listing each diagnostic of `report`, or write nothing when the report has no diagnostics.
+///
+/// Each entry shows the diagnostic type and any file path as code spans, with line one when no line is recorded, then the plain-text message.
+fn render_diagnostics_section(output: &mut String, report: &AnalysisReport) {
+    if report.diagnostics.is_empty() {
+        return;
+    }
+    output.push_str("\n## Diagnostics\n");
+    for diagnostic in &report.diagnostics {
+        let diagnostic_type = markdown_code_span(&diagnostic.diagnostic_type);
+        let message = markdown_plain_text(&diagnostic.message);
+        let _ = write!(output, "\n- {diagnostic_type}");
+        if let Some(path) = diagnostic.file_path.as_deref() {
+            let path = markdown_code_span(path);
+            let _ = write!(output, " {path}:{}", diagnostic.line.unwrap_or(1));
+        }
+        let _ = write!(output, " - {message}");
+    }
+    output.push('\n');
+}
+
 /// Render ranked rule improvements and regressions before the composite score.
 /// Full-tree reports have no comparison block, so users see the established layout.
+///
+/// `output` receives one appended line per non-empty direction, improvements first, each listing up to five rules.
+/// `report` supplies `per_rule_deltas`; when it is `None` or no rule's net count changed, nothing is appended.
 fn render_rule_delta_blocks(output: &mut String, report: &AnalysisReport) {
     // A full-tree scan has no comparison context, so no delta block is shown.
     let Some(deltas) = report.per_rule_deltas.as_ref() else {
@@ -145,6 +228,9 @@ fn render_rule_delta_blocks(output: &mut String, report: &AnalysisReport) {
 
 /// Select and format the five most significant rule deltas for one direction.
 /// An empty result means that comparison category is omitted from the report.
+///
+/// `deltas` holds every rule's net change, and `predicate` keeps one direction, such as a negative net for improvements.
+/// Returns up to five comma-separated entries, each a signed net count and a code-spanned rule id, largest absolute change first, ties by rule id.
 fn rule_delta_entries(deltas: &[RuleDelta], predicate: impl Fn(&RuleDelta) -> bool) -> String {
     // Only deltas in the requested direction compete for the five visible positions.
     let mut filtered: Vec<&RuleDelta> = deltas.iter().filter(|delta| predicate(delta)).collect();
@@ -167,6 +253,9 @@ fn rule_delta_entries(deltas: &[RuleDelta], predicate: impl Fn(&RuleDelta) -> bo
 
 /// Render the canonical seven-column pillar table in its pre-ranked order.
 /// Empty reports show a plain empty state instead of a table with no rows.
+///
+/// `output` receives a Pillars heading followed by the table, or by a no-pillars message when `pillars` is empty.
+/// `pillars` holds the already-ranked pillar digests, written one row each in the given order.
 fn render_pillars_section(output: &mut String, pillars: &[crate::summary::PillarDigest]) {
     output.push_str("\n## Pillars\n\n");
     // No applicable pillars gives the user an explicit empty state instead of a blank section.
@@ -179,10 +268,10 @@ fn render_pillars_section(output: &mut String, pillars: &[crate::summary::Pillar
     // Pillars retain the shared findings-descending, label-ascending report order.
     for pillar in pillars {
         output.push_str(&format!(
-            "| {} | {} | {:.2} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} |\n",
             pillar_label(pillar.pillar),
-            pillar.grade,
-            pillar.score,
+            pillar.grade.as_deref().unwrap_or("n/a"),
+            score_text(pillar.score),
             pillar.findings,
             pillar.advisory,
             pillar.warning,

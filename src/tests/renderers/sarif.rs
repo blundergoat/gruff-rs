@@ -19,10 +19,10 @@ pub(crate) fn sarif_suppression_results_carry_external_justification() {
         reason: "test-only synthetic command".to_string(),
     }];
     let (findings, suppressions, suppressed_findings) =
-        apply_report_exclusions(vec![finding], &exclusions);
+        apply_report_exclusions(vec![finding], &exclusions, &[]);
     let mut report = sample_report_with(findings, Vec::new());
     report.summary = summarize(&report.findings);
-    report.score = score_report(&report.findings, &Config::default());
+    report.score = score_report(&report.findings, &Config::default(), 10);
     report.suppressions = suppressions;
     report.suppressed_findings = suppressed_findings;
 
@@ -164,6 +164,7 @@ pub(crate) fn sarif_maps_diagnostics_to_invocation_notifications() {
             message: "Input path does not exist: missing.rs".to_string(),
             file_path: Some("missing.rs".to_string()),
             line: None,
+            invalidates_run: None,
         }],
     );
     let sarif = sample_sarif(&report);
@@ -213,7 +214,7 @@ pub(crate) fn sarif_marks_clean_invocation_successful() {
 
 #[test]
 pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
-    let report = analyse_test_paths(vec![PathBuf::from("tests/fixtures/parser/invalid.rs")]);
+    let report = analyse_fixture_as_production_code("tests/fixtures/parser/invalid.rs");
     assert_eq!(
         diagnostic_types(&report),
         vec!["partial-context-rule-suppressed", "parse-error"]
@@ -236,7 +237,7 @@ pub(crate) fn sarif_parse_error_keeps_text_rule_results() {
     assert_eq!(
         sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][1]["locations"][0]
             ["physicalLocation"]["artifactLocation"]["uri"],
-        "tests/fixtures/parser/invalid.rs"
+        "src/invalid.rs"
     );
     assert_eq!(
         sarif["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["descriptor"]["id"],

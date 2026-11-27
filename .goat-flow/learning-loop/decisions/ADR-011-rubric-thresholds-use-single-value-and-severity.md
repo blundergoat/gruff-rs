@@ -4,7 +4,7 @@
 **Date:** 2026-05-18
 **Author(s):** Codex, after human review feedback
 **Ticket/Context:** M32 follow-up; gruff-php threshold contract comparison
-**Updated:** 2026-05-31 (added standalone severity override addendum below)
+**Updated:** 2026-09-19 (narrowed for named detector parameters; addendum below). Earlier: 2026-05-31 (added standalone severity override addendum below)
 
 ## Decision
 
@@ -102,6 +102,17 @@ disabling a security, dependency, or sensitive-data signal. This does not
 reintroduce severity bands: each rule still emits exactly one severity for a
 given run. Thresholded rules keep the paired `threshold` + `severity` contract,
 and `threshold` without `severity` remains invalid.
+
+## Addendum (2026-09-19): Named detector parameters are not threshold bands
+
+Superseded narrowly by the 0.6.0 family decision of 2026-09-02, which makes `sensitive-data.high-entropy-string`
+configurable in all five ports as `minLength` and `entropy`, spelled the way the sibling ports spell them. A
+detector whose two knobs measure different things (a length and a bits-per-character score) is not a rubric with
+severity bands, so the rejection above does not reach it. A rule may declare named detector parameters in the
+catalogue (`src/rules/mod.rs`, search: `DETECTOR_PARAMETERS`); only such a rule accepts a `thresholds:` map, only
+with the names it declares, and each value is validated at load time rather than clamped. Every rubric keeps
+one `threshold` and one `severity`, a `thresholds:` map on any other rule is still refused, and a detector still
+emits one severity per run. Approved as route (a) of M21's activation bundle.
 
 ## Reversibility
 

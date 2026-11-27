@@ -1,10 +1,17 @@
+//! Check durable Rust bindings for placeholder names, overly short variables, and same-file function shadowing.
+//!
+//! Runs on parsed Rust ASTs during `analyse` so reviewers see domain-meaningful identifiers instead of `foo`, `tmp`, or cryptic two-letter names.
+//! Loop indices, closure parameters, plain two-letter English words, and configured `allowlists.acceptedAbbreviations` stay quiet.
+
 use super::*;
 
 /// Analyze durable local and parameter names for the built-in naming rules.
 ///
-/// Every supported binding pattern is checked for placeholder names. Short-variable findings stay
-/// limited to durable `let` bindings and function parameters because loop and closure context
-/// usually supplies enough meaning. The same pass reports same-file function shadowing.
+/// Every supported binding pattern is checked for placeholder names; short-variable checks stay limited to durable `let` bindings and parameters.
+/// The same pass also flags local bindings that shadow a same-file free function.
+///
+/// `file` supplies the display path each finding carries, and `ast` is the parsed file whose bindings are walked.
+/// `config` supplies extra placeholder names and accepted abbreviations; every naming finding is appended to `findings`.
 pub(crate) fn analyse_naming_patterns(
     file: &SourceFile,
     ast: &syn::File,
@@ -21,16 +28,19 @@ pub(crate) fn analyse_naming_patterns(
     visitor.visit_file(ast);
 }
 
-/// Returns the names of every `fn` declared as a free item in the file
-/// (top-level functions and functions nested inside `mod` items). Methods
-/// inside `impl` blocks and `use`-imported functions are intentionally
-/// excluded so the v0.1 `naming.identifier-shadow` rule stays narrow.
+/// Collect the names of every free `fn` declared in the file (top-level functions and functions inside inline `mod` items).
+///
+/// Methods inside `impl` blocks and `use`-imported functions stay excluded so `naming.identifier-shadow` remains narrow and high-signal.
+/// `ast` is the parsed file; out-of-line `mod name;` items contribute no names. Returns the sorted set of free function names.
 fn collect_same_file_free_fns(ast: &syn::File) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     collect_free_fns_in_items(&ast.items, &mut names);
     names
 }
 
+/// Insert the name of every free `fn` in `items` into `names`, recursing into inline `mod` bodies.
+///
+/// Other item kinds, including `impl` blocks and out-of-line `mod` declarations, add nothing to `names`.
 fn collect_free_fns_in_items(items: &[syn::Item], names: &mut BTreeSet<String>) {
     for item in items {
         match item {
@@ -61,6 +71,9 @@ enum BindingLifetime {
 }
 
 impl NamingPatternVisitor<'_> {
+    /// Check the identifiers that `walk_pat_idents` reaches in `pat` against the placeholder and short-variable naming rules.
+    ///
+    /// `binding_lifetime` decides whether the short-variable rule applies; findings are pushed onto the visitor's list.
     fn visit_pat_idents(&mut self, pat: &syn::Pat, binding_lifetime: BindingLifetime) {
         walk_pat_idents(pat, &mut |ident| {
             let name = ident.to_string();
@@ -69,6 +82,9 @@ impl NamingPatternVisitor<'_> {
         });
     }
 
+    /// Report a `let` binding whose name matches its initialiser's last callee segment and a same-file free function name.
+    ///
+    /// `local` is the visited `let` statement; a match pushes one `naming.identifier-shadow` finding.
     fn check_identifier_shadow(&mut self, local: &syn::Local) {
         let Some(shadow) = shadow_candidate(local, self.same_file_free_fns) else {
             return;
@@ -77,6 +93,10 @@ impl NamingPatternVisitor<'_> {
             .push(identifier_shadow_finding(&self.file.display_path, shadow));
     }
 
+    /// Push the placeholder and short-variable findings that one bound identifier earns.
+    ///
+    /// `name` is the identifier text and `line` is the source line recorded on each finding.
+    /// The short-variable check runs only when `binding_lifetime` is `BindingLifetime::Durable`.
     fn check_name(&mut self, name: &str, line: usize, binding_lifetime: BindingLifetime) {
         if self.name_is_placeholder(name) {
             self.findings.push(placeholder_identifier_finding(
@@ -91,6 +111,10 @@ impl NamingPatternVisitor<'_> {
         }
     }
 
+    /// Decide whether `name` is a placeholder identifier, either built in or configured as an extra.
+    ///
+    /// Extra names come from the `extraPlaceholders` option of `naming.placeholder-identifier` and must match exactly.
+    /// Returns true when `name` is a built-in or configured placeholder, and false otherwise.
     fn name_is_placeholder(&self, name: &str) -> bool {
         let extra_placeholders = self
             .config
@@ -98,22 +122,34 @@ impl NamingPatternVisitor<'_> {
         is_placeholder_identifier(name) || extra_placeholders.iter().any(|extra| extra == name)
     }
 
+    /// Decide whether `name` is a two-byte identifier that `naming.short-variable` should report.
+    ///
+    /// Exempts leading underscores, plain two-letter English words (`at`, `by`, `on`, `to`, `up`), configured abbreviations, and AWS-path names.
+    /// Comparisons run against the lowercased `name`; returns true when `name` should be reported as too short, and false otherwise.
     fn name_is_too_short(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
         name.len() == 2
             && !name.starts_with('_')
+            && !PLAIN_TWO_LETTER_WORDS.contains(&lower.as_str())
             && !self.config.accepted_abbreviations.contains(&lower)
             && !self.file_context_has_accepted_abbreviation(&lower)
     }
 
+    /// Accept an AWS service abbreviation when the file's display path marks it as AWS code.
+    ///
+    /// The display path, with backslashes turned into slashes, must contain `/aws/` or end with `/aws.rs`.
+    /// `name` must already be lowercase and is looked up in `AWS_CONTEXT_ABBREVIATIONS`; returns true only for a listed `name` in an AWS file.
     fn file_context_has_accepted_abbreviation(&self, name: &str) -> bool {
         let normalized = self.file.display_path.replace('\\', "/");
+        // AWS SDK modules routinely use two-letter service codes (such as `cw` or `sg`) that would be cryptic elsewhere.
         if normalized.contains("/aws/") || normalized.ends_with("/aws.rs") {
             return AWS_CONTEXT_ABBREVIATIONS.contains(&name);
         }
         false
     }
 }
+
+const PLAIN_TWO_LETTER_WORDS: &[&str] = &["at", "by", "on", "to", "up"];
 
 const AWS_CONTEXT_ABBREVIATIONS: &[&str] = &[
     "ca", "ce", "cn", "cw", "dp", "dt", "gb", "gw", "lb", "pm", "py", "sa", "sg", "sn", "td", "tg",
@@ -126,6 +162,11 @@ struct IdentifierShadow {
     line: usize,
 }
 
+/// Find a `let` binding whose name equals its initialiser's last callee segment and a collected same-file free function name.
+///
+/// `local` is the visited `let` statement and `same_file_free_fns` holds the file's free function names.
+/// The pattern must be an identifier pattern, even with `ref`, `mut` or `@`, and the initialiser a path call whose last segment equals it.
+/// Returns the binding, callee and binding line on a match, or None when any condition or the same-file lookup fails.
 fn shadow_candidate(
     local: &syn::Local,
     same_file_free_fns: &BTreeSet<String>,
@@ -153,6 +194,10 @@ fn shadow_candidate(
     })
 }
 
+/// Build the advisory `naming.identifier-shadow` finding for one local binding that shadows a same-file function.
+///
+/// `file_path` is the reported display path, and `shadow` supplies the binding name, the shadowed function and the line.
+/// Returns a high-confidence finding whose symbol is the binding and whose metadata names the function under `shadows`.
 fn identifier_shadow_finding(file_path: &str, shadow: IdentifierShadow) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "naming.identifier-shadow".to_string(),
@@ -173,6 +218,10 @@ fn identifier_shadow_finding(file_path: &str, shadow: IdentifierShadow) -> Findi
     })
 }
 
+/// Build the advisory `naming.placeholder-identifier` finding for one placeholder-named variable.
+///
+/// `file_path` is the reported display path, `name` the flagged identifier and `line` the source line it is bound on.
+/// Returns a medium-confidence finding whose symbol is `name` and whose remediation asks for a domain name.
 fn placeholder_identifier_finding(file_path: &str, name: &str, line: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "naming.placeholder-identifier".to_string(),
@@ -183,14 +232,15 @@ fn placeholder_identifier_finding(file_path: &str, name: &str, line: usize) -> F
         pillar: Pillar::Naming,
         confidence: Confidence::Medium,
         symbol: Some(name.to_string()),
-        remediation: Some(
-            "Use a name that describes the domain role. If the placeholder is intentional (test fixture, generated code), add the path to `paths.ignore` in `.gruff-rs.yaml`."
-                .to_string(),
-        ),
+        remediation: Some("Use a name that describes the domain role.".to_string()),
         metadata: json!({}),
     })
 }
 
+/// Build the advisory `naming.short-variable` finding for one identifier judged too short.
+///
+/// `file_path` is the reported display path, `name` the flagged identifier and `line` the source line it is bound on.
+/// Returns a medium-confidence finding whose remediation points to `allowlists.acceptedAbbreviations` in `.gruff-rs.yaml`.
 fn short_variable_finding(file_path: &str, name: &str, line: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "naming.short-variable".to_string(),
@@ -210,12 +260,18 @@ fn short_variable_finding(file_path: &str, name: &str, line: usize) -> Finding {
 }
 
 impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
+    /// Check the `let` bindings that `walk_pat_idents` reaches as durable, then test the statement for function shadowing.
+    ///
+    /// `local` is the visited statement; the walk then continues into its pattern and initialiser.
     fn visit_local(&mut self, local: &'ast syn::Local) {
         self.visit_pat_idents(&local.pat, BindingLifetime::Durable);
         self.check_identifier_shadow(local);
         syn::visit::visit_local(self, local);
     }
 
+    /// Check the names `walk_pat_idents` reaches in a typed function parameter as durable, skipping a conventional `cx` context parameter.
+    ///
+    /// `arg` is the visited parameter; a `self` receiver is not checked, and the walk then continues into `arg`.
     fn visit_fn_arg(&mut self, arg: &'ast syn::FnArg) {
         // Rust poll and lint APIs conventionally pair `cx` with a typed context parameter.
         if let syn::FnArg::Typed(pat_type) = arg {
@@ -226,11 +282,17 @@ impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
         syn::visit::visit_fn_arg(self, arg);
     }
 
+    /// Check the names `walk_pat_idents` reaches in a `for` loop pattern as short-lived, so only the placeholder rule applies to them.
+    ///
+    /// `expression` is the visited loop; the walk then continues into its pattern, iterable and body.
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
         self.visit_pat_idents(&expression.pat, BindingLifetime::ShortLived);
         syn::visit::visit_expr_for_loop(self, expression);
     }
 
+    /// Check the names `walk_pat_idents` reaches in each closure parameter as short-lived, so only the placeholder rule applies to them.
+    ///
+    /// `expression` is the visited closure; the walk then continues into its parameters and body.
     fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
         for input in &expression.inputs {
             self.visit_pat_idents(input, BindingLifetime::ShortLived);
@@ -240,6 +302,9 @@ impl<'ast> Visit<'ast> for NamingPatternVisitor<'_> {
 }
 
 /// Recognize the ecosystem-standard `cx` name only when its declared type is a context.
+///
+/// `parameter` must have the plain identifier `cx` as its pattern and a type that `is_context_type` accepts.
+/// Returns true only for that pairing, so the caller skips the parameter's naming checks, and false for any other parameter.
 fn is_conventional_context_parameter(parameter: &syn::PatType) -> bool {
     let syn::Pat::Ident(identifier) = parameter.pat.as_ref() else {
         return false;
@@ -248,6 +313,9 @@ fn is_conventional_context_parameter(parameter: &syn::PatType) -> bool {
 }
 
 /// Return whether a parameter type ends in `Context`, including references and grouping.
+///
+/// `parameter_type` is unwrapped through references, macro groups and parentheses until a path type's last segment can be tested.
+/// Returns true when that segment's name ends in `Context`, and false for every other type shape such as tuples or slices.
 fn is_context_type(parameter_type: &syn::Type) -> bool {
     match parameter_type {
         syn::Type::Reference(reference) => is_context_type(&reference.elem),
@@ -262,10 +330,10 @@ fn is_context_type(parameter_type: &syn::Type) -> bool {
     }
 }
 
-/// Recursively walks a `syn::Pat`, invoking `callback` for every leaf
-/// `Pat::Ident`. Handles tuples, tuple-structs, struct fields, slices,
-/// references, or-patterns, and typed patterns. Unhandled variants
-/// (`Pat::Lit`, `Pat::Wild`, etc.) carry no bindings to inspect.
+/// Recursively walk `pat` and invoke `callback` for every leaf `Pat::Ident` binding.
+///
+/// Covers tuples, tuple-structs, struct fields, slices, references, or-patterns, and typed patterns.
+/// Variants that bind no name (`Pat::Lit`, `Pat::Wild`, and similar) are skipped cleanly.
 fn walk_pat_idents<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
     if should_recurse_walk_pat(pat, callback) {
         return;
@@ -273,6 +341,10 @@ fn walk_pat_idents<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
     walk_compound_pat(pat, callback);
 }
 
+/// Handle the identifier, typed and reference pattern shapes for `walk_pat_idents`, reporting whether `pat` was one of them.
+///
+/// An identifier is passed to `callback` as a `syn::Ident`; a typed or reference pattern has its inner pattern walked with the same `callback`.
+/// Returns true when `pat` was handled here, so the caller skips the compound walk, and false for every other pattern shape.
 fn should_recurse_walk_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) -> bool {
     match pat {
         syn::Pat::Ident(pat_ident) => {
@@ -291,6 +363,9 @@ fn should_recurse_walk_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut
     }
 }
 
+/// Walk the immediate sub-patterns of a supported compound `pat` through `walk_pat_idents`, passing each `syn::Ident` reached to `callback`.
+///
+/// Tuple, tuple-struct, slice, or-pattern and struct field patterns are handled; any other shape is ignored.
 fn walk_compound_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
     match pat {
         syn::Pat::Tuple(pat_tuple) => walk_each(pat_tuple.elems.iter(), callback),
@@ -305,6 +380,7 @@ fn walk_compound_pat<F: FnMut(&syn::Ident)>(pat: &syn::Pat, callback: &mut F) {
     }
 }
 
+/// Run `walk_pat_idents` over each pattern in `pats`, sharing one `callback` that receives every `syn::Ident` the walker reaches.
 fn walk_each<'a, I, F>(pats: I, callback: &mut F)
 where
     I: IntoIterator<Item = &'a syn::Pat>,

@@ -1,32 +1,36 @@
 ---
 category: naming
-last_reviewed: 2026-05-31
+last_reviewed: 2026-11-25
 ---
 
 ## Lesson: Never Name Files or Folders After Milestones (M33, M35, etc.)
 
-**Created:** 2026-05-21
+**Created:** 2026-05-21 | **Incident count:** 2 | **Latest occurrence:** 2026-11-25
+**Decision changed:** Before creating any new file, directory, module, or test function, name it for the domain behaviour it owns — never after a milestone, PR number, release version, review finding ID, or implementation wave.
+**Trigger phase:** SCOPE | **Caught at:** VERIFY
 
-Do not encode milestone identifiers (`M01`, `M33`, `M37`, etc.) — or any task/ticket/PR/sprint identifier — into source file names, directory names, or module names. The same prohibition applies to test files, helper files, ADR-referenced code paths, and config keys that touch persistent storage.
+**Prevention:**
+- Before naming a new file, directory, module, or test function, reject any proposed name containing a temporal or process token: milestones (`M<digits>`), PR numbers (`pr<digits>`, `pr_<digits>`), release versions (`v060_*`, `v0_6_*`), review finding/lead/wave IDs (`r002_*`, `lead1`, `wave2_*`), ticket/sprint IDs (`T<digits>`, `sprint_*`), or dates (`march_refactor`).
+- Check existing domain suites first (such as `tests/cli_regressions.rs` or `src/tests/rule_behaviours/false_positive_guards.rs`) and add new regressions there; only create a new file when the target suite would cross its dogfood size limit or represents a distinct domain (such as `tests/analyzer_regressions.rs`).
+- Name every test function after the invariant it proves (for example `exclusions_precede_baseline_generation_and_application`), not the review ticket that uncovered the bug.
+
+Do not encode milestone identifiers (`M01`, `M33`, `M37`, etc.) — or any task/ticket/PR/version/review-finding identifier — into source file names, directory names, module names, or test function names. The same prohibition applies to test files, helper files, ADR-referenced code paths, and config keys that touch persistent storage.
 
 **Why:**
-- Milestones are temporal. `M33` means "the thirty-third milestone in version 0.1's plan" — a moment in time. Once the work lands, the milestone identifier is dead context: future readers must look up what `M33` was before they understand the file's purpose.
-- Milestones don't compose. A file named `m33_regressions.rs` is the wrong home for the next M40 regression on the same false-positive class. You then either pollute the file (the M33 prefix lies) or create `m40_regressions.rs` (now you have two files for the same concern).
+- Milestones, PR numbers, release tags, and review finding IDs are temporal. `M33` or `pr7_v060` names a moment in time or a review thread rather than what the code checks. Once the work lands, the identifier is dead context that future readers cannot navigate without searching git history.
+- Temporal names don't compose. A file named `m33_regressions.rs` or `pr7_v060_regressions.rs` is the wrong home for the next regression on the same subsystem, forcing future work to either pollute a misleadingly named file or spawn another disposable file for the same concern.
 - Renaming later loses git blame continuity for the same reason avoiding `*_new`, `*_v2`, `*_backup` suffixes does (see `CLAUDE.md` Hard Rules). Get the name right when you create the file.
 
 **Concrete example (this repo, 2026-05-21):** During the M41 test split, the regression tests added during M33, M35, M37, and M38 were grouped into milestone-named files. The user flagged this immediately and required a rename. The semantic home is now `src/tests/rule_behaviours/false_positive_guards.rs` and `src/tests/rule_behaviours/idiomatic_handling.rs` — grouped by what the tests *guard against*, not by which milestone introduced them.
 
+**Recurrence 2026-11-25:** After fixing findings from the `v0.6.0` PR #7 review, the agent created a new integration test file named `tests/pr7_v060_regressions.rs` and prefixed its tests and doc comments with ephemeral review IDs (`r002_`, `r006_`, `lead1`, `wave2_`). The user caught the bad filename immediately. The file was deleted and its cases were moved with behaviour-based names into `tests/cli_regressions.rs` (search: `exclusions_precede_baseline_generation_and_application`) and `tests/analyzer_regressions.rs` (search: `deep_assignment_and_let_comments_do_not_overflow_parser`).
+
 **How to apply:**
-- Before naming a new file/folder/module, ask: "What does this file contain?" — not "When was it added?" or "Which ticket motivated it?"
-- Acceptable names describe the domain: `false_positive_guards.rs`, `dead_code_recovery.rs`, `selector_parsing.rs`.
-- Unacceptable names encode time/process: `m33_*.rs`, `pr_142_fixes.rs`, `sprint_3_cleanup.rs`, `march_refactor.rs`.
-- The same rule applies inside files: don't put `// M33 added this` markers in code where a `// SAFETY:` or `// Why:` comment is what the reader actually needs. Git blame already records when something was added.
-- Milestone IDs belong in the milestone file (`.goat-flow/tasks/<version>/M33-*.md`) and in PR descriptions — not in the codebase itself.
-- Test *function* names can keep a `m33_` prefix when they prove a specific regression scenario tied to a documented incident (and the regression scenario itself is what matters, not the milestone). The file containing them should still be named for the *class of behavior under test*.
-
-**Why:** Encoding sequence identifiers in code paths creates dead context that future readers must decode before they can act, and traps new work into either misnamed homes or fragmented files.
-
-**How to apply:** Reject any proposed file/folder/module name that contains a task-ID-shaped token (`M<digits>`, `T<digits>`, `PR<digits>`, `sprint_*`, `<month>_refactor`, `phase_<n>`, etc.). Ask what behavior or concept the file owns and use that.
+- Before naming a new file/folder/module, ask: "What does this file contain?" — not "When was it added?" or "Which PR/ticket motivated it?"
+- Acceptable names describe the domain: `cli_regressions.rs`, `analyzer_regressions.rs`, `false_positive_guards.rs`, `dead_code_recovery.rs`, `selector_parsing.rs`.
+- Unacceptable names encode time/process: `m33_*.rs`, `pr7_v060_regressions.rs`, `pr_142_fixes.rs`, `sprint_3_cleanup.rs`, `march_refactor.rs`, `r002_*`, `wave2_*`.
+- The same rule applies inside files: don't put `// M33 added this` or `/// R-006:` markers in code where a `// SAFETY:` or `// Why:` comment explaining the invariant is what the reader actually needs. Git blame already records when something was added.
+- Milestone, PR, and review-finding IDs belong in plans, PR descriptions, and review logs — not in the permanent codebase.
 
 ## Lesson: Don't Extend Alphabet-Sequel File Series (cases_d.rs, helpers_b.rs)
 

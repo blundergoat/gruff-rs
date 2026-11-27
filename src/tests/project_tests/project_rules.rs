@@ -53,7 +53,6 @@ version = "3.0.0"
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     assert_has_rule(&report, "dependency.git-source");
     assert_has_rule(&report, "dependency.git-unpinned-revision");
-    assert_has_rule(&report, "dependency.path-source");
     assert_has_rule(&report, "dependency.wildcard-version");
     assert_has_rule(&report, "dependency.duplicate-locked-version");
     assert_has_rule(&report, "dependency.missing-package-metadata");
@@ -195,7 +194,6 @@ version = "1.0.0"
     .expect("clean analysis succeeds");
     assert_missing_rule(&clean, "dependency.git-source");
     assert_missing_rule(&clean, "dependency.git-unpinned-revision");
-    assert_missing_rule(&clean, "dependency.path-source");
     assert_missing_rule(&clean, "dependency.wildcard-version");
     assert_missing_rule(&clean, "dependency.duplicate-locked-version");
     assert_missing_rule(&clean, "dependency.missing-package-metadata");

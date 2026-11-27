@@ -5,6 +5,8 @@
 use super::*;
 
 /// Build one compact rule definition for registry-construction failure tests.
+/// `id` is the rule ID the definition carries, and `related_rules` lists the rule IDs it links to as related rules.
+/// Returns a default-enabled, advisory, high-confidence text rule in the Documentation pillar with no threshold, options or false-positive shapes.
 const fn registry_test_definition(
     id: &'static str,
     related_rules: &'static [&'static str],
@@ -40,6 +42,29 @@ pub(crate) fn registry_rejects_duplicate_rule_ids_and_sorts_definitions() {
 
     let duplicate = registry.definitions()[0];
     assert!(rules::RuleRegistry::new(vec![duplicate, duplicate]).is_err());
+}
+
+/// Keep every heuristic rule's reviewed exception guidance in the native catalogue.
+#[test]
+pub(crate) fn medium_and_low_confidence_rules_publish_false_positive_guidance() {
+    let registry = rules::builtin_registry();
+    let heuristic_rules: Vec<&rules::RuleDefinition> = registry
+        .definitions()
+        .iter()
+        .filter(|definition| matches!(definition.confidence, Confidence::Medium | Confidence::Low))
+        .collect();
+
+    assert_eq!(heuristic_rules.len(), 27);
+    for definition in heuristic_rules {
+        assert!(
+            !definition.false_positive_shapes.is_empty(),
+            "{} lacks reviewed false-positive guidance",
+            definition.id
+        );
+        assert!(definition.false_positive_shapes.iter().all(|shape| {
+            !shape.shape.trim().is_empty() && !shape.mitigation.trim().is_empty()
+        }));
+    }
 }
 
 /// Pin the ratified `size.file-length` bar. The catalogue is the only place this

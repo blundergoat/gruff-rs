@@ -5,7 +5,7 @@
 ## Start
 
 ```sh
-cargo run -- dashboard --host 127.0.0.1 --port 8766 --project-root .
+./.cargo-tools/bin/gruff-rs dashboard --host 127.0.0.1 --port 8766 --project-root .
 ```
 
 ## Options
@@ -15,6 +15,7 @@ cargo run -- dashboard --host 127.0.0.1 --port 8766 --project-root .
 | `--host` | `127.0.0.1` | Bind host. |
 | `--port` | `8766` | Bind port. |
 | `--project-root` | current directory | Initial project root. |
+| `--deep-scan-budget` | project config | Deep Rust-analysis limits as `LINES:BYTES`, or `off`. |
 
 ## Safety
 

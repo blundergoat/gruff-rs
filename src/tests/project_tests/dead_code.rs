@@ -534,6 +534,73 @@ license = "MIT"
     );
 }
 
+/// Keep private constants referenced only through `format!("{CONST}")` out of unused-private-item findings.
+#[test]
+pub(crate) fn project_dead_code_counts_format_macro_inline_captures() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(
+        dir.path(),
+        r#"mod hud;
+
+const ICON_FOLDER: &str = "res://icons";
+const RETRY_HINT: &str = "press R";
+const UNUSED_FOLDER: &str = "res://unused";
+const COMMENTED_ONLY: &str = "commented";
+
+/// Builds the icon resource path for `name`.
+/// Returns the resolved resource path string.
+pub fn icon_path(name: &str) -> String {
+    // format!("{COMMENTED_ONLY}")
+    let _ = "{UNUSED_FOLDER}";
+    format!("{ICON_FOLDER}/{name}.png")
+}
+"#,
+    );
+    fs::write(
+        dir.path().join("src/hud.rs"),
+        r#"use super::*;
+
+/// Formats the retry banner for `headline`.
+/// Returns the combined banner text.
+pub fn banner(headline: &str) -> String {
+    format!("{headline}: {RETRY_HINT}")
+}
+"#,
+    )
+    .expect("hud write");
+
+    let report = run_project_analysis(
+        dir.path(),
+        AnalysisOptions {
+            paths: vec![PathBuf::from(".")],
+            no_config: true,
+            no_baseline: true,
+            ..default_test_options()
+        },
+    )
+    .expect("analysis succeeds");
+
+    for used in ["ICON_FOLDER", "RETRY_HINT"] {
+        assert!(
+            !has_dead_code_symbol(&report, used),
+            "private constant `{used}` captured in format! must not report as unused; findings={:?}",
+            report.findings
+        );
+    }
+    for unused in ["UNUSED_FOLDER", "COMMENTED_ONLY"] {
+        assert!(
+            has_dead_code_symbol(&report, unused),
+            "truly unreferenced private constant `{unused}` must still report; findings={:?}",
+            report.findings
+        );
+    }
+}
+
+/// Tells the dead-code tests whether an analysis flagged one named item as an unused private item candidate.
+///
+/// `report` is the finished analysis and `symbol` the exact item name to match.
+/// Returns true when `report` holds a `dead-code.unused-private-item-candidate` finding for `symbol`, and false otherwise.
 pub(super) fn has_dead_code_symbol(report: &AnalysisReport, symbol: &str) -> bool {
     report.findings.iter().any(|finding| {
         finding.rule_id == "dead-code.unused-private-item-candidate"
@@ -541,6 +608,10 @@ pub(super) fn has_dead_code_symbol(report: &AnalysisReport, symbol: &str) -> boo
     })
 }
 
+/// Checks whether an analysis reported the dead-code candidate rule as suppressed for partial context.
+///
+/// Looks through the diagnostics of `report`, the finished analysis.
+/// Returns true when one of them has type `partial-context-rule-suppressed` and its message names `dead-code.unused-private-item-candidate`.
 fn has_partial_context_diagnostic(report: &AnalysisReport) -> bool {
     report.diagnostics.iter().any(|diagnostic| {
         diagnostic.diagnostic_type == "partial-context-rule-suppressed"
@@ -550,6 +621,9 @@ fn has_partial_context_diagnostic(report: &AnalysisReport) -> bool {
     })
 }
 
+/// Writes a two-file crate whose private `helper_used_by_child` in `src/lib.rs` is called only from `src/child.rs`.
+///
+/// `root` is the project directory that receives `Cargo.toml`, `README.md`, `src/lib.rs` and `src/child.rs`; any write failure panics.
 fn write_cross_file_dead_code_fixture(root: &Path) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     fs::write(root.join("README.md"), "# Fixture\n").expect("readme write");

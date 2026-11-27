@@ -14,9 +14,9 @@
 #     deleted in the worktree cannot slip through;
 #   - a binary changed path is reported as unread, because it carries no text hunks for the detectors.
 #
-# Every case runs twice, once per dispatch path: the Bash 4+ `main` and the Bash 3 `fallback_main` reached via
-# GOAT_FLOW_POST_TURN_SAFETY_FORCE_BASH3_FALLBACK. Testing only the host's default shell hid a fail-open in the fallback
-# branch.
+# Since goat-flow 1.19.0 the hook is the Node `post-turn-safety.mjs`, which has one scan path, so every case runs once.
+# The Bash hook's two dispatch paths, and the fail-open its untested fallback once hid, retired with it. The allow-marker
+# case is the only one upstream does not satisfy: it passes because of the ADR-022 local delta in post-turn/scanner.mjs.
 #
 # The "++" cases need a committed baseline. An untracked file takes the whole-file scan path, which never sees a diff
 # stream, so only a tracked modification exercises the header-versus-content decision being tested.
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-HOOK="${GOAT_POST_TURN_SAFETY_HOOK:-$SCRIPT_DIR/../post-turn-safety.sh}"
+HOOK="${GOAT_POST_TURN_SAFETY_HOOK:-$SCRIPT_DIR/../post-turn-safety.mjs}"
 WORK_DIR=""
 HOOK_OUTPUT=""
 HOOK_STATUS=0
@@ -45,9 +45,11 @@ fail_post_turn_safety_test() {
 
 run_hook_in() {
   local repository=$1
-  local force_fallback=$2
-  local max_bytes=${3:-}
-  local -a hook_environment=("GOAT_FLOW_POST_TURN_SAFETY_FORCE_BASH3_FALLBACK=$force_fallback")
+  local max_bytes=${2:-}
+  # The same two values the hook's own --self-test sets: an empty result protocol selects plain output instead of the
+  # managed goat-flow.hook-result.v1 envelope, and the controller-child flag scans only this Git root rather than
+  # fanning out to the controller's configured child roots, so the exit status is this repository's verdict alone.
+  local -a hook_environment=("GOAT_FLOW_HOOK_RESULT_PROTOCOL=" "GOAT_FLOW_POST_TURN_CONTROLLER_CHILD=1")
 
   # Byte-cap cases pass a small cap so their fixtures stay a few kilobytes. Padding past the 1 MiB default would make
   # this self-test slow for no extra coverage: the gate compares sizes, it does not care how large the file is.
@@ -56,7 +58,7 @@ run_hook_in() {
   fi
 
   set +e
-  HOOK_OUTPUT="$(cd "$repository" && env "${hook_environment[@]}" bash "$HOOK" 2>&1)"
+  HOOK_OUTPUT="$(cd "$repository" && env "${hook_environment[@]}" node "$HOOK" --root "$repository" </dev/null 2>&1)"
   HOOK_STATUS=$?
   set -e
 }
@@ -203,77 +205,69 @@ init_staged_oversized_repo "$WORK_DIR/staged-oversized-deleted" deleted
 # A binary changed path has no text hunks, so it is unread by definition and must say so.
 init_binary_change_repo "$WORK_DIR/binary-change"
 
-for dispatch in default bash3-fallback; do
-  if [[ $dispatch == bash3-fallback ]]; then
-    force_fallback=1
-  else
-    force_fallback=0
-  fi
+run_hook_in "$WORK_DIR/no-git"
+expect_hook_status 2 "unavailable scan"
+# Releases word this differently ("git repository root unavailable; cannot scan changed content" through 1.15.0,
+# "scan incomplete (git repository root unavailable)" from 1.15.1), so assert the reason the user is shown rather
+# than one release's phrasing. Blocking itself is already pinned by the exit status above.
+[[ $HOOK_OUTPUT == *"git repository root unavailable"* ]] \
+  || fail_post_turn_safety_test "unavailable scan did not explain the missing Git root"
 
-  run_hook_in "$WORK_DIR/no-git" "$force_fallback"
-  expect_hook_status 2 "unavailable scan [$dispatch]"
-  # Releases word this differently ("git repository root unavailable; cannot scan changed content" through 1.15.0,
-  # "scan incomplete (git repository root unavailable)" from 1.15.1), so assert the reason the user is shown rather
-  # than one release's phrasing. Blocking itself is already pinned by the exit status above.
-  [[ $HOOK_OUTPUT == *"git repository root unavailable"* ]] \
-    || fail_post_turn_safety_test "unavailable scan [$dispatch] did not explain the missing Git root"
+run_hook_in "$WORK_DIR/clean"
+expect_hook_status 0 "clean repository"
 
-  run_hook_in "$WORK_DIR/clean" "$force_fallback"
-  expect_hook_status 0 "clean repository [$dispatch]"
+run_hook_in "$WORK_DIR/hazard"
+expect_hook_status 2 "merge conflict"
+# Releases have worded this differently ("blocked merge conflict marker in X"
+# versus the retired Bash 3 path's "merge conflict marker in X (Bash 3
+# compatibility scan)"), so assert the finding family and the offending file.
+# Blocking itself is already pinned by the exit status above.
+[[ $HOOK_OUTPUT == *"merge conflict marker in conflict.txt"* ]] \
+  || fail_post_turn_safety_test "merge conflict did not report its finding family"
 
-  run_hook_in "$WORK_DIR/hazard" "$force_fallback"
-  expect_hook_status 2 "merge conflict [$dispatch]"
-  # The paths word this differently ("blocked merge conflict marker in X" versus
-  # "merge conflict marker in X (Bash 3 compatibility scan)"), so assert the
-  # finding family and the offending file, which both must name. Blocking itself
-  # is already pinned by the exit status above.
-  [[ $HOOK_OUTPUT == *"merge conflict marker in conflict.txt"* ]] \
-    || fail_post_turn_safety_test "merge conflict [$dispatch] did not report its finding family"
+run_hook_in "$WORK_DIR/plusplus"
+expect_hook_status 2 "++ prefixed added line"
+[[ $HOOK_OUTPUT == *"AWS access key in changed.txt"* ]] \
+  || fail_post_turn_safety_test "++ prefixed added line did not report its finding family"
 
-  run_hook_in "$WORK_DIR/plusplus" "$force_fallback"
-  expect_hook_status 2 "++ prefixed added line [$dispatch]"
-  [[ $HOOK_OUTPUT == *"AWS access key in changed.txt"* ]] \
-    || fail_post_turn_safety_test "++ prefixed added line [$dispatch] did not report its finding family"
+run_hook_in "$WORK_DIR/plusplus-space"
+expect_hook_status 2 "header-shaped added line"
+[[ $HOOK_OUTPUT == *"AWS access key in changed.txt"* ]] \
+  || fail_post_turn_safety_test "header-shaped added line did not report its finding family"
 
-  run_hook_in "$WORK_DIR/plusplus-space" "$force_fallback"
-  expect_hook_status 2 "header-shaped added line [$dispatch]"
-  [[ $HOOK_OUTPUT == *"AWS access key in changed.txt"* ]] \
-    || fail_post_turn_safety_test "header-shaped added line [$dispatch] did not report its finding family"
+run_hook_in "$WORK_DIR/fixture-marked"
+expect_hook_status 0 "line-scoped allow marker"
 
-  run_hook_in "$WORK_DIR/fixture-marked" "$force_fallback"
-  expect_hook_status 0 "line-scoped allow marker [$dispatch]"
+run_hook_in "$WORK_DIR/fixture-bare"
+expect_hook_status 2 "unmarked intentional token"
 
-  run_hook_in "$WORK_DIR/fixture-bare" "$force_fallback"
-  expect_hook_status 2 "unmarked intentional token [$dispatch]"
+run_hook_in "$WORK_DIR/conflict-marked"
+expect_hook_status 2 "allow marker on a conflict marker"
+[[ $HOOK_OUTPUT == *"merge conflict marker in changed.txt"* ]] \
+  || fail_post_turn_safety_test "allow marker on a conflict marker did not report its finding family"
 
-  run_hook_in "$WORK_DIR/conflict-marked" "$force_fallback"
-  expect_hook_status 2 "allow marker on a conflict marker [$dispatch]"
-  [[ $HOOK_OUTPUT == *"merge conflict marker in changed.txt"* ]] \
-    || fail_post_turn_safety_test "allow marker on a conflict marker [$dispatch] did not report its finding family"
+run_hook_in "$WORK_DIR/oversized-untracked" "$OVERSIZE_CAP_BYTES"
+expect_hook_status 2 "oversized untracked text"
+# Assert the reason, not just the status. Oversized and binary both exit 2, so a status-only test would pass straight
+# through a change that reclassified one as the other.
+[[ $HOOK_OUTPUT == *"oversized untracked text not scanned in big.txt"* ]] \
+  || fail_post_turn_safety_test "oversized untracked text did not report unread coverage"
 
-  run_hook_in "$WORK_DIR/oversized-untracked" "$force_fallback" "$OVERSIZE_CAP_BYTES"
-  expect_hook_status 2 "oversized untracked text [$dispatch]"
-  # Assert the reason, not just the status. Oversized and binary both exit 2, so a status-only test would pass straight
-  # through a change that reclassified one as the other.
-  [[ $HOOK_OUTPUT == *"oversized untracked text not scanned in big.txt"* ]] \
-    || fail_post_turn_safety_test "oversized untracked text [$dispatch] did not report unread coverage"
+# Staged blobs are streamed as added hunks with no whole-file cap, so the credential must be found outright rather
+# than merely counted as unread. Assert the finding family and the file rather than one release's phrasing.
+run_hook_in "$WORK_DIR/staged-oversized-shrunk" "$OVERSIZE_CAP_BYTES"
+expect_hook_status 2 "staged oversized with shrunk worktree copy"
+[[ $HOOK_OUTPUT == *"AWS access key in staged.txt"* ]] \
+  || fail_post_turn_safety_test "staged oversized with shrunk worktree copy did not reach the credential"
 
-  # Staged blobs are streamed as added hunks with no whole-file cap, so the credential must be found outright rather
-  # than merely counted as unread. The paths word findings differently, so assert the family and the file.
-  run_hook_in "$WORK_DIR/staged-oversized-shrunk" "$force_fallback" "$OVERSIZE_CAP_BYTES"
-  expect_hook_status 2 "staged oversized with shrunk worktree copy [$dispatch]"
-  [[ $HOOK_OUTPUT == *"AWS access key in staged.txt"* ]] \
-    || fail_post_turn_safety_test "staged oversized with shrunk worktree copy [$dispatch] did not reach the credential"
+run_hook_in "$WORK_DIR/staged-oversized-deleted" "$OVERSIZE_CAP_BYTES"
+expect_hook_status 2 "staged oversized with deleted worktree copy"
+[[ $HOOK_OUTPUT == *"AWS access key in staged.txt"* ]] \
+  || fail_post_turn_safety_test "staged oversized with deleted worktree copy did not reach the credential"
 
-  run_hook_in "$WORK_DIR/staged-oversized-deleted" "$force_fallback" "$OVERSIZE_CAP_BYTES"
-  expect_hook_status 2 "staged oversized with deleted worktree copy [$dispatch]"
-  [[ $HOOK_OUTPUT == *"AWS access key in staged.txt"* ]] \
-    || fail_post_turn_safety_test "staged oversized with deleted worktree copy [$dispatch] did not reach the credential"
+run_hook_in "$WORK_DIR/binary-change"
+expect_hook_status 2 "binary changed path"
+[[ $HOOK_OUTPUT == *"binary changed path not scanned in asset.bin"* ]] \
+  || fail_post_turn_safety_test "binary changed path did not report unread coverage"
 
-  run_hook_in "$WORK_DIR/binary-change" "$force_fallback"
-  expect_hook_status 2 "binary changed path [$dispatch]"
-  [[ $HOOK_OUTPUT == *"binary changed path not scanned in asset.bin"* ]] \
-    || fail_post_turn_safety_test "binary changed path [$dispatch] did not report unread coverage"
-done
-
-printf 'PASS: post-turn safety blocks unavailable scans, every reachable added-line prefix, hazards, oversized and binary unread content, and index-only credentials, while allowing clean repositories and line-scoped allow markers on both dispatch paths\n'
+printf 'PASS: post-turn safety blocks unavailable scans, every reachable added-line prefix, hazards, oversized and binary unread content, and index-only credentials, while allowing clean repositories and line-scoped allow markers\n'

@@ -26,9 +26,9 @@ pub(crate) struct ThresholdDefinition {
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Value shape for a configurable rule option. Recorded so config parsing can
-/// validate the JSON shape before the rule reads it. `boolean` is reserved for
-/// future use; the current built-in surface only exposes `stringArray`.
-#[allow(dead_code)]
+/// validate the JSON shape before the rule reads it: the naming rules' extra-name
+/// and prefix lists take a `stringArray`, and the documentation `everyCallable`
+/// switch takes a `boolean`.
 pub(crate) enum OptionValueKind {
     Boolean,
     StringArray,
@@ -83,6 +83,9 @@ pub(crate) struct RuleRegistry {
 impl RuleRegistry {
     /// Build a sorted registry for scan and rule-detail consumers.
     /// Reject IDs or relationships that the resulting catalogue cannot serve.
+    ///
+    /// `definitions` holds the rule definitions to serve, in any order; the registry stores them sorted by rule id.
+    /// Returns the registry, or `Err` naming the id that uses the reserved `custom.` namespace, repeats, or lists an unknown related rule.
     pub(crate) fn new(mut definitions: Vec<RuleDefinition>) -> Result<Self, String> {
         definitions.sort_by(|left, right| left.id.cmp(right.id));
         let mut seen = BTreeSet::new();
@@ -126,6 +129,9 @@ impl RuleRegistry {
     }
 
     /// Look up a rule definition by stable rule id.
+    ///
+    /// `rule_id` is the exact id to find, matched by binary search over the definitions sorted in `new`.
+    /// Returns the matching definition, or `None` when no rule in the registry has that id.
     pub(crate) fn get(&self, rule_id: &str) -> Option<&RuleDefinition> {
         self.definitions
             .binary_search_by(|definition| definition.id.cmp(rule_id))
@@ -134,11 +140,17 @@ impl RuleRegistry {
     }
 
     /// Return whether the registry contains a rule id.
+    ///
+    /// `rule_id` is the exact rule id to look up, using the same binary search as `get`.
+    /// Returns `true` when the registry has a definition for that id, otherwise `false`.
     pub(crate) fn contains(&self, rule_id: &str) -> bool {
         self.get(rule_id).is_some()
     }
 
     /// Look up the declared value kind for a rule's option, if any.
+    ///
+    /// `rule_id` selects the rule and `option` is the option name to match among that rule's declared options.
+    /// Returns the option's `OptionValueKind`, or `None` when the rule is unknown or declares no option by that name.
     pub(crate) fn option_value_kind(&self, rule_id: &str, option: &str) -> Option<OptionValueKind> {
         self.get(rule_id).and_then(|definition| {
             definition
@@ -151,6 +163,9 @@ impl RuleRegistry {
 }
 
 /// Build the static registry of rules shipped with this binary.
+///
+/// Returns a new owned `RuleRegistry` holding every built-in definition sorted by rule id.
+/// Panics when the built-in definitions fail `RuleRegistry::new` validation, a catalogue defect rather than a user input error.
 pub(crate) fn builtin_registry() -> RuleRegistry {
     match RuleRegistry::new(builtin_definitions()) {
         Ok(registry) => registry,
@@ -166,6 +181,8 @@ pub(crate) fn builtin_registry() -> RuleRegistry {
 /// every `--no-config` scan. Building the registry sorts and validates every
 /// definition, so rebuilding it per call is wasted work; callers that need an
 /// owned registry keep using [`builtin_registry`].
+///
+/// Returns the process-wide built-in `RuleRegistry`, built by `builtin_registry` on the first call and reused by every later call.
 pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
     static REGISTRY: OnceLock<RuleRegistry> = OnceLock::new();
     REGISTRY.get_or_init(builtin_registry)
@@ -175,6 +192,9 @@ pub(crate) fn builtin_registry_cached() -> &'static RuleRegistry {
 /// instead of repeating the number, because `list-rules` and the config that
 /// `init` generates render the catalogue: a second literal can disagree with the
 /// shipped default and silently change what a scan reports.
+///
+/// `rule_id` is the built-in rule whose declared threshold default is read from the cached catalogue.
+/// Returns that default; panics when the catalogue has no such rule or the rule declares no threshold.
 pub(crate) fn builtin_threshold(rule_id: &str) -> f64 {
     match builtin_registry_cached()
         .get(rule_id)
@@ -189,11 +209,100 @@ pub(crate) fn builtin_threshold(rule_id: &str) -> f64 {
 
 /// Catalogue default severity for a configurable rule, kept single-sourced for
 /// the same reason as [`builtin_threshold`].
+///
+/// `rule_id` is the built-in rule whose default severity is read from the cached catalogue.
+/// Returns that `Severity`; panics when the catalogue does not ship a rule with that id.
 pub(crate) fn builtin_severity(rule_id: &str) -> Severity {
     match builtin_registry_cached().get(rule_id) {
         Some(definition) => definition.default_severity,
         // PANIC: rule code naming an ID the catalogue does not ship is a defect.
         None => panic!("built-in rule `{rule_id}` is missing from the catalogue"),
+    }
+}
+
+/// Give a built-in finding its rule's catalogue confidence, kept single-sourced for the same reason as
+/// [`builtin_severity`]: `list-rules`, the hook gate and the score must read one value, so a detector's own literal
+/// must not override it.
+///
+/// `finding` is a finding whose rule id may name a built-in rule.
+/// Returns `finding` with its rule's catalogue confidence, or unchanged when the id is not a built-in rule, such as a
+/// custom rule.
+pub(crate) fn with_builtin_confidence(mut finding: crate::Finding) -> crate::Finding {
+    if let Some(definition) = builtin_registry_cached().get(&finding.rule_id) {
+        finding.confidence = definition.confidence;
+    }
+    finding
+}
+
+/// A named numeric knob a detector reads, as opposed to a rubric's single threshold. ADR-011 keeps
+/// every rubric at one `threshold`; a detector with independent knobs names each one under
+/// `rules.<id>.thresholds`, spelled as the sibling ports spell it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DetectorParameter {
+    pub(crate) name: &'static str,
+    pub(crate) default: f64,
+    pub(crate) kind: DetectorParameterKind,
+}
+
+/// The values a detector parameter accepts; anything else is a configuration error, never clamped.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DetectorParameterKind {
+    /// A whole number from `min` to `max` inclusive.
+    WholeNumber { min: u64, max: u64 },
+    /// A finite number of zero or more.
+    NonNegative,
+}
+
+/// The longest literal the high-entropy detector may be told to require. It matches gruff-php's
+/// scan cap, so one configured value means the same thing in both ports.
+pub(crate) const HIGH_ENTROPY_MAX_MIN_LENGTH: u64 = 65_535;
+
+/// Named detector parameters by rule id, with the family defaults ratified on 2026-09-02.
+const DETECTOR_PARAMETERS: &[(&str, &[DetectorParameter])] = &[(
+    "sensitive-data.high-entropy-string",
+    &[
+        DetectorParameter {
+            name: "minLength",
+            default: 32.0,
+            kind: DetectorParameterKind::WholeNumber {
+                min: 1,
+                max: HIGH_ENTROPY_MAX_MIN_LENGTH,
+            },
+        },
+        DetectorParameter {
+            name: "entropy",
+            default: 4.2,
+            kind: DetectorParameterKind::NonNegative,
+        },
+    ],
+)];
+
+/// Named detector parameters a rule declares; empty for every rubric and every other rule.
+///
+/// `rule_id` is matched exactly against the rule ids in `DETECTOR_PARAMETERS`.
+/// Returns that rule's static parameter list, or an empty slice when the table has no entry for it.
+pub(crate) fn detector_parameters(rule_id: &str) -> &'static [DetectorParameter] {
+    DETECTOR_PARAMETERS
+        .iter()
+        .find(|(id, _)| *id == rule_id)
+        .map(|(_, parameters)| *parameters)
+        .unwrap_or(&[])
+}
+
+/// Catalogue default for one named detector parameter, single-sourced like [`builtin_threshold`].
+///
+/// `rule_id` selects the rule's declared parameters and `name` is the parameter to read, such as `minLength` or `entropy`.
+/// Returns that parameter's default; panics when the rule declares no parameter with that name, including an unknown `rule_id`.
+pub(crate) fn builtin_detector_parameter(rule_id: &str, name: &str) -> f64 {
+    match detector_parameters(rule_id)
+        .iter()
+        .find(|parameter| parameter.name == name)
+    {
+        Some(parameter) => parameter.default,
+        // PANIC: rule code reading a parameter its rule does not declare is a catalogue defect.
+        None => panic!(
+            "built-in rule `{rule_id}` reads detector parameter `{name}` it does not declare"
+        ),
     }
 }
 
@@ -263,6 +372,35 @@ macro_rules! rule_definition {
             related_rules: $related,
         }
     };
+    (
+        $id:literal,
+        $name:literal,
+        $pillar:expr,
+        $kind:expr,
+        $default_severity:expr,
+        $confidence:expr,
+        $threshold:expr,
+        $description:literal,
+        options: $options:expr,
+        false_positives: $false_positives:expr,
+        related: $related:expr $(,)?
+    ) => {
+        RuleDefinition {
+            options: $options,
+            ..rule_definition!(
+                $id,
+                $name,
+                $pillar,
+                $kind,
+                $default_severity,
+                $confidence,
+                $threshold,
+                $description,
+                false_positives: $false_positives,
+                related: $related
+            )
+        }
+    };
 }
 
 mod idiom_security_size_test_definitions;
@@ -279,6 +417,9 @@ use structure_docs_reliability_definitions::{
 };
 use waste_definitions::WASTE_RULES;
 
+/// Concatenate the per-area built-in rule tables into one list, in table order, for `RuleRegistry::new` to sort and validate.
+///
+/// Returns every built-in definition in table order, unsorted and not yet checked for duplicate or reserved ids.
 fn builtin_definitions() -> Vec<RuleDefinition> {
     [
         ARCHITECTURE_RULES,
@@ -301,6 +442,9 @@ fn builtin_definitions() -> Vec<RuleDefinition> {
     .collect()
 }
 
+/// Build a `ThresholdDefinition` in const context so each rule's threshold constant states only its default number.
+///
+/// Returns a threshold whose `default` field holds the given `default` value.
 const fn threshold(default: f64) -> ThresholdDefinition {
     ThresholdDefinition { default }
 }

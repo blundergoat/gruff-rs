@@ -22,18 +22,24 @@ extends = ":workspace"
 glob_scan_max_depth = 3
 
 [permissions.goat-flow.filesystem.":workspace_roots"]
-# Codex applies the most specific matching path, so the reviewed sample can
-# remain editable inside the broader deny for real and nonstandard env files.
+# Keep the entire dotenv filename family out of native tool access, including
+# backups and deployment suffixes. Put checked-in samples outside this naming
+# family, for example in env.example.
+# Rules match secret content shapes and credential stores, never plain folder
+# or file names such as secrets/ or credentials*, which collide with ordinary
+# application code. The Bash deny hook covers shell access to home stores.
 "**/.env*" = "deny"
-"**/.env.example" = "write"
-"**/secrets/**" = "deny"
 "**/.ssh/**" = "deny"
 "**/.aws/**" = "deny"
-"**/.docker/**" = "deny"
 "**/.gnupg/**" = "deny"
+"**/.config/gcloud/**" = "deny"
+"**/.docker/**" = "deny"
 "**/.kube/**" = "deny"
-"**/credentials*" = "deny"
 "**/.npmrc" = "deny"
+"**/.netrc" = "deny"
+"**/.git-credentials" = "deny"
+"**/.config/gh/hosts.yml" = "deny"
+"**/.pgpass" = "deny"
 "**/.pypirc" = "deny"
 "**/*.pem" = "deny"
 "**/*.key" = "deny"

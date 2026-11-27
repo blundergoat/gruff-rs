@@ -4,12 +4,32 @@
 
 use super::*;
 
+/// Repository discovery retains workflow env and reachable steps beside isolated guards.
+#[test]
+pub(crate) fn github_secret_event_guards_keep_unsafe_ownership_reported() {
+    let _guard = analysis_lock();
+    let dir = tempdir().expect("tempdir");
+    baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
+    write_github_metadata(dir.path(), ".github/workflows/guards.yml", "on:\n  pull_request_target:\nenv:\n  TOKEN: ${{ secrets.WORKFLOW_TOKEN }}\njobs:\n  issues:\n    if: github.event_name == 'issues'\n    env:\n      TOKEN: ${{ secrets.ISSUES_TOKEN }}\n  build:\n    steps:\n      - if: github.event_name == 'issues'\n        run: echo ${{ secrets.STEP_TOKEN }}\n      - run: echo ${{ secrets.REACHABLE_TOKEN }}\n");
+    let mut options = default_test_options();
+    options.no_config = true;
+    let report = run_project_analysis(dir.path(), options).expect("analysis succeeds");
+    assert_eq!(
+        github_rule_count(&report, "security.github-actions-secrets-in-pr"),
+        2
+    );
+}
+
 const RETAINED_PYPA_ACTION: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/github-actions/pypa-cibuildwheel/action.yml"
 ));
 
 /// Write one workflow or action fixture at the path a CLI user supplies.
+///
+/// `root` is the project directory and `relative_path` is the fixture's location inside it; missing parent directories are created first.
+/// `source` becomes the complete file contents, replacing any file already at that path.
+/// Panics when the joined path has no parent or when the directories or the file cannot be written.
 fn write_github_metadata(root: &Path, relative_path: &str, source: &str) {
     let metadata_path = root.join(relative_path);
     let parent = metadata_path
@@ -20,6 +40,9 @@ fn write_github_metadata(root: &Path, relative_path: &str, source: &str) {
 }
 
 /// Count one rule's findings so applicability assertions remain readable.
+///
+/// `report` is the finished analysis to inspect, and `rule_id` is compared exactly against each finding's rule ID.
+/// Returns how many findings in `report` carry `rule_id`, or zero when none do.
 fn github_rule_count(report: &AnalysisReport, rule_id: &str) -> usize {
     // Only the requested rule contributes to the user-visible count under review.
     report
@@ -30,6 +53,10 @@ fn github_rule_count(report: &AnalysisReport, rule_id: &str) -> usize {
 }
 
 /// Select GitHub metadata findings when a test needs to inspect their paths or wording.
+///
+/// `report` is the finished analysis to filter; the returned references borrow its findings.
+/// Returns findings whose rule ID is `ci.github-event-shell-interpolation` or starts with `security.github-actions-`, in report order,
+/// or an empty vector when the report holds none.
 fn github_metadata_findings(report: &AnalysisReport) -> Vec<&Finding> {
     // The GitHub prefixes isolate metadata findings from unrelated project diagnostics.
     report
@@ -73,11 +100,12 @@ pub fn run_shell(command: &str) {
 "#,
     );
 
+    enable_builtin_rule(dir.path(), "security.process-command");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -161,11 +189,12 @@ pub(crate) fn process_command_requires_std_import_provenance() {
             .expect("write Rust case");
     }
 
+    enable_builtin_rule(dir.path(), "security.process-command");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -245,11 +274,12 @@ pub fn print_message() {
 "#,
     );
 
+    enable_builtin_rule(dir.path(), "security.process-command");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
@@ -267,7 +297,8 @@ pub fn print_message() {
     );
 }
 
-/// Prove workflow event gates recognise scalar, list, and mapping `on:` forms.
+/// Prove workflow event gates recognise scalar, list, commented block-list and mapping `on:`
+/// forms, and that the per-run `GITHUB_TOKEN` is not a repository secret.
 #[test]
 pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
     let _guard = analysis_lock();
@@ -291,17 +322,22 @@ pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
     write_github_metadata(
         dir.path(),
         ".github/workflows/target-scalar.yml",
-        "name: target\non: pull_request_target\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+        "name: target\non: pull_request_target\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
     write_github_metadata(
         dir.path(),
         ".github/workflows/target-list.yml",
-        "name: target\non: [push, pull_request_target]\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+        "name: target\non: [push, pull_request_target]\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
     write_github_metadata(
         dir.path(),
         ".github/workflows/target-mapping.yml",
-        "name: target\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo ready\n",
+        "name: target\non:\n  pull_request_target:\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n      - run: echo '${{ secrets.GITHUB_TOKEN }}'\n",
+    );
+    write_github_metadata(
+        dir.path(),
+        ".github/workflows/target-commented-list.yml",
+        "name: target\non:\n  - push\n  - pull_request_target  # label bot\njobs:\n  test:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
 
     let report = run_project_analysis(
@@ -317,12 +353,12 @@ pub(crate) fn github_actions_security_events_accept_scalar_on_values() {
 
     assert_eq!(
         github_rule_count(&report, "security.github-actions-secrets-in-pr"),
-        3,
-        "each pull-request event shape should expose its secret reference"
+        4,
+        "each pull_request_target event shape exposes its secret; plain pull_request and GITHUB_TOKEN do not"
     );
     assert_eq!(
         github_rule_count(&report, "security.github-actions-pull-request-target"),
-        3,
+        4,
         "each pull_request_target event shape should be reviewed"
     );
 }
@@ -349,6 +385,8 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
         "name: ordinary-yaml\nruns:\n  steps:\n    - uses: acme/tool@v1\n    - run: echo '${{ github.event.issue.title }}'\n    - run: curl https://installer.example/tool.sh | bash\n",
     );
 
+    // Off by default (ADR-024): enable it so the count proves the rule ran.
+    write_config(dir.path(), "rules:\n  ci.github-event-shell-interpolation:\n    enabled: true\n  security.github-actions-broad-permissions:\n    enabled: true\n");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -357,7 +395,6 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
                 PathBuf::from("nested/action.yaml"),
                 PathBuf::from("nested/not-action.yml"),
             ],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
@@ -400,7 +437,8 @@ pub(crate) fn github_actions_explicit_action_metadata_applies_shared_step_rules_
 }
 
 /// Prove `uses:` reports a dependency attached directly to a GitHub step or job,
-/// and stays silent for `env:`, `with:`, and lookalike keys that only spell `uses`.
+/// and stays silent for `env:`, `with:`, and lookalike keys that only spell `uses`,
+/// and for GitHub's own first-party `actions/*` and `github/*` actions.
 #[test]
 pub(crate) fn github_actions_uses_requires_step_placement() {
     let _guard = analysis_lock();
@@ -414,7 +452,7 @@ pub(crate) fn github_actions_uses_requires_step_placement() {
     write_github_metadata(
         dir.path(),
         ".github/workflows/placement.yml",
-        "name: placement\nenv:\n  uses: acme/env-value@v1\njobs:\n  reusable:\n    uses: acme/reusable/.github/workflows/check.yml@v1\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Configure\n        with:\n          uses: acme/config-value@v1\n      - uses: acme/workflow-tool@v1\nmetadata:\n  jobs:\n    fake:\n      steps:\n        - uses: acme/nested-workflow-value@v1\n",
+        "name: placement\nenv:\n  uses: acme/env-value@v1\njobs:\n  reusable:\n    uses: acme/reusable/.github/workflows/check.yml@v1\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Configure\n        with:\n          uses: acme/config-value@v1\n      - uses: acme/workflow-tool@v1\n      - uses: actions/checkout@v4\n      - uses: github/codeql-action/init@v3\nmetadata:\n  jobs:\n    fake:\n      steps:\n        - uses: acme/nested-workflow-value@v1\n",
     );
 
     let report = run_project_analysis(
@@ -439,7 +477,7 @@ pub(crate) fn github_actions_uses_requires_step_placement() {
     assert_eq!(
         unpinned_findings.len(),
         3,
-        "only direct step and job dependencies should report; findings={unpinned_findings:?}"
+        "only direct third-party step and job dependencies should report; findings={unpinned_findings:?}"
     );
     assert!(unpinned_findings
         .iter()
@@ -473,12 +511,12 @@ pub(crate) fn github_actions_events_require_top_level_on_placement() {
     write_github_metadata(
         dir.path(),
         ".github/workflows/quoted-event.yml",
-        "name: quoted event\non:\n  \"pull_request\":\n    branches: [main]\njobs:\n  build:\n    steps:\n      - run: echo '${{secrets.DEPLOY_TOKEN}}'\n",
+        "name: quoted event\non:\n  \"pull_request_target\":\n    branches: [main]\njobs:\n  build:\n    steps:\n      - run: echo '${{secrets.DEPLOY_TOKEN}}'\n",
     );
     write_github_metadata(
         dir.path(),
         ".github/workflows/flow-mapping.yml",
-        "name: flow mapping\non: {push: null, pull_request: null}\njobs:\n  build:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
+        "name: flow mapping\non: {push: null, pull_request_target: null}\njobs:\n  build:\n    steps:\n      - run: echo '${{ secrets.DEPLOY_TOKEN }}'\n",
     );
 
     let report = run_project_analysis(
@@ -492,8 +530,8 @@ pub(crate) fn github_actions_events_require_top_level_on_placement() {
     )
     .expect("analysis succeeds");
 
-    // Only the two real pull-request workflows expose their secret reference, and the
-    // second proves interior expression whitespace is optional.
+    // The three real pull_request_target workflows expose their secret reference, and the
+    // quoted event proves interior expression whitespace is optional.
     assert_eq!(
         github_rule_count(&report, "security.github-actions-secrets-in-pr"),
         3,
@@ -501,8 +539,8 @@ pub(crate) fn github_actions_events_require_top_level_on_placement() {
     );
     assert_eq!(
         github_rule_count(&report, "security.github-actions-pull-request-target"),
-        1,
-        "only the quoted target trigger is a pull_request_target workflow"
+        3,
+        "the quoted scalar, quoted event and flow-mapping triggers are pull_request_target workflows"
     );
     let event_findings = github_metadata_findings(&report);
     assert!(
@@ -645,30 +683,45 @@ pub(crate) fn github_actions_broad_permissions_ignores_step_inputs() {
         "name: workflow grant\non: push\npermissions: write-all\njobs:\n  build:\n    steps:\n      - run: echo ready\n",
     );
 
+    for (name, source) in [
+        ("single-job-scoped", "permissions:\n  pull-requests: write\njobs:\n  comment:\n    steps:\n      - run: gh pr comment 1 --body ready\n"),
+        ("multi-job-scoped", "permissions:\n  contents: write\njobs:\n  release:\n    steps:\n      - run: echo release\n  test:\n    steps:\n      - run: echo test\n"),
+        ("ambiguous-jobs", "permissions:\n  contents: write\njobs: unknown\n"),
+        ("reusable-job", "permissions:\n  contents: write\njobs:\n  release:\n    uses: acme/workflows/.github/workflows/release.yml@main\n"),
+        ("matrix-job", "permissions:\n  contents: write\njobs:\n  test:\n    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-latest]\n    steps:\n      - run: echo ready\n"),
+    ] {
+        write_github_metadata(dir.path(), &format!(".github/workflows/{name}.yml"), source);
+    }
+
+    enable_builtin_rule(dir.path(), "security.github-actions-broad-permissions");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
+            no_config: false,
             no_baseline: true,
             ..default_test_options()
         },
     )
     .expect("analysis succeeds");
 
-    let permission_findings: Vec<&Finding> = report
+    let mut permission_paths: Vec<&str> = report
         .findings
         .iter()
         .filter(|finding| finding.rule_id == "security.github-actions-broad-permissions")
+        .map(|finding| finding.file_path.as_str())
         .collect();
+    permission_paths.sort_unstable();
     assert_eq!(
-        permission_findings.len(),
-        1,
-        "only the workflow-level grant is a permission; findings={permission_findings:?}"
-    );
-    assert_eq!(
-        permission_findings[0].file_path,
-        ".github/workflows/workflow-permissions.yml"
+        permission_paths,
+        vec![
+            ".github/workflows/ambiguous-jobs.yml",
+            ".github/workflows/matrix-job.yml",
+            ".github/workflows/multi-job-scoped.yml",
+            ".github/workflows/reusable-job.yml",
+            ".github/workflows/workflow-permissions.yml",
+        ],
+        "step inputs and a scoped grant confined to one concrete job are quiet"
     );
 }
 
@@ -727,11 +780,11 @@ pub(crate) fn github_actions_directory_discovery_keeps_action_metadata_out_of_sc
         "name: ci\njobs:\n  test:\n    steps:\n      - run: echo '${{ github.event.issue.title }}'\n",
     );
 
+    enable_builtin_rule(dir.path(), "ci.github-event-shell-interpolation");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from(".")],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
@@ -761,11 +814,11 @@ pub(crate) fn github_actions_retained_pypa_action_is_a_silent_negative() {
     baseline_with_lib(dir.path(), "/// Probe.\npub fn entry() {}\n");
     write_github_metadata(dir.path(), "action.yml", RETAINED_PYPA_ACTION);
 
+    write_config(dir.path(), "rules:\n  ci.github-event-shell-interpolation:\n    enabled: true\n  security.github-actions-broad-permissions:\n    enabled: true\n");
     let report = run_project_analysis(
         dir.path(),
         AnalysisOptions {
             paths: vec![PathBuf::from("action.yml")],
-            no_config: true,
             no_baseline: true,
             ..default_test_options()
         },
@@ -968,8 +1021,8 @@ pub(crate) fn file_length_no_config_gate_matches_ratified_bar() {
         .collect();
     assert_eq!(
         file_length,
-        vec![("src/over_bar.rs", Severity::Error)],
-        "only the file past the ratified bar should flag, at error severity",
+        vec![("src/over_bar.rs", Severity::Advisory)],
+        "only the file past the ratified bar should flag; just past it, the finding is a lower-band notice",
     );
 }
 

@@ -1,29 +1,76 @@
 //! Hook capability, changed-region, and native new-only comparison contracts.
+//!
 //! These tests keep serialized hook findings stable while line shifts and
 //! duplicate identities are matched by occurrence count.
 
 use super::*;
 
+/// Let hook consumers distinguish an invalid change selection from a config they cannot load.
 #[test]
-pub(crate) fn hook_capabilities_advertise_gruff_hook_v1() {
+pub(crate) fn hook_names_an_unreadable_scope_changed_region_and_a_bad_config_config() {
+    // A scope the run could not read carries one family type on every surface (FAMILY-CONTRACT.md section 6).
+    for message in [
+        "invalid changed range `=abc`: line numbers must be integers",
+        "--changed-ranges must include at least one line or range",
+    ] {
+        let value: Value = serde_json::from_str(&crate::hook::render_run_failure(
+            &RunFailure::ChangedRegion(message.to_string()),
+        ))
+        .expect("run failure json");
+
+        assert_eq!(
+            value["diagnostics"][0]["type"], "changed-region",
+            "{message}"
+        );
+        assert_eq!(value["diagnostics"][0]["severity"], "fatal", "{message}");
+        assert_eq!(value["findings"].as_array().expect("findings").len(), 0);
+    }
+
+    // A configuration the loader refused keeps the payload's own config block, which points at the right file.
+    let refused: Value = serde_json::from_str(&crate::hook::render_run_failure(
+        &RunFailure::Config("config schema is not recognised".to_string()),
+    ))
+    .expect("config failure json");
+
+    assert_eq!(refused["diagnostics"][0]["type"], "config");
+    assert_eq!(refused["config"]["schemaOk"], false);
+}
+
+/// A hook can check which machine contract the installed binary supports before asking it to scan.
+#[test]
+pub(crate) fn hook_capabilities_advertise_gruff_hook_v2() {
     let value: Value =
         serde_json::from_str(&crate::hook::render_capabilities()).expect("capabilities json");
 
-    assert_eq!(value["contractVersion"], "gruff.hook.v1");
+    assert_eq!(value["contractVersion"], "gruff.hook.v2");
     assert_eq!(value["analyzer"]["name"], "gruff-rs");
-    assert_eq!(value["supports"]["changedRanges"], true);
-    assert_eq!(value["supports"]["baseline"], true);
-    assert_eq!(value["supports"]["scopeField"], true);
-    assert_eq!(value["supports"]["metadata"], true);
-    assert_eq!(value["supports"]["stableIdentity"], true);
-    assert_eq!(value["supports"]["ignoreReport"], true);
-    assert_eq!(value["supports"]["newOnly"], true);
-    assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
-    assert_eq!(value["flags"]["diff"], "--diff");
+    // v2's twelve advertisements, each of which must be true of this port rather than merely present.
+    for capability in [
+        "baseline",
+        "baselineV3",
+        "changedRanges",
+        "confidenceGate",
+        "deepScanBudget",
+        "diagnostics",
+        "diff",
+        "ignoreReport",
+        "metadata",
+        "newOnly",
+        "scopeField",
+        "stableIdentity",
+    ] {
+        assert_eq!(value["supports"][capability], true, "{capability}");
+    }
     assert_eq!(value["flags"]["baseline"], "--baseline");
+    assert_eq!(value["flags"]["changedRanges"], "--changed-ranges");
+    assert_eq!(value["flags"]["deepScanBudget"], "--deep-scan-budget");
+    assert_eq!(value["flags"]["diff"], "--diff");
+    assert_eq!(value["flags"]["failOnDiagnostics"], "--fail-on-diagnostics");
+    assert_eq!(value["flags"]["minConfidence"], "--min-confidence");
     assert_eq!(value["flagOrder"], "any");
 }
 
+/// Accept the argument ordering callers commonly use when constructing hook commands.
 #[test]
 pub(crate) fn hook_accepts_flags_before_and_after_paths() {
     let before = Cli::try_parse_from([
@@ -58,6 +105,7 @@ pub(crate) fn hook_accepts_flags_before_and_after_paths() {
     assert_eq!(before.changed_ranges.as_deref(), Some("1-1"));
 }
 
+/// A full-scan consumer can locate findings and display their available remediation.
 #[test]
 pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_metadata() {
     let _guard = analysis_lock();
@@ -91,7 +139,7 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
 
     let secret = finding_by_rule(findings, "sensitive-data.aws-access-key");
     assert_eq!(secret["scope"], "line");
-    assert_eq!(secret["severity"], "error");
+    assert_eq!(secret["severity"], "warning");
     assert!(secret["remediation"]
         .as_str()
         .is_some_and(|text| !text.is_empty()));
@@ -99,6 +147,7 @@ pub(crate) fn hook_full_scan_emits_file_and_line_scopes_with_remediation_and_met
     assert_eq!(value["config"]["schemaOk"], true);
 }
 
+/// A line-only edit must not make the hook block on an unrelated file-wide finding.
 #[test]
 pub(crate) fn hook_changed_region_drops_file_scope_without_anchor_residual() {
     let _guard = analysis_lock();
@@ -142,6 +191,7 @@ pub(crate) fn hook_changed_region_drops_file_scope_without_anchor_residual() {
     assert!(findings.iter().any(|finding| finding["scope"] == "line"));
 }
 
+/// Avoid renaming the underlying issue when a developer moves code or changes its measured size.
 #[test]
 pub(crate) fn hook_stable_identity_survives_line_shift_and_measured_value_change() {
     let line_ten = Finding::new(FindingDescriptor {
@@ -169,6 +219,7 @@ pub(crate) fn hook_stable_identity_survives_line_shift_and_measured_value_change
     assert_eq!(six_oh_one.scope, FindingScope::File);
 }
 
+/// Keep reviewed file findings quiet while reporting a newly crossed threshold.
 #[test]
 pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_new_threshold_crossing(
 ) {
@@ -217,6 +268,7 @@ pub(crate) fn hook_baseline_new_only_suppresses_existing_file_scope_and_keeps_ne
     assert_has_rule(&newly_crossed, "size.file-length");
 }
 
+/// Compare file-level warnings across a Git edit without relying on moved line numbers.
 #[test]
 pub(crate) fn hook_diff_new_only_uses_stable_identity_for_file_scope_thresholds() {
     let _guard = analysis_lock();
@@ -258,6 +310,7 @@ pub(crate) fn hook_diff_new_only_uses_stable_identity_for_file_scope_thresholds(
     assert_has_rule(&current, "size.file-length");
 }
 
+/// Keep skip reasons and config failures available to consumers that read only hook JSON.
 #[test]
 pub(crate) fn hook_reports_ignored_paths_and_config_errors_in_band() {
     let _guard = analysis_lock();
@@ -292,6 +345,7 @@ pub(crate) fn hook_reports_ignored_paths_and_config_errors_in_band() {
         .is_some_and(|text| text.contains("configuration")));
 }
 
+/// Ask for an explicit opt-in before entering a Git-backed hook comparison.
 #[test]
 pub(crate) fn hook_diff_requires_the_unsafe_git_opt_in() {
     // `--diff` executes Git on the target repo, so per ADR-019 it must be a
@@ -341,6 +395,7 @@ pub(crate) fn hook_diff_requires_the_unsafe_git_opt_in() {
     .expect("hook --changed-ranges parses without the unsafe opt-in");
 }
 
+/// A reviewed file remains comparable when its path uses characters outside ASCII.
 #[test]
 pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
     let _guard = analysis_lock();
@@ -367,6 +422,7 @@ pub(crate) fn hook_diff_base_export_handles_non_ascii_filenames() {
     );
 }
 
+/// A newline in a filename stays part of the path during the Git comparison.
 #[test]
 pub(crate) fn hook_diff_base_export_handles_newline_filenames() {
     let _guard = analysis_lock();
@@ -391,6 +447,7 @@ pub(crate) fn hook_diff_base_export_handles_newline_filenames() {
     );
 }
 
+/// A reviewed occurrence cannot hide a second occurrence introduced by the edit.
 #[test]
 pub(crate) fn hook_diff_new_only_keeps_a_newly_added_duplicate_line_finding() {
     let _guard = analysis_lock();
@@ -427,6 +484,10 @@ pub(crate) fn hook_diff_new_only_keeps_a_newly_added_duplicate_line_finding() {
     );
 }
 
+/// Renders `report` as hook output and parses the JSON text back into a value for assertions.
+///
+/// `changed_region_active` and `new_only_active` tell the renderer whether changed-region scope and new-only filtering applied to the run.
+/// Returns the parsed hook document; panics when the rendered text is not valid JSON.
 fn render_hook_value(
     report: AnalysisReport,
     changed_region_active: bool,
@@ -440,6 +501,9 @@ fn render_hook_value(
     .expect("hook json")
 }
 
+/// Finds the first hook finding in `findings` whose `ruleId` field equals `rule_id`.
+///
+/// Returns a reference to that finding; panics, printing all of `findings`, when none matches.
 fn finding_by_rule<'a>(findings: &'a [Value], rule_id: &str) -> &'a Value {
     findings
         .iter()
@@ -447,6 +511,10 @@ fn finding_by_rule<'a>(findings: &'a [Value], rule_id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing {rule_id} in {findings:#?}"))
 }
 
+/// Writes `src/lib.rs` under `root` as one constant holding an AWS-access-key-shaped string followed by filler constants.
+///
+/// `lines` is the total line count including the key line, and a value of 0 still writes that line.
+/// Creates `src/` when missing and replaces any existing `src/lib.rs`; panics when either write fails.
 fn write_secret_oversized_rust_file(root: &Path, lines: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     let mut source = String::from("const LEAKED_KEY: &str = \"AKIA1234567890ABCDEF\";\n");
@@ -456,6 +524,9 @@ fn write_secret_oversized_rust_file(root: &Path, lines: usize) {
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
 
+/// Writes `src/lib.rs` under `root` as `lines` public `usize` filler constants, one per line, to set its file length.
+///
+/// Creates `src/` when missing and replaces any existing `src/lib.rs`; panics when either write fails.
 fn write_oversized_rust_file(root: &Path, lines: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     let source = (0..lines)
@@ -464,6 +535,10 @@ fn write_oversized_rust_file(root: &Path, lines: usize) {
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
 
+/// Writes `lines` public `usize` filler constants, one per line, to the file at `rel` under `root`.
+///
+/// `rel` is the file path relative to `root`; its parent directories are created first and any existing file is replaced.
+/// Panics when a directory or the file cannot be written.
 fn write_named_oversized_rust_file(root: &Path, rel: &str, lines: usize) {
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -475,6 +550,9 @@ fn write_named_oversized_rust_file(root: &Path, rel: &str, lines: usize) {
     fs::write(&path, source).expect("named lib write");
 }
 
+/// Writes `src/lib.rs` under `root` as `count` differently named constants that all hold the same AWS-access-key-shaped string.
+///
+/// Creates `src/` when missing and replaces any existing `src/lib.rs`; panics when either write fails.
 fn write_aws_key_file(root: &Path, count: usize) {
     fs::create_dir_all(root.join("src")).expect("src dir");
     // Distinct const names, identical AWS key value: each line yields a
@@ -485,6 +563,9 @@ fn write_aws_key_file(root: &Path, count: usize) {
     fs::write(root.join("src/lib.rs"), source).expect("lib write");
 }
 
+/// Counts the `sensitive-data.aws-access-key` findings in `report`.
+///
+/// Returns that count, which is 0 when the rule did not fire.
 fn aws_key_count(report: &AnalysisReport) -> usize {
     report
         .findings
@@ -493,6 +574,9 @@ fn aws_key_count(report: &AnalysisReport) -> usize {
         .count()
 }
 
+/// Analyses only `src/lib.rs` in the project at `root`, without reading a config file or baseline.
+///
+/// Returns the analysis report; panics when config loading or the analysis fails.
 fn analyse_lib_no_config(root: &Path) -> AnalysisReport {
     run_project_analysis(
         root,
@@ -506,6 +590,9 @@ fn analyse_lib_no_config(root: &Path) -> AnalysisReport {
     .expect("analysis succeeds")
 }
 
+/// Builds the analysis options the hook diff tests pass when exporting base stable identities.
+///
+/// Returns `default_test_options` narrowed to `src/lib.rs`, with config files and baselines turned off.
 fn hook_diff_test_options() -> AnalysisOptions {
     AnalysisOptions {
         paths: vec![PathBuf::from("src/lib.rs")],
@@ -515,17 +602,26 @@ fn hook_diff_test_options() -> AnalysisOptions {
     }
 }
 
+/// Initialises a Git repository at `root` and sets a local test user name and email so commits can be made there.
+///
+/// Panics when any of the Git commands fails.
 fn init_git_repo(root: &Path) {
     git(root, &["init"]);
     git(root, &["config", "user.name", "Gruff Test"]);
     git(root, &["config", "user.email", "gruff@example.test"]);
 }
 
+/// Runs Git in the repository at `root` with the command-line arguments `args`, discarding its output.
+///
+/// Panics when the command fails.
 fn git(root: &Path, args: &[&str]) {
     let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
     crate::changed_region::git_output(root, &args).expect("git command succeeds");
 }
 
+/// Builds a `size.file-length` error finding for `src/lib.rs` that reports `lines` measured lines against a threshold of 1000.
+///
+/// Returns the finding, placed on line 1 with high confidence and no symbol or remediation.
 fn file_length_finding(lines: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "size.file-length".to_string(),
@@ -546,6 +642,9 @@ fn file_length_finding(lines: usize) -> Finding {
     })
 }
 
+/// Copies every descriptor field of `finding` into a new `FindingDescriptor`, so a test can rebuild the finding with some fields changed.
+///
+/// Returns the descriptor, cloned field by field from `finding`.
 fn finding_descriptor_from(finding: &Finding) -> FindingDescriptor {
     FindingDescriptor {
         rule_id: finding.rule_id.clone(),

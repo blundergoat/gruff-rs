@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-06-12
+**Updated:** 2026-10-05 (`security.path-traversal-candidate`, kept on by default here, was retired in 0.6.0, ADR-024)
 **Author(s):** Codex, with owner approval
 **Ticket/Context:** 0.4.0 M09 external-scan rubric follow-up
 

@@ -1,0 +1,263 @@
+//! Load and validate the `sensitiveExclusions` section that suppresses sensitive-data findings.
+//!
+//! Separate from ordinary `exclude` so no key can match on secret text or value previews (FAMILY-CONTRACT.md section 13a).
+//! Every malformed entry stops the CLI with exit code 2 before any sensitive finding can be hidden:
+//! - `rule`: one exact sensitive-data rule ID (no globs or pillar selectors)
+//! - `path`: one exact project-relative file path (no globs, `..`, or absolute paths)
+//! - `symbol`: optional narrowing symbol
+//! - `reason`: required human-readable review rationale
+
+use super::*;
+
+/// The only keys one `sensitiveExclusions` entry may carry.
+/// Every message- and value-matching key is therefore rejected as unknown.
+const SENSITIVE_EXCLUSION_KEYS: &[&str] = &["rule", "path", "symbol", "reason"];
+
+/// Characters that turn a rule id into a pattern rather than one exact id.
+const RULE_PATTERN_CHARACTERS: &[char] = &[
+    '*', '?', '[', ']', '{', '}', '(', ')', '|', '^', '$', '+', '\\', '/',
+];
+
+/// Characters that turn a path into a glob rather than one exact file.
+const PATH_GLOB_CHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
+
+/// Describe one user-configured sensitive-data suppression from `sensitiveExclusions`.
+///
+/// Scopes suppression to one exact rule ID and one project-relative display path, with an optional `symbol`.
+/// An absent `symbol` suppresses every match of that rule in that file; no message or value key exists (FAMILY-CONTRACT.md section 13a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SensitiveExclusionRule {
+    pub(crate) rule_id: String,
+    pub(crate) path: String,
+    pub(crate) symbol: Option<String>,
+    pub(crate) reason: String,
+}
+
+/// Validate every configured sensitive exclusion and store the resolved scopes.
+/// An empty list means the user suppresses no sensitive-data finding.
+///
+/// `section_value` is the raw `sensitiveExclusions` value and must be an array of entry objects.
+/// `config` supplies the custom rules that resolve rule ids, and its `sensitive_exclusions` list is replaced only when every entry passes.
+/// Returns `Err` naming the first non-array value, invalid entry or duplicate scope, leaving `config` unchanged; otherwise `Ok(())`.
+pub(crate) fn apply_sensitive_exclusions_section(
+    section_value: &Value,
+    config: &mut Config,
+) -> Result<(), String> {
+    let registry = rules::builtin_registry();
+    let entries = section_value
+        .as_array()
+        .ok_or_else(|| "config key `sensitiveExclusions` must be an array".to_string())?;
+    // The resolved list starts empty so only validated entries can suppress a user's finding.
+    let mut sensitive_exclusions: Vec<SensitiveExclusionRule> = Vec::new();
+    // Each entry is validated with its list position so every diagnostic names an editable entry.
+    for (index, entry_value) in entries.iter().enumerate() {
+        let exclusion =
+            parse_sensitive_exclusion(index, entry_value, &registry, &config.custom_rules)?;
+        reject_duplicate_scope(&sensitive_exclusions, &exclusion, index)?;
+        sensitive_exclusions.push(exclusion);
+    }
+    config.sensitive_exclusions = sensitive_exclusions;
+    Ok(())
+}
+
+/// Parse one entry into a validated rule, path, optional symbol, and rationale.
+/// Any key outside the four supported names fails before analysis begins.
+///
+/// `index` is the entry's list position used to name it in diagnostics, and `entry_value` is the raw entry, which must be an object.
+/// `registry` and `custom_rules` resolve the rule id to its pillar.
+/// Returns the validated exclusion, or `Err` when the entry is not an object, carries an unknown key, or has an invalid field.
+fn parse_sensitive_exclusion(
+    index: usize,
+    entry_value: &Value,
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
+) -> Result<SensitiveExclusionRule, String> {
+    let entry_path = format!("sensitiveExclusions[{index}]");
+    let entry = entry_value
+        .as_object()
+        .ok_or_else(|| format!("config key `{entry_path}` must be an object"))?;
+    reject_unknown_keys(
+        entry,
+        SENSITIVE_EXCLUSION_KEYS,
+        &format!("config key `{entry_path}`"),
+    )?;
+
+    Ok(SensitiveExclusionRule {
+        rule_id: parse_sensitive_rule_id(entry, &entry_path, registry, custom_rules)?,
+        path: parse_sensitive_path(entry, &entry_path)?,
+        symbol: parse_sensitive_symbol(entry, &entry_path)?,
+        reason: required_non_empty_config_string(entry, "reason", &entry_path)?,
+    })
+}
+
+/// Accept exactly one registered sensitive-data rule id.
+/// Patterns, pillar selectors, unknown ids, and other pillars each fail with their own diagnostic.
+///
+/// `entry` is the parsed entry object whose `rule` key is read, and `entry_path` names that entry in diagnostics.
+/// `registry` holds the built-in rules and `custom_rules` the project-defined ones consulted when the id is not built in.
+///
+/// Returns the accepted rule id, or `Err` when `rule` is missing, not a string or empty, or names a pattern or pillar selector.
+/// An unknown id or a rule outside the sensitive-data pillar also returns `Err`.
+fn parse_sensitive_rule_id(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
+) -> Result<String, String> {
+    let key_path = format!("{entry_path}.rule");
+    let rule_id = required_non_empty_config_string(entry, "rule", entry_path)?;
+    reject_rule_pattern(&rule_id, &key_path)?;
+    let pillar = rule_pillar(&rule_id, registry, custom_rules).ok_or_else(|| {
+        if crate::migrate_config::is_retired_0_5_rule(&rule_id) {
+            crate::migrate_config::retired_rule_config_error(&rule_id, &key_path)
+        } else {
+            format!("unknown rule id `{rule_id}` in config key `{key_path}`")
+        }
+    })?;
+    // Only the sensitive-data pillar is governed here; every other rule keeps its normal channel.
+    if pillar != Pillar::SensitiveData {
+        return Err(format!(
+            "config key `{key_path}` must name a sensitive-data rule; `{rule_id}` belongs to the {} pillar",
+            pillar_label(pillar)
+        ));
+    }
+    Ok(rule_id)
+}
+
+/// Reject any rule value that selects more than one rule.
+/// A blanket suppression would hide findings nobody reviewed.
+///
+/// `rule_id` is the configured rule value, and `key_path` names its config key in diagnostics.
+/// Returns `Err` when `rule_id` contains a `RULE_PATTERN_CHARACTERS` character or parses as a pillar selector; otherwise `Ok(())`.
+fn reject_rule_pattern(rule_id: &str, key_path: &str) -> Result<(), String> {
+    // Wildcard, glob, and regular-expression syntax all name a set rather than one rule.
+    if rule_id.contains(RULE_PATTERN_CHARACTERS) {
+        return Err(format!(
+            "config key `{key_path}` must name one exact rule id; `{rule_id}` uses wildcard, glob, or regular-expression syntax"
+        ));
+    }
+    // A pillar name is a selector wearing a rule id and would suppress the whole pillar.
+    if parse_pillar_selector(rule_id).is_some() {
+        return Err(format!(
+            "config key `{key_path}` must name one exact rule id, not the pillar selector `{rule_id}`"
+        ));
+    }
+    Ok(())
+}
+
+/// Find the pillar of one built-in or project-defined rule id.
+/// `None` means the user named a rule this build does not know.
+///
+/// `rule_id` is looked up in `registry` first, then by id in `custom_rules`, so a built-in definition wins over a custom one.
+/// Returns the matching rule's pillar, or `None` when neither source defines `rule_id`.
+pub(crate) fn rule_pillar(
+    rule_id: &str,
+    registry: &rules::RuleRegistry,
+    custom_rules: &[CustomRule],
+) -> Option<Pillar> {
+    registry
+        .get(rule_id)
+        .map(|definition| definition.pillar)
+        .or_else(|| {
+            custom_rules
+                .iter()
+                .find(|custom_rule| custom_rule.id == rule_id)
+                .map(|custom_rule| custom_rule.pillar)
+        })
+}
+
+/// Accept one project-relative file path and return it in report display form.
+/// Absolute paths, directory/empty paths, parent traversals, and globs each fail before analysis begins.
+///
+/// `entry` is the parsed entry object whose `path` key is read, and `entry_path` names that entry in diagnostics.
+/// Returns the normalised display path, or `Err` when `path` is missing, not a string, empty, or only whitespace.
+/// Directory or empty normalized paths (such as `./`, `.`, or `src/`), absolute paths, `..` components, and globs also return `Err`.
+fn parse_sensitive_path(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<String, String> {
+    let key_path = format!("{entry_path}.path");
+    let configured = required_non_empty_config_string(entry, "path", entry_path)?;
+    let path = normalize_report_path(&configured);
+    // Bare `./`, `.`, or a trailing `/` names a directory or nothing rather than one concrete file in the report.
+    if path.is_empty() || path == "." || path.ends_with('/') {
+        return Err(format!(
+            "config key `{key_path}` must name one exact file; `{configured}` does not name a file"
+        ));
+    }
+    // An absolute path escapes the analysed project and records the author's machine layout.
+    if is_absolute_display_path(&path) {
+        return Err(format!(
+            "config key `{key_path}` must be a project-relative path; `{configured}` is absolute"
+        ));
+    }
+    // A parent traversal claims a scope outside the project the user asked gruff-rs to analyse.
+    if path.split('/').any(|component| component == "..") {
+        return Err(format!(
+            "config key `{key_path}` must not contain a `..` path component; found `{configured}`"
+        ));
+    }
+    // A glob would suppress findings across files nobody enumerated in review.
+    if path.contains(PATH_GLOB_CHARACTERS) {
+        return Err(format!(
+            "config key `{key_path}` must name one exact file; `{configured}` uses glob syntax"
+        ));
+    }
+    Ok(path)
+}
+
+/// Decide whether a normalised display path is absolute on any platform gruff-rs reports for.
+/// A leading separator covers POSIX and UNC forms; a single-letter drive prefix covers Windows.
+///
+/// Returns `true` when `path` starts with `/` or with one ASCII letter followed by `:/`; any other value, including a relative path, gives `false`.
+fn is_absolute_display_path(path: &str) -> bool {
+    path.starts_with('/')
+        || path.split_once(":/").is_some_and(|(drive, _)| {
+            drive.len() == 1 && drive.chars().all(|letter| letter.is_ascii_alphabetic())
+        })
+}
+
+/// Accept the optional symbol that narrows an entry further.
+/// `None` means every occurrence of the rule in the named file is in scope.
+///
+/// `entry` is the parsed entry object whose optional `symbol` key is read, and `entry_path` names that entry in diagnostics.
+/// Returns `Ok(None)` when the key is absent, the symbol for any string value, even an empty one, and `Err` for any other value, including null.
+fn parse_sensitive_symbol(
+    entry: &serde_json::Map<String, Value>,
+    entry_path: &str,
+) -> Result<Option<String>, String> {
+    let key_path = format!("{entry_path}.symbol");
+    entry
+        .get("symbol")
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("config key `{key_path}` must be a string"))
+        })
+        .transpose()
+}
+
+/// Reject a second entry claiming a scope an earlier entry already owns.
+/// Two entries over one scope would split the audit count arbitrarily.
+///
+/// `existing` holds the entries accepted so far, `candidate` is the entry being added, and `index` is its list position named in the diagnostic.
+/// Returns `Err` naming the earliest entry with the same rule, path and symbol, or `Ok(())` when the scope is new.
+fn reject_duplicate_scope(
+    existing: &[SensitiveExclusionRule],
+    candidate: &SensitiveExclusionRule,
+    index: usize,
+) -> Result<(), String> {
+    let claimed = existing.iter().position(|entry| {
+        entry.rule_id == candidate.rule_id
+            && entry.path == candidate.path
+            && entry.symbol == candidate.symbol
+    });
+    match claimed {
+        // The earlier index is named so the user can delete or narrow the right entry.
+        Some(first_index) => Err(format!(
+            "duplicate sensitive exclusion scope in config key `sensitiveExclusions[{index}]`; the same rule, path, and symbol are already claimed by `sensitiveExclusions[{first_index}]`"
+        )),
+        None => Ok(()),
+    }
+}

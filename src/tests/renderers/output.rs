@@ -1,4 +1,5 @@
 //! Output renderer contracts for reports assembled directly or through analysis.
+//!
 //! These tests let CLI users trust that each format preserves report data while
 //! applying only the escaping required by its own output protocol.
 
@@ -11,6 +12,9 @@ const HOSTILE_MESSAGE: &str =
 
 /// Build one finding and delta whose controlled fields exercise Markdown structure.
 /// A CLI user reaches the same renderer after scanning an untrusted source tree.
+///
+/// Returns a sample report with one warning finding built from `HOSTILE_RULE_ID`, `HOSTILE_FILE_PATH` and `HOSTILE_MESSAGE` at line 9.
+/// Its `per_rule_deltas` holds one delta for `HOSTILE_RULE_ID` with one finding introduced, none removed and a net of one.
 fn hostile_renderer_report() -> AnalysisReport {
     let mut report = sample_report_with(
         vec![Finding::new(FindingDescriptor {
@@ -56,7 +60,7 @@ pub(crate) fn markdown_renderer_keeps_hostile_finding_fields_in_one_inert_bullet
         "hostile fields must render as one escaped finding:\n{markdown}"
     );
     assert_eq!(markdown.matches("\n- ").count(), 1, "{markdown}");
-    assert_eq!(markdown.matches("\n## ").count(), 1, "{markdown}");
+    assert_eq!(markdown.matches("\n## ").count(), 2, "{markdown}");
     assert!(markdown.contains("| Pillar | Grade | Score | Findings | Advisory | Warning | Error |"));
     // Hostile pipes cannot add a row to the fixed header, separator, and eleven pillar rows.
     assert_eq!(
@@ -104,21 +108,31 @@ pub(crate) fn github_renderer_is_unchanged_for_hostile_markdown_report() {
     );
 }
 
+/// Keep report content safe to display while preserving the fields consumers use.
 #[test]
 pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     let report = sample_report();
 
     let json_output = render_report(&report, OutputFormat::Json);
     let decoded: Value = serde_json::from_str(&json_output).expect("json report");
-    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v2");
+    assert_eq!(decoded["schemaVersion"], "gruff.analysis.v3");
     assert_eq!(decoded["findings"][0]["ruleId"], "security.process-command");
     assert_eq!(decoded["findings"][0]["file"], "src/lib.rs");
-    assert_eq!(decoded["findings"][0]["filePath"], "src/lib.rs");
-    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert!(decoded["findings"][0].get("filePath").is_none());
+    assert!(decoded["findings"][0].get("column").is_none());
+    assert!(decoded["findings"][0].get("endLine").is_none());
     assert_eq!(
-        decoded["score"]["topOffenders"][0]["filePath"],
-        "src/lib.rs"
+        decoded["findings"][0]["metadata"]["locationPrecision"],
+        "line-only"
     );
+    assert_eq!(
+        decoded["findings"][0]["extensions"]["rs"]["finding"]["scope"],
+        "symbol"
+    );
+    assert_eq!(decoded["score"]["topOffenders"][0]["file"], "src/lib.rs");
+    assert!(decoded["score"]["topOffenders"][0]
+        .get("filePath")
+        .is_none());
 
     let sarif: Value =
         serde_json::from_str(&render_report(&report, OutputFormat::Sarif)).expect("sarif report");
@@ -127,7 +141,7 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "gruff-rs");
     assert_eq!(
         sarif["runs"][0]["properties"]["gruffSchemaVersion"],
-        "gruff.analysis.v2"
+        "gruff.analysis.v3"
     );
     let sarif_rules = sarif["runs"][0]["tool"]["driver"]["rules"]
         .as_array()
@@ -159,9 +173,14 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
         sarif_result["locations"][0]["physicalLocation"]["region"]["startLine"],
         7
     );
+    // Code scanning groups alerts by the ratified durable identity, the same name baseline matching reads.
+    let named = finding_identities(&report.findings[..1], &declaration_position_by_line)
+        .expect("the finding can be named")
+        .remove(0)
+        .expect("an ordinary finding has an identity");
     assert_eq!(
         sarif_result["partialFingerprints"]["gruffFingerprint"].as_str(),
-        Some(report.findings[0].fingerprint.as_str())
+        Some(named.identity.as_str())
     );
 
     let text = render_report(&report, OutputFormat::Text);
@@ -185,6 +204,35 @@ pub(crate) fn report_renderers_escape_and_preserve_contracts() {
     assert_eq!(hotspot["files"][0]["filePath"], "src/lib.rs");
 }
 
+/// Leave missing source locations out of a JSON finding rather than giving it an invented line.
+#[test]
+pub(crate) fn report_json_emits_optional_locations_only_when_present() {
+    let mut finding = test_finding(
+        "complexity.cyclomatic",
+        "src/lib.rs",
+        7,
+        Severity::Warning,
+        Pillar::Complexity,
+    );
+    finding.column = Some(4);
+    finding.end_line = Some(9);
+    finding.metadata = json!({"native": "preserved"});
+    let report = sample_report_with(vec![finding], Vec::new());
+
+    let decoded: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("json report");
+    let emitted = &decoded["findings"][0];
+
+    assert_eq!(emitted["column"], 4);
+    assert_eq!(emitted["endLine"], 9);
+    assert_eq!(emitted["metadata"]["native"], "preserved");
+    assert_eq!(
+        emitted["metadata"]["locationPrecision"],
+        "scanner-pinpointed"
+    );
+}
+
+/// Tell a terminal or Markdown reader why a path was skipped or how to handle baseline input.
 #[test]
 pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
     let mut report = sample_report();
@@ -206,14 +254,22 @@ pub(crate) fn text_renderers_surface_ignored_paths_and_baseline_guidance() {
         new_count: 2,
         unchanged_count: 1,
         absent_count: 3,
+        collision_count: 0,
+        not_eligible_count: 0,
+        sensitive_counted: 0,
+        entries: 0,
         generated: false,
     });
     let baseline_summary = crate::summary::render(&report, 10, SummaryFormat::Text, 1);
     assert!(baseline_summary.contains("baseline: 2 new, 1 unchanged, 3 resolved"));
     assert!(baseline_summary.contains("gruff-rs analyse --no-baseline"));
     assert!(!baseline_summary.contains("gruff-rs analyse --generate-baseline"));
+    // ADR-006: `analyse` text names an applied baseline and how it was chosen, so hidden findings never read as clean.
+    let analyse_text = render_report(&report, OutputFormat::Text);
+    assert!(analyse_text.contains("Baseline: default gruff-baseline.json; suppressed 1 findings"));
 }
 
+/// Ensure commas, percent signs, and other reserved characters stay inside the annotation field they came from.
 #[test]
 pub(crate) fn github_renderer_escapes_annotation_properties() {
     let report = sample_report_with(
@@ -240,13 +296,15 @@ pub(crate) fn github_renderer_escapes_annotation_properties() {
     assert!(github.ends_with("Message with 100%25 and%0Anewline"));
 }
 
+/// Keep the JSON finding order stable for reviewers and comparison tools.
 #[test]
 pub(crate) fn report_json_keeps_deterministic_finding_order() {
     let _guard = analysis_lock();
     let dir = tempdir().expect("tempdir");
     fs::write(dir.path().join("README.md"), "# Fixture\n").expect("readme write");
-    fs::write(dir.path().join("b.rs"), "pub fn process() {}\n").expect("b write");
-    fs::write(dir.path().join("a.rs"), "pub fn process() {}\n").expect("a write");
+    let source = "pub fn process() { let foo = 1; let _ = foo; }\n";
+    fs::write(dir.path().join("b.rs"), source).expect("b write");
+    fs::write(dir.path().join("a.rs"), source).expect("a write");
 
     let report = run_project_analysis(
         dir.path(),
@@ -267,8 +325,9 @@ pub(crate) fn report_json_keeps_deterministic_finding_order() {
     assert_eq!(ordered_paths, vec!["a.rs", "a.rs", "b.rs", "b.rs"]);
 }
 
+/// Let automation switch to JSON summary and keep the same scan metadata and counts.
 #[test]
-pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
+pub(crate) fn summary_json_is_the_exact_findings_free_analysis_projection() {
     let findings: Vec<Finding> = (0..12)
         .map(|index| {
             test_finding(
@@ -282,8 +341,138 @@ pub(crate) fn summary_top_file_limit_is_not_capped_by_score_report() {
         .collect();
     let report = sample_report_with(findings, Vec::new());
 
-    let json_output = crate::summary::render(&report, 12, SummaryFormat::Json, 1);
-    let decoded: Value = serde_json::from_str(&json_output).expect("summary json");
+    let mut expected: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("analysis json");
+    let expected_object = expected.as_object_mut().expect("analysis object");
+    expected_object.insert(
+        "schemaVersion".to_string(),
+        Value::String("gruff.summary.v3".to_string()),
+    );
+    expected_object.remove("findings");
 
-    assert_eq!(decoded["topFiles"].as_array().expect("top files").len(), 12);
+    let top_one: Value =
+        serde_json::from_str(&crate::summary::render(&report, 1, SummaryFormat::Json, 1))
+            .expect("summary json");
+    let top_twelve: Value =
+        serde_json::from_str(&crate::summary::render(&report, 12, SummaryFormat::Json, 1))
+            .expect("summary json");
+
+    assert_eq!(top_one, expected);
+    assert_eq!(top_twelve, expected);
+    assert!(top_one.get("findings").is_none());
+}
+
+/// Surface the reduced scan coverage wherever a caller reads the result.
+#[test]
+pub(crate) fn bounded_deep_scan_note_reaches_every_supported_output_surface() {
+    let diagnostic = RunDiagnostic {
+        diagnostic_type: "bounded-deep-scan".to_string(),
+        message: "path=src/large.rs; lines=20001; bytes=2000001; maxLines=20000; maxBytes=2000000; override=cli. Text-level rules (size, sensitive-data, config) still ran; masking, block parsing, AST walking, and other deep script analysis were skipped.".to_string(),
+        file_path: Some("src/large.rs".to_string()),
+        line: Some(1),
+        invalidates_run: Some(false),
+    };
+
+    for format in [
+        OutputFormat::Text,
+        OutputFormat::Json,
+        OutputFormat::Sarif,
+        OutputFormat::Html,
+        OutputFormat::Markdown,
+        OutputFormat::Github,
+        OutputFormat::Hotspot,
+    ] {
+        let output = render_report(
+            &sample_report_with(Vec::new(), vec![diagnostic.clone()]),
+            format,
+        );
+        assert!(output.contains("bounded-deep-scan"), "{format:?}: {output}");
+        assert!(
+            output.replace('\\', "").contains("override=cli"),
+            "{format:?}: {output}"
+        );
+    }
+
+    for format in [SummaryFormat::Text, SummaryFormat::Json] {
+        let output = crate::summary::render(
+            &sample_report_with(Vec::new(), vec![diagnostic.clone()]),
+            10,
+            format,
+            1,
+        );
+        assert!(output.contains("bounded-deep-scan"), "{format:?}: {output}");
+        assert!(output.contains("override=cli"), "{format:?}: {output}");
+    }
+
+    let hook: Value = serde_json::from_str(&crate::hook::render_hook_report(
+        sample_report_with(Vec::new(), vec![diagnostic]),
+        false,
+        false,
+    ))
+    .expect("hook report JSON");
+    assert_eq!(hook["diagnostics"][0]["type"], "bounded-deep-scan");
+    assert_eq!(hook["diagnostics"][0]["invalidatesRun"], false);
+    assert!(hook["diagnostics"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("override=cli")));
+}
+
+/// A failure report with an unresolved project root must not publish an outside input path.
+#[test]
+pub(crate) fn failed_run_envelope_leaves_out_a_target_named_from_a_sibling_directory() {
+    // A run whose config cannot load never resolves a project root, so its envelope is rooted at the launch
+    // directory, and `analyse ../proj` from a sibling directory names a target with no form under it. The envelope
+    // leaves that input out, as it already does the config path, rather than panicking on the way to stdout.
+    let report = failed_run_report(
+        Path::new("."),
+        &AnalysisOptions {
+            paths: vec![PathBuf::from("../proj")],
+            config: Some(PathBuf::from("../c.yaml")),
+            ..default_test_options()
+        },
+        &RunFailure::Config("unable to read config ../c.yaml".to_string()),
+    );
+
+    let envelope: Value =
+        serde_json::from_str(&render_report(&report, OutputFormat::Json)).expect("analysis json");
+
+    assert_eq!(envelope["run"]["inputs"], json!([]));
+    assert!(envelope["run"].get("config").is_none());
+    assert_eq!(envelope["diagnostics"][0]["type"], "config-error");
+    assert_eq!(envelope["diagnostics"][0]["invalidatesRun"], true);
+    assert_eq!(envelope["summary"]["exitCode"], 2);
+}
+
+/// Keep the required separator space before `title=` when GitHub annotations render pathless diagnostics.
+#[test]
+pub(crate) fn github_renderer_separates_pathless_diagnostic_command_and_title() {
+    let diagnostics = vec![
+        RunDiagnostic {
+            diagnostic_type: "patch-filter".to_string(),
+            message: "Filtered to 1 changed file.".to_string(),
+            file_path: None,
+            line: None,
+            invalidates_run: Some(false),
+        },
+        RunDiagnostic {
+            diagnostic_type: "config-error".to_string(),
+            message: "Invalid config.".to_string(),
+            file_path: None,
+            line: None,
+            invalidates_run: Some(true),
+        },
+    ];
+
+    let rendered = render_report(
+        &sample_report_with(Vec::new(), diagnostics),
+        OutputFormat::Github,
+    );
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "::notice title=patch-filter::Filtered to 1 changed file.",
+            "::error title=config-error::Invalid config.",
+        ]
+    );
 }

@@ -1,5 +1,11 @@
+//! Exercise configured `custom.*` rules through the same scan pipeline as built-ins.
+//!
+//! These cases cover rule selection, scope, and the findings reviewers see.
+//! They keep config changes from silently dropping a user-authored check or widening where it runs.
+
 use super::*;
 
+/// A configured text check joins built-in results in a repeatable order.
 #[test]
 pub(crate) fn custom_rule_text_scope_emits_deterministic_findings_with_builtins() {
     let _guard = analysis_lock();
@@ -65,6 +71,7 @@ custom_rules:
     );
 }
 
+/// A developer choosing Rust-code scope gets findings for code rather than code-like examples in strings or comments.
 #[test]
 pub(crate) fn custom_rule_rust_code_scope_masks_strings_and_comments() {
     let _guard = analysis_lock();
@@ -131,6 +138,7 @@ rules:
     assert_eq!(findings[0].line, Some(4));
 }
 
+/// A comment-only check leaves matching text in Rust string literals alone.
 #[test]
 pub(crate) fn custom_rule_comments_scope_matches_comments_not_strings() {
     let _guard = analysis_lock();
@@ -181,6 +189,7 @@ rules:
     assert_eq!(comment_findings[0].line, Some(4));
 }
 
+/// Rust's nested block comments remain in comment scope for a custom rule.
 #[test]
 pub(crate) fn custom_rule_comments_scope_handles_nested_block_comments() {
     let _guard = analysis_lock();
@@ -220,6 +229,7 @@ rules:
     assert_has_rule(&report, "custom.nested-comment");
 }
 
+/// A custom rule reports within its requested paths and leaves excluded files out.
 #[test]
 pub(crate) fn custom_rule_include_exclude_paths_are_honored() {
     let _guard = analysis_lock();
@@ -266,6 +276,7 @@ rules:
     assert_eq!(paths, vec!["src/lib.rs"]);
 }
 
+/// Reject ambiguous rule IDs and unusable settings before users rely on the check in CI.
 #[test]
 pub(crate) fn custom_rule_config_rejects_duplicate_id_missing_prefix_bad_regex_and_bad_settings() {
     let dir = tempdir().expect("tempdir");
@@ -354,6 +365,7 @@ rules:
     );
 }
 
+/// A valid custom rule with nothing to report lets the scan complete cleanly.
 #[test]
 pub(crate) fn custom_rule_no_match_is_ok() {
     let _guard = analysis_lock();
@@ -389,6 +401,7 @@ rules:
     assert!(report.findings.is_empty(), "{:?}", report.findings);
 }
 
+/// Apply selectors, audited exclusions, baseline review, and changed-code filtering to custom findings as users expect.
 #[test]
 pub(crate) fn custom_rule_findings_pass_selection_exclusion_baseline_and_diff() {
     let _guard = analysis_lock();
@@ -438,6 +451,11 @@ exclude:
     let baseline_path = dir.path().join("baseline.json");
     write_baseline(&baseline_path, std::slice::from_ref(&selected.findings[0]))
         .expect("baseline write");
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "\nfn selected() {}\nCUSTOM_MARKER\n",
+    )
+    .expect("shifted marker source");
     let baseline_filtered = run_project_analysis(
         dir.path(),
         AnalysisOptions {
@@ -508,6 +526,7 @@ rules:
         .any(|diagnostic| diagnostic.diagnostic_type == "patch-filter"));
 }
 
+/// Find a project's custom rules through the same catalogue and selector UI as built-ins.
 #[test]
 pub(crate) fn custom_rule_list_rules_includes_configured_rules_and_selectors() {
     let dir = tempdir().expect("tempdir");
@@ -541,7 +560,10 @@ custom_rules:
         },
     )
     .expect("rule list json");
-    let rules: Vec<Value> = serde_json::from_str(&json_output).expect("rule list json");
+    let listing: Value = serde_json::from_str(&json_output).expect("rule list json");
+    let rules = listing["rules"]
+        .as_array()
+        .expect("the catalogue is an object carrying its rules under `rules`");
     let ids: Vec<&str> = rules
         .iter()
         .map(|rule| rule["id"].as_str().expect("id"))
@@ -576,6 +598,7 @@ custom_rules:
     assert_eq!(selected, vec!["custom.first", "custom.second"]);
 }
 
+/// Give repeated scans of the same custom-rule match the same fingerprint.
 #[test]
 pub(crate) fn fingerprint_stable_for_custom_rule() {
     let finding = Finding::new(FindingDescriptor {

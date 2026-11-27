@@ -1,5 +1,10 @@
 use super::*;
 
+/// Runs the module fan-out, public API surface and large module rules over the indexed project.
+///
+/// `context` is the indexed project, with its module declarations and item summaries.
+/// `config` decides which of the rules run and supplies their thresholds and severities.
+/// `findings` receives one finding per file or module above a rule's threshold.
 pub(crate) fn analyse_architecture_rules(
     context: &ProjectContext,
     config: &Config,
@@ -10,6 +15,13 @@ pub(crate) fn analyse_architecture_rules(
     analyse_large_modules(context, config, findings);
 }
 
+/// Reports files that declare more child modules than the `architecture.module-fan-out` threshold allows.
+///
+/// Modules gated behind `cfg` are not counted, files named `main.rs` are skipped, and nothing runs when the rule is disabled.
+///
+/// `context` is the indexed project whose module declarations are grouped by declaring file.
+/// `config` decides whether the rule is enabled and supplies its threshold and severity.
+/// `findings` receives one finding per file above the threshold.
 pub(crate) fn analyse_module_fan_out(
     context: &ProjectContext,
     config: &Config,
@@ -36,11 +48,21 @@ pub(crate) fn analyse_module_fan_out(
 // Binary crate roots (`main.rs`) wire every top-level module together,
 // so high fan-out is the norm there, not a smell. Library roots
 // (`lib.rs`) keep the fan-out check on - their job is composition.
+/// Tells whether a file is a `main.rs` binary crate root, which the module fan-out rule exempts.
+///
+/// `file_path` is the report path to check, with backslashes treated as forward slashes.
+///
+/// Returns `true` when the path is `main.rs` or ends in `/main.rs`, otherwise `false`.
 fn is_binary_crate_root(file_path: &str) -> bool {
     let normalized = file_path.replace('\\', "/");
     normalized.ends_with("/main.rs") || normalized == "main.rs"
 }
 
+/// Groups the project's module declarations by the file that declares them, leaving out `cfg`-gated modules.
+///
+/// `context` is the indexed project whose module summaries are grouped.
+///
+/// Returns a map from declaring file path to its counted module declarations, ordered by path.
 fn group_modules_by_file(context: &ProjectContext) -> BTreeMap<&str, Vec<&ModuleSummary>> {
     let mut by_file: BTreeMap<&str, Vec<&ModuleSummary>> = BTreeMap::new();
     for module in context.modules.iter().filter(|module| !module.cfg_gated) {
@@ -52,6 +74,16 @@ fn group_modules_by_file(context: &ProjectContext) -> BTreeMap<&str, Vec<&Module
     by_file
 }
 
+/// Builds the module fan-out finding for one file that declares too many child modules.
+///
+/// `rule_id` is the fan-out rule id, used for the finding and its severity lookup.
+/// `file_path` is the declaring file, used as the finding's path and symbol.
+/// `modules` are the file's counted module declarations; the earliest line anchors the finding, or line 1 when empty.
+///
+/// `threshold` is the configured maximum, reported in the message and metadata.
+/// `config` supplies the configured severity for `rule_id`, falling back to the built-in severity.
+///
+/// Returns a high-confidence Design finding whose message and metadata carry the module count and threshold.
 fn module_fan_out_finding(
     rule_id: &str,
     file_path: &str,
@@ -86,6 +118,14 @@ fn module_fan_out_finding(
     })
 }
 
+/// Reports modules that expose more public items than the `architecture.public-api-surface` threshold allows.
+///
+/// Only items declared with unrestricted `pub` count; `cfg`-gated items, test-context items and methods are left out.
+/// Nothing runs when the rule is disabled.
+///
+/// `context` is the indexed project whose items are grouped by file and module path.
+/// `config` decides whether the rule is enabled and supplies its threshold and severity.
+/// `findings` receives one finding per module above the threshold.
 pub(crate) fn analyse_public_api_surface(
     context: &ProjectContext,
     config: &Config,
@@ -113,6 +153,11 @@ pub(crate) fn analyse_public_api_surface(
     }
 }
 
+/// Groups items declared with unrestricted `pub` by module, leaving out `cfg`-gated items, test-context items and methods.
+///
+/// `context` is the indexed project whose item summaries are grouped.
+///
+/// Returns a map from each file path and module path pair to that module's counted items, ordered by the pair.
 fn group_public_items_by_module(
     context: &ProjectContext,
 ) -> BTreeMap<(String, String), Vec<&ItemSummary>> {
@@ -134,6 +179,15 @@ pub(crate) struct ModuleItemGroup<'a> {
     pub(crate) items: &'a [&'a ItemSummary],
 }
 
+/// Builds the public API surface finding for one module that exposes too many public items.
+///
+/// `rule_id` is the public API surface rule id, used for the finding and its severity lookup.
+/// `group` holds the module's file path, module path and counted items; the earliest item line anchors the finding, or line 1 when empty.
+///
+/// `threshold` is the configured maximum, reported in the message and metadata.
+/// `config` supplies the configured severity for `rule_id`, falling back to the built-in severity.
+///
+/// Returns a high-confidence Design finding, labelled by `module_label`, whose message and metadata carry the item count and threshold.
 fn public_api_surface_finding(
     rule_id: &str,
     group: ModuleItemGroup<'_>,
@@ -168,6 +222,14 @@ fn public_api_surface_finding(
     })
 }
 
+/// Reports modules that contain more counted items than the `architecture.large-module` threshold allows.
+///
+/// Items count when marked `public` in the index, methods included, unless they are `cfg`-gated or in a test context.
+/// Nothing runs when the rule is disabled.
+///
+/// `context` is the indexed project whose items are grouped by file and module path.
+/// `config` decides whether the rule is enabled and supplies its threshold and severity.
+/// `findings` receives one finding per module above the threshold.
 pub(crate) fn analyse_large_modules(
     context: &ProjectContext,
     config: &Config,
@@ -195,6 +257,11 @@ pub(crate) fn analyse_large_modules(
     }
 }
 
+/// Groups the project's items marked `public` by module, leaving out `cfg`-gated and test-context items.
+///
+/// `context` is the indexed project whose item summaries are grouped.
+///
+/// Returns a map from each file path and module path pair to that module's counted items, ordered by the pair.
 fn group_indexed_items_by_module(
     context: &ProjectContext,
 ) -> BTreeMap<(String, String), Vec<&ItemSummary>> {
@@ -212,6 +279,15 @@ fn group_indexed_items_by_module(
     by_module
 }
 
+/// Builds the large module finding for one module that contains too many counted items.
+///
+/// `rule_id` is the large module rule id, used for the finding and its severity lookup.
+/// `group` holds the module's file path, module path and counted items; the earliest item line anchors the finding, or line 1 when empty.
+///
+/// `threshold` is the configured maximum, reported in the message and metadata.
+/// `config` supplies the configured severity for `rule_id`, falling back to the built-in severity.
+///
+/// Returns a high-confidence Design finding, labelled by `module_label`, whose message and metadata carry the item count and threshold.
 fn large_module_finding(
     rule_id: &str,
     group: ModuleItemGroup<'_>,

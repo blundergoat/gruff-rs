@@ -1,6 +1,6 @@
 ---
 category: preflight
-last_reviewed: 2026-08-14
+last_reviewed: 2026-11-28
 ---
 
 ## Footgun: Preflight Shows Only The Last 20 Lines Of A Failed Check
@@ -44,10 +44,9 @@ Resist the temptation to "fix the truncation" by widening the `tail` window: the
 
 `target/debug/gruff-rs` and `target/release/gruff-rs` are local Cargo artifacts,
 not freshness-guaranteed project entrypoints. During the 2026-06-10 sibling
-audit (`.goat-flow/scratchpad/sibling-audit-2026-06-10.json`, search:
-`surprises[5]`), this checkout's release binary was five days and nine commits
-behind HEAD and predated the `hook` subcommand entirely. Directly timing that
-binary measured stale code.
+audit (local scratchpad notes, not retained), this checkout's release binary
+was five days and nine commits behind HEAD and predated the `hook` subcommand
+entirely. Directly timing that binary measured stale code.
 
 The debug path can also stay stale after a test-only build. During 0.5.0 M01,
 `cargo test accepted_abbreviations` compiled a test binary containing
@@ -112,6 +111,28 @@ the canonical target, and the complete 85-rule detail scan reported zero
 dangling links. A post-test CLI proof must therefore check both the marker and
 the executable freshness; a successful test harness alone does not refresh the
 normal command.
+
+**2026-10-03 extension:** goat-flow 1.17.0 reordered the gruff playbook's
+Availability Check (`.goat-flow/skill-docs/playbooks/gruff-code-quality.md`,
+search: `"target/release/$target"`) so `target/release/gruff-rs` is tried
+before `bin/gruff-rs`. In this checkout the release binary was built the
+evening before the HEAD commit, so an agent following the playbook verbatim
+would have proved fixes against stale code. The preflight row for the wrapper
+kept passing because `bin/$target` was still in the list, only no longer first.
+`.goat-flow/config.yaml` now pins `hooks.gruff-code-quality.binaries.rs` to
+`bin/gruff-rs`, which the playbook treats as project authority and the hook
+honours, and `scripts/preflight-checks.sh` (search: `rs: bin/gruff-rs`) asserts
+the pin. The hook itself never searched `target/`, and its goat-flow 1.19.0 Node
+form still does not: after the `GRUFF_RS_BIN` override and the configured pin it
+searches only `vendor/bin`, `node_modules/.bin`, `bin`, `.venv/bin`, `~/.local/bin`
+and `PATH` (`.goat-flow/hooks/gruff/analyzer.mjs`, search: `export function discoverAnalyzer`).
+
+**2026-11-22 extension:** The PR 7 before/after benchmark shared a Cargo
+target directory across two checkouts. After building the PR head, the next
+worktree build returned success and the binary hash still matched the head
+receipt. `scripts/test-performance.sh` (search: `PERF_BUILD_TARGET`) now uses
+an explicit per-checkout benchmark target for both building and execution.
+When comparing revisions, check each receipt against its build artifact.
 
 ## Footgun: Cargo Install Will Not Adopt An Unmanaged Existing Binary
 
@@ -182,3 +203,35 @@ scratch file makes the perf harness fail before it can print a summary table.
 
 Mitigation: keep `setup_scenario` for `src.diff-empty` writing a minimal context-only unified diff
 (search: `@@ -1,1 +1,1 @@`) rather than truncating the patch with `: > "${SCRATCH_PATCH}"`.
+
+## Footgun: publish-crates.sh Accepts --allow-dirty Without Forwarding It To Cargo
+
+**Status:** active | **Created:** 2026-11-25 | **Evidence:** OBSERVED
+**Decision changed:** Before committing a release, inspect packaged crate contents with `cargo package --list --locked --allow-dirty` instead of running `scripts/publish-crates.sh --allow-dirty`, and run `publish-crates.sh` only on a clean committed tree.
+**Trigger phase:** SCOPE
+**Caught at:** VERIFY
+
+**Prevention:** When verifying packaging before a release commit, invoke `cargo package --list --locked --allow-dirty` directly to confirm tracked files and exclude `.goat-flow/` scratch artifacts. Reserve `bash scripts/publish-crates.sh` for the clean post-commit release step documented in `docs/releasing.md` (search: `## Package Review`).
+
+`scripts/publish-crates.sh` (search: `ALLOW_DIRTY=1`) parses `--allow-dirty` to skip its own dirty-worktree guard, but its downstream `cargo package --list --locked` and `cargo publish --dry-run --locked` commands do not pass `--allow-dirty`. Calling `bash scripts/publish-crates.sh --allow-dirty` on an uncommitted working tree therefore passes the shell check and still fails inside Cargo.
+
+## Footgun: toml 1.x `str::parse::<toml::Value>()` Reads One Value, Not A Document
+
+**Status:** active | **Created:** 2026-11-28 | **Evidence:** OBSERVED
+**Decision changed:** Parse Cargo manifests and lockfiles with `toml::from_str::<toml::Value>`, and accept a parser-crate upgrade only after scan output compares byte for byte, not after a clean compile.
+**Trigger phase:** ACT
+**Caught at:** VERIFY
+
+**Prevention:** Keep `src/project/manifest.rs` (search: `fn parse_manifest_value`) and `src/project/lockfile.rs` (search: `fn parse_lockfile_value`) on `toml::from_str`. After bumping `toml`, `syn`, `regex`, `ignore` or another crate that reads source or project files, compare JSON output for the fixtures and several real Rust repositories against the previous binary and require it to be identical.
+
+Moving `toml` from 0.8 to 1.2 compiled without errors, but `str::parse::<toml::Value>()` now parses a single bare TOML value. Every `Cargo.toml` and `Cargo.lock` then failed to parse, so each scan emitted fatal `manifest-parse-error` and `lockfile-parse-error` diagnostics and exited `2`. The PostToolUse quality hook surfaced it as "Invalid Cargo.toml" against this repository's valid manifest. Restoring only the two `str::parse` calls in a scratch copy fails 258 of 544 tests, so the suite also guards it once it runs.
+
+## Footgun: The Declared MSRV Is Not Built Anywhere
+
+**Status:** active | **Created:** 2026-11-28 | **Evidence:** OBSERVED
+**Decision changed:** Before trusting or changing `rust-version`, build the crate with that exact toolchain; a green CI run on the pinned toolchain says nothing about the minimum.
+**Trigger phase:** VERIFY
+
+**Prevention:** The CI `msrv` job (`.github/workflows/ci.yml`, search: `Read the declared minimum Rust version`) builds with whatever `Cargo.toml` (search: `rust-version`) declares; preflight does not, so run `cargo +<rust-version> check --locked` locally after changing a `const` rule table or a dependency. Keep the README's two `Rust 1.90+` lines in step with `rust-version`.
+
+Until that job existed, CI (`.github/workflows/ci.yml`, search: `CI_RUST_TOOLCHAIN`) and preflight built only the pinned toolchain, so `rust-version` drifted without any check failing. 0.6.0 declared 1.88 and v0.5.0 declared 1.82, yet both fail to compile on 1.88 with `E0080` "reference to mutable memory in `const`" in rule tables such as `src/built_in_rules/test_rules.rs` (search: `const TEST_CHECKS`). Rust 1.89 also fails, and 1.90 is the first release that builds the crate and passes its suite (measured 2026-11-28), so `rust-version` is now 1.90.

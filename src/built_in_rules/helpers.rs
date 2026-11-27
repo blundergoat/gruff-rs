@@ -1,22 +1,29 @@
 //! Shared constructors and predicates for built-in source checks.
+//!
 //! Rule modules use these helpers to create deterministic findings, classify
-//! source shapes, and keep sensitive display values separate from suppression.
+//! source shapes, and keep sensitive source values out of user-facing reports.
 
 use super::*;
 
+/// Check whether nearby source documents a deliberate panic or invariant.
+/// Rules use this signal to avoid asking users to change already-explained behavior.
+///
+/// Returns true when any line of `source` contains `PANIC:` or `INVARIANT:`, even outside a comment; false otherwise.
 pub(crate) fn has_nearby_invariant_comment(source: &str) -> bool {
     source
         .lines()
         .any(|line| line.contains("PANIC:") || line.contains("INVARIANT:"))
 }
 
-/// Detects a trivial assertion - a literal tautology (`assert!(true)`,
-/// `assert_eq!(1, 1)`) or a literal-binding tautology (`let x = 5;
-/// assert_eq!(x, 5)`). `source` must already be string- AND comment-masked (as
-/// `analyse_test_block` prepares it); an unmasked comment would let a
-/// commented-out assertion be mistaken for real code.
+/// Detect an assertion that proves only a literal or its unchanged binding.
+/// Call this on masked test source so commented examples do not become user findings.
+///
+/// Returns true when `source` has `assert!(true)` or `assert!(false)`, or an `assert_eq!` of two identical digit-only or quoted literals.
+/// The `assert_eq!` must end right after its second literal, without a trailing comma or message, and no literal may contain its own quote.
+/// It is also true when `has_literal_binding_tautology` finds a literal binding asserted unchanged within its textual window.
 pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     let literal_assert = static_regex(&TRIVIAL_ASSERT_REGEX, r"\bassert!\s*\(\s*(true|false)\s*\)");
+    // A literal assertion gives the user no confidence that application behavior works.
     if literal_assert.is_match(source) {
         return true;
     }
@@ -28,6 +35,7 @@ pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     let has_same_literal = same_literal.captures_iter(source).any(|captures| {
         captures.get(1).map(|left| left.as_str()) == captures.get(2).map(|right| right.as_str())
     });
+    // Equal literal arguments exercise the assertion macro, not the user's code.
     if has_same_literal {
         return true;
     }
@@ -35,28 +43,22 @@ pub(crate) fn has_trivial_assertion(source: &str) -> bool {
     has_literal_binding_tautology(source)
 }
 
-/// Detects the "literal-binding tautology": an immutable binding to a
-/// numeric or boolean literal (`let answer = 42;`) whose value is then
-/// asserted to equal that same literal (`assert_eq!(answer, 42)`), with no
-/// shadowing of the name in between. The assertion proves only what the
-/// binding already fixed, so it exercises no behavior.
+/// Detect an immutable literal binding asserted unchanged before a later `let` with a value mentions its name.
+/// This catches tests such as `let answer = 42; assert_eq!(answer, 42)` without guessing about computed values.
 ///
-/// Sound without dataflow analysis: an immutable, non-`mut` binding to a
-/// `Copy` literal cannot be reassigned or mutated (the compiler forbids
-/// both), so the only way the asserted name could differ from its
-/// initializer is a later `let name = ...` shadow. `source` is already
-/// string-masked, so only numeric and boolean literals survive to be
-/// compared textually; `let mut`, computed initializers (`2 + 2`), and
-/// values derived into a different name therefore stay silent.
+/// `source` is the test text to search; only an immutable `let` of `true`, `false` or a number literal can count.
+/// Returns true when such a binding meets an `assert_eq!` against its literal inside the window `literal_is_asserted_before_shadow` checks.
 fn has_literal_binding_tautology(source: &str) -> bool {
     let binding = static_regex(
         &LITERAL_BINDING_REGEX,
         r"\blet\s+(mut\s+)?([A-Za-z_]\w*)\s*(?::[^=;\n]+)?=\s*(true|false|[0-9][0-9_]*(?:\.[0-9][0-9_]*)?)\s*;",
     );
     binding.captures_iter(source).any(|captures| {
+        // Mutable bindings may change before the assertion, so users should not see a tautology finding.
         if captures.get(1).is_some() {
-            return false; // `let mut` — the value may change before the assert.
+            return false;
         }
+        // Missing regex groups cannot identify a binding and assertion pair for the user.
         let (Some(name), Some(literal), Some(whole)) =
             (captures.get(2), captures.get(3), captures.get(0))
         else {
@@ -66,36 +68,36 @@ fn has_literal_binding_tautology(source: &str) -> bool {
     })
 }
 
-/// True when `rest` (the body after a `let name = literal;` binding) asserts
-/// `name` equal to `literal` before any later `let` rebinds `name`. The shadow
-/// guard matches `name` in the binding position of any later `let` - including
-/// pattern forms such as `let (name) = ...`, `let mut name = ...`, or
-/// `let Foo { name } = ...` - because a rebind hides the original literal.
-/// Both `assert_eq!` argument orders count; the trailing `[,)]` allows the
-/// message form `assert_eq!(name, literal, "...")`.
+/// Check whether a literal binding is asserted before a later `let` with a value mentions the same name.
+/// Conservative misses are preferred because a false finding would ask the user to rewrite a meaningful test.
 ///
-/// Conservative by design: an inner-scope shadow (`{ let name = ...; }`) also
-/// stops the scan, so an outer tautology after the block is a miss, not a false
-/// positive. Type-suffixed (`1u32`), hex/negative, and separator-different
-/// (`1000` vs `1_000`) literals are compared textually and likewise missed -
-/// all safe directions for a rule whose findings command code changes.
+/// `rest` is the source after the binding, `name` is the bound identifier, and `literal` is its value as written.
+/// Returns true when `assert_eq!` compares `name` with `literal`, in either order, before the next `let` that mentions `name` ahead of an `=`.
+/// Returns false safely if `name` or `literal` is too large to compile into a bounded regex.
+///
+/// The window is textual, so a `let name;` with no value does not end it, while `name` in a later `let` type annotation does.
 fn literal_is_asserted_before_shadow(rest: &str, name: &str, literal: &str) -> bool {
     let escaped_name = regex::escape(name);
     let escaped_literal = regex::escape(literal);
 
-    // Match `name` bound in the pattern of any later `let` (before its `=`),
-    // covering `let (name)`, `let mut name`, `let Foo { name }`, etc.
-    let shadow = Regex::new(&format!(r"\blet\b[^;=]*\b{escaped_name}\b[^;=]*="))
-        .expect("literal-binding shadow regex compiles");
+    // A later binding ends the safe comparison window because the assertion may refer to a different user value.
+    let Ok(shadow) = Regex::new(&format!(r"\blet\b[^;=]*\b{escaped_name}\b[^;=]*=")) else {
+        return false;
+    };
     let window_end = shadow.find(rest).map_or(rest.len(), |found| found.start());
 
-    let assertion = Regex::new(&format!(
+    let Ok(assertion) = Regex::new(&format!(
         r"\bassert_eq!\s*\(\s*(?:\b{escaped_name}\b\s*,\s*\b{escaped_literal}\b|\b{escaped_literal}\b\s*,\s*\b{escaped_name}\b)\s*[,)]"
-    ))
-    .expect("literal-binding assertion regex compiles");
+    )) else {
+        return false;
+    };
     assertion.is_match(&rest[..window_end])
 }
 
+/// Describe the common fields needed to show a source-level finding to the user.
+///
+/// Rule helpers add confidence and metadata before the finding reaches a renderer.
+/// An absent line means the issue applies to the file rather than one source line.
 pub(crate) struct SimpleFindingDescriptor<'a> {
     pub(crate) rule_id: &'a str,
     pub(crate) message: String,
@@ -105,10 +107,20 @@ pub(crate) struct SimpleFindingDescriptor<'a> {
     pub(crate) pillar: Pillar,
 }
 
+/// Build a source-level finding with high confidence and empty metadata.
+/// Use this when the user only needs the rule message and location.
+///
+/// `descriptor` supplies the rule id, message, file, optional line, severity and pillar.
+/// Returns the finding with no symbol, no remediation and empty metadata.
 pub(crate) fn finding(descriptor: SimpleFindingDescriptor<'_>) -> Finding {
     finding_with_metadata(descriptor, json!({}))
 }
 
+/// Build a source-level finding with rule-specific metadata for reports and UI details.
+/// Empty metadata means the finding has no safe supplemental values to display.
+///
+/// `descriptor` supplies the rule id, message, file, optional line, severity and pillar; `metadata` is attached as given.
+/// Returns a high-confidence finding with no symbol and no remediation.
 pub(crate) fn finding_with_metadata(
     descriptor: SimpleFindingDescriptor<'_>,
     metadata: Value,
@@ -121,12 +133,18 @@ pub(crate) fn finding_with_metadata(
         severity: descriptor.severity,
         pillar: descriptor.pillar,
         confidence: Confidence::High,
+        // File-level helper findings have no parsed symbol to show in the user's report.
         symbol: None,
+        // The calling rule's message is complete, so the shared default adds no remediation text.
         remediation: None,
         metadata,
     })
 }
 
+/// Describe a measured limit in the stable metadata shape shown by threshold-based rules.
+/// Users see the measured value, configured threshold, unit, and comparison direction.
+///
+/// Returns a JSON object holding `measured`, `threshold` and `unit` as given, with `direction` always set to `above`.
 pub(crate) fn threshold_metadata(measured: usize, threshold: usize, unit: &str) -> Value {
     json!({
         "measured": measured,
@@ -136,6 +154,10 @@ pub(crate) fn threshold_metadata(measured: usize, threshold: usize, unit: &str) 
     })
 }
 
+/// Describe a finding attached to one parsed function or block.
+///
+/// The block supplies the symbol and first line shown to the user.
+/// Rule helpers add confidence, remediation, and metadata before rendering.
 pub(crate) struct BlockFindingDescriptor<'a> {
     pub(crate) rule_id: &'a str,
     pub(crate) message: String,
@@ -145,10 +167,20 @@ pub(crate) struct BlockFindingDescriptor<'a> {
     pub(crate) pillar: Pillar,
 }
 
+/// Build a high-confidence block finding with no supplemental metadata.
+/// Use this for a user-facing issue whose message and symbol carry the full explanation.
+///
+/// `descriptor` supplies the rule id, message, file, function block, severity and pillar.
+/// Returns the finding at the block's declaration line with the block's name as symbol, no remediation and empty metadata.
 pub(crate) fn block_finding(descriptor: BlockFindingDescriptor<'_>) -> Finding {
     block_finding_with_metadata(descriptor, json!({}))
 }
 
+/// Build a high-confidence block finding with safe rule-specific metadata.
+/// Empty metadata means reports show only the message, symbol, and location.
+///
+/// `descriptor` supplies the rule id, message, file, function block, severity and pillar; `metadata` is attached as given.
+/// Returns a high-confidence finding at the block's declaration line, with the block's name as symbol and no remediation.
 pub(crate) fn block_finding_with_metadata(
     descriptor: BlockFindingDescriptor<'_>,
     metadata: Value,
@@ -157,18 +189,28 @@ pub(crate) fn block_finding_with_metadata(
         descriptor,
         BlockFindingExtras {
             confidence: Confidence::High,
+            // The calling block rule's message already gives the user its default remediation context.
             remediation: None,
             metadata,
         },
     )
 }
 
+/// Hold optional presentation details for a block finding.
+///
+/// Rules use these fields when users need calibrated confidence, remediation, or metadata.
+/// `None` remediation means the rule message already gives sufficient guidance.
 pub(crate) struct BlockFindingExtras {
     pub(crate) confidence: Confidence,
     pub(crate) remediation: Option<String>,
     pub(crate) metadata: Value,
 }
 
+/// Build a block finding with explicitly selected confidence and presentation details.
+/// This is the final shared step before the finding enters the user's report.
+///
+/// `descriptor` gives the rule id, message, file, block, severity and pillar; `extras` gives the confidence, remediation and metadata.
+/// Returns the finding at the block's declaration line, with the block's name as its symbol.
 pub(crate) fn block_finding_with_extras(
     descriptor: BlockFindingDescriptor<'_>,
     extras: BlockFindingExtras,
@@ -177,7 +219,7 @@ pub(crate) fn block_finding_with_extras(
         rule_id: descriptor.rule_id.to_string(),
         message: descriptor.message,
         file_path: descriptor.file.display_path.clone(),
-        line: Some(descriptor.block.start_line),
+        line: Some(descriptor.block.declaration_line),
         severity: descriptor.severity,
         pillar: descriptor.pillar,
         confidence: extras.confidence,
@@ -187,10 +229,10 @@ pub(crate) fn block_finding_with_extras(
     })
 }
 
-pub(crate) fn count_regex(source: &str, pattern: &Regex) -> usize {
-    pattern.find_iter(source).count()
-}
-
+/// Find the first one-based line containing text for a user-visible location.
+/// `None` means the requested text does not occur in the scanned source.
+///
+/// Returns the one-based number of the first line of `source` containing `needle`, or `None` when no line does.
 #[allow(dead_code)]
 pub(crate) fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
     source
@@ -199,9 +241,10 @@ pub(crate) fn first_matching_line(source: &str, needle: &str) -> Option<usize> {
         .find_map(|(index, line)| line.contains(needle).then_some(index + 1))
 }
 
-/// Zero-payload marker selected from detector-owned sensitive-data categories.
-/// Reports receive only these markers; matched source values and legacy aliases
-/// remain inside analysis long enough to classify or suppress a finding.
+/// Select a zero-payload marker from detector-owned categories after matched source text has been classified.
+///
+/// Reports receive only these markers; source text never becomes user-facing metadata.
+/// Category variants explain the remediation users need without revealing matched characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SensitiveDisplayMarker<'a> {
     Generic,
@@ -216,6 +259,9 @@ pub(crate) enum SensitiveDisplayMarker<'a> {
 impl SensitiveDisplayMarker<'_> {
     /// Render the zero-payload text serialized in a sensitive finding's metadata.
     /// Category and scheme values come from detector constants or accepted regex alternatives.
+    ///
+    /// Returns a bracketed marker of `redacted` alone for `Generic`, else `redacted`, a colon and the detector class, such as `redacted:jwt`.
+    /// A `ProtectedIdentifier` marker's class is its category, and a `ConnectionString` marker adds a colon and its scheme after its class.
     pub(crate) fn render(self) -> String {
         match self {
             // Generic token and entropy matches reveal no narrower detector class.
@@ -238,36 +284,15 @@ impl SensitiveDisplayMarker<'_> {
     }
 }
 
-/// Compute the historic first-four/last-four alias accepted by `secretPreviews`.
-/// Callers use it only for exact in-memory suppression; reports must use a
-/// [`SensitiveDisplayMarker`] instead.
-pub(crate) fn legacy_secret_suppression_alias(value: &str) -> String {
-    let char_count = value.chars().count();
-    // Short values reveal no characters, preserving the historic exact alias contract.
-    if char_count <= 8 {
-        return format!("{} (redacted, {char_count} chars)", "*".repeat(char_count));
-    }
-    let start: String = value.chars().take(4).collect();
-    let end: String = value
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{start}...{end} (redacted, {char_count} chars)")
-}
-
-/// Render the legacy partial form still used by structured fixture-PII messages.
-/// Message text participates in line-scoped stable identity, so this display
-/// remains separate from the zero-payload secret-metadata path.
-pub(crate) fn redact(value: &str) -> String {
-    legacy_secret_suppression_alias(value)
-}
-
-pub(crate) fn is_high_entropy(value: &str) -> bool {
-    if value.chars().count() < 32 {
+/// Decide whether `value` meets the length, character-variety, and Shannon-entropy bars for a secret candidate.
+///
+/// Both thresholds (`min_length`, `min_entropy`) come from configured detector parameters; inert shapes are filtered later.
+/// Variety follows FAMILY-CONTRACT section 12 (one ASCII letter and one ASCII digit), so lowercase-and-digit keys report across ports.
+///
+/// Returns true when `value` has at least `min_length` chars, an ASCII letter, an ASCII digit, and entropy at least `min_entropy`.
+pub(crate) fn is_high_entropy(value: &str, min_length: usize, min_entropy: f64) -> bool {
+    // Short values do not meet the detector's minimum evidence bar for a user finding.
+    if value.chars().count() < min_length {
         return false;
     }
     let has_upper = value
@@ -277,11 +302,16 @@ pub(crate) fn is_high_entropy(value: &str) -> bool {
         .chars()
         .any(|character| character.is_ascii_lowercase());
     let has_digit = value.chars().any(|character| character.is_ascii_digit());
-    has_upper && has_lower && has_digit && shannon_entropy(value) >= 4.2
+    (has_upper || has_lower) && has_digit && shannon_entropy(value) >= min_entropy
 }
 
+/// Measure Shannon entropy so generated-looking values can be separated from ordinary user text.
+///
+/// Returns the entropy of `value` in bits per character, from its character frequencies; an empty `value` gives 0.
 pub(crate) fn shannon_entropy(value: &str) -> f64 {
+    // The frequency table starts empty because every count must come from the candidate currently being classified.
     let mut counts: HashMap<char, usize> = HashMap::new();
+    // Character frequencies provide the distribution used by the detector's entropy score.
     for character in value.chars() {
         *counts.entry(character).or_default() += 1;
     }
@@ -295,164 +325,228 @@ pub(crate) fn shannon_entropy(value: &str) -> f64 {
         .sum()
 }
 
-/// Recognises subresource-integrity hash literals (`sha1-...`,
-/// `sha256-...`, `sha384-...`, `sha512-...`, generic `sri-...`) that
-/// lockfiles and integrity manifests commit on purpose. The byte body
-/// of these is always a base64 cryptographic digest, so it trivially
-/// trips entropy thresholds.
+/// Recognise integrity hashes that users intentionally commit in lockfiles and manifests.
+/// Their digest bodies look secret-like, but the public prefix makes their purpose explicit.
+///
+/// Returns true when `value` starts with `sha1-`, `sha256-`, `sha384-`, `sha512-` or `sri-`; the digest body is not checked.
 pub(crate) fn is_integrity_hash(value: &str) -> bool {
     const PREFIXES: &[&str] = &["sha1-", "sha256-", "sha384-", "sha512-", "sri-"];
     PREFIXES.iter().any(|prefix| value.starts_with(prefix))
 }
 
+/// Check a complete literal before the scanner raises an entropy warning.
+/// Empty content matches no exception; accepting a shape does not prove the value is public.
+///
+/// Returns true when `value` is exactly a listed encoding alphabet or wholly matches a listed public URL, client id, key name or file name.
+/// It is also true for a bounded help route or clinical code and for a readable structured name; false leaves the value eligible.
 pub(crate) fn is_structured_high_entropy_non_secret(value: &str) -> bool {
-    is_base64_alphabet_table(value)
-        || is_word_segment_slug(value)
-        || is_separated_identifier_slug(value)
+    const ALPHABETS: &[&str] = &[
+        "abcdefghijklmnopqrstuvwxyz0123456789",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_",
+        "abcdefghijklmnopqrstuvwxyz0123456789-_",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+        "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRTUVWXY23456789",
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_",
+    ];
+    static PUBLIC_FORMAT: OnceLock<Regex> = OnceLock::new();
+    ALPHABETS.contains(&value)
+        || static_regex(
+            &PUBLIC_FORMAT,
+            r"^(?:https://entra\.microsoft\.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/Credentials/appId/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/isMSAApp~/false\?Microsoft_AAD_IAM_legacyAADRedirect=true|security\.access_token_handler\.oidc\.signature\.(?:ES|RS|PS)(?:256|384|512)|[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com|soljson-v[0-9]+\.[0-9]+\.[0-9]+\+commit\.[0-9a-f]{8}\.js|https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9][A-Za-z0-9._-]{0,99}/commit/[0-9a-f]{40})$",
+        ).is_match(value)
+        || is_bounded_public_entropy_format(value)
+        || is_structured_entropy_name(value)
 }
 
-fn is_base64_alphabet_table(value: &str) -> bool {
-    const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
-    const DIGITS: &str = "0123456789";
-    if value.len() != UPPER.len() + LOWER.len() + DIGITS.len() + 2 {
-        return false;
+/// Keep established help routes and clinical codes quiet only when every word fits their complete format.
+/// An unmatched or malformed value stays eligible for entropy scoring.
+///
+/// Returns true when `value` is wholly a help article, section or category route or a `PH_` or `PHVS_` HL7 code and every title word passes.
+/// An article title may also use the joiners `a`, `to` and `in`; other words need 3 to 32 letters in a case `has_entropy_word_case` accepts.
+fn is_bounded_public_entropy_format(value: &str) -> bool {
+    static HELP_ARTICLE: OnceLock<Regex> = OnceLock::new();
+    // A stored relative help link uses its own title grammar after the complete route matches.
+    if let Some(article) = static_regex(
+        &HELP_ARTICLE,
+        r"^/hc/[a-z]{2}-[a-z]{2}/articles/[0-9]{12,13}-([A-Za-z]+(?:-[A-Za-z]+)*)$",
+    )
+    .captures(value)
+    {
+        // Only the approved short joiners may accompany otherwise bounded title words.
+        return article[1].split('-').all(|word| {
+            matches!(word, "a" | "to" | "in")
+                || ((3..=32).contains(&word.len()) && has_entropy_word_case(word))
+        });
     }
-    let Some(after_upper) = value.strip_prefix(UPPER) else {
-        return false;
-    };
-    let Some(after_lower) = after_upper.strip_prefix(LOWER) else {
-        return false;
-    };
-    after_lower == "0123456789+/" || after_lower == "0123456789-_"
-}
-
-fn is_word_segment_slug(value: &str) -> bool {
-    if value.contains(['+', '=']) {
-        return false;
-    }
-    let segments: Vec<&str> = value.split(['/', '_', '-']).collect();
-    if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
-        return false;
-    }
-    segments.iter().all(|segment| {
-        segment_has_letters_then_optional_short_digits(segment)
-            && segment_has_word_like_case_runs(segment)
+    static HELP_ROUTE: OnceLock<Regex> = OnceLock::new();
+    static CLINICAL_CODE: OnceLock<Regex> = OnceLock::new();
+    let formats = [
+        static_regex(
+            &HELP_ROUTE,
+            r"^/hc/[a-z]{2}-[a-z]{2}/(?:sections|categories)/[0-9]{12}-([A-Za-z]+(?:-[A-Za-z]+)*)$",
+        ),
+        static_regex(&CLINICAL_CODE, r"^(?:PH|PHVS)_([A-Za-z]+)_HL7_V[0-9]{1,4}$"),
+    ];
+    // Either recognized format must account for the complete literal the user committed.
+    formats.iter().any(|pattern| {
+        // A missing match or an opaque label cannot grant an exception to the value.
+        pattern.captures(value).is_some_and(|matched| {
+            matched[1]
+                .split('-')
+                .all(|word| (3..=32).contains(&word.len()) && has_entropy_word_case(word))
+        })
     })
 }
 
-/// Recognises separator-delimited identifier slugs that trip entropy thresholds
-/// only because several low-entropy tokens are concatenated: model names and IDs
-/// (`Llama-4-Maverick-17B-128E-Instruct-FP8`, `provider/Family/Model-Size`), and
-/// kebab/path identifiers. A real secret is either contiguous (a single segment),
-/// carries base64 padding (`+`/`=`), or hides a long high-entropy run in a segment;
-/// none of those shapes pass here, so this skip cannot mask a credential.
-fn is_separated_identifier_slug(value: &str) -> bool {
-    if value.contains(['+', '=']) {
+/// Decide whether a letter run reads as an ordinary word or a compound name before granting a name exception.
+///
+/// Returns true when `word` is lowercase after optional capitals, all capitals, or a camel-case compound of parts of three or more letters.
+fn has_entropy_word_case(word: &str) -> bool {
+    static WORD_CASE: OnceLock<Regex> = OnceLock::new();
+    static_regex(
+        &WORD_CASE,
+        r"^(?:[A-Z]*[a-z]+|[A-Z]+|(?:[a-z]{3,}|[A-Z]{3,}|[A-Z][a-z]{2,})(?:[A-Z][a-z]{2,}|[A-Z]{3,})+)$",
+    ).is_match(word)
+}
+
+/// Recognize readable names and repository paths without letting their words hide an opaque tail.
+/// At least two word segments must supply a strict letter majority; empty or malformed names remain eligible for scoring.
+///
+/// Returns true when every segment of `value` passes `entropy_segment_word_letters` and both bars above hold; false otherwise.
+/// One leading `../../`, `../`, `./` or `/` is ignored, followed by one optional leading `.` before an ASCII alphanumeric character;
+/// segments are split on `/`, `.`, `_` and `-`, and other punctuation fails the name.
+fn is_structured_entropy_name(value: &str) -> bool {
+    static NAME_SHAPE: OnceLock<Regex> = OnceLock::new();
+    // A committed path may start with up to two parent components, `./`, or `/`, then one hidden-entry `.` prefix.
+    let after_dir_prefix = value
+        .strip_prefix("../../")
+        .or_else(|| value.strip_prefix("../"))
+        .or_else(|| value.strip_prefix("./"))
+        .or_else(|| value.strip_prefix('/'))
+        .unwrap_or(value);
+    let normalized = after_dir_prefix
+        .strip_prefix('.')
+        .filter(|rest| {
+            rest.as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+        })
+        .unwrap_or(after_dir_prefix);
+    // Missing segments or other punctuation keep the value eligible for a warning.
+    if !static_regex(&NAME_SHAPE, r"^[A-Za-z0-9]+(?:[/._-]+[A-Za-z0-9]+)+$").is_match(normalized) {
         return false;
     }
-    let segments: Vec<&str> = value.split(['/', '_', '-', '.']).collect();
-    if segments.len() < 3 || segments.iter().any(|segment| segment.is_empty()) {
-        return false;
-    }
-    if segments.iter().any(|segment| {
-        !segment
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-    }) {
-        return false;
-    }
-    let mut word_segments = 0;
-    for segment in &segments {
-        if segment_has_word_like_case_runs(segment) {
-            word_segments += 1;
-        } else if segment.len() > 6 {
-            // A long token that is not word-like has the shape of a secret chunk,
-            // not a version/size code, so the whole value is not inert.
+    let mut alphanumeric_count = 0;
+    let mut word_letter_count = 0;
+    let mut word_segment_count = 0;
+    // Readable directories do not excuse a random-looking filename; check each populated part independently.
+    for segment in normalized
+        .split(['/', '.', '_', '-'])
+        .filter(|part| !part.is_empty())
+    {
+        // A rejected segment prevents the whole value from receiving the public-name exception.
+        let Some(segment_word_letters) = entropy_segment_word_letters(segment) else {
             return false;
-        }
+        };
+        alphanumeric_count += segment.len();
+        word_letter_count += segment_word_letters;
+        word_segment_count += usize::from(segment_word_letters > 0);
     }
-    word_segments >= 2
+    word_segment_count >= 2 && word_letter_count * 2 > alphanumeric_count
 }
 
-fn segment_has_letters_then_optional_short_digits(segment: &str) -> bool {
-    let mut letter_count = 0;
-    let mut digit_count = 0;
-    let mut seen_digit = false;
-    for character in segment.chars() {
-        if character.is_ascii_alphabetic() {
-            if seen_digit {
-                return false;
-            }
-            letter_count += 1;
-        } else if character.is_ascii_digit() {
-            seen_digit = true;
-            digit_count += 1;
-        } else {
-            return false;
-        }
+/// Count readable word letters without accepting an opaque suffix in the same populated ASCII segment.
+/// A zero count supplies no word evidence; None rejects the whole name and keeps it eligible for scoring.
+///
+/// Returns the number of letters of `segment` in runs of three or more, zero for a code, timestamp or short number, or `None` to reject it.
+/// It rejects a segment over 32 bytes, more than two digit runs, an over-long digit run, or a letter run that is too short or oddly cased.
+fn entropy_segment_word_letters(segment: &str) -> Option<usize> {
+    static SHORT_CODE: OnceLock<Regex> = OnceLock::new();
+    static RUNS: OnceLock<Regex> = OnceLock::new();
+    // Long undivided segments can hold opaque values, so they remain eligible for a warning.
+    if segment.len() > 32 {
+        return None;
     }
-    letter_count > 0 && digit_count <= 4
-}
-
-fn segment_has_word_like_case_runs(segment: &str) -> bool {
-    let alpha_prefix: String = segment
-        .chars()
-        .take_while(|character| character.is_ascii_alphabetic())
-        .collect();
-    let runs = camel_case_runs(&alpha_prefix);
-    !runs.is_empty() && runs.iter().filter(|run| run.len() >= 3).count() * 2 > runs.len()
-}
-
-fn camel_case_runs(value: &str) -> Vec<String> {
-    let mut runs: Vec<String> = Vec::new();
-    for character in value.chars() {
-        if character.is_ascii_uppercase()
-            && runs.last().is_some_and(|run| {
-                run.chars()
-                    .last()
-                    .is_some_and(|last| last.is_ascii_lowercase())
-            })
-        {
-            runs.push(String::new());
-        }
-        if let Some(run) = runs.last_mut() {
-            run.push(character);
-        } else {
-            runs.push(character.to_string());
-        }
+    // Model codes and timestamps may occur in public paths but contribute no readable-word evidence.
+    if static_regex(
+        &SHORT_CODE,
+        r"^(?:[vVxXrR][0-9]{1,4}|[0-9]{1,4}[bBeE]|[aA][0-9]{1,4}[bB]|FP[0-9]{1,4}|i18n|ec2|[mMtT][0-9]{2,3}|[0-9]{8}T[0-9]{4}(?:[0-9]{2})?Z)$",
+    )
+    .is_match(segment)
+    {
+        return Some(0);
     }
-    runs
+    let (digits, letters): (Vec<_>, Vec<_>) = static_regex(&RUNS, r"[A-Za-z]+|[0-9]+")
+        .find_iter(segment)
+        .map(|part| part.as_str())
+        .partition(|part| part.as_bytes()[0].is_ascii_digit());
+    // A standalone short number can label a version; numbers mixed with words need tighter bounds.
+    let max_digits = if letters.is_empty() { 6 } else { 4 };
+    // Repeated or long number runs prevent the name from receiving an exception.
+    if digits.len() > 2 || digits.iter().any(|part| part.len() > max_digits) {
+        return None;
+    }
+    // Short labels may occur alone, but short letters interleaved with numbers do not establish a readable name.
+    let min_letters = if digits.is_empty() { 1 } else { 3 };
+    // Arbitrary case changes keep the value eligible for a warning.
+    if letters
+        .iter()
+        .any(|part| part.len() < min_letters || !has_entropy_word_case(part))
+    {
+        return None;
+    }
+    Some(
+        letters
+            .iter()
+            .filter(|part| part.len() >= 3)
+            .map(|part| part.len())
+            .sum(),
+    )
 }
 
-/// Returns true when the file is part of the rule calibration harness.
-/// Calibration files exist to prove rules fire (positive cases) or stay
-/// silent (negative cases); they intentionally embed deliberately-bad
-/// patterns and would otherwise produce sensitive-data and metric noise.
-/// Path-based so the same skip applies regardless of file kind.
+/// Recognise analyser calibration fixtures that intentionally contain patterns users should normally fix.
+/// Excluding them keeps self-analysis results focused on production behavior rather than the rule corpus.
+///
+/// Returns true when `display_path`, read with forward slashes, is under `tests/calibration/` or is a `calibration_extras.rs` file.
 pub(crate) fn path_is_calibration_fixture(display_path: &str) -> bool {
     let normalized = display_path.replace('\\', "/");
+    // Files under the calibration tree are deliberate positive and negative rule examples.
     if normalized.contains("/tests/calibration/") || normalized.starts_with("tests/calibration/") {
         return true;
     }
+    // The standalone calibration extras file serves the same test-only purpose.
     if normalized.ends_with("/calibration_extras.rs") || normalized == "calibration_extras.rs" {
         return true;
     }
     false
 }
 
-/// Returns true when the file lives in Rust test infrastructure: anything
-/// under a `tests/` directory or a sibling `tests.rs` file. Rule scanners
-/// parse files individually and miss the parent-level `#[cfg(test)]`
-/// gating, so this path heuristic catches helpers that panic, unwrap, or
-/// otherwise behave in ways that would be production-bad but are normal
-/// for test scaffolding.
+/// The code before a trailing `//` comment, found outside string literals, so `let a = read(p); // slow path :(`
+/// ends in `;` and `} // end match` is a closing brace.
 ///
-/// `**/fixtures/**` is explicitly excluded - those files are inputs that
-/// rules scan on purpose (e.g. `tests/fixtures/parser/invalid.rs` exists
-/// to prove the AWS access key rule fires).
+/// Returns `text` up to the first `//` outside a string literal, trimmed at the end, or all of `text` when it has no such comment.
+pub(crate) fn without_trailing_comment(text: &str) -> &str {
+    let masked = crate::strip_rust_string_literals(text);
+    masked
+        .find("//")
+        .map_or(text, |position| text[..position].trim_end())
+}
+
+/// Recognise Rust test infrastructure where panic and unwrap patterns are expected scaffolding.
+///
+/// Fixture inputs remain analysable because users rely on them to prove sensitive-data rules fire.
+/// `display_path` is read with forward slashes, and a path under a `fixtures/` directory is never test infrastructure.
+/// Returns true when the path is under a `tests/` directory or is a `tests.rs` file, and false otherwise.
 pub(crate) fn path_is_test_infrastructure(display_path: &str) -> bool {
     let normalized = display_path.replace('\\', "/");
+    // Fixture files are user-like scan inputs, not test harness code to silence.
     if normalized.contains("/fixtures/") || normalized.starts_with("fixtures/") {
         return false;
     }
@@ -486,9 +580,7 @@ mod high_entropy_tests {
         "-_"
     );
     const MODEL_IDENTIFIER: &str = concat!("deepinfra/Qwen/", "Qwen3-235B-A22B-", "Instruct-2507");
-    // Real model-name/ID shapes that flagged at error severity on AI-tooling repos:
-    // a bare name with no provider slash, a single-slash id, and lowercase size codes
-    // the previous recogniser rejected.
+    // These real model-name shapes previously produced error findings: bare and single-slash IDs plus lowercase size codes.
     const BARE_MODEL_NAME: &str = "Llama-4-Maverick-17B-128E-Instruct-FP8";
     const SINGLE_SLASH_MODEL: &str = "Qwen/Qwen3-Coder-480B-A35B-Instruct";
     const LOWERCASE_MODEL_ID: &str = "abacus/Qwen/qwen3-coder-480b-a35b-instruct";
@@ -533,7 +625,7 @@ mod high_entropy_tests {
 
     #[test]
     fn high_entropy_predicates_keep_jwt_segment_flaggable() {
-        assert!(is_high_entropy(JWT_PAYLOAD_SEGMENT));
+        assert!(is_high_entropy(JWT_PAYLOAD_SEGMENT, 32, 4.2));
         assert!(!is_structured_high_entropy_non_secret(JWT_PAYLOAD_SEGMENT));
     }
 
@@ -548,6 +640,35 @@ mod high_entropy_tests {
             "sha512-",
             "j51egjPa7/i+HYI",
             "ftzVDpy1aZQ=="
+        )));
+    }
+
+    #[test]
+    fn high_entropy_allows_relative_hidden_paths_without_hiding_opaque_tails() {
+        assert!(is_structured_high_entropy_non_secret(
+            "./.goat-flow/plans/0.3.0-upgrades-at-the-elevator-door/scripts/prepare_floor1_art.py"
+        ));
+        assert!(is_structured_high_entropy_non_secret(
+            "../.config/project-settings/floor1_art_manifest.json"
+        ));
+        assert!(is_structured_high_entropy_non_secret(
+            "../../.hidden/scripts/prepare_floor1_art.py"
+        ));
+
+        assert!(!is_structured_high_entropy_non_secret(concat!(
+            "./..goat-flow/plans/0.3.0-upgrades-",
+            "at-the-elevator-door/scripts/",
+            "prepare_floor1_art.py"
+        )));
+        assert!(!is_structured_high_entropy_non_secret(concat!(
+            "../../../.goat-flow/plans/0.3.0-upgrades-",
+            "at-the-elevator-door/scripts/",
+            "prepare_floor1_art.py"
+        )));
+        assert!(!is_structured_high_entropy_non_secret(concat!(
+            "./.goat-flow/plans/scripts/",
+            "q7W9e2R4t6Y8u1I3o5P0",
+            "a9S7d5F3g1H8j6K4l2Z0"
         )));
     }
 }

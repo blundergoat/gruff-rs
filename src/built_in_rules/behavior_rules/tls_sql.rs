@@ -11,6 +11,11 @@ static SQL_LINE_COMMENT_REGEX: OnceLock<Regex> = OnceLock::new();
 static SQL_WHITESPACE_REGEX: OnceLock<Regex> = OnceLock::new();
 static TLS_VERIFICATION_DISABLED_REGEX: OnceLock<Regex> = OnceLock::new();
 
+/// Flag `danger_accept_invalid_certs` or `accept_invalid_hostnames` calls passed `true` directly or through a local bound to `true`.
+///
+/// `source` is the file text, scanned line by line with string literals and comments masked, and `file` is the file each finding names.
+/// Per line, only the first non-`mut` `let` of a lowercase name updates the tracked set: `true` adds it, any other value removes it.
+/// Each function-start line clears the set, and each matching line appends one `security.tls-verification-disabled` finding to `findings`.
 pub(crate) fn analyse_tls_verification_disabled(
     file: &SourceFile,
     source: &str,
@@ -46,6 +51,10 @@ pub(crate) fn analyse_tls_verification_disabled(
     }
 }
 
+/// Build the warning for an explicit TLS verification bypass.
+///
+/// `file` is the scanned file, and `line` is the one-based line of the bypass call.
+/// Returns a high-confidence `security.tls-verification-disabled` warning with removal advice.
 fn tls_verification_disabled_finding(file: &SourceFile, line: usize) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "security.tls-verification-disabled".to_string(),
@@ -66,6 +75,9 @@ fn tls_verification_disabled_finding(file: &SourceFile, line: usize) -> Finding 
 
 /// A line that opens a function body (`fn name`), used to scope `true` bindings to
 /// a single function so they cannot leak into a later, unrelated function.
+///
+/// `line` is one source line, and the dynamic SQL checks use the same boundary.
+/// Returns true when `line` contains the word `fn`, whitespace, and an ASCII letter or underscore, and false otherwise.
 fn is_function_start_line(line: &str) -> bool {
     static FUNCTION_START_REGEX: OnceLock<Regex> = OnceLock::new();
     static_regex(&FUNCTION_START_REGEX, r"\bfn\s+[A-Za-z_]").is_match(line)
@@ -86,6 +98,10 @@ fn boolean_let_binding(line: &str) -> Option<(String, bool)> {
     Some((name, value == "true"))
 }
 
+/// Detect a TLS bypass call whose argument is a local currently bound to `true`.
+///
+/// `line` is one masked source line, and `true_bindings` holds the names the caller recorded as bound to `true`, including on this line.
+/// Returns true when the first bypass call on the line whose argument is a lowercase identifier passes one of those names, and false otherwise.
 fn tls_bypass_uses_true_binding(line: &str, true_bindings: &BTreeSet<String>) -> bool {
     static TLS_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
@@ -98,6 +114,11 @@ fn tls_bypass_uses_true_binding(line: &str, true_bindings: &BTreeSet<String>) ->
         .is_some_and(|arg| true_bindings.contains(arg.as_str()))
 }
 
+/// Flag `query`, `execute` or `prepare` calls given a `format!` string that `dynamic_sql_template_is_flaggable` accepts, inline or through a local.
+/// That is a template that cannot be read, or a SQL-shaped one outside the fixed `?` list exemption.
+///
+/// `source` is the file text; calls are matched with string literals and comments masked, while templates are read from the original.
+/// `file` is the file each finding names, and each flagged line appends one `security.sql-dynamic-query` finding to `findings`.
 pub(crate) fn analyse_sql_dynamic_query(
     file: &SourceFile,
     source: &str,
@@ -124,6 +145,10 @@ pub(crate) fn analyse_sql_dynamic_query(
     );
 }
 
+/// Flag `query`, `execute` or `prepare` calls whose argument is an inline `format!` that `dynamic_sql_template_is_flaggable` accepts.
+///
+/// `searchable` is the masked copy of `source` that is matched, `source` supplies the template text, and `starts` maps offsets to lines.
+/// `emitted` holds the lines already reported and gains each new one; each new line appends one finding for `file` to `findings`.
 fn push_direct_sql_dynamic_query_findings(
     file: &SourceFile,
     source: &str,
@@ -159,6 +184,12 @@ fn push_direct_sql_dynamic_query_findings(
     }
 }
 
+/// Flag `query`, `execute` or `prepare` calls passed a local recorded since the last function-start line from a `format!` that
+/// `dynamic_sql_template_is_flaggable` accepts.
+///
+/// `searchable` is the masked copy of `source` scanned line by line; `source` supplies template text and `starts` gives line byte offsets.
+/// `emitted` holds the lines already reported and gains each new one; each new line appends one finding for `file` to `findings`.
+/// A binding on the sink's own line counts, and a later `let` that rebinds the name to something else does not clear it.
 fn push_bound_sql_dynamic_query_findings(
     file: &SourceFile,
     source: &str,
@@ -192,6 +223,10 @@ fn push_bound_sql_dynamic_query_findings(
     }
 }
 
+/// Build the warning for a dynamic SQL string passed to a query sink.
+///
+/// `file` is the scanned file, `line` is the one-based line the caller reports, and `method` is the sink name: `query`, `execute` or `prepare`.
+/// Returns a high-confidence `security.sql-dynamic-query` warning naming `method` in its message, symbol and metadata.
 fn sql_dynamic_query_finding(file: &SourceFile, line: usize, method: &str) -> Finding {
     Finding::new(FindingDescriptor {
         rule_id: "security.sql-dynamic-query".to_string(),
@@ -205,13 +240,17 @@ fn sql_dynamic_query_finding(file: &SourceFile, line: usize, method: &str) -> Fi
         confidence: Confidence::High,
         symbol: Some(method.to_string()),
         remediation: Some(
-            "Review this SQL-shaped formatted value, then prefer static SQL with bind parameters. If the named sink is a reviewed non-SQL wrapper or non-production fixture, rename it or add the host path to `paths.ignore` in `.gruff-rs.yaml`."
+            "Review this SQL-shaped formatted value, then prefer static SQL with bind parameters. If the named sink is a reviewed non-SQL wrapper, rename it so it does not read as a SQL sink."
                 .to_string(),
         ),
         metadata: json!({ "method": method }),
     })
 }
 
+/// Find the local a line binds to a `format!` value that `dynamic_sql_template_is_flaggable` accepts.
+///
+/// `line` is one masked source line, and `line_start` is its byte offset in `source`, the original text the template is read from.
+/// Returns the name from the line's first `let name = format!(` binding, or None when there is none or its template is not flaggable.
 fn dynamic_format_binding_name(line: &str, source: &str, line_start: usize) -> Option<String> {
     static SQL_FORMAT_BINDING_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
@@ -232,6 +271,10 @@ fn dynamic_format_binding_name(line: &str, source: &str, line_start: usize) -> O
     Some(name)
 }
 
+/// Find a SQL sink call on one line whose single argument is a plain local name.
+///
+/// `line` is one masked source line.
+/// Returns the method name (`query`, `execute` or `prepare`) and argument name of the first such call, or None when there is none.
 fn sql_sink_binding(line: &str) -> Option<(&str, &str)> {
     static SQL_BINDING_SINK_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = static_regex(
@@ -245,6 +288,10 @@ fn sql_sink_binding(line: &str) -> Option<(&str, &str)> {
     ))
 }
 
+/// Decide whether the `format!` template at an offset counts as dynamic SQL.
+///
+/// `source` is the original file text, and `format_start` is the byte offset of `format!` in it.
+/// Returns true when the template cannot be read or has a SQL statement shape outside the fixed `?` list exemption, and false otherwise.
 fn dynamic_sql_template_is_flaggable(source: &str, format_start: usize) -> bool {
     let Some(template) = format_template_at(source, format_start) else {
         return true;
@@ -253,6 +300,10 @@ fn dynamic_sql_template_is_flaggable(source: &str, format_start: usize) -> bool 
         && !fixed_placeholder_arity_is_safe(source, format_start, &template)
 }
 
+/// Locate the `format!` macro inside a regex match so its template can be read.
+///
+/// `source` is the original file text, and `match_start` and `match_end` bound the match, with `match_end` clamped to the text length.
+/// Returns the byte offset of the first `format!` in that range, or None when there is none or the range is not a valid slice.
 fn format_start_in_match(source: &str, match_start: usize, match_end: usize) -> Option<usize> {
     let bounded_end = match_end.min(source.len());
     source
@@ -271,6 +322,9 @@ const STATEMENT_CLAUSE_PROSE_WORDS: &[&str] = &[
 
 /// Reports whether the clause between `SELECT`/`UPDATE` and its partner keyword reads as prose.
 /// `Select the note from the archive` satisfies the bare keyword shape but is a user-facing string.
+///
+/// `sql_shape_text` is the normalised template text, with placeholders blanked and whitespace folded.
+/// Returns true when a clause word matches a listed prose word, ignoring case, and false otherwise or when the text has no such clause.
 fn statement_clause_is_prose(sql_shape_text: &str) -> bool {
     static STATEMENT_CLAUSE_REGEX: OnceLock<Regex> = OnceLock::new();
     let clause_regex = static_regex(
@@ -295,6 +349,9 @@ fn statement_clause_is_prose(sql_shape_text: &str) -> bool {
 }
 
 /// Reports whether a format template retains a supported SQL statement shape after placeholders.
+///
+/// `template` is the raw `format!` string; placeholders become spaces and SQL comments are removed before the shape check.
+/// Returns true for a recognised SQL statement shape, and false for a prose-like `SELECT` or `UPDATE` clause or any other text.
 fn template_is_flaggable(template: &str) -> bool {
     let sql_shape_text = normalise_sql_shape_text(&format_literal_fragments(template));
     // A sentence that merely opens with a statement verb is not a query the user is building.
@@ -339,6 +396,9 @@ fn template_is_flaggable(template: &str) -> bool {
 }
 
 /// Removes SQL comments and folds whitespace before the bounded statement-shape comparison.
+///
+/// `template` is the template text after placeholders were replaced.
+/// Returns the text with `/* */` and `--` comments replaced by spaces, whitespace runs folded to one space, and both ends trimmed.
 fn normalise_sql_shape_text(template: &str) -> String {
     let without_block_comments =
         static_regex(&SQL_BLOCK_COMMENT_REGEX, r"(?s)/\*.*?\*/").replace_all(template, " ");
@@ -350,6 +410,10 @@ fn normalise_sql_shape_text(template: &str) -> String {
         .to_string()
 }
 
+/// Reduce a `format!` template to its literal text so placeholder contents cannot form SQL keywords.
+///
+/// `template` is the template string as written.
+/// Returns the text with each placeholder and each lone `}` replaced by a space, and each doubled brace collapsed to one.
 fn format_literal_fragments(template: &str) -> String {
     let mut output = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
@@ -359,6 +423,10 @@ fn format_literal_fragments(template: &str) -> String {
     output
 }
 
+/// Translate one template character into literal-only output, consuming the rest of a placeholder or escaped brace.
+///
+/// `character` is the character just read, `chars` is the rest of the template, and `output` receives the translated text.
+/// A doubled brace becomes one brace, a placeholder or lone `}` becomes one space, and `chars` is advanced past what was consumed.
 fn append_format_literal_fragment(
     character: char,
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
@@ -373,6 +441,9 @@ fn append_format_literal_fragment(
     }
 }
 
+/// Emit one literal brace for an escaped `{{` or `}}` pair.
+///
+/// `chars` is advanced past the second brace of the pair, and `brace` is the character pushed onto `output`.
 fn push_escaped_format_brace(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     output: &mut String,
@@ -382,6 +453,9 @@ fn push_escaped_format_brace(
     output.push(brace);
 }
 
+/// Drop the contents of one placeholder from the literal-only output.
+///
+/// `chars` is advanced past the next `}`, or to the end when there is none, and `output` receives one space in place of the placeholder.
 fn skip_format_placeholder(
     chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
     output: &mut String,
@@ -394,6 +468,11 @@ fn skip_format_placeholder(
     output.push(' ');
 }
 
+/// Apply the fixed `?` list exemption from textual markers near the template, without tracing data flow.
+///
+/// `source` is the original file text, `format_start` is the byte offset of the `format!`, and `template` is its string.
+/// Returns true only when the template has placeholders, each a simple identifier passing the raw-text fixed `?` list check,
+/// and the text `params_from_iter(` appears within twelve lines starting at the `format!`; false otherwise.
 fn fixed_placeholder_arity_is_safe(source: &str, format_start: usize, template: &str) -> bool {
     let placeholders = placeholder_arg_names(template);
     // Every placeholder must be a simple identifier proven to be a fixed `?` list.
@@ -437,6 +516,10 @@ fn placeholder_arg_names(template: &str) -> Vec<String> {
     names
 }
 
+/// Check that a placeholder argument is a plain ASCII identifier.
+///
+/// `value` is the placeholder token, which is empty for a positional `{}`.
+/// Returns true when it starts with an ASCII letter or `_` and continues with ASCII letters, digits or `_`, and false for empty or other text.
 fn is_simple_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -446,6 +529,13 @@ fn is_simple_identifier(value: &str) -> bool {
         && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
+/// Look for an earlier raw line that binds a placeholder local and carries comma-joined `?` list markers.
+///
+/// `source` is the original file text, `name` is the placeholder's local, and `format_start` is the `format!` offset that ends the search.
+/// Returns true when a raw line since the last function-start line starts by binding `name` and contains `.join(",")` and a repetition marker,
+/// either `std::iter::repeat_n("?"` or a `vec!` repeat of `"?"`, even inside a trailing comment; false otherwise.
+///
+/// A later rebinding of `name` before `format_start` is not checked.
 fn placeholder_binding_is_fixed_question_list(
     source: &str,
     name: &str,
@@ -462,11 +552,14 @@ fn placeholder_binding_is_fixed_question_list(
         })
 }
 
-/// Byte offset where the function enclosing `format_start` begins. Recognises
-/// `fn`, `pub fn`, `async fn`, and indented `impl` methods via
-/// `is_function_start_line`, not just a bare `fn` at column zero, so the
-/// fixed-`?` proof window stays inside one function: a helper's `let x = ...`
-/// binding must not vouch for a same-named parameter in a later public function.
+/// Byte offset of the last function-start line before `format_start`. Recognises `fn`, `pub fn`, `async fn`, and indented `impl`
+/// methods via `is_function_start_line`, not just a bare `fn` at column zero.
+///
+/// The fixed-`?` proof window therefore starts at the nearest function line: a helper's `let x = ...` binding must not vouch for
+/// a same-named parameter in a later public function.
+///
+/// `source` is the original file text, searched up to `format_start`.
+/// Returns the byte offset of the last function-start line in that text, or zero when there is none.
 fn enclosing_function_start(source: &str, format_start: usize) -> usize {
     let mut start = 0;
     let mut offset = 0;
@@ -482,6 +575,8 @@ fn enclosing_function_start(source: &str, format_start: usize) -> usize {
 /// True when `line` binds exactly `name` (`let name` / `let mut name`). A
 /// non-identifier char must follow the name so `placeholders` does not match a
 /// `placeholders_safe` binding.
+///
+/// Returns true for such a binding after leading whitespace is trimmed, and false otherwise.
 fn line_is_name_binding(line: &str, name: &str) -> bool {
     let line = line.trim_start();
     ["let ", "let mut "].iter().any(|prefix| {
@@ -495,6 +590,10 @@ fn line_is_name_binding(line: &str, name: &str) -> bool {
     })
 }
 
+/// Search for the text `params_from_iter(` just after a formatted query.
+///
+/// `source` is the original file text, and `format_start` is the `format!` offset where the search begins.
+/// Returns true when `params_from_iter(` appears in the twelve lines starting at `format_start`, and false otherwise.
 fn later_uses_params_from_iter(source: &str, format_start: usize) -> bool {
     source[format_start..]
         .lines()
@@ -502,6 +601,11 @@ fn later_uses_params_from_iter(source: &str, format_start: usize) -> bool {
         .any(|line| line.contains("params_from_iter("))
 }
 
+/// Read the template string literal passed as the first argument to `format!`.
+///
+/// `source` is the original file text, and `format_start` is the byte offset where `format!` begins.
+/// Returns the literal's text, or None when `format!` is not followed by `(` and a complete plain or raw string literal.
+/// In a plain literal each backslash escape is reduced to the character after it, so `\n` reads as `n`.
 fn format_template_at(source: &str, format_start: usize) -> Option<String> {
     source
         .get(format_start..)?
@@ -514,6 +618,10 @@ fn format_template_at(source: &str, format_start: usize) -> Option<String> {
     parse_rust_string_literal_at(source, index)
 }
 
+/// Advance past a run of ASCII whitespace bytes.
+///
+/// `source` is the text to scan, and `index` is the byte offset to start from.
+/// Returns `index` moved past any ASCII whitespace, stopping at the first other byte or the end of the text.
 fn skip_ascii_whitespace(source: &str, mut index: usize) -> usize {
     while source
         .as_bytes()
@@ -525,11 +633,20 @@ fn skip_ascii_whitespace(source: &str, mut index: usize) -> usize {
     index
 }
 
+/// Read a raw or plain Rust string literal that starts at a byte offset.
+///
+/// `source` is the original file text, and `index` is the offset of the literal's first character.
+/// Returns the contents from the raw-string parser, else from the plain-string parser, or None when neither finds a literal there.
 fn parse_rust_string_literal_at(source: &str, index: usize) -> Option<String> {
     parse_raw_string_literal_at(source, index)
         .or_else(|| parse_double_quoted_string_literal_at(source, index))
 }
 
+/// Read a raw string literal such as `r"..."` or `r#"..."#` starting at a byte offset.
+///
+/// `source` is the original file text, and `index` is the offset of the `r` prefix.
+/// Returns the text between the opening quote and the first closing quote followed by the same number of `#` marks.
+/// Returns None when `index` does not start an `r`, hashes and quote prefix, or the literal never closes.
 fn parse_raw_string_literal_at(source: &str, index: usize) -> Option<String> {
     let bytes = source.as_bytes();
     (bytes.get(index) == Some(&b'r')).then_some(())?;
@@ -545,6 +662,11 @@ fn parse_raw_string_literal_at(source: &str, index: usize) -> Option<String> {
     Some(source[content_start..content_start + relative_end].to_string())
 }
 
+/// Read a plain double-quoted string literal starting at a byte offset.
+///
+/// `source` is the original file text, and `index` is the offset of the opening quote.
+/// Returns the contents with each backslash escape reduced to the character after it.
+/// Returns None when there is no quote at `index` or the literal never closes.
 fn parse_double_quoted_string_literal_at(source: &str, index: usize) -> Option<String> {
     (source.as_bytes().get(index) == Some(&b'"')).then_some(())?;
     let mut content = String::new();

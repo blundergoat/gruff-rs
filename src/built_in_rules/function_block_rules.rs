@@ -1,5 +1,10 @@
 use super::*;
 
+/// Reports an advisory `naming.placeholder-identifier` finding when a function's name is a stock or configured placeholder.
+///
+/// `file` is the source file the finding points into, and `block` is the parsed function whose `name` is checked.
+/// `config` supplies the rule's `extraPlaceholders` names, matched exactly beside the built-in `foo`, `bar`, `baz` and `qux`.
+/// The finding, with medium confidence and a rename remediation, is appended to `findings`; nothing is added for any other name.
 pub(crate) fn analyse_placeholder_block_name(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -23,16 +28,17 @@ pub(crate) fn analyse_placeholder_block_name(
             },
             BlockFindingExtras {
                 confidence: Confidence::Medium,
-                remediation: Some(
-                    "Rename the function to describe its domain role. If the placeholder is intentional (test fixture, generated stub), add the host path to `paths.ignore` in `.gruff-rs.yaml`."
-                        .to_string(),
-                ),
+                remediation: Some("Rename the function to describe its domain role.".to_string()),
                 metadata: json!({}),
             },
         ));
     }
 }
 
+/// Runs the `error-handling.production-panic` and `error-handling.unimplemented-placeholder` checks on one function block.
+///
+/// `file` and `block` locate the function, and `searchable_body` is its body text, comments included, which both checks scan.
+/// Findings from either check are appended to `findings`, the panic check's first.
 pub(crate) fn analyse_error_handling_block(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -41,9 +47,15 @@ pub(crate) fn analyse_error_handling_block(
 ) {
     analyse_panic_block(file, block, searchable_body, findings);
     analyse_placeholder_block(file, block, searchable_body, findings);
-    analyse_public_unwrap_block(file, block, searchable_body, findings);
 }
 
+/// Reports an `error-handling.production-panic` warning when the body text of a function outside test code matches a `panic!` invocation.
+///
+/// Test functions, blocks in test context and files on test-infrastructure paths are skipped.
+/// `file` and `block` locate the function, and `searchable_body` is the body text, comments included, searched for a `panic!` invocation.
+/// A `PANIC:` or `INVARIANT:` substring anywhere in the body, found by `has_nearby_invariant_comment`, suppresses the finding.
+///
+/// The high-confidence finding is appended to `findings`; nothing is added when the function is skipped or passes.
 pub(crate) fn analyse_panic_block(
     file: &SourceFile,
     block: &FunctionBlock,
@@ -76,15 +88,34 @@ pub(crate) fn analyse_panic_block(
     }
 }
 
+/// Reports an `error-handling.unimplemented-placeholder` warning when the cleaned body text has a parenthesised `todo!` or `unimplemented!`.
+///
+/// Files on test-infrastructure paths are skipped; comments and matched `quote!` or `quote_spanned!` bodies are masked before matching.
+/// `file` and `block` locate the function, and `searchable_body` is the body text, comments included, that is cleaned and scanned.
+/// The high-confidence finding lists each distinct macro in its `macros` metadata and is appended to `findings`.
 pub(crate) fn analyse_placeholder_block(
     file: &SourceFile,
     block: &FunctionBlock,
     searchable_body: &str,
     findings: &mut Vec<Finding>,
 ) {
-    if static_regex(&PLACEHOLDER_MACRO_REGEX, r"\b(todo!|unimplemented!)\s*\(")
-        .is_match(searchable_body)
-    {
+    // `blocks.rs` returns before this rule for a test fn or `#[cfg(test)]` code, so the one guard
+    // `analyse_panic_block` opens with that is missing here is the test-infrastructure path.
+    if path_is_test_infrastructure(&file.display_path) {
+        return;
+    }
+    // Comments are stripped here, not by the caller, because the panic and unwrap checks read the same
+    // body. A macro named in prose, or quoted into a `quote!` stream for generated code, is not a call.
+    let code = mask_quote_token_streams(&strip_rust_comments_after_string_mask(searchable_body));
+    let regex = static_regex(&PLACEHOLDER_MACRO_REGEX, r"\b(todo!|unimplemented!)\s*\(");
+    let mut macros: Vec<&str> = Vec::new();
+    for captures in regex.captures_iter(&code) {
+        let name = captures.get(1).map_or("", |found| found.as_str());
+        if !macros.contains(&name) {
+            macros.push(name);
+        }
+    }
+    if !macros.is_empty() {
         findings.push(block_finding_with_extras(
             BlockFindingDescriptor {
                 rule_id: "error-handling.unimplemented-placeholder",
@@ -103,42 +134,58 @@ pub(crate) fn analyse_placeholder_block(
                     "Replace the placeholder with implemented behavior before shipping."
                         .to_string(),
                 ),
-                metadata: json!({ "macros": ["todo!", "unimplemented!"] }),
+                metadata: json!({ "macros": macros }),
             },
         ));
     }
 }
 
-pub(crate) fn analyse_public_unwrap_block(
-    file: &SourceFile,
-    block: &FunctionBlock,
-    searchable_body: &str,
-    findings: &mut Vec<Finding>,
-) {
-    let has_unwrap = static_regex(&UNWRAP_EXPECT_CALL_REGEX, r"\.(unwrap|expect)\s*\(")
-        .is_match(searchable_body);
-    if block.is_externally_public && has_unwrap {
-        findings.push(block_finding_with_extras(
-            BlockFindingDescriptor {
-                rule_id: "error-handling.public-unwrap",
-                message: format!(
-                    "Public function `{}` uses unwrap()/expect() in its implementation.",
-                    block.name
-                ),
-                file,
-                block,
-                severity: Severity::Warning,
-                pillar: Pillar::Maintainability,
-            },
-            BlockFindingExtras {
-                confidence: Confidence::High,
-                remediation: Some(
-                    "Return a Result or map the failure into the public API contract.".to_string(),
-                ),
-                metadata: json!({}),
-            },
-        ));
+/// Blank the body of each matched `quote!` or `quote_spanned!` invocation, keeping line breaks, so a macro name
+/// inside a generated-code token stream is not read as a call. Strings are already masked, so the
+/// delimiters counted here are all code.
+///
+/// `code` is function body text whose comments have already been stripped.
+/// Only the spelling with `!` right after the macro name is matched, so whitespace before the `!` leaves that stream unmasked.
+///
+/// Returns a copy of `code` with the same byte length, in which each stream body's bytes other than newlines are spaces.
+/// A stream that never closes is blanked to the end of the text; the macro name and its delimiters are kept.
+fn mask_quote_token_streams(code: &str) -> String {
+    static QUOTE_MACRO_REGEX: OnceLock<Regex> = OnceLock::new();
+    let regex = static_regex(&QUOTE_MACRO_REGEX, r"\bquote(?:_spanned)?!\s*[\(\[\{]");
+    let bytes = code.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut search_from = 0;
+    while let Some(found) = regex.find_at(code, search_from) {
+        // The match ends on the opening delimiter.
+        let end = closing_delimiter_index(bytes, found.end() - 1);
+        for byte in &mut masked[found.end()..end] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+        search_from = end;
     }
+    String::from_utf8_lossy(&masked).into_owned()
+}
+
+/// Return the index of the delimiter that closes the one at `open_index`, counting every bracket kind, or
+/// the end of the text when the stream never closes.
+///
+/// `bytes` is the code text being scanned, and `open_index` is the position of the opening bracket to match.
+/// Returns the first index where the bracket depth falls back to zero, so a closing bracket of any kind can end the stream.
+fn closing_delimiter_index(bytes: &[u8], open_index: usize) -> usize {
+    let mut depth = 0usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open_index) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => continue,
+        }
+        if depth == 0 {
+            return index;
+        }
+    }
+    bytes.len()
 }
 
 pub(crate) struct PerformanceCheck {
@@ -151,32 +198,12 @@ pub(crate) struct PerformanceCheck {
     pub(crate) remediation: &'static str,
 }
 
-pub(crate) const PERFORMANCE_CHECKS: &[PerformanceCheck] = &[
-    PerformanceCheck {
-        rule_id: "performance.regex-in-loop",
-        regex: &PERF_REGEX_IN_LOOP_REGEX,
-        pattern: r"\bRegex::new\s*\(",
-        severity: Severity::Warning,
-        confidence: Confidence::High,
-        label: "Regex::new",
-        remediation: "Move regex construction out of the loop or cache the compiled regex.",
-    },
-    PerformanceCheck {
-        rule_id: "performance.format-in-loop",
-        regex: &PERF_FORMAT_IN_LOOP_REGEX,
-        pattern: r"\bformat!\s*\(",
-        severity: Severity::Advisory,
-        confidence: Confidence::Medium,
-        label: "format!",
-        remediation: "Reuse buffers or move formatting out of the loop when allocation matters.",
-    },
-    PerformanceCheck {
-        rule_id: "performance.clone-in-loop",
-        regex: &PERF_CLONE_IN_LOOP_REGEX,
-        pattern: r"\.clone\s*\(",
-        severity: Severity::Advisory,
-        confidence: Confidence::Medium,
-        label: "clone()",
-        remediation: "Clone outside the loop or borrow values when ownership permits.",
-    },
-];
+pub(crate) const PERFORMANCE_CHECKS: &[PerformanceCheck] = &[PerformanceCheck {
+    rule_id: "performance.regex-in-loop",
+    regex: &PERF_REGEX_IN_LOOP_REGEX,
+    pattern: r"\bRegex::new\s*\(",
+    severity: Severity::Warning,
+    confidence: Confidence::High,
+    label: "Regex::new",
+    remediation: "Move regex construction out of the loop or cache the compiled regex.",
+}];
