@@ -333,7 +333,7 @@ const DOCUMENTED_SAMPLE_DIGESTS: &[&str] = &[
 /// `matched_value` is hashed with SHA-256, and its lowercase hex digest is looked up in `DOCUMENTED_SAMPLE_DIGESTS`.
 /// Returns true only when that digest is listed, and false for every other value.
 fn is_documented_sample(matched_value: &str) -> bool {
-    let digest = format!("{:x}", Sha256::digest(matched_value.as_bytes()));
+    let digest = crate::report_identity::lower_hex(&Sha256::digest(matched_value.as_bytes()));
     DOCUMENTED_SAMPLE_DIGESTS.contains(&digest.as_str())
 }
 
@@ -682,14 +682,10 @@ fn is_pem_shaped_body(body: &str) -> bool {
 /// Returns true only when all of those hold, and false when any check excludes the value.
 fn high_entropy_secret_should_report(value: &str, min_length: usize, min_entropy: f64) -> bool {
     // Values below the entropy bar, known inert shapes and vendor-documented samples are not secret findings.
-    if !is_high_entropy(value, min_length, min_entropy)
-        || is_integrity_hash(value)
-        || is_structured_high_entropy_non_secret(value)
-        || is_documented_sample(value)
-    {
-        return false;
-    }
-    true
+    is_high_entropy(value, min_length, min_entropy)
+        && !is_integrity_hash(value)
+        && !is_structured_high_entropy_non_secret(value)
+        && !is_documented_sample(value)
 }
 
 /// Build a high-entropy finding carrying only the generic zero-payload marker.

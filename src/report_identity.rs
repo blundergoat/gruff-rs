@@ -66,7 +66,15 @@ pub(crate) fn compute_stable_identity(
     hasher.update(file_path.as_bytes());
     hasher.update(b"\0");
     hasher.update(stable_identity_subject(scope, symbol, message).as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    lower_hex(&hasher.finalize())[..16].to_string()
+}
+
+/// Spell digest bytes as lowercase hex, two characters per byte, the form every published identity and digest uses.
+///
+/// `digest` is a hash output such as a SHA-256 digest.
+/// Returns a string twice as long as `digest`, with no separators or prefix.
+pub(crate) fn lower_hex(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Chooses the subject that `compute_stable_identity` hashes after a finding's rule and file.

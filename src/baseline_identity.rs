@@ -153,7 +153,7 @@ pub(crate) fn compute_identity_for(
         }
         hasher.update(field.as_bytes());
     }
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    crate::report_identity::lower_hex(&hasher.finalize())[..16].to_string()
 }
 
 /// Name every eligible finding in one run, ranking same-named declarations as it goes.

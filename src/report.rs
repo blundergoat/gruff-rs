@@ -4,7 +4,9 @@
 //! The same report carries summaries, scores, baseline outcomes, and the suppression audit.
 
 use super::*;
-use crate::report_identity::{compute_stable_identity, infer_finding_scope, FindingScope};
+use crate::report_identity::{
+    compute_stable_identity, infer_finding_scope, lower_hex, FindingScope,
+};
 use serde::ser::{SerializeStruct, Serializer};
 
 /// How serious a finding is in the report.
@@ -287,7 +289,7 @@ fn line_sensitive_fingerprint(
     hasher.update(line.unwrap_or_default().to_string().as_bytes());
     hasher.update(b"\0");
     hasher.update(symbol.unwrap_or_default().as_bytes());
-    format!("{:x}", hasher.finalize())[..16].to_string()
+    lower_hex(&hasher.finalize())[..16].to_string()
 }
 
 /// Explain a run-level problem a caller may need to act on before trusting the findings.

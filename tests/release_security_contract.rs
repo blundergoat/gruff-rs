@@ -11,28 +11,28 @@ use std::path::PathBuf;
 const EXPECTED_ACTION_PINS: &[(&str, &str, &str)] = &[
     (
         "actions/checkout",
-        "34e114876b0b11c390a56381ad16ebd13914f8d5",
-        "v4.3.1",
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "v7.0.1",
     ),
     (
         "actions/upload-artifact",
-        "ea165f8d65b6e75b540449e92b4886f43607fa02",
-        "v4.6.2",
+        "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+        "v7.0.2",
     ),
     (
         "actions/download-artifact",
-        "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-        "v4.3.0",
+        "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+        "v8.0.2",
     ),
     (
         "Swatinem/rust-cache",
-        "c19371144df3bb44fab255c43d04cbc2ab54d1c4",
-        "v2.9.1",
+        "d1527c8f67ef9af357290475d4af4b0fab8f12e0",
+        "v2.9.3",
     ),
     (
         "dtolnay/rust-toolchain",
-        "4be7066ada62dd38de10e7b70166bc74ed198c30",
-        "stable snapshot for Rust 1.97.0",
+        "39008827e6b4319a349e9a42dfc90579dd25f1ca",
+        "stable snapshot for Rust 1.100.1",
     ),
 ];
 
@@ -451,12 +451,12 @@ fn validate_workflow_tool_versions(
     require_contract_text(
         ".github/workflows/ci.yml",
         ci_workflow,
-        "CI_RUST_TOOLCHAIN: 1.97.0",
+        "CI_RUST_TOOLCHAIN: 1.100.1",
     )?;
     require_contract_text(
         ".github/workflows/release.yml",
         release_workflow,
-        "RELEASE_RUST_TOOLCHAIN: 1.97.0",
+        "RELEASE_RUST_TOOLCHAIN: 1.100.1",
     )?;
     require_contract_text(
         ".github/workflows/release.yml",
@@ -477,12 +477,12 @@ fn validate_local_checker_versions(
     require_contract_text(
         "scripts/dependency-install.sh",
         dependency_installer,
-        "CARGO_AUDIT_VERSION=0.22.2",
+        "CARGO_AUDIT_VERSION=0.23.0",
     )?;
     require_contract_text(
         "scripts/preflight-checks.sh",
         preflight,
-        "CARGO_AUDIT_VERSION=0.22.2",
+        "CARGO_AUDIT_VERSION=0.23.0",
     )?;
     require_contract_text(
         "scripts/dependency-install.sh",
@@ -633,7 +633,7 @@ fn mutable_action_tag_is_rejected_by_contract() {
         EXPECTED_ACTION_PINS[0].1, EXPECTED_ACTION_PINS[0].2
     );
     let mutable_ci_workflow =
-        ci_workflow.replacen(&pinned_checkout, "actions/checkout@v4 # v4.3.1", 1);
+        ci_workflow.replacen(&pinned_checkout, "actions/checkout@v7 # v7.0.1", 1);
     let contract_error =
         validate_action_references(&[(".github/workflows/ci.yml", &mutable_ci_workflow)])
             .expect_err("a moving checkout tag must fail the supply-chain contract");

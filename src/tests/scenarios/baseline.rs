@@ -1053,7 +1053,14 @@ fn sentinel_forms(sentinel: &str) -> Vec<(&'static str, String)> {
     vec![
         ("raw", sentinel.to_string()),
         ("partial", sentinel[..8].to_string()),
-        ("hashed", format!("{:x}", hasher.finalize())),
+        (
+            "hashed",
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        ),
         ("encoded", base64_encode(sentinel.as_bytes())),
     ]
 }

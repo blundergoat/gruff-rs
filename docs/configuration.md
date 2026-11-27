@@ -11,9 +11,9 @@ with built-in defaults. Explicit `.json` config paths are rejected; use YAML.
 
 ## Root Keys
 
-Every config must declare `schemaVersion: gruff-rs.config.v1` as its first key;
-configs without it are rejected at load time (run `gruff-rs init --force` to
-regenerate). The supported top-level sections are:
+Every config must declare `schemaVersion: gruff-rs.config.v1` (`init` writes it
+as the first key); configs without it are rejected at load time (run
+`gruff-rs init --force` to regenerate). The supported top-level sections are:
 
 - `schemaVersion` (required) — config schema version; must be `gruff-rs.config.v1`.
 - `paths`
@@ -43,8 +43,8 @@ deepScanBudget:
 Crossing either limit degrades that Rust file instead of excluding it. The file
 still counts as analysed, and text-level size and sensitive-data checks still
 run; `size.file-length` counts only its code lines, leaving out blank, comment,
-doc-comment and attribute lines. Masking, block parsing, AST walking, Rust-code/comment custom rules, and
-other deep script work do not. Non-code text such as `.env`, JSON, YAML, TOML,
+doc-comment and attribute lines. Block parsing, AST walking, Rust-code and comment custom rules, and
+other deep analysis do not. Non-code text such as `.env`, JSON, YAML, TOML,
 and `.conf` never enters this budget and remains fully scanned.
 
 Each degradation emits a non-fatal `bounded-deep-scan` diagnostic naming the
@@ -265,8 +265,9 @@ gate:
 unlimited. `onMatch` is `fail` (exit `1`) or `warn` (diagnostic only). `scope`
 selects which findings count: `new` counts only findings introduced since the
 baseline, `all` counts every finding, and leaving it unset keeps the historical
-behaviour. `--fail-on-new` is the CLI alias for `scope: new` and requires a
-baseline. A malformed gate is a config error (exit `2`) naming the offending path.
+behaviour. `--fail-on-new` is the CLI alias for `scope: new`; both require a
+baseline, and without one the run fails with exit `2`. A malformed gate is a
+config error (exit `2`) naming the offending path.
 
 ## Compatibility
 

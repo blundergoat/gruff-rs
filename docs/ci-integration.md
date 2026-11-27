@@ -13,7 +13,7 @@ jobs:
   analyse:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Replace the placeholder with the reviewed commit for v0.6.0.
       - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.6.0
         with:
@@ -26,7 +26,7 @@ jobs:
             --fail-on
             none
           output-file: gruff-rs.sarif
-      - uses: github/codeql-action/upload-sarif@v3
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gruff-rs.sarif
 ```
@@ -53,8 +53,7 @@ from the fixed `blundergoat/gruff-rs` GitHub release origin. It verifies the
 checksum and archive members before installing only the binary into a private
 `RUNNER_TEMP` directory. This checksum catches corruption or a mismatched
 asset, but it is not publisher authentication because both files come from the
-same release channel. The 0.5.0 release gate also requires GitHub release
-immutability before publication. Errors identify the install,
+same release channel. Errors identify the install,
 checksum/archive, or analyzer-execution stage.
 
 The former `args` command string is intentionally unsupported starting in

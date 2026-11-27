@@ -505,9 +505,25 @@ fn is_returned_type(signature: &syn::Signature, name: &str) -> bool {
 /// Returns true for a constructor or builder step, false otherwise.
 fn is_constructor_or_builder(signature: &syn::Signature) -> bool {
     is_returned_type(signature, "Self")
-        && signature.receiver().is_none_or(|receiver| {
-            !matches!(receiver.ty.as_ref(), syn::Type::Reference(reference) if reference.mutability.is_some())
-        })
+        && signature
+            .receiver()
+            .is_none_or(|receiver| receiver_borrow_mutability(receiver) != Some(true))
+}
+
+/// Read whether a method receiver borrows `self`, covering the shorthand and the explicit `self: &Self` form.
+///
+/// `receiver` is the parsed `self` parameter.
+/// Returns `Some(true)` for `&mut self` or `self: &mut Self`, `Some(false)` for `&self` or `self: &Self`,
+/// and `None` for `self` by value or any other explicit receiver type such as `self: Box<Self>`.
+fn receiver_borrow_mutability(receiver: &syn::Receiver) -> Option<bool> {
+    match &receiver.kind {
+        syn::ReceiverKind::Reference(_, _, mutability) => Some(mutability.is_some()),
+        syn::ReceiverKind::Typed(_, receiver_type) => match receiver_type.as_ref() {
+            syn::Type::Reference(reference) => Some(reference.mutability.is_some()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Report whether a signature returns `bool` or `Option<bool>`, whose meaning a summary has to state.
@@ -568,8 +584,7 @@ fn has_only_shared_self_input(signature: &syn::Signature) -> bool {
     signature.inputs.len() == 1
         && matches!(
             signature.inputs.first(),
-            Some(syn::FnArg::Receiver(receiver))
-                if matches!(receiver.ty.as_ref(), syn::Type::Reference(reference) if reference.mutability.is_none())
+            Some(syn::FnArg::Receiver(receiver)) if receiver_borrow_mutability(receiver) == Some(false)
         )
 }
 

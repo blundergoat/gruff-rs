@@ -112,7 +112,7 @@ A scan of that file alone, a production declaration, or a path override keeps th
 
 `test-quality.duplicate-test-body` is enabled by default. Set `rules.test-quality.duplicate-test-body.enabled: false` to opt out. It finds three or more tests in the same module of one file whose bodies differ only in literal values. Members need identical attributes in source order, with their arguments (rustdoc excluded), the same signature apart from the name, and at least four top-level statements, the contracted Rust minimum: an assertion macro does a whole check in one statement, so a shorter test is one named case. Names, calls, assertions, operators, numeric suffixes and token delimiters stay significant, and comments and formatting are ignored. Text containing ASCII whitespace, literals inside an index or slice, record, object and map keys, and tuple field numbers such as `pair.0` stay exact. An item declared anywhere inside a test body, such as a nested function, struct or trait implementation, including one inside a block or closure, is compared exactly with its attributes and documentation, because a declaration is not case data; a constant or static declared in the body is a value and still normalizes. Attributes inside the body keep their literal arguments. Each group produces one finding at its first test, listing every member and suggesting a table-driven case loop with descriptive labels. Tests with case attributes or a `for` loop are excluded, and two matching tests are never reported. Literal payloads and module-local helpers can encode distinct contracts, so review the members before folding them.
 
-`security.process-command` and `security.unsafe-deserialization` are off by default after M02's accepted table. The process sample has 18 unresolved provenance cases and 8 of 14 judged findings right, below its 0.80 floor; the deserialization sample has one unresolved finding and no judged result. Both detectors remain available with `rules.<id>.enabled: true` or `--include-rule <id>`. A severity override alone does not enable either rule.
+`security.process-command` and `security.unsafe-deserialization` are off by default after the 0.6.0 precision measurement. The process sample has 18 unresolved provenance cases and 8 of 14 judged findings right, below its 0.80 floor; the deserialization sample has one unresolved finding and no judged result. Both detectors remain available with `rules.<id>.enabled: true` or `--include-rule <id>`. A severity override alone does not enable either rule.
 
 `ci.github-event-shell-interpolation`, `security.sql-dynamic-query`, and `security.ssrf-candidate` are off by default too: each was wrong on
 all four judged findings in the 0.6.0 precision measurement, too few to delete on (ADR-024). Enable one with `rules.<id>.enabled: true`, or
@@ -208,6 +208,9 @@ A rule's confidence follows its measured precision: high at an error-adjusted sc
   JSON. Peer unlocks: Detekt, PMD, Semgrep, and golangci-lint; ADR-006 keeps
   these as renderers over `gruff.analysis.v3`. SARIF is the first implemented
   CI renderer.
-- Source suppressions. Peer unlocks: Detekt source suppressions and RuboCop
-  TODO config; ADR-009 keeps discovery ignores separate from report
-  suppressions.
+- A gruff-specific source-suppression comment. Since 0.6.0, Rust `allow` and
+  `expect` attributes for the six mapped lints and `zizmor: ignore[...]`
+  comments suppress matching findings (see `configuration.md`); a comment
+  syntax of gruff's own is still deferred. Peer unlocks: Detekt source
+  suppressions and RuboCop TODO config; ADR-009 keeps discovery ignores separate
+  from report suppressions.

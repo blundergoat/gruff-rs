@@ -786,7 +786,7 @@ fn has_same_file_enum_formatter(items: &[syn::Item], enum_name: &syn::Ident) -> 
 /// `item_impl` is the impl block to inspect and `enum_name` is the enum under review.
 /// Returns true when it is a trait impl whose trait path ends in `Debug` or `Display` and whose self type path ends in `enum_name`.
 fn has_enum_formatter_impl(item_impl: &syn::ItemImpl, enum_name: &syn::Ident) -> bool {
-    let Some((_, trait_path, _)) = &item_impl.trait_ else {
+    let Some((trait_path, _)) = &item_impl.trait_ else {
         return false;
     };
     // Only Debug and Display can change the output promised by this narrow formatter check.

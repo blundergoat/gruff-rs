@@ -45,4 +45,6 @@ bash scripts/publish-crates.sh
 2. Push the exact `vX.Y.Z` tag. The same workflow then publishes the verified crate. It creates an unpublished
    GitHub draft, uploads the verified archives, checks with `scripts/release-contract.sh verify-draft` that the
    draft holds exactly the verified asset set, and only then publishes it.
-3. Confirm the published version with `cargo install gruff-rs --locked --version X.Y.Z` in a clean directory.
+3. Replace the release notes. The workflow publishes the release with GitHub's generated notes (`--generate-notes`),
+   so swap in the curated notes with `gh release edit vX.Y.Z --notes-file <notes.md>`.
+4. Confirm the published version with `cargo install gruff-rs --locked --version X.Y.Z` in a clean directory.

@@ -23,7 +23,7 @@ Doc comments are mandatory even on a private one-liner: forcing the agent to sta
 | Field | Value |
 | --- | --- |
 | Release line | Published `0.6.0` package line |
-| Runtime | Prebuilt binary, or Rust `1.88+` when building from source |
+| Runtime | Prebuilt binary, or Rust `1.90+` when building from source |
 | Package | `gruff-rs` on crates.io |
 | Binary | `gruff-rs` |
 | Rule catalogue | 71 rules across 11 pillars |
@@ -40,7 +40,7 @@ Rule IDs, fingerprints, baseline identity, JSON schema version, and SARIF behavi
 ## Requirements
 
 - No Rust toolchain is needed when using a prebuilt binary through `cargo-binstall`.
-- Rust `1.88+` is required when building from source with Cargo.
+- Rust `1.90+` is required when building from source with Cargo.
 - Git is not used by default; Git-backed changed-region modes run only when `--diff`/`--since` is explicitly passed.
 
 ## Install
@@ -153,7 +153,7 @@ jobs:
   gruff:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Replace the placeholder with the reviewed commit for v0.6.0.
       - uses: blundergoat/gruff-rs@FULL_40_CHARACTER_COMMIT_SHA # v0.6.0
         with:
@@ -191,8 +191,7 @@ release origin, verifies the archive against its matching `.sha256` sidecar,
 checks the expected member set, and puts only the verified binary directory on
 the workflow path. The checksum detects corruption or a mismatched download;
 because the archive and checksum share one release channel, it does not prove
-publisher authenticity. The 0.5.0 release gate therefore also requires GitHub
-release immutability before publication. Install, checksum/archive, and
+publisher authenticity. Install, checksum/archive, and
 analyzer-execution errors name the failing stage. See [`action.yml`](action.yml)
 for inputs.
 
@@ -212,7 +211,7 @@ argv: |
 
 `gruff-rs` reads `.gruff-rs.yaml` by default. Use `--config <path>` to pass another YAML file, or `--no-config` to ignore project config. Unknown keys, unknown rule IDs, unknown selectors, and invalid threshold shapes fail closed.
 
-Every config must declare `schemaVersion: gruff-rs.config.v1` as the first key. Configs without it are rejected at load time; run `gruff-rs init --force` to regenerate.
+Every config must declare `schemaVersion: gruff-rs.config.v1` (`init` writes it as the first key). Configs without it are rejected at load time; run `gruff-rs init --force` to regenerate.
 
 The optional `failOn:` block sets per-subcommand defaults for `--fail-on` so CI invocations can omit the flag. Accepted keys are `analyse` and `report` (the two commands that gate exit code); values are `none`, `advisory`, `warning`, or `error`. The CLI `--fail-on` flag always wins; if both the CLI flag and the config key are absent, the binary default (`advisory` for `analyse`, `none` for `report`) applies. See ADR-013 for the rationale and the gating-only accept-list rule. The separate scalar `minimumSeverity:` key does not gate: it takes one severity (`advisory`, `warning`, or `error`) and is the display floor, hiding findings below it from the reported list while the counts, the score, and the exit code stay unchanged.
 
@@ -350,8 +349,7 @@ A baseline run classifies every finding as **new**, **unchanged** (matched the
 baseline and suppressed from the default list), or **resolved** (a baseline entry no
 longer found). The counts surface in the scan card and in JSON under
 `baseline.newFindings` / `unchangedFindings` / `resolvedFindings`; the default
-findings list still shows only new findings, so existing reports are
-byte-identical. See
+findings list still shows only new findings. See
 [Quality Gates](#quality-gates) to fail CI on new findings only.
 
 Changed-code scans keep findings whose location or enclosing declaration
@@ -367,11 +365,11 @@ git diff | ./.cargo-tools/bin/gruff-rs analyse --format json --diff-patch - src/
 Use `--changed-scope=hunk` for line/hunk-only filtering; the default is
 `--changed-scope=symbol`.
 
-When a baseline or diff comparison context is active, `analyse` and `summary` surface per-rule deltas before the composite-score line:
+When a baseline or diff comparison context is active, `analyse` and `summary` print per-rule deltas after the score and totals header and before the findings list, for example:
 
 ```text
-Top 5 improved: -12 docs.missing-public-doc, -7 size.method-length, ...
-Top 5 regressed: +4 modernisation.semver-pin, +2 naming.identifier-quality, ...
+Top 5 improved: -1 naming.short-variable
+Top 5 regressed: +1 docs.missing-panics-section, +1 docs.missing-param-doc, +1 docs.missing-return-doc, +1 waste.unwrap-expect
 ```
 
 The JSON output exposes the same data at `extensions.rs.topLevel.perRuleDeltas`, an array of `{ruleId, introduced, removed, net}`. Both surfaces stay omitted on full-tree scans so the schema remains byte-identical for non-comparison runs.
@@ -392,7 +390,7 @@ gate:
     error: 0            # optional per-severity caps (omitted = unlimited)
     warning: 10
   onMatch: fail         # `fail` (default, exit 1) | `warn` (diagnostic only)
-  scope: new            # optional: `new` | `all` (default: scope unset)
+  scope: new            # optional: `new` (needs a baseline) | `all` (default: scope unset)
 ```
 
 Every gated run records a `gate` diagnostic with the per-severity breakdown and the

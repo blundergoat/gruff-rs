@@ -644,7 +644,7 @@ fn closure_return_type<'a>(
 /// Returns the type after the arrow of a fn-pointer or `Fn`-style `item_type`; `None` for any other type or an omitted output.
 fn callable_type_output(item_type: &syn::Type) -> Option<&syn::Type> {
     match item_type {
-        syn::Type::BareFn(function) => written_return_type(&function.output),
+        syn::Type::FnPtr(function) => written_return_type(&function.output),
         syn::Type::Reference(reference) => callable_type_output(&reference.elem),
         syn::Type::Paren(paren) => callable_type_output(&paren.elem),
         syn::Type::TraitObject(object) => trait_object_output(object).and_then(written_return_type),

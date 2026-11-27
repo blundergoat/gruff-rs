@@ -51,7 +51,8 @@ pub(crate) fn parse_lockfile_value(
     raw: &str,
     diagnostics: &mut Vec<RunDiagnostic>,
 ) -> Option<toml::Value> {
-    Some(match raw.parse::<toml::Value>() {
+    // A whole document deserialises through `from_str`; `str::parse` reads one bare TOML value and rejects every lockfile.
+    Some(match toml::from_str::<toml::Value>(raw) {
         Ok(value) => value,
         Err(_) => {
             diagnostics.push(RunDiagnostic {

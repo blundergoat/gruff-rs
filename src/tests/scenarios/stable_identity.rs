@@ -259,7 +259,12 @@ pub(crate) fn fingerprint_byte_identical_to_pre_m02_formula() {
     sha2::Digest::update(&mut hasher, b"42");
     sha2::Digest::update(&mut hasher, b"\0");
     sha2::Digest::update(&mut hasher, b"x");
-    let expected = format!("{:x}", hasher.finalize())[..16].to_string();
+    let expected: String = hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     assert_eq!(finding.fingerprint, expected);
 }
 

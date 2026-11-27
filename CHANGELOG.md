@@ -48,6 +48,7 @@
 
 ### Changed
 
+- **Building from source requires Rust 1.90.** `rust-version` now names the oldest toolchain that compiles the crate (Rust 1.89 and earlier reject its `const` rule tables); prebuilt binaries need no Rust toolchain.
 - **Security and sensitive-data rules skip test, fixture, and example files with audited rows.** Every security rule (including security-pillar `dependency.*` and `ci.*`, with the five network-security descriptions updated) and every sensitive-data rule except `sensitive-data.pii-test-fixture` skips directories named `test`, `tests`, `__tests__`, `spec`, `testdata`, `fixtures`, or `examples` (any case) and test filenames (`*_test.go`, `test_*.py`, `*_test.py`, `*Test.php`, `*.test.*`, `*.spec.*`). **The trade-off is deliberate: a real vulnerability or credential committed under one of those paths is no longer reported.** Each skip publishes a counted `source: "built-in"` audit row (`FAMILY-CONTRACT.md` section 13a; sensitive-data rows follow lockfile rows).
 - **Vendored, built, and minified files skipped by default (`FAMILY-CONTRACT.md` section 7).** `vendor`, `vendors`, `third_party`, `third-party`, `bower_components`, `dist` (any depth or case), and `*.min.*` files are skipped even under `.gitignore` and listed in `paths.details` as `dependency`, `build-output`, or `generated`; pass `--include-ignored` or name the file explicitly to scan it.
 - **`sensitive-data.high-entropy-string` lockfile skips, character-class floor, and public-format exemptions.**

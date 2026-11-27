@@ -1,34 +1,33 @@
 # Upgrading
 
-`gruff-rs` follows SemVer with one explicit caveat: the `0.5.x` line is
-"mostly stable", which means the surface listed below is locked across `0.5.x`
+`gruff-rs` follows SemVer with one explicit caveat: the `0.6.x` line is
+"mostly stable", which means the surface listed below is locked across `0.6.x`
 releases, but the surrounding edges may evolve.
 
-## What is stable across `0.5.x`
+## What is stable across `0.6.x`
 
-These will not change in a `0.5.x` patch or minor without a bump to `0.6.0`:
+These will not change in a `0.6.x` release without a bump to `0.7.0`:
 
 - **Rule ids.** `security.process-command`, `dead-code.unused-private-function`,
   `complexity.cognitive`, etc. Baselines key on these.
-- **Finding fingerprints.** The hash inputs and serialisation of
-  `partialFingerprints.gruffFingerprint` (SARIF) and `findings[].fingerprint`
-  (JSON). Baselines key on these.
-- **JSON schema version.** `schemaVersion: "gruff.analysis.v2"` and the
+- **Finding identities.** The `gruff.baseline.v3` identity inputs (tool language,
+  rule id, project-relative path, and subject), which baselines and SARIF
+  `partialFingerprints.gruffFingerprint` use, and the hash inputs and
+  serialisation of `findings[].fingerprint` (JSON).
+- **JSON schema version.** `schemaVersion: "gruff.analysis.v3"` and the
   documented top-level fields (`tool`, `run`, `paths`, `summary`, `score`,
-  `findings`, `diagnostics`, `suppressions`, `baseline`, optional
-  `perRuleDeltas` when a baseline / diff context is active). `0.6.0` moves this
-  to `gruff.analysis.v3`; see [What changes in `0.6.0`](#what-changes-in-060).
+  `findings`, `diagnostics`, `suppressions`, plus `baseline` and `extensions`
+  when a baseline or comparison context is active).
 - **Config schema version.** `schemaVersion: "gruff-rs.config.v1"` is
   required on every `.gruff-rs.yaml`. Configs without it are rejected at
   load time; run `gruff-rs init --force` to regenerate.
 - **SARIF surface.** SARIF 2.1.0 contract: rule descriptor shape, result
   shape, suppression kind for config-derived exclusions, `partialFingerprints`
   key.
-- **Config root keys.** `paths.ignore`, `allowlists`, `rules.select`,
-  `rules.ignore`, `rules.<id>`, `custom_rules`, `exclude`, `minimumSeverity`,
-  `gate`. Unknown keys continue to fail closed. `0.6.0` renames the per-command
-  exit gate to `failOn` and rereads `minimumSeverity` as a scalar display floor;
-  see [What changes in `0.6.0`](#what-changes-in-060).
+- **Config root keys.** `paths`, `allowlists`, `rules`, `custom_rules`,
+  `exclude`, `sensitiveExclusions`, `failOn`, `minimumSeverity` (the scalar
+  display floor), `deepScanBudget`, and `gate`. Unknown keys continue to fail
+  closed.
 - **Exit codes.** `0` clean, `1` finding at the `--fail-on` threshold, `2`
   fatal diagnostic (parse error, missing path, etc).
 
@@ -75,8 +74,6 @@ at a time, so a project using more than one of them moves once. This port's reco
    `minimumSeverity` still loads, but only as a scalar display floor that hides findings below
    one severity and changes no count, score, or exit code; `gruff-rs migrate-config` renames it.
 
-Each entry above is the one this port's own `CHANGELOG.md` records; nothing here is a plan.
-
 10. **the agent-hook contract moves from `gruff.hook.v1` to `gruff.hook.v2`** — The payload's `contractVersion` changes and the envelope gains two required keys, `run` and `suppressions`. `run` carries the audit data a consumer needs to trust the verdict — mode, scope, the operands as given, `analysedFiles`, and the applied baseline — and `suppressions` carries one row per configured sensitive exclusion the run applied, `[]` when none are configured. The exits are ratified as three and no others: `0` when nothing reached the gate, `1` when something did under an explicit consumer request (`--fail-on`, `--fail-on-new`, or `--fail-on-diagnostics`), and `2` when the run could not happen. Update any consumer that validates the payload's key set; one that reads only the keys it needs is unaffected. The contract is `gruff-spec/contracts/core/hook.v2.json`, ratified 2026-09-06.
 
 11. **`list-rules --format json` is an object carrying the rules under `rules`, and thresholds are
@@ -109,9 +106,11 @@ Each entry above is the one this port's own `CHANGELOG.md` records; nothing here
 20. **unit and never returns stop asking for a description, and three documentation rules widen by default** — `docs.missing-return-doc` no longer reports a function returning `()` or `!`, which removed 3 findings at the defaults on the 0.6.0 precision measurement's twelve Rust repositories. `docs.missing-param-doc` names every undocumented parameter in one message, and `docs.missing-public-doc` says what the rustdoc should cover. The `everyCallable` option is on by default for the three rules, including in a config written by an earlier `init`, which has no `options` entry; turning it on there added 25,316 `docs.missing-public-doc`, 1,862 `docs.missing-param-doc` and 1,563 `docs.missing-return-doc` findings, taking the total from 25,460 to 54,201, a little over twice as many. Set `rules.<id>.options.everyCallable: false` to keep a rule to public functions. The rest of this entry is in `CHANGELOG.md`.
 21. **remaining `0.6.0` rule-default, severity, and confidence shifts** — All eight formerly-`error` `sensitive-data.*` rules (`api-key-pattern`, `aws-access-key`, `gcp-service-account-key`, `jwt-token`, `phi-pattern`, `pii-test-fixture`, `private-key`, `url-embedded-credentials`) now default to `warning` (override `severity: error` in `.gruff-rs.yaml` to retain `--fail-on error` blocking); `complexity.cyclomatic`, `security.process-command`, `security.unsafe-deserialization`, `security.github-actions-broad-permissions`, and `security.hardcoded-bind-all-interfaces` are off by default (set `enabled: true` to keep them on); `security.*` rules skip test, fixture, and example paths with counted `source: "built-in"` audit rows; ten rules recalibrated confidence against measured precision with catalogue confidence taking precedence on every built-in finding; and `test-quality.duplicate-test-body` is enabled by default (set `enabled: false` to opt out). Full details are in `CHANGELOG.md`.
 
-## What may change in `0.5.x` with deprecation
+Each entry above is the one this port's own `CHANGELOG.md` records; nothing here is a plan.
 
-These can evolve inside `0.5.x` provided users get at least one minor release
+## What may change in `0.6.x` with deprecation
+
+These can evolve inside `0.6.x` provided users get at least one minor release
 of warning before the change lands:
 
 - **New rules.** Default-on additions ship as new ids. Add `rules.ignore`
@@ -121,23 +120,21 @@ of warning before the change lands:
 - **New CLI flags and output formats.** Additions are non-breaking.
 - **New SARIF properties** under `result.properties` or `rule.properties`.
   Additions only; existing keys keep their meaning.
-- **`findings[].filePath`.** Superseded by the canonical `findings[].file`
-  alias added in `0.3.0`. It was emitted through `0.5.x` for the transition and
-  is **removed in `0.6.0`**, along with `score.topOffenders[].filePath`. Migrate
-  JSON consumers to `file`.
 - **Text/Markdown/HTML output formatting.** Cosmetic improvements may land
   without a deprecation window because they are not machine-consumed.
 - **Dashboard UI.** The local dashboard is explicitly best-effort.
 
 ## What may change without warning
 
-- **Pre-`0.5.x` behaviour.** Each earlier line had its own "mostly stable" tier.
+- **Pre-`0.6.x` behaviour.** Each earlier line had its own "mostly stable" tier.
   `0.2.0` collected the `0.1.x` breaking changes (analyse-default flip from
   `error` to `advisory`, required config `schemaVersion`, analysis JSON schema
   bump from `gruff.analysis.v1` to `gruff.analysis.v2`, `gruff.summary.v1` to
   `gruff.summary.v2`); `0.4.0` retired two default rules; `0.5.0` removed the
-  composite Action's `args` input. Anything that existed only inside an earlier
-  line and is not named under "What is stable across `0.5.x`" is not covered.
+  composite Action's `args` input; `0.6.0` carried the breaks listed under
+  [What changes in `0.6.0`](#what-changes-in-060). Anything that existed only
+  inside an earlier line and is not named under "What is stable across `0.6.x`"
+  is not covered.
 - **Internal Rust API.** `gruff-rs` is a binary crate; its library symbols are
   `pub(crate)` and intentionally not part of the public surface. Treat
   `gruff-rs` as a CLI, not a library dependency.
@@ -163,10 +160,25 @@ of warning before the change lands:
    `minimumSeverity:` placeholders, deletes `allowlists.secretPreviews`, and strips all fifteen
    retired `0.5` rule IDs across `rules:`, `rules.select`, `rules.ignore`, `exclude`, and
    `sensitiveExclusions` (refusing if removing retired IDs would empty a non-empty `rules.select`).
-   Review the diff, then replace `.gruff-rs.yaml` once satisfied.
+   Review the diff, then replace `.gruff-rs.yaml` once satisfied, keeping the `0.5` file under
+   another name for the retreat path:
+
+   ```bash
+   mv .gruff-rs.yaml .gruff-rs.0.5.yaml && mv .gruff-rs.0.6.yaml .gruff-rs.yaml
+   ```
+
 4. Carry a baseline forward rather than regenerating it, so previously reviewed findings stay
    reviewed. Run `gruff-rs analyse --migrate-baseline <old path> --generate-baseline <new path>`,
    the command the tool prints when it refuses a `0.5` baseline; the original file is preserved.
+   The run exits `1` when the scan reports findings at your gate, and the new file is still
+   written. A `0.5` baseline left at `gruff-baseline.json` stops `analyse`, `report`, and
+   `summary` with exit `2`, so move the migrated file into place:
+
+   ```bash
+   ./.cargo-tools/bin/gruff-rs analyse --migrate-baseline gruff-baseline.json --generate-baseline gruff-baseline.v3.json
+   mv gruff-baseline.json gruff-baseline.0.5.json && mv gruff-baseline.v3.json gruff-baseline.json
+   ```
+
 5. Re-run `./.cargo-tools/bin/gruff-rs summary .` and compare the finding count and grade with the
    one you had. Both are expected to move: every score changes at this release, the fallback policy
    changes which files are scanned at all, and a secret a `0.5` baseline suppressed is reported
@@ -176,7 +188,8 @@ of warning before the change lands:
 
 **Retreat path.** Pin the previous line —
 `cargo install gruff-rs --locked --version 0.5.0 --root ./.cargo-tools` — and keep the `0.5`
-config and baseline files the migrations preserved.
+config and baseline files the migrations preserved. Move them back to `.gruff-rs.yaml` and
+`gruff-baseline.json` before running `0.5` again.
 
 ## Upgrade workflow (0.4.x → 0.5.0)
 
@@ -283,7 +296,7 @@ without edits. The new surface is opt-in:
    `exclude`, per-rule threshold override, `excludeFromScore` for visibility
    without scoring penalty) over disabling broadly.
 
-## Retired M02 rules in `0.6.0`
+## Rules retired in `0.6.0`
 
 The following rules are retired. Run `gruff-rs migrate-config --config <old> --output <new>` to strip them automatically, or remove their `rules:` blocks and any configured selector or exclusion entries naming them; configuration rejects retired IDs with a migration hint. CLI include and exclude selectors reject retired IDs. Existing baseline entries for those rules resolve.
 
@@ -304,10 +317,10 @@ These removals land in the coordinated 0.6.0 break because the accepted precisio
 
 `security.github-actions-broad-permissions` and `security.hardcoded-bind-all-interfaces` also require explicit opt-in after their bounded repairs. Their blind comparisons retained one and nine findings, all judged right, but fewer than ten is too little evidence to establish the floor. Enable each with `rules.<id>.enabled: true` or `--include-rule <id>` to retain its findings; a severity override alone does not enable it. Detector identities and existing suppression and baseline behavior are unchanged.
 
-`security.process-command` and `security.unsafe-deserialization` no longer run by default because the accepted M02 measurement leaves input provenance unresolved. To retain either check, set `rules.<id>.enabled: true` in your configuration or pass `--include-rule <id>`. A severity setting alone keeps the rule off; `--include-rule` also narrows the scan to selected rules. Both detectors and their IDs remain available. Cyclomatic complexity remains opt-in under its earlier decision.
+`security.process-command` and `security.unsafe-deserialization` no longer run by default because the 0.6.0 precision measurement leaves input provenance unresolved. To retain either check, set `rules.<id>.enabled: true` in your configuration or pass `--include-rule <id>`. A severity setting alone keeps the rule off; `--include-rule` also narrows the scan to selected rules. Both detectors and their IDs remain available. Cyclomatic complexity remains opt-in under its earlier decision.
 
 ## Reporting compatibility regressions
 
-If a `0.5.x` upgrade silently changes a rule id, fingerprint input, exit code,
+If a `0.6.x` upgrade silently changes a rule id, fingerprint input, exit code,
 or JSON/SARIF field declared stable above, open an issue. Those are the
-load-bearing contracts and breaking them inside `0.5.x` is a bug.
+load-bearing contracts and breaking them inside `0.6.x` is a bug.
